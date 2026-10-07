@@ -89,7 +89,9 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   const initialThinking=record.thinkingLevel;
   const groupOwned=process.platform!=='win32';
   const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path&&existsSync(record.path)?record.path:undefined,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
-  const worker:Worker={child,record,state:{isRunning:false,messages:[]},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);
+  // The renderer initializes its draft and execution controls from this first snapshot.
+  // Keep the persisted configuration visible while native Pi history is loading.
+  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,executionMode:record.executionMode==='swarm'?'swarm':'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);
   worker.startupTimer=setTimeout(()=>{
     const error=new Error('Pi 初始化超时；请检查系统文件访问授权，重新打开会话后显式继续');
     retireWorker(worker,error,true);void terminateWorker(worker);if(!shuttingDown)publishState();

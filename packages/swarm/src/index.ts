@@ -400,6 +400,14 @@ export class SwarmController implements PluginController {
 const extension:ExtensionFactory=pi=>{
   const controller=new SwarmController();
   pi.on('session_start',(_event,ctx)=>{controller.setConfirmationHandler((title,message)=>ctx.ui.confirm(title,message));});
-  registerPlugin(pi,'swarm',controller,'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核');
+  registerPlugin(pi,'swarm',controller,'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
+    actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','configure','send','shared.read','shared.write'],
+    toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status、update_task 或自行声称成员执行。
+1. create 的 input={goal,tasks:[{id,title,prompt,dependencies:[],mode:"read"|"write",writeScopes:["."]}],maxWorkers?,checks?:[{command,args:[]}]}。必须明确每个任务的 mode；只读分析任务用 mode:"read"，不能省略后变成写入。需要自动规划且不提供 tasks 时明确传 automatic:true。返回 Graph.id 是完整 UUID，created 只代表计划保存，不代表成员已执行。
+2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
+3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图做复核；integrate 仅对已通过检查/复核的 ready 图整合。
+4. configure input={graphId,maxWorkers:1..16}，只在空闲修改并发。send input={graphId,to:"任务 id",body:"消息"}。shared.read input={graphId,name}；shared.write input={graphId,name,content,expectedRevision}，新材料 expectedRevision:0，更新使用读取到的 revision。
+5. 只有 snapshot 返回的目标 graphs[].status === "integrated" 才可报告 Swarm 完成；pending/running/awaiting_review/created/paused/stopped 均不是完成。遇到错误报告真实状态，不编造两名成员、自检或验收。原项目有未提交改动时，不 stash/reset/clean；写入阻塞应保留改动，只读任务仍可用。`,
+  });
 };
 export default extension;

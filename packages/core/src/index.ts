@@ -145,8 +145,10 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   };
 }
 
+export interface PluginRegistrationOptions {toolDescription?:string;actionEnum?:readonly string[]}
 /** Connect a native Pi extension and desktop requests to the same controller. */
-export function registerPlugin(pi: ExtensionAPI, name: string, controller: PluginController, description: string): void {
+export function registerPlugin(pi: ExtensionAPI, name: string, controller: PluginController, description: string, options:PluginRegistrationOptions={}): void {
+  if(options.actionEnum&&!options.actionEnum.length)throw new Error('插件动作枚举不能为空');
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent') => {
     const context = makeContext(pi,ctx,origin); const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
@@ -163,8 +165,8 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
     })();
   });
   pi.registerTool({
-    name:`friend_${name.replaceAll('-','_')}`,label:description,description,
-    parameters:Type.Object({action:Type.String(),input:Type.Optional(Type.Record(Type.String(),Type.Unknown()))}),
+    name:`friend_${name.replaceAll('-','_')}`,label:description,description:options.toolDescription||description,
+    parameters:Type.Object({action:options.actionEnum?Type.Union(options.actionEnum.map(action=>Type.Literal(action))):Type.String(),input:options.actionEnum?Type.Record(Type.String(),Type.Unknown()):Type.Optional(Type.Record(Type.String(),Type.Unknown()))},options.actionEnum?{additionalProperties:false}:{}),
     async execute(_id,params,_signal,_update,ctx) { const result = await call(params.action,params.input || {},ctx); return {content:[{type:'text',text:JSON.stringify(result)}],details:result}; },
   });
   pi.registerCommand(name,{description,handler:async(args,ctx) => {

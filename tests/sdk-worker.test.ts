@@ -31,9 +31,16 @@ test('native confirmation is correlated and cancellation blocks the requested si
 test('streaming abort reaches settled and cannot be mistaken for a completed operation',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('send',{text:'QA_SLOW'});await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));await fixture.request('stop');await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));const state=await fixture.request('state') as {isRunning:boolean};assert.equal(state.isRunning,false);}finally{await fixture.close();}});
 test('Swarm composer dispatch keeps task authority until isolated members and independent review finish',{timeout:40000},async()=>{const f=await start();try{
  execFileSync('git',['init','-q'],{cwd:f.directory});writeFileSync(join(f.directory,'README.md'),'fixture baseline');writeFileSync(join(f.directory,'.gitignore'),'data/\n');execFileSync('git',['add','README.md','.gitignore'],{cwd:f.directory});execFileSync('git',['-c','user.name=QA','-c','user.email=qa@localhost','commit','-qm','baseline'],{cwd:f.directory});
- await f.request('send',{text:'完成隔离写入并独立复核',mode:'swarm'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+ const dispatched=await f.request('send',{text:'完成隔离写入并独立复核',mode:'swarm'}) as {runId:string};await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+ assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,true);
+ const continuation=await f.request('send',{text:'继续跟踪原有任务图，不要重复创建。',mode:'swarm'}) as {runId:string};assert.equal(continuation.runId,dispatched.runId,'a continuation keeps the in-flight graph relationship');
  let graph:{id:string;status:string;error?:string}|undefined;const end=Date.now()+25000;do{const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:typeof graph[]};graph=snapshot.graphs[0];if(graph?.status==='paused')throw new Error(graph.error);if(graph?.status==='integrated')break;assert.ok(Date.now()<end,'Swarm timed out');const state=await f.request('state') as {isRunning:boolean};await new Promise(done=>setTimeout(done,60));}while(true);
- const settledAt=f.events.findIndex(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled');assert.ok(f.events.slice(settledAt).some(e=>e.event?.type==='state'&&e.event.data.isRunning===true),'member scheduler remains running after coordinator settles');assert.match(readFileSync(join(f.directory,'fixture-result.txt'),'utf8'),/SDK tool execution/);assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
+ const settledAt=f.events.findIndex(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled');assert.ok(f.events.slice(settledAt).some(e=>e.event?.type==='state'&&e.event.data.isRunning===true),'member scheduler remains running after coordinator settles');
+ const graphEventAt=(status:string)=>f.events.findIndex(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&Array.isArray((e.event.data.data as {graphs?:unknown[]})?.graphs)&&((e.event.data.data as {graphs:{status:string}[]}).graphs.some(graph=>graph.status===status)));
+ const readyAt=graphEventAt('ready');const integratedAt=graphEventAt('integrated');assert.ok(readyAt>=0&&integratedAt>readyAt);
+ assert.ok(f.events.slice(readyAt,integratedAt).some(e=>e.event?.type==='state'&&e.event.data.isRunning===true),'validated ready graphs remain busy until integration actually completes');
+ assert.equal(f.events.slice(readyAt,integratedAt).some(e=>e.event?.type==='state'&&e.event.data.isRunning===false),false);
+ assert.match(readFileSync(join(f.directory,'fixture-result.txt'),'utf8'),/SDK tool execution/);const after=await f.request('state') as {isRunning:boolean;lifecycleStatus:string};assert.equal(after.isRunning,false);assert.equal(after.lifecycleStatus,'completed');
  }finally{await f.close();}});
 test('custom provider persists authentication and native history across a cold worker restart',{timeout:30000},async()=>{
  let calls=0;const server=createServer(async(req,res)=>{for await(const _chunk of req){}calls++;res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta:{role:'assistant',content:'local HTTP integration confirmed'},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:'test',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');});await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
@@ -61,7 +68,48 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
    assert.equal(snapshot.graphs[0]?.status,'integrated');
    const after=await fixture.request('state') as {lifecycleStatus:string;isRunning:boolean};
    assert.equal(after.lifecycleStatus,'stopped');assert.equal(after.isRunning,false);
+   await fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'只创建待启动的手动图',tasks:[{id:'manual',title:'待启动',prompt:'只读检查',mode:'read',dependencies:[]}]}});
+   assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a manual unstarted graph cannot overwrite a cold terminal record');
  }finally{await fixture.close();}
+});
+
+test('Swarm task authority rejects a provider claiming completion after create and invalid start calls',{timeout:30000},async()=>{
+ let calls=0;
+ const server=createServer(async(req,res)=>{
+   for await(const _chunk of req){}
+   const call=calls++;
+   const tool=call===0?{action:'create',input:{goal:'两成员完成只读检查',tasks:[{id:'one',title:'检查一',prompt:'只读检查一',mode:'read',dependencies:[]},{id:'two',title:'检查二',prompt:'只读检查二',mode:'read',dependencies:[]}]}}:call<3?{action:'start',input:{id:'incorrect-field-without-graphId'}}:undefined;
+   res.writeHead(200,{'Content-Type':'text/event-stream'});
+   const deltas=tool?[{delta:{role:'assistant',tool_calls:[{index:0,id:`call-${call}`,type:'function',function:{name:'friend_swarm',arguments:JSON.stringify(tool)}}]},finish_reason:null},{delta:{},finish_reason:'tool_calls'}]:[{delta:{role:'assistant',content:'已完成两个成员的执行、独立复核和整合闭环。'},finish_reason:null},{delta:{},finish_reason:'stop'}];
+   for(const choice of deltas)res.write(`data: ${JSON.stringify({id:`completion-${call}`,object:'chat.completion.chunk',created:1,model:'unstarted',choices:[{index:0,...choice}]})}\n\n`);
+   res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ const fixture=await start();
+ try {
+   await fixture.request('configure',{plugins:['swarm']});
+   await fixture.request('provider.save',{provider:'swarm-unstarted-local-fixture',modelId:'unstarted',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+   await fixture.request('send',{text:'请用两个成员完成只读检查并闭环',mode:'swarm'});
+   await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   const graphs=await fixture.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string;attempts:unknown[];tasks:{status:string}[]}[]};
+   assert.equal(graphs.graphs.length,1);assert.equal(graphs.graphs[0].status,'created');assert.equal(graphs.graphs[0].attempts.length,0);
+   assert.ok(graphs.graphs[0].tasks.every(task=>task.status==='pending'));
+   const after=await fixture.request('state') as {lifecycleStatus:string;isRunning:boolean;sessionFile:string;messages:{role:string;text:string}[]};
+   assert.equal(after.isRunning,false);assert.equal(after.lifecycleStatus,'failed');assert.equal(calls,4);
+   assert.ok(after.messages.some(message=>message.role==='assistant'&&message.text.includes('已完成两个成员')),'the real model reply falsely claims completion');
+   assert.ok(fixture.events.some(event=>event.event?.type==='notice'&&String(event.event.data.message).includes('尚未启动或完成整合')),'the client explains the actual unstarted task authority');
+   const jsonl=readFileSync(after.sessionFile,'utf8');assert.match(jsonl,/"role":"toolResult"/);assert.match(jsonl,/"isError":true/);assert.match(jsonl,/已完成两个成员/);
+
+   const next=fixture.events.length;await fixture.request('send',{text:'这轮仅需 Single 只读回复',mode:'single'});
+   await fixture.wait(()=>fixture.events.slice(next).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','a new Single run retains its own native settled authority');
+   const noGraph=fixture.events.length;await fixture.request('send',{text:'新一轮 Swarm 必须实际执行',mode:'swarm'});
+   await fixture.wait(()=>fixture.events.slice(noGraph).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'failed','old unstarted graphs and a text-only answer cannot complete a new Swarm execution');
+   const plan=fixture.events.length;await fixture.request('send',{text:'先只读规划即可',mode:'swarm',planMode:true});
+   await fixture.wait(()=>fixture.events.slice(plan).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','read-only planning does not require executing members');
+ }finally{await fixture.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
 
 test('automatic Rebuild at the settled boundary cannot restore a stale running lifecycle',{timeout:30000},async()=>{
