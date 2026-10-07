@@ -8,7 +8,7 @@ import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { agentDirectory, atomicWrite, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text } from '@friend-pi/core';
 import type { JsonObject, PluginContext, PluginController, StoredDocument } from '@friend-pi/core';
 import { contains, destructiveCommand } from './guard.js';
-import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, SharedDocument, Task } from './types.js';
+import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task } from './types.js';
 export type * from './types.js';
 
 const runFile = promisify(execFile);
@@ -127,7 +127,14 @@ export class SwarmController implements PluginController {
     if (action==='send') return this.sendMessage(id,input,ctx);
     if (action==='shared.write') return this.writeShared(id,input,ctx);
     if (action==='shared.read') {this.get(id,ctx);const doc=this.store(ctx).get<SharedDocument>(`shared:${id}:${text(input.name)}`);return doc?{...doc.value,revision:doc.revision}:null;}
-    if (action==='prepare' || action==='review') {await this.prepare(id,ctx);return this.get(id,ctx).value;}
+    if (action==='prepare' || action==='review') {
+      const graph=this.get(id,ctx).value;
+      if(!graph.tasks.every(task=>task.status==='completed'))throw new Error('所有成果完成后才能整合复核');
+      if(graph.status==='integrated'||graph.status==='ready'||this.preparing.has(id))return graph;
+      // The native review may exceed the request bridge timeout. Return its retained state
+      // immediately and keep completion/failure authority in the actual member lifecycle.
+      void this.prepare(id,ctx).catch(()=>{});this.changed(ctx);return this.get(id,ctx).value;
+    }
     if (action==='integrate') {await this.integrate(id,ctx);return this.get(id,ctx).value;}
     throw new Error(`未知 Swarm 操作：${action}`);
   }
@@ -312,17 +319,17 @@ export class SwarmController implements PluginController {
     catch (raw) {const error=raw as {code?:number;stdout?:string;stderr?:string;message?:string};exitCode=typeof error.code==='number'?error.code:1;output=(error.stdout||'')+(error.stderr||'')+(error.message||'');}
     return {command:check.command,args:check.args,exitCode,output:output.slice(-20000),at:now()};
   }
-  private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<{approved:boolean;findings:string}> {
-    const id=randomUUID();const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时只读原文件。不能修改或派生。输出纯 JSON {"approved":true|false,"findings":"事实和具体问题"}，不能只凭成员自评批准。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.prompt,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n客观检查：${JSON.stringify(graph.integration?.checks || [])}`};
+  private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<Omit<Review,'at'>> {
+    const id=randomUUID();const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],reviewResult:true,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题"}) 提交不可变结论；说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.prompt,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
     return new Promise((resolveResult,reject)=>{
       let done=false;let handle:MemberHandle;
-      const finish=(error?:Error,value?:{approved:boolean;findings:string})=>{if (done) return;done=true;clearTimeout(timer);this.members.delete(id);if (error) {handle?.stop();reject(error);}else resolveResult(value!);};
+      const finish=(error?:Error,value?:Omit<Review,'at'>)=>{if (done) return;done=true;clearTimeout(timer);this.members.delete(id);if (error) {handle?.stop();reject(error);}else resolveResult(value!);};
       const timer=setTimeout(()=>finish(new Error('独立复核超时，成果已保留')),120000);
       try {handle=this.launcher(start,message=>{
-        if (message.type==='settled') {try {const result=parseModelJson(message.summary);if (typeof result.approved!=='boolean') throw new Error('独立复核未提供明确判断');finish(undefined,{approved:result.approved,findings:text(result.findings,'复核结论')});}catch (error) {finish(new Error(errorText(error)));}}
+        if (message.type==='settled') {try {const result=object(JSON.parse(message.summary));if (typeof result.approved!=='boolean'||typeof result.findings!=='string') throw new Error('独立复核未提供结构化判断');finish(undefined,{approved:result.approved,findings:text(result.findings,'复核结论'),attemptId:id,sessionId:message.sessionId,sessionFile:message.sessionFile});}catch (error) {finish(new Error(errorText(error)));}}
         if (message.type==='failed') finish(new Error(message.error));
         if (message.type==='confirm') handle.send({v:1,type:'confirm.response',requestId:message.requestId,accepted:false});
-      },()=>{if (!done) finish(new Error('独立复核进程中断'));});this.members.set(id,{handle,graphId:graph.id,context:ctx});}
+      },()=>{if (!done) finish(new Error('独立复核进程中断'));});if(!done)this.members.set(id,{handle,graphId:graph.id,context:ctx});}
       catch (error) {finish(new Error(errorText(error)));}
     });
   }
@@ -363,7 +370,7 @@ export class SwarmController implements PluginController {
     graph=this.get(id,ctx).value;const review=await this.reviewer(graph,cwd,ctx);
     if (this.disposed) return;
     if (this.get(id,ctx).value.status!=='awaiting_review') return;
-    this.update(id,ctx,g=>{g.integration!.review={...review,attemptId:randomUUID(),at:now()};g.status=review.approved?'ready':'paused';if (!review.approved) g.error=review.findings;});this.changed(ctx);
+    this.update(id,ctx,g=>{g.integration!.review={...review,at:now()};g.status=review.approved?'ready':'paused';if (!review.approved) g.error=review.findings;});this.changed(ctx);
     if (!review.approved) {
       graph=this.get(id,ctx).value;if (graph.reworkRound>=2) {this.update(id,ctx,g=>{g.error=`已达 2 轮自动返工上限：${review.findings}`;});return;}
       // Review directs a fresh attempt; dependent results must be regenerated as their baseline changed.
@@ -405,7 +412,7 @@ const extension:ExtensionFactory=pi=>{
     toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status、update_task 或自行声称成员执行。
 1. create 的 input={goal,tasks:[{id,title,prompt,dependencies:[],mode:"read"|"write",writeScopes:["."]}],maxWorkers?,checks?:[{command,args:[]}]}。必须明确每个任务的 mode；只读分析任务用 mode:"read"，不能省略后变成写入。需要自动规划且不提供 tasks 时明确传 automatic:true。返回 Graph.id 是完整 UUID，created 只代表计划保存，不代表成员已执行。
 2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
-3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图做复核；integrate 仅对已通过检查/复核的 ready 图整合。
+3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图启动异步复核，立即返回保留的状态，再用 snapshot 查询；重复 prepare 不会同时开启复核。integrate 仅对已通过检查/复核的 ready 图整合。
 4. configure input={graphId,maxWorkers:1..16}，只在空闲修改并发。send input={graphId,to:"任务 id",body:"消息"}。shared.read input={graphId,name}；shared.write input={graphId,name,content,expectedRevision}，新材料 expectedRevision:0，更新使用读取到的 revision。
 5. 只有 snapshot 返回的目标 graphs[].status === "integrated" 才可报告 Swarm 完成；pending/running/awaiting_review/created/paused/stopped 均不是完成。遇到错误报告真实状态，不编造两名成员、自检或验收。原项目有未提交改动时，不 stash/reset/clean；写入阻塞应保留改动，只读任务仍可用。`,
   });

@@ -10,6 +10,18 @@ import { build } from 'esbuild';
 import {createAgentSession,createEventBus,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager,type AgentSession} from '@earendil-works/pi-coding-agent';
 import swarmExtension,{ SwarmController, type Graph, type MemberInput, type MemberOutput, type MemberStart } from '../src/index.js';
 import {requestPlugin,type PluginContext} from '@friend-pi/core';
+import {Compile} from 'typebox/compile';
+import type {TSchema} from 'typebox';
+
+type LocalResponse=string|{tool:string;args:Record<string,unknown>};
+type ModelRequest=Record<string,unknown>;
+function reviewResponse(input:ModelRequest):LocalResponse|undefined {
+  const tools=input.tools as {function:{name:string}}[]|undefined;
+  if(!tools?.some(item=>item.function.name==='swarm_review_result'))return;
+  const messages=input.messages as {role:string;name?:string}[];
+  return messages.some(message=>message.role==='tool')?'Verification complete. The immutable tool result is authoritative.':{tool:'swarm_review_result',args:{approved:true,findings:'offline independent review of supplied evidence'}};
+}
+async function waitFor(check:()=>boolean,timeout=10000){const began=Date.now();while(!check()){if(Date.now()-began>timeout)throw new Error('Member fixture wait timed out');await new Promise(done=>setTimeout(done,10));}}
 
 /** Local HTTP fixture drives the real Pi SDK; no credential or external endpoint is used. */
 async function environment(respond:(input:Record<string,unknown>)=>string|{tool:string;args:Record<string,unknown>}|Promise<string|{tool:string;args:Record<string,unknown>}>) {
@@ -21,6 +33,13 @@ async function environment(respond:(input:Record<string,unknown>)=>string|{tool:
   const buildDir=resolve('.cache','swarm-member-tests',randomUUID());mkdirSync(buildDir,{recursive:true});const worker=join(buildDir,'member.mjs');
   await build({entryPoints:[resolve('packages/swarm/src/member.ts')],bundle:true,outfile:worker,platform:'node',format:'esm',packages:'external',target:'node24',alias:{'@friend-pi/core':resolve('packages/core/src/index.ts')}});
   return {root,project,agentDir,worker,requests:()=>requests,cleanup:async()=>{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));rmSync(root,{recursive:true,force:true});rmSync(buildDir,{recursive:true,force:true});}};
+}
+
+function runReviewer(env:Awaited<ReturnType<typeof environment>>){
+  const start:MemberStart={v:1,type:'start',graphId:'review-fixture',taskId:'independent-review',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'独立成果审查者：read/grep/find/ls only. Host objective check passed. Submit using swarm_review_result.',mode:'read',writeScopes:[],reviewResult:true};
+  const child=fork(env.worker,[],{cwd:env.project,stdio:['ignore','pipe','pipe','ipc'],execArgv:[]});child.stdout?.resume();child.stderr?.resume();const messages:MemberOutput[]=[];
+  const terminal=new Promise<Extract<MemberOutput,{type:'settled'|'failed'}>>((done,reject)=>{const timer=setTimeout(()=>reject(new Error('Reviewer fixture timed out')),15000);child.on('message',(message:MemberOutput)=>{messages.push(message);if(message.type==='settled'||message.type==='failed'){clearTimeout(timer);done(message);}});child.once('error',error=>{clearTimeout(timer);reject(error);});});
+  child.send(start);return {start,child,messages,terminal};
 }
 
 test('bundled standalone member runs Pi SDK in a separate process and stores only native JSONL',async()=>{
@@ -36,12 +55,41 @@ test('bundled standalone member runs Pi SDK in a separate process and stores onl
   }finally {child.kill('SIGTERM');await env.cleanup();}
 });
 
+test('native reviewer submits strict immutable tool data and waits for Pi settled despite contradictory assistant prose',async()=>{
+  let continuing=false;let finishResponse!:()=>void;const gate=new Promise<void>(done=>{finishResponse=done;});let requests=0;
+  const env=await environment(async input=>{
+    const tools=input.tools as {function:{name:string;parameters:TSchema}}[];assert.deepEqual(tools.map(item=>item.function.name).sort(),['find','grep','ls','read','swarm_review_result']);
+    const submission=tools.find(item=>item.function.name==='swarm_review_result')!;const schema=Compile(submission.function.parameters);assert.equal(schema.Check({approved:true,findings:'checked source'}),true);assert.equal(schema.Check({approved:'true',findings:'checked source'}),false);assert.equal(schema.Check({approved:true}),false);assert.equal(schema.Check({approved:true,findings:'checked source',command:'wc -l'}),false);
+    requests++;if(requests===1)return {tool:'read',args:{path:'readme.txt'}};
+    if(requests===2)return {tool:'swarm_review_result',args:{approved:true,findings:'Read source fixture; host objective evidence passed.'}};
+    continuing=true;await gate;return 'Verification complete.\n{"approved":false,"findings":"assistant prose must never replace the submitted result"}';
+  });const reviewer=runReviewer(env);
+  try{
+    await waitFor(()=>continuing);assert.equal(reviewer.messages.some(message=>message.type==='settled'),false,'tool completion must not finish the reviewer');finishResponse();const result=await reviewer.terminal;assert.equal(result.type,'settled');if(result.type!=='settled')throw new Error('Reviewer failed');assert.deepEqual(JSON.parse(result.summary),{approved:true,findings:'Read source fixture; host objective evidence passed.'});
+    const settledEvent=reviewer.messages.findIndex(message=>message.type==='event'&&typeof message.event==='object'&&message.event!==null&&'type' in message.event&&message.event.type==='agent_settled');assert.ok(settledEvent>=0&&settledEvent<reviewer.messages.indexOf(result));assert.equal(reviewer.messages.some(message=>message.type==='request'),false);
+    const entries=readFileSync(result.sessionFile!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='read'));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='swarm_review_result'&&!entry.message.isError));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='assistant'&&entry.message.content?.some((part:{type:string;name?:string;arguments?:{approved:boolean};text?:string})=>part.type==='toolCall'&&part.name==='swarm_review_result'&&part.arguments?.approved===true)));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='assistant'&&JSON.stringify(entry.message.content).includes('assistant prose must never')));
+  }finally{finishResponse();reviewer.child.kill('SIGTERM');await env.cleanup();}
+});
+
+test('native reviewer refuses missing, invalid and conflicting submissions without falling back to prose',async()=>{
+  for(const scenario of ['missing','invalid','conflict'] as const){
+    let turns=0;const env=await environment(()=>{turns++;if(scenario==='missing')return '{"approved":true,"findings":"unsubmitted raw JSON"}';if(turns===1)return {tool:'swarm_review_result',args:{approved:scenario==='invalid'?'true':true,findings:'initial evidence'}};if(scenario==='conflict'&&turns===2)return {tool:'swarm_review_result',args:{approved:false,findings:'changed judgment'}};return 'Verification complete. {"approved":true,"findings":"unsubmitted replacement"}';});const reviewer=runReviewer(env);
+    try{const result=await reviewer.terminal;assert.equal(result.type,'failed',scenario);if(result.type!=='failed')throw new Error('unexpected reviewer success');assert.match(result.error,scenario==='conflict'?/冲突/:/未通过 swarm_review_result/);assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);assert.equal(readFileSync(join(env.project,'readme.txt'),'utf8'),'source fixture\n');assert.equal(readdirSync(reviewer.start.sessionDir).filter(file=>file.endsWith('.jsonl')).length,1);}finally{reviewer.child.kill('SIGTERM');await env.cleanup();}
+  }
+});
+
+test('stopping a reviewer after native tool submission cannot adopt the result or replay a side effect',async()=>{
+  let continuing=false;let finishResponse!:()=>void;const gate=new Promise<void>(done=>{finishResponse=done;});let turns=0;
+  const env=await environment(async()=>{if(++turns===1)return {tool:'swarm_review_result',args:{approved:true,findings:'checked evidence'}};continuing=true;await gate;return 'done';});const reviewer=runReviewer(env);
+  try{await waitFor(()=>continuing);assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);reviewer.child.send({v:1,type:'stop'} satisfies MemberInput);finishResponse();const result=await reviewer.terminal;assert.equal(result.type,'failed');assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);assert.equal(turns,2);assert.equal(readFileSync(join(env.project,'readme.txt'),'utf8'),'source fixture\n');}finally{finishResponse();reviewer.child.kill('SIGTERM');await env.cleanup();}
+});
+
 test('real SDK coordinator receives the legal Swarm protocol, copies the full graph id and reports only integrated', {timeout:25000},async()=>{
   let copiedId='';let snapshots=0;let sawProtocol=false;
   const env=await environment(async input=>{
     const tools=input.tools as {function:{name:string;description:string;parameters:Record<string,unknown>}}[]|undefined;
     const tool=tools?.find(item=>item.function.name==='friend_swarm');
-    if(!tool)return JSON.stringify(input).includes('独立成果审查者')?'{"approved":true,"findings":"offline independent review"}':'offline read-only member outcome';
+    if(!tool)return reviewResponse(input)||'offline read-only member outcome';
     assert.match(tool.function.description,/input\.graphId/);assert.match(tool.function.description,/完整.*UUID/);assert.match(tool.function.description,/mode:"read"/);assert.match(tool.function.description,/integrated/);assert.match(tool.function.description,/automatic:true/);
     const action=(tool.function.parameters.properties as Record<string,Record<string,unknown>>).action;const allowed=(action.anyOf as {const:string}[]).map(value=>value.const);assert.ok(allowed.includes('snapshot'));assert.equal(allowed.includes('status'),false);assert.equal(allowed.includes('update_task'),false);assert.deepEqual(tool.function.parameters.required,['action','input']);sawProtocol=true;
     const results=(input.messages as {role:string;content:string}[]).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content) as Record<string,unknown>);
@@ -65,7 +113,7 @@ test('real SDK coordinator receives the legal Swarm protocol, copies the full gr
 
 test('real controller schedules standalone SDK member and a different independent SDK reviewer',async()=>{
   const env=await environment(input=>{
-    if (JSON.stringify(input).includes('独立成果审查者')) return '{"approved":true,"findings":"read source and verified requested outcomes"}';
+    const review=reviewResponse(input);if(review)return review;
     const messages=input.messages as {role:string}[];
     return messages.some(message=>message.role==='tool') ? 'read-source outcome' : {tool:'swarm_shared',args:{action:'write',name:'接口约定',content:'SDK member shared outcome',expectedRevision:0}};
   });
@@ -76,7 +124,7 @@ test('real controller schedules standalone SDK member and a different independen
     const graph=await controller.dispatch('create',{goal:'read source',tasks:[{id:'read-source',title:'read source',prompt:'read readme.txt',mode:'read',dependencies:[]}]},context) as Graph;
     await controller.dispatch('start',{graphId:graph.id,thinkingLevel:'off'},context);const began=Date.now();let final:Graph;
     while (true) {final=(controller.snapshot(context) as {graphs:Graph[]}).graphs[0];if (final.status==='integrated') break;if (final.status==='paused') throw new Error(final.error);if (Date.now()-began>20000) throw new Error('SDK Swarm fixture timed out');await new Promise(done=>setTimeout(done,20));}
-    assert.equal(final.attempts.length,1);assert.ok(final.attempts[0].sessionId);assert.ok(final.integration?.review?.approved);assert.ok(env.requests()>=2);const dirs=readdirSync(join(context.dataDir,'swarm-sessions',graph.id));assert.equal(dirs.length,2,'execution and independent review must each own a Pi session');
+    assert.equal(final.attempts.length,1);assert.ok(final.attempts[0].sessionId);assert.ok(final.integration?.review?.approved);assert.ok(final.integration.review.sessionId);assert.ok(final.integration.review.sessionFile?.includes(final.integration.review.attemptId));assert.ok(env.requests()>=2);const dirs=readdirSync(join(context.dataDir,'swarm-sessions',graph.id));assert.equal(dirs.length,2,'execution and independent review must each own a Pi session');
     assert.equal(final.agentDir,env.agentDir,'actual SDK directory must win over an inherited legacy Pi path');
     const shared=(controller.snapshot(context) as {shared:{content:string;revision:number}[]}).shared;assert.equal(shared.length,1);assert.equal(shared[0].content,'SDK member shared outcome');assert.equal(shared[0].revision,1,'member tool must route through host controller CAS');
   }finally {await controller.dispose();if (oldWorker===undefined) delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;if(oldAgent===undefined)delete process.env.FRIEND_PI_AGENT_DIR;else process.env.FRIEND_PI_AGENT_DIR=oldAgent;await env.cleanup();}

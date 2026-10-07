@@ -13,7 +13,7 @@ export interface Attempt {
   sessionId?: string; sessionFile?: string; summary?: string; commit?: string; error?: string;
 }
 export interface Baseline { repoRoot: string; projectRelative: string; head: string; branch?: string }
-export interface Review { attemptId: string; approved: boolean; findings: string; at: string }
+export interface Review { attemptId: string; approved: boolean; findings: string; at: string; sessionId?: string; sessionFile?: string }
 export interface CheckResult { command: string; args: string[]; exitCode: number|null; output: string; at: string }
 export interface Graph {
   id: string; projectId: string; sessionId: string; projectDir: string; goal: string; status: GraphStatus;
@@ -26,7 +26,7 @@ export interface SharedDocument { graphId: string; name: string; content: string
 export interface MemberStart {
   v: 1; type: 'start'; graphId: string; taskId: string; attemptId: string; cwd: string; dataDir: string;
   agentDir: string; sessionDir: string; modelId?: string; thinkingLevel?: string; prompt: string;
-  expert?: unknown; mode: 'read'|'write'; writeScopes: string[];
+  expert?: unknown; mode: 'read'|'write'; writeScopes: string[]; reviewResult?: boolean;
 }
 export type MemberInput = MemberStart | {v:1;type:'steer';messageId:string;text:string} | {v:1;type:'stop'} | {v:1;type:'confirm.response';requestId:string;accepted:boolean} | {v:1;type:'request.response';requestId:string;result?:unknown;error?:string};
 export type MemberOutput =
