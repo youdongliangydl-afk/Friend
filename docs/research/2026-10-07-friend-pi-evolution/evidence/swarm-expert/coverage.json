@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 1,
+  "scope": [
+    "swarm",
+    "expert"
+  ],
+  "candidate": {
+    "sourceCommit": "5ec4b39fb7301ac57715976458f602909fc0a0fb",
+    "sourceClean": true,
+    "piCommit": "eb326d265ae0b88489a6d10319307780df827cdf",
+    "appPath": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/mac/Friend-Pi.app",
+    "appHashFromCurrentManifest": "a066e009e9d073ee3f49fc5b0e73307da857d57d6b2a425cabd16e7fbc6097d4",
+    "appHashRecomputedByThisAudit": false
+  },
+  "newEvidence": {
+    "targetedTests": {
+      "passed": 43,
+      "failed": 0,
+      "provider": "faux/local HTTP; no real credentials",
+      "log": ".artifacts/qa/evolution-audit/swarm-expert/targeted-tests.log"
+    },
+    "probes": [
+      {
+        "id": "SWARM-TARGETED-REWORK",
+        "outcome": "CONFIRMED_GAP",
+        "counts": {
+          "task-a": 2,
+          "task-b": 2
+        },
+        "reviews": 2,
+        "expectation": "Only task-a and affected dependents should receive fresh attempts",
+        "observed": "Unrelated task-b also ran twice",
+        "source": "packages/swarm/src/index.ts:375-377"
+      },
+      {
+        "id": "SWARM-STOP-OBJECTIVE-CHECK",
+        "outcome": "CONFIRMED_GAP",
+        "stopReturnedMs": 1,
+        "graphStatus": "stopped",
+        "lateEffect": "check still executed after stop",
+        "reviewersStarted": 0,
+        "source": "packages/swarm/src/index.ts:115-117,316-320,365-368"
+      },
+      {
+        "id": "EXPERT-AUTO-TOOL-SCOPE",
+        "outcome": "CONFIRMED_GAP",
+        "adoptedTools": [
+          "read"
+        ],
+        "autoBlocksBash": false,
+        "explicitBlocksBash": true,
+        "source": "packages/expert/src/index.ts:74-77,108-111,215"
+      },
+      {
+        "id": "EXPERT-ROLLBACK-VERSION",
+        "outcome": "PASS",
+        "restoredVersion": 3,
+        "historyVersions": [
+          1
+        ],
+        "source": "packages/expert/src/index.ts:92-99,117-118"
+      },
+      {
+        "id": "SWARM-SHARED-EVENT-COMMIT",
+        "outcome": "CONFIRMED_GAP",
+        "notification": {
+          "payloadCount": 1,
+          "otherConnectionCount": 0
+        },
+        "committedCount": 1,
+        "source": "packages/swarm/src/index.ts:308-314"
+      },
+      {
+        "id": "SWARM-MERGE-CONFLICT-RETENTION",
+        "outcome": "PASS",
+        "graphStatus": "paused",
+        "retainedAttemptWorkspaces": 2,
+        "retainedIntegrationWorkspace": true,
+        "integrationStatus": "UU shared.txt",
+        "sourceUnchanged": true,
+        "source": "packages/swarm/src/index.ts:351-359,336-342"
+      }
+    ]
+  },
+  "requirements": [
+    {
+      "id": "SE-01",
+      "requirement": "成果 DAG、依赖合法性、循环与重复检查",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "swarm.test：DAG / dependencies；index.ts:34-49"
+    },
+    {
+      "id": "SE-02",
+      "requirement": "原子领取、并发数默认 4 / 可调",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "两个独立控制器共用 SQLite，竞争只产生一次领取；index.ts:150,171-181"
+    },
+    {
+      "id": "SE-03",
+      "requirement": "非 Git 写入串行、读者并行",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现规则、专项通过",
+      "evidence": "claim 串行门槛；index.ts:178,220；非 Git 没有回滚/独立整合工作区，写入就在原项目发生"
+    },
+    {
+      "id": "SE-04",
+      "requirement": "Git 写成员独立进程 / worktree",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "native member / real controller tests；worktree 与整合目录不同"
+    },
+    {
+      "id": "SE-05",
+      "requirement": "dirty baseline 保留、只读仍可用",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "dirty baseline test；未删除用户草稿、未产生成员"
+    },
+    {
+      "id": "SE-06",
+      "requirement": "依赖成果传递、整合串行",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "dependencyCommits、真实 Git 两任务传递与整合；index.ts:186-201,356-359"
+    },
+    {
+      "id": "SE-07",
+      "requirement": "自检",
+      "status": "limited",
+      "assessment": "部分实现",
+      "evidence": "写成员结束时执行 git diff --check / scoped staging；成员提示要求报告检查；没有独立结构化自检用例与证据门槛；index.ts:269-278；guard.ts:43"
+    },
+    {
+      "id": "SE-08",
+      "requirement": "客观检查、独立复核",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "检查真实执行；不同 Pi 会话只读复核器；结构化结果工具提交，等 agent_settled 才采用；反向文字不能覆盖"
+    },
+    {
+      "id": "SE-09",
+      "requirement": "基线变化 / 冲突保留并暂停",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "现有 baseline change test；新增真实两 worktree 同文件冲突探针：原项目 HEAD 与文件未变，两个成员和冲突整合目录保留"
+    },
+    {
+      "id": "SE-10",
+      "requirement": "自动返工最多 2 轮",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "independent rejection test 恰好 3 次实现尝试 / 2 轮返工"
+    },
+    {
+      "id": "SE-11",
+      "requirement": "定向返工 / 调整方法入口",
+      "status": "missing_backend_and_ui",
+      "assessment": "缺少后端定向集合与对应 UI",
+      "evidence": "当前所有任务重跑；GUI 仅 start / pause / stop / resume / prepare，不能指定返工任务或改当前任务要求；panels.tsx:67-70"
+    },
+    {
+      "id": "SE-12",
+      "requirement": "暂停 / 停止 / 明确接续",
+      "status": "complete_targeted_verification",
+      "assessment": "成员闭环已实现；宿主检查取消缺口",
+      "evidence": "unknown 要求用户 confirmUnknown；旧尝试结果不能覆盖新尝试；stop-check 差距见上"
+    },
+    {
+      "id": "SE-13",
+      "requirement": "成员崩溃 / 会话关闭不重放",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "vanished owner / pre-launch shutdown / native lifecycle tests；保存 unknown、没有自动启动"
+    },
+    {
+      "id": "SE-14",
+      "requirement": "消息先持久化、已投递 / 已处理",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "durable delivery、member 实际 user message 消费才 processed；重复 ready 不重复投递"
+    },
+    {
+      "id": "SE-15",
+      "requirement": "共享材料短事务 / 版本 CAS / 原子文件",
+      "status": "limited",
+      "assessment": "存储实现、专项通过；通知顺序有差距",
+      "evidence": "immutable v1/v2 文件、过期 CAS 拒绝、路径名称校验；事件见上"
+    },
+    {
+      "id": "SE-16",
+      "requirement": "工具范围含嵌套调用、禁止递归派生",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现工具钩子、专项通过",
+      "evidence": "guard test 带 parentToolCallId，越界/范围外/递归/未确认 rm 拦截；shell 是高信任，不是完整沙箱"
+    },
+    {
+      "id": "SE-17",
+      "requirement": "关键确认",
+      "status": "validation_uncertain_gui",
+      "assessment": "已接公开 UI 确认接口，规则测试通过",
+      "evidence": "index.ts:248-258,409；实际 macOS 对话体验由根 Agent 核验，本审计未做 GUI"
+    },
+    {
+      "id": "SE-18",
+      "requirement": "Expert 五类、稳定身份 / 版本 / 摘要",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "expert startup / immutable version tests；内置 planner/researcher/implementer/reviewer/integrator"
+    },
+    {
+      "id": "SE-19",
+      "requirement": "实际采用版本、历史不被编辑覆盖",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、原生 JSONL 专项通过",
+      "evidence": "同一 Pi 会话两次 run 记录 v1 / v2，旧文件前缀保持；自动目录不会假称所有专家已采用"
+    },
+    {
+      "id": "SE-20",
+      "requirement": "Skill 正文 / 范围冻结",
+      "status": "limited",
+      "assessment": "明确指定场景已实现、专项通过；自动 scope 有差距",
+      "evidence": "原方法正文变更后仍返回已冻结 v1；Markdown / 项目路径校验；auto-use 见上"
+    },
+    {
+      "id": "SE-21",
+      "requirement": "方法按需采用",
+      "status": "limited",
+      "assessment": "Single 模型 use 入口存在；加载和 Swarm 采用粒度有限",
+      "evidence": "自动目录 freeze 会预读所有启用专家的 Skill，use 返回该冻结正文；Swarm 成员不加载 Expert 插件，采用记录在 attempt.expert，不能从成员 JSONL 确认自动目录中究竟采用哪个角色"
+    },
+    {
+      "id": "SE-22",
+      "requirement": "专家适用领域 / 检查标准",
+      "status": "limited",
+      "assessment": "文本支持，结构化能力有限",
+      "evidence": "prompt / 候选 method 可写范围和检查标准；definition 只有项目 scope，没有领域谓词、检查标准字段或运行时匹配器；index.ts:8,68-77；编辑 UI 只有名称、方法、工具、Skill"
+    },
+    {
+      "id": "SE-23",
+      "requirement": "两个独立适用案例 + 一个反例",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现门槛、专项通过",
+      "evidence": "用例 ID 与输入不同，至少 2 positive / 1 negative；用户拥有 oracle，模型不能创建套件"
+    },
+    {
+      "id": "SE-24",
+      "requirement": "客观验证、缺少基准不发布",
+      "status": "complete_targeted_verification",
+      "assessment": "JSON 预期比对场景已实现、专项通过",
+      "evidence": "真实输出与用户 expected 深比较；记 baselinePassed；不是模型自评。首版没有外部测试脚本/文件制品断言的 Expert 验证器，领域效果只能由用户给定 JSON 案例证明"
+    },
+    {
+      "id": "SE-25",
+      "requirement": "限域自动发布 / 撤回",
+      "status": "complete_targeted_verification",
+      "assessment": "项目隔离与来源撤回已实现、专项通过",
+      "evidence": "新方法只写本项目、只有文本、不加 tools/skills；来源失效/套件变化/关闭时晚到结果不能发布；细粒度任务领域为文本约束"
+    },
+    {
+      "id": "SE-26",
+      "requirement": "后台串行 / 前台优先 / 暂停",
+      "status": "complete_targeted_verification",
+      "assessment": "已实现、专项通过",
+      "evidence": "双控制器 lease、serial queue、foreground idle、abort pause/resume"
+    },
+    {
+      "id": "SE-27",
+      "requirement": "编辑 / 版本差异 / 启停 / 回滚 UI",
+      "status": "validation_uncertain_gui",
+      "assessment": "后端已实现、UI 调用已接；真实 GUI 未在本审计重测",
+      "evidence": "panels.tsx:98-104；新增 rollback 探针恢复旧正文生成 v3，旧 v1 / v2 不改写"
+    },
+    {
+      "id": "SE-28",
+      "requirement": "Swarm 管理 UI",
+      "status": "limited",
+      "assessment": "主操作入口已接；可见性/恢复操作有限",
+      "evidence": "任务依赖卡片、尝试摘要、状态、消息收据、共享材料、检查/复核展开；没有成员工具事件/原生会话读取、单任务返工、每任务 Expert 选择、保留 worktree 打开按钮"
+    }
+  ],
+  "sourceFileHashes": {
+    "packages/swarm/src/index.ts": "5eb068590e4bc29b48bc9670983ff74a6a32fa78cda4ef842bc5d8b133985058",
+    "packages/swarm/src/member.ts": "f5ca4bb2fb58d460452abede5dfabcebc7a5ac40716d6bc8c1e863acdaaa67ec",
+    "packages/swarm/src/guard.ts": "28eeedeab3eda96dcabb3538d93991a325346cd991e5a52f31792ea02fca156b",
+    "packages/expert/src/index.ts": "e162b7dbd01415fe1adae9a45e8925c63e6e845e11b03e437499f256053459ab",
+    "apps/desktop/src/renderer/panels.tsx": "91646f82c884614b4a160c70019349891319cf7ce4c01878989ba920b15c73b4"
+  },
+  "gui": "NOT_RUN_BY_THIS_AGENT_ROOT_OWNS_GUI",
+  "realModel": "NOT_RUN_BY_THIS_AGENT",
+  "createdAt": "2026-10-07T08:36:11.621Z"
+}

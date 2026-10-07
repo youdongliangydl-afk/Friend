@@ -1,0 +1,73 @@
+Window: "ZCode", App: ZCode.
+0 standard window ZCode, Secondary Actions: Raise
+	1 container ZCode
+		2 container
+			3 ZCode, URL: file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html?restoreSession=true&supportsSettings=true&zcodeLaunchMarks=%7B%22createdAt%22%3A1790093625757.159%2C%22mainStart%22%3A1790093628349%2C%22appReady%22%3A1790093628870%2C%22loadUrl%22%3A1790093630281%7D
+				4 container
+					5 heading 命令面板, Value: 2
+						6 text 命令面板
+					7 text 搜索并执行当前工作区可用的命令。
+					8 container
+						9 container
+							10 text 新建任务 ⌘ N
+							11 button 搜索 ⌘ K
+								12 text 搜索
+								13 text ⌘ K
+							14 checkbox 自动化, Value: 0
+							15 checkbox 插件市场, Value: 0
+							16 container 视图
+								17 tab group
+									18 tab (settable, integer) 分组, Value: 0
+									19 tab (selected) 项目, Value: 1
+							20 pop up button 筛选和排序
+							21 button 归档
+							22 container 项目
+								23 button 项目
+								24 sortable 移动项目分区
+								25 pop up button 添加项目
+								26 text 尚未打开项目
+							27 container 任务
+								28 button 任务
+								29 sortable 移动任务分区
+								30 button 新建任务
+								31 container
+									32 container 加载中...
+									33 text 正在获取任务...
+							34 pop up button 连接使用
+							35 button 移动端远程控制
+							36 button 设置
+						37 splitter Description: 调整侧边栏宽度, Value: 100
+						38 container
+							39 container
+								40 container
+									41 pop up button 帮助
+									42 button 切换终端
+									43 button 展开侧边面板
+									44 container
+										45 text 下午好呀，接下来交给我吧
+										46 container
+											47 pop up button 选择项目
+											48 container
+												49 text entry area (settable) Value: UX-ZCODE-DRAFT-0922: keep this draft while opening model settings; do not send., Placeholder: 向 ZCode 提问，使用 @ 添加上下文，使用 / 选择命令或能力
+													50 text UX-ZCODE-DRAFT-0922: keep this draft while opening model settings; do not send.
+												51 pop up button 添加上下文
+												52 pop up button 切换模式
+												53 pop up button (disabled) 管理模型
+													54 text 管理模型
+												55 button (disabled) 发送
+						56 button 切换侧边栏
+						57 button (disabled) 后退
+						58 button (disabled) 前进
+						59 button v3.14.4 已就绪，点击重启更新
+	60 close button
+	61 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	62 minimize button
+63 menu bar
+	64 ZCode
+	65 文件
+	66 编辑
+	67 视图
+	68 窗口
+	69 帮助
+
+The focused UI element is 49 text entry area (settable) Value: UX-ZCODE-DRAFT-0922: keep this draft while opening model settings; do not send., Placeholder: 向 ZCode 提问，使用 @ 添加上下文，使用 / 选择命令或能力

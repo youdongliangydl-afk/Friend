@@ -27,6 +27,7 @@ test('real Pi Runtime new/resume/fork recreates all four extensions and preserve
     runtime=await createAgentSessionRuntime(factory,{cwd:dir,agentDir:join(dir,'agent'),sessionManager:SessionManager.create(dir,join(dir,'sessions'))});
     const bind=async()=>{await runtime!.session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});};await bind();runtime.setRebindSession(async()=>bind());
     await requestPlugin(bus,'memory','learning.pause',{},1000,'user');await requestPlugin(bus,'expert','settings',{paused:true},1000,'user');
+    await requestPlugin(bus,'topic-rebuild','settings',{mode:'infinite'},1000,'user');
     await runtime.session.prompt('必须保留原项目文件。请分析数据库事务。');const originalSession=runtime.session.sessionId;const originalFile=runtime.session.sessionFile!;
     const originalField=(await requestPlugin(bus,'topic-rebuild','snapshot',{},1000,'user') as {field:WorkingField}).field;assert.equal(originalField.sessionId,originalSession);
     const graph=await requestPlugin(bus,'swarm','create',{goal:'old graph',tasks:[{id:'read',title:'read',prompt:'read source',mode:'read',dependencies:[]}]},1000,'user') as Graph;

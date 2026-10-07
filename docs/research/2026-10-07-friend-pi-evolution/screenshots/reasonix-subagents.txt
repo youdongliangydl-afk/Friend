@@ -1,0 +1,113 @@
+Window: "Reasonix", App: Reasonix.
+0 标准窗口 Reasonix, Secondary Actions: Raise
+	1 container Reasonix
+		2 container
+			3 HTML 内容 Reasonix, URL: reasonix://app/index.html
+				4 container
+					5 container 设置
+						6 container
+							7 按钮 返回工作区
+							8 container 设置
+								9 文本栏 (settable) 搜索设置
+								10 container
+									11 文本 偏好设置
+									12 按钮 通用, Help: 通用 · 标准 · 创作
+									13 文本 模型
+									14 按钮 模型偏好, Help: 模型偏好 · DeepSeek 官方 · deepseek-v4-flash
+									15 按钮 模型服务, Help: 模型服务 · 5 个服务
+									16 按钮 用量统计
+									17 文本 集成与连接
+									18 按钮 机器人, Help: 机器人 · 未连接
+									19 按钮 MCP 与工具, Help: MCP 与工具 · MCP 服务器
+									20 按钮 远程 SSH, Help: 远程 SSH · SSH 主机与远程工作区
+									21 文本 能力扩展
+									22 按钮 Agent Skills, Help: Agent Skills · 可复用的指令、工具与工作流
+									23 按钮 子智能体, Help: 子智能体 · 内置 + 你自己的 agent 档案
+									24 按钮 插件, Help: 插件 · 包与诊断
+									25 文本 记忆与上下文
+									26 按钮 记忆, Help: 记忆 · 项目与全局
+									27 文本 自动化与开发者
+									28 按钮 Hooks, Help: Hooks · Shell 自动化
+									29 按钮 诊断, Help: 诊断 · 能力健康检查
+									30 文本 安全与控制
+									31 按钮 权限, Help: 权限 · 自动执行写操作
+									32 按钮 沙箱, Help: 沙箱 · 强制隔离
+									33 按钮 网络, Help: 网络 · 自动
+									34 文本 应用
+									35 按钮 外观, Help: 外观 · 主题包 · 明暗模式 · 字号 · 字体
+									36 按钮 快捷键, Help: 快捷键 · 按键与帮助
+									37 按钮 存储与路径, Help: 存储与路径 · 工作区 · 数据 · 路径
+									38 按钮 更新, Help: 更新 · 版本 · 配置
+						39 container 子智能体
+							40 container
+								41 搜索文本字段 (settable) 搜索子智能体...
+								42 按钮 + 新建
+								43 按钮 重新扫描
+								44 container 自定义子智能体
+									45 标题 自定义子智能体, Value: 3
+										46 文本 自定义子智能体
+									47 文本 你创建或加载的子智能体 Profile；可编辑项可以在这里管理。
+									48 文本 还没有自定义子智能体。
+								49 container 内置子智能体
+									50 标题 内置子智能体, Value: 3
+										51 文本 内置子智能体
+									52 text 内置 Profile 的提示词和工具范围固定；你可以覆盖其模型和推理强度。 / explore 内置 5 个工具
+									53 文本 在隔离子智能体中广泛调查代码库，并返回一份精炼结论。
+									54 文本 在聊天中输入
+									55 文本 /explore <任务>
+									56 按钮 复制命令
+									57 按钮 在聊天中使用
+									58 文本 模型
+									59 弹出式按钮 Description: explore: 模型, Help: 当前生效：deepseek-v4-flash
+										60 文本 继承默认
+									61 文本 推理强度
+									62 弹出式按钮 Description: explore: 推理强度, Help: 当前生效：自动
+										63 文本 继承默认
+									64 text 继承中 / research 内置 6 个工具
+									65 文本 在隔离子智能体中结合网页研究与代码阅读。
+									66 文本 在聊天中输入
+									67 文本 /research <任务>
+									68 按钮 复制命令
+									69 按钮 在聊天中使用
+									70 文本 模型
+									71 弹出式按钮 Description: research: 模型, Help: 当前生效：deepseek-v4-flash
+										72 文本 继承默认
+									73 文本 推理强度
+									74 弹出式按钮 Description: research: 推理强度, Help: 当前生效：自动
+										75 文本 继承默认
+									76 text 继承中 / review 内置 7 个工具
+									77 文本 只读评审待提交改动的正确性、安全性和测试缺口。
+									78 文本 在聊天中输入
+									79 文本 /review <任务>
+									80 按钮 复制命令
+									81 按钮 在聊天中使用
+									82 文本 模型
+									83 弹出式按钮 Description: review: 模型, Help: 当前生效：deepseek-v4-flash
+										84 文本 继承默认
+									85 文本 推理强度
+									86 弹出式按钮 Description: review: 推理强度, Help: 当前生效：自动
+										87 文本 继承默认
+									88 text 继承中 / security-review 内置 7 个工具
+									89 文本 只读检查待提交改动中的安全漏洞。
+									90 文本 在聊天中输入
+									91 文本 /security-review <任务>
+									92 按钮 复制命令
+									93 按钮 在聊天中使用
+									94 文本 模型
+									95 弹出式按钮 Description: security-review: 模型, Help: 当前生效：deepseek-v4-flash
+										96 文本 继承默认
+									97 文本 推理强度
+									98 弹出式按钮 Description: security-review: 推理强度, Help: 当前生效：自动
+										99 文本 继承默认
+									100 文本 继承中
+	101 关闭按钮
+	102 全屏幕按钮 Help: 此按钮也可以执行缩放窗口的操作, Secondary Actions: 缩放窗口
+	103 最小化按钮
+104 menu bar
+	105 Reasonix
+	106 File
+	107 Edit
+	108 View
+	109 Window
+
+The focused UI element is 23 按钮 子智能体, Help: 子智能体 · 内置 + 你自己的 agent 档案

@@ -14,6 +14,14 @@ SDK 集成测试实际 fork Node、加载四插件、执行 Pi 工具、保存 J
 
 最终可机器读取的报告写在 `.artifacts/qa`，制品及摘要在 `.artifacts/delivery-manifest.json` 和 `.artifacts/packages/manifest.json`。`build-info.json` 记录源码提交、工作区状态及 Pi SHA；它随应用分发。报告中的 `PENDING_USER_AUTH` 表示新数据目录尚未配置真实供应商，不得据此声称真实模型验收通过。
 
-真实模型小批旅程由用户在客户端配置 Key 后显式运行 `node scripts/real-journeys.mjs`；可用 `FRIEND_PI_ROOT` 指向应用 `Contents/Resources/app` 并使用应用内 Node。脚本只操作独立的 `.artifacts/qa/real-workspace`，不导入旧 Friend 或 Pi 认证。结果保存至 `.artifacts/qa/real-model-report.json`。
+真实模型小批旅程由用户在客户端配置 Key 后显式运行 `node scripts/real-journeys.mjs`；可用 `FRIEND_PI_ROOT` 指向应用 `Contents/Resources/app` 并使用应用内 Node。脚本只操作新建的系统临时 `friend-pi-repair-real-*` 项目，不导入旧 Friend 或 Pi 认证。结果保存至 `.artifacts/qa/real-model-report.json`。
 
 本地交付不做远端发布、npm 发布和签名发行。最终源提交、应用树摘要、压缩包摘要及验证状态应一起查看，未运行项保持明确标记。
+
+## 2026-10-07 修复候选
+
+源码整合阶段已执行 165 项测试全部通过（fake/local HTTP Provider，含实际 Node/Pi 进程）；新后台宿主与生命周期测试分别覆盖串行/前后台并行/检查点/崩溃接续/晚结果失效，以及归档写保护/原史缺失/父子史删除/永久 tombstone/幂等与清理恢复。第一批真实模型已完成 Single、Expert 收据、Memory 纠正和 Swarm 独立复核；连续压缩第一批仅一次采用，保留待补状态，未改写为通过。
+
+以上是施工中的观测，不是最终制品验收。最终候选必须重新构建、完整测试、打包并实际 Computer Use；绑定记录位于 `.artifacts/qa/evolution-candidate-verification.md`、`.artifacts/qa/real-model-report.json` 与 `.artifacts/mac/delivery-manifest.json`。原失败及施工记录保留，最终报告逐项区分通过、未运行和限制。
+
+[实施清单](implementation/2026-10-07/修复清单.md) 和 [18 项前后对比](implementation/2026-10-07/comparison.html) 说明本批范围；第 17 项专家验证界面不扩展。

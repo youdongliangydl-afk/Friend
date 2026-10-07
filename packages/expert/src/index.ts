@@ -8,7 +8,7 @@ import { RecordStore, registerPlugin, digest, text, object, makeContext, type Pl
 export interface ExpertDefinition { id:string; version:number; title:string; scope:string; prompt:string; tools:string[]; skills:string[]; enabled:boolean; hash:string; createdAt:string; candidateId?:string }
 export interface FrozenSkill {path:string;content:string;hash:string}
 export interface FrozenExpert extends ExpertDefinition {skillContents:FrozenSkill[]}
-export interface FrozenRun {id:string;version:number;prompt:string;toolScope?:string[];skillPaths:string[];experts:FrozenExpert[];hash:string;runId?:string;modelId?:string;thinkingLevel?:string;selectionMode:'auto'|'explicit';selectedIds:string[]}
+export interface FrozenRun {id:string;version:number;prompt:string;toolScope?:string[];skillPaths:string[];experts:FrozenExpert[];hash:string;runId?:string;modelId?:string;thinkingLevel?:string;selectionMode:'auto'|'explicit';selectedIds:string[];adoptedIds?:string[];adoptions?:unknown[]}
 export interface ValidationCase {id:string;kind:'positive'|'negative';input:string;expected:unknown;scope:string}
 export interface MethodCandidate {
   id:string;title:string;method:string;scope:string;sourceMemoryIds:string[];sources:SourceRef[];
@@ -40,6 +40,12 @@ function frozenSkill(path:string,ctx:PluginContext):FrozenSkill {
 }
 function frozenBody(expert:FrozenExpert):string {return `${expert.title} v${expert.version}\n${expert.prompt}${expert.skillContents.map(skill=>`\n\nSkill ${skill.path} (${skill.hash})\n${skill.content}`).join('')}`;}
 export function blockedByFrozenScope(frozen:FrozenRun|undefined,toolName:string):boolean {return !!frozen?.toolScope && toolName!=='friend_expert' && !frozen.toolScope.includes(toolName);}
+/** An empty expert tools list means no additional restriction, never a grant. */
+export function adoptedToolScope(experts:readonly FrozenExpert[],ids:readonly string[],previous?:readonly string[]):string[]|undefined {
+  const scopes=experts.filter(expert=>ids.includes(expert.id)).map(expert=>expert.tools).filter(tools=>tools.length);
+  if(previous)scopes.unshift([...previous]);
+  return scopes.length?[...new Set(scopes[0])].filter(tool=>scopes.every(scope=>scope.includes(tool))):undefined;
+}
 
 export class ExpertController {
   readonly store:RecordStore;
@@ -64,24 +70,24 @@ export class ExpertController {
   }
   private settings(ctx:PluginContext):{paused:boolean} {return this.store.get<{paused:boolean}>(`settings:${ctx.projectId}`)?.value||{paused:false};}
   snapshot(ctx:PluginContext) {return {experts:this.definitions(ctx),selection:this.store.get<{ids:string[]}>(`selection:${ctx.projectId}`)?.value.ids||[],candidates:this.store.list<MethodCandidate>(`candidate:${ctx.projectId}:`).map(row=>({...row.value,revision:row.revision})),suites:this.store.list<ValidationCase[]>(`suite:${ctx.projectId}:`).map(row=>({id:row.key.split(':').at(-1),cases:row.value,revision:row.revision})),adoptions:this.store.get(`run:${ctx.sessionId}`)?.value,validation:{...this.settings(ctx),running:!!this.active,queued:this.queue.filter(key=>key.startsWith(`candidate:${ctx.projectId}:`)).length}};}
-  private changed(ctx:PluginContext):void {if(!this.closed)ctx.emit('expert.changed',this.snapshot(ctx));}
+  private changed(ctx:PluginContext):void {if(!this.closed)try{ctx.emit('expert.changed',this.snapshot(ctx));}catch{/* A refresh notification cannot invalidate a persisted method or adoption. */}}
   freeze(input:JsonObject,ctx:PluginContext):FrozenRun {
     if(this.closed)throw new Error('Expert 已关闭');
     const all=this.definitions(ctx);const selected=this.store.get<{ids:string[]}>(`selection:${ctx.projectId}`)?.value.ids||[];
     const chosen=input.expertId?[text(input.expertId)]:selected.filter(id=>all.some(expert=>expert.id===id&&expert.enabled));
-    const enabled=all.filter(expert=>expert.enabled);const list=chosen.length?chosen.map(id=>{const expert=enabled.find(item=>item.id===id);if(!expert)throw new Error('专家已停用或范围不匹配');return expert;}):enabled;
+    const enabled=all.filter(expert=>expert.enabled);const picked=chosen.map(id=>{const expert=enabled.find(item=>item.id===id);if(!expert)throw new Error('专家已停用或范围不匹配');return expert;});const list=input.catalog===true?enabled:chosen.length?picked:enabled;
     const experts:FrozenExpert[]=list.map(({revision:_revision,...expert})=>({...expert,tools:[...expert.tools],skills:[...expert.skills],skillContents:expert.skills.map(path=>frozenSkill(path,ctx))}));
-    const restrictions=chosen.length?experts.map(expert=>expert.tools).filter(tools=>tools.length):[];
+    const restrictions=chosen.length?experts.filter(expert=>chosen.includes(expert.id)).map(expert=>expert.tools).filter(tools=>tools.length):[];
     const toolScope=restrictions.length?restrictions[0].filter(tool=>restrictions.every(scope=>scope.includes(tool))):undefined;
-    const prompt=chosen.length?experts.map(frozenBody).join('\n\n'):`可用专家方法（按需使用 friend_expert use，不是强制流程）：\n${experts.map(expert=>`${expert.id}: ${expert.title} — ${expert.prompt}`).join('\n')}`;
-    return {id:chosen.join('+')||'auto',version:Math.max(1,...experts.map(expert=>expert.version)),prompt,toolScope,skillPaths:[],experts,hash:digest(experts),selectionMode:chosen.length?'explicit':'auto',selectedIds:[...chosen]};
+    const prompt=chosen.length?experts.filter(expert=>chosen.includes(expert.id)).map(frozenBody).join('\n\n'):`可用专家方法（按需使用 friend_expert use，不是强制流程）：\n${experts.map(expert=>`${expert.id}: ${expert.title} — ${expert.prompt}`).join('\n')}`;
+    return {id:chosen.join('+')||'auto',version:Math.max(1,...experts.map(expert=>expert.version)),prompt,toolScope,skillPaths:[],experts,hash:digest(experts),selectionMode:chosen.length?'explicit':'auto',selectedIds:[...chosen],adoptedIds:[...chosen]};
   }
   beginRun(ctx:PluginContext):FrozenRun&{runId:string} {
-    const snapshot={...this.freeze({},ctx),runId:randomUUID(),modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel};
+    const snapshot={...this.freeze({},ctx),runId:ctx.runId||randomUUID(),modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,adoptions:[] as unknown[]};
     // Native Pi history preserves each actual execution snapshot. The mutable SQLite pointer
     // is only the current tool-scope/adoption lookup; it never replaces earlier evidence.
     ctx.appendEntry('friend-pi.expert.run',{v:1,runId:snapshot.runId,sessionId:ctx.sessionId,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,frozen:snapshot,at:now()});
-    if(snapshot.selectionMode==='explicit')for(const expert of snapshot.experts)ctx.appendEntry('friend-pi.expert.adoption',this.adoption(expert,snapshot,ctx,'selected'));
+    if(snapshot.selectionMode==='explicit')for(const expert of snapshot.experts){const receipt=this.adoption(expert,snapshot,ctx,'selected');snapshot.adoptions.push(receipt);ctx.appendEntry('friend-pi.expert.adoption',receipt);}
     this.store.put(`run:${ctx.sessionId}`,snapshot);return snapshot;
   }
   private adoption(expert:FrozenExpert,run:FrozenRun&{runId:string},ctx:PluginContext,mode:'selected'|'use') {
@@ -101,14 +107,39 @@ export class ExpertController {
   async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
     if(this.closed)throw new Error('Expert 已关闭');
     if(action==='list'||action==='snapshot')return this.snapshot(ctx);
-    if(action==='freeze')return this.freeze(input,ctx);
+    if(action==='freeze'){const frozen=this.freeze(input,ctx);if(input.catalog===true)this.store.put(`catalog:${ctx.projectId}:${frozen.hash}`,frozen);return frozen;}
+    if(action==='adopt.frozen'){
+      const hash=text(input.catalogHash);const catalog=this.store.get<FrozenRun>(`catalog:${ctx.projectId}:${hash}`)?.value;
+      if(!catalog||catalog.hash!==hash)throw new Error('成员冻结目录不存在或不属于当前项目');
+      const expert=catalog.experts.find(item=>item.id===text(input.id));if(!expert)throw new Error('专家不在本次成员冻结目录中');
+      if(expert.candidateId&&this.store.get<MethodCandidate>(candidateKey(ctx,expert.candidateId))?.value.status==='withdrawn')throw new Error('来源已撤回，不能再采用派生方法');
+      return {...expert,prompt:frozenBody(expert),adoption:{v:1,id:expert.id,version:expert.version,hash:expert.hash,snapshotHash:catalog.hash,mode:'use',skills:expert.skillContents.map(({path,hash})=>({path,hash})),at:now()}};
+    }
     if(['select','create','update','toggle','rollback','validation.suite','settings','candidate.withdraw'].includes(action))user(ctx);
     if(action==='select'){const ids=cleanStrings(input.ids||[],'专家标识');for(const id of ids)this.freeze({expertId:id},ctx);this.store.put(`selection:${ctx.projectId}`,{ids});return this.snapshot(ctx);}
     if(action==='settings'){if(typeof input.paused!=='boolean')throw new Error('paused 必须是布尔值');this.store.put(`settings:${ctx.projectId}`,{paused:input.paused});if(input.paused)this.interrupt(ctx.projectId);else this.kick();return this.snapshot(ctx);}
     if(action==='use'){
-      const frozen=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;if(!frozen?.runId)throw new Error('当前会话尚无实际执行身份，请先启动任务');const expert=frozen.experts.find(item=>item.id===text(input.id));if(!expert)throw new Error('当前执行未冻结该专家');
-      const latest=this.definition(expert.id,ctx);if(latest?.value.candidateId&&this.store.get<MethodCandidate>(candidateKey(ctx,latest.value.candidateId))?.value.status==='withdrawn')throw new Error('来源已撤回，不能再采用派生方法');
-      const adoption=this.adoption(expert,frozen as FrozenRun&{runId:string},ctx,'use');ctx.appendEntry('friend-pi.expert.adoption',adoption);return {...expert,prompt:frozenBody(expert),adoption};
+      const id=text(input.id);const result=this.store.transaction(()=>{
+        const row=this.store.get<FrozenRun>(`run:${ctx.sessionId}`);const frozen=row?.value;
+        if(!frozen?.runId)throw new Error('当前会话尚无实际执行身份，请先启动任务');
+        if(typeof input.runId==='string'&&input.runId!==frozen.runId)throw new Error('执行身份已变化，不能采用旧运行的方法');
+        const expert=frozen.experts.find(item=>item.id===id);if(!expert)throw new Error('当前执行未冻结该专家');
+        if(expert.candidateId&&this.store.get<MethodCandidate>(candidateKey(ctx,expert.candidateId))?.value.status==='withdrawn')throw new Error('来源已撤回，不能再采用派生方法');
+        const existing=(frozen.adoptions||[]).find(raw=>raw&&typeof raw==='object'&&'id' in raw&&raw.id===id&&'mode' in raw&&raw.mode==='use');
+        if(existing&&object(existing).journalStatus==='failed')throw new Error('上次采用的原生记录保存失败；范围保持收紧，请开始新运行后再采用');
+        const adoptedIds=[...new Set([...(frozen.adoptedIds||frozen.selectedIds),id])];
+        const adoption=existing||{...this.adoption(expert,frozen as FrozenRun&{runId:string},ctx,'use'),journalStatus:'pending'};
+        const effective={...frozen,adoptedIds,toolScope:adoptedToolScope(frozen.experts,adoptedIds,frozen.toolScope),adoptions:existing?frozen.adoptions:[...(frozen.adoptions||[]),adoption]};
+        this.store.put(row!.key,effective,row!.revision);
+        return {...expert,prompt:frozenBody(expert),adoption:object(adoption),toolScope:effective.toolScope,runId:frozen.runId,needsJournal:!existing};
+      });
+      if(result.needsJournal){
+        const receipt={...result.adoption,journalStatus:'written'};let failure:unknown;
+        try{ctx.appendEntry('friend-pi.expert.adoption',receipt);}catch(error){receipt.journalStatus='failed';failure=error;}
+        this.store.transaction(()=>{const row=this.store.get<FrozenRun>(`run:${ctx.sessionId}`);if(row?.value.runId===result.runId)this.store.put(row.key,{...row.value,adoptions:row.value.adoptions?.map(raw=>raw&&typeof raw==='object'&&'id' in raw&&raw.id===id&&'mode' in raw&&raw.mode==='use'?receipt:raw)},row.revision);});result.adoption=receipt;
+        this.changed(ctx);if(failure)throw new Error(`采用记录未能保存，方法未返回；工具范围保持收紧：${errorText(failure)}`);
+      }else this.changed(ctx);
+      const {needsJournal:_needsJournal,...response}=result;return response;
     }
     if(action==='create'){
       const id=randomUUID();const prompt=text(input.prompt,'专业方法',32000);const tools=cleanStrings(input.tools||[],'工具');const skills=cleanStrings(input.skills||[],'Skill');skills.forEach(path=>frozenSkill(path,ctx));
@@ -118,7 +149,12 @@ export class ExpertController {
     if(action==='versions'){const id=text(input.id);return this.store.list<ExpertDefinition>(`version:${ctx.projectId}:${id}:`).map(row=>row.value);}
     if(action==='candidate.submit'){
       if(ctx.origin!=='user'&&ctx.origin!=='plugin')throw new Error('模型不能用候选提交绕过用户管理；自动方法由有来源的 Memory 插件提交');
-      const sources=Array.isArray(input.sources)?input.sources.map(raw=>{const source=object(raw);const ref={sessionId:text(source.sessionId),entryId:text(source.entryId)};ctx.readSource(ref);return ref;}):[];
+      const sources=Array.isArray(input.sources)?input.sources.map(raw=>{
+        const source=object(raw);const ref:SourceRef={sessionId:text(source.sessionId),entryId:text(source.entryId)};
+        for(const key of ['start','end'] as const)if(source[key]!==undefined){if(typeof source[key]!=='number'||!Number.isInteger(source[key])||Number(source[key])<0)throw new Error('方法来源片段范围无效');ref[key]=source[key] as number;}
+        if(source.hash!==undefined)ref.hash=text(source.hash,'来源摘要',128);if(source.factId!==undefined)ref.factId=text(source.factId,'来源事实标识',180);
+        ctx.readSource(ref);return ref;
+      }):[];
       const sourceMemoryIds=cleanStrings(input.sourceMemoryIds||[],'父记忆');if(ctx.origin==='plugin'&&(!sourceMemoryIds.length||!sources.length))throw new Error('自动候选需要可回查的来源与父记忆');
       const sourceDigest=digest({title:input.title,method:input.method,scope:ctx.projectId,sourceMemoryIds,sources});const idempotencyKey=input.idempotencyKey?`delivery:${ctx.projectId}:${text(input.idempotencyKey)}`:undefined;
       if(idempotencyKey){const existing=this.store.get<{id:string;sourceDigest:string}>(idempotencyKey);if(existing){if(existing.value.sourceDigest!==sourceDigest)throw new Error('同一幂等标识对应的方法或来源已变化');return this.store.get<MethodCandidate>(candidateKey(ctx,existing.value.id))!.value;}}

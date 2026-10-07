@@ -10,9 +10,7 @@ const compact=(value:string)=>value.trim().replace(/\s+/g,' ');
 export function TurnIndex({messages,container,sessionId,onLocate}:{messages:Message[];container:RefObject<HTMLDivElement|null>;sessionId?:string;onLocate():void}) {
   const entries=useMemo(()=>messages.flatMap((message,index)=>{
     if(message.role!=='user')return [];
-    const next=messages.findIndex((item,position)=>position>index&&item.role==='user');
-    const replies=messages.slice(index+1,next<0?messages.length:next).filter(item=>item.role==='assistant'&&item.text.trim());
-    return [{message,id:messageAnchor(message,index),reply:replies.at(-1)?.text || ''}];
+    return [{message,id:messageAnchor(message,index)}];
   }),[messages]);
   const [active,setActive]=useState<string>();
   const [bookmarks,setBookmarks]=useState<string[]>([]);
@@ -68,9 +66,8 @@ export function TurnIndex({messages,container,sessionId,onLocate}:{messages:Mess
       style={{left:preview.left,top:preview.top,width:preview.width}} onMouseEnter={cancelClose} onMouseLeave={closeSoon} onFocus={cancelClose}
       onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();const target=[...document.querySelectorAll<HTMLButtonElement>('[data-turn-anchor]')].find(element=>element.dataset.turnAnchor===preview.id);target?.focus();setPreview(null);}}}
       onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))closeSoon();}}>
-      <div className="turn-preview-heading"><p>{compact(selected.message.text)}</p><button type="button" className={`bookmark-button ${bookmarks.includes(selected.id)?'selected':''}`}
+      <div className="turn-preview-heading"><p>{selected.message.userText??selected.message.text}</p><button type="button" className={`bookmark-button ${bookmarks.includes(selected.id)?'selected':''}`}
         aria-label={bookmarks.includes(selected.id)?'取消轮次书签':'收藏这一轮'} aria-pressed={bookmarks.includes(selected.id)} title={bookmarks.includes(selected.id)?'取消书签':'添加书签'} onClick={()=>toggleBookmark(selected.id)}><Icon name="bookmark" size={16}/></button></div>
-      <p className={`turn-preview-answer ${selected.reply?'':'waiting'}`}>{selected.reply?compact(selected.reply):'此轮暂未产生回复'}</p>
     </div>,document.body)}
   </>;
 }

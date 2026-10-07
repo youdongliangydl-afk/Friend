@@ -1,0 +1,103 @@
+{
+  "date": "2026-10-07",
+  "scope": "audit and product research only; evolution not implemented",
+  "sourceCommit": "5ec4b39fb7301ac57715976458f602909fc0a0fb",
+  "piCommit": "eb326d265ae0b88489a6d10319307780df827cdf",
+  "appSha256": "a066e009e9d073ee3f49fc5b0e73307da857d57d6b2a425cabd16e7fbc6097d4",
+  "zipSha256": "62fcb20db6aed9edbcbd44e6f6c9d246528cfff3e07e2b792419f33c8c570375",
+  "appPath": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/mac/Friend-Pi.app",
+  "testSummary": "95 existing tests PASS; 43/31 focused are subsets, not added to 95; 5 new positive probes PASS; 13 confirmed gaps across independent probes/harnesses",
+  "functionalCompleteness": "NOT_PASSED",
+  "evolutionImplemented": false,
+  "confirmedGaps": [
+    {
+      "id": "SWARM-STOP-OBJECTIVE-CHECK",
+      "severity": "P1",
+      "finding": "停止后宿主检查继续执行",
+      "evidenceLevel": "真实延迟Node进程探针"
+    },
+    {
+      "id": "SWARM-TARGETED-REWORK",
+      "severity": "P2",
+      "finding": "返工重跑未受影响任务",
+      "evidenceLevel": "独立两任务控制器探针"
+    },
+    {
+      "id": "EXPERT-AUTO-TOOL-SCOPE",
+      "severity": "P2",
+      "finding": "自动采用与明确采用工具范围不一致",
+      "evidenceLevel": "独立专家策略探针"
+    },
+    {
+      "id": "SWARM-SHARED-EVENT-COMMIT",
+      "severity": "P2",
+      "finding": "共享变更事件先于事务提交",
+      "evidenceLevel": "双SQLite连接探针"
+    },
+    {
+      "id": "R02",
+      "severity": "P1",
+      "finding": "纠正一个事实丢掉同来源无关约束",
+      "evidenceLevel": "Memory/ReBuild组合回归"
+    },
+    {
+      "id": "R01",
+      "severity": "P2",
+      "finding": "普通更正仍同时保留新旧有效要求",
+      "evidenceLevel": "组合回归及本轮真实GUI"
+    },
+    {
+      "id": "M01",
+      "severity": "P2",
+      "finding": "请帮我记住的中文表达误拒绝",
+      "evidenceLevel": "独立明确偏好回归"
+    },
+    {
+      "id": "M02",
+      "severity": "P2",
+      "finding": "跨会话前台未抢占另一后台调用",
+      "evidenceLevel": "双活控制器回归"
+    },
+    {
+      "id": "M03",
+      "severity": "P2",
+      "finding": "遗忘原史fork后换词事实重新成为候选",
+      "evidenceLevel": "真实Pi fork与fake reflection回归"
+    },
+    {
+      "id": "CL-01",
+      "severity": "P1",
+      "finding": "缺失原史静默替换索引",
+      "evidenceLevel": "真实Main隔离VM/harness"
+    },
+    {
+      "id": "CL-02",
+      "severity": "P2",
+      "finding": "Diff漏掉未跟踪文件",
+      "evidenceLevel": "真实Git与本轮真实GUI"
+    },
+    {
+      "id": "CL-03",
+      "severity": "P2",
+      "finding": "冷恢复消息投影丢工具/多模态结构",
+      "evidenceLevel": "真实Pi JSONL与SDK进程"
+    },
+    {
+      "id": "CL-05",
+      "severity": "P2",
+      "finding": "默认Swarm和默认插件互相矛盾",
+      "evidenceLevel": "实际Main隔离harness"
+    }
+  ],
+  "researchFeatureUnits": {
+    "MiniMax": 34,
+    "Reasonix": 28,
+    "Codex": 24,
+    "DSH": 26,
+    "ZCode": 24
+  },
+  "cuaCodex": "BLOCKED_SELF_APP; no bypass attempted",
+  "credentials": "No auth files or keys read or copied in this audit/research; existing configured models only",
+  "screenshotPolicy": "Real CUA JPEG bytes, separate from illustrative before/after SVG and PNG",
+  "decisionStatus": "Point19 unified light workbench is user-selected; other choices pending; no source functionality changed"
+}

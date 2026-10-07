@@ -1,0 +1,1300 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-07T08:58:09.741Z",
+  "scope": "Capability level coverage candidate inventory, not all combinations tested; root must merge actual GUI evidence by id",
+  "entryCount": 74,
+  "perProduct": {
+    "codex": 24,
+    "dsh": 26,
+    "zcode": 24
+  },
+  "entries": [
+    {
+      "id": "codex-01",
+      "product": "codex",
+      "category": "projects_sessions",
+      "capability": "项目/聊天/来源组织、置顶/未读/归档/分组",
+      "guiRoute": "左栏与对话menu；用测试项目创建/改名/归档/返回",
+      "sourceIds": [
+        "C02",
+        "C15"
+      ],
+      "guiPriority": "high",
+      "qualifier": "公开Desktop资料；渲染实现闭源，本轮未体验",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-02",
+      "product": "codex",
+      "category": "search_navigation",
+      "capability": "全局命令、会话全文/文件搜索、注意力导航",
+      "guiRoute": "CmdK/CmdF/CmdP、下一待处理chat",
+      "sourceIds": [
+        "C13"
+      ],
+      "guiPriority": "high",
+      "qualifier": "具体快捷键需已装26.1002菜单确认",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-03",
+      "product": "codex",
+      "category": "environment",
+      "capability": "Local/Worktree/Cloud身份、branch与Handoff",
+      "guiRoute": "新任务环境picker+页头路径/测试worktree/Handoff",
+      "sourceIds": [
+        "C03",
+        "C04"
+      ],
+      "guiPriority": "high",
+      "qualifier": "Cloud需published environment，未启环境不计成功",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-04",
+      "product": "codex",
+      "category": "composer_config",
+      "capability": "模型/思考/plan/permissions/本次与草稿",
+      "guiRoute": "composer控件，空闲/执行期间生效边界",
+      "sourceIds": [
+        "C03",
+        "C12",
+        "C17"
+      ],
+      "guiPriority": "high",
+      "qualifier": "TUI命令并不保证Desktop相同",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-05",
+      "product": "codex",
+      "category": "attachments",
+      "capability": "文件/图片/目录与现有browser上下文",
+      "guiRoute": "native picker/粘贴/拖入/@、预览与移除",
+      "sourceIds": [
+        "C08",
+        "C07"
+      ],
+      "guiPriority": "high",
+      "qualifier": "已提供上下文不等于真实模型已读",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-06",
+      "product": "codex",
+      "category": "execution",
+      "capability": "流式、工具、turn settled、成功/异常/等待审批",
+      "guiRoute": "只读fixture模型旅程，观察tool/source+terminalstate",
+      "sourceIds": [
+        "C15"
+      ],
+      "guiPriority": "high",
+      "qualifier": "后端typed状态不是Desktop视觉实测",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-07",
+      "product": "codex",
+      "category": "steer_queue",
+      "capability": "运行中修正/下一轮排队/待发编辑",
+      "guiRoute": "运行中发无副作用补充，编辑/取消queue",
+      "sourceIds": [
+        "C12",
+        "C15"
+      ],
+      "guiPriority": "high",
+      "qualifier": "current与next配置不得混为历史重写",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-08",
+      "product": "codex",
+      "category": "stop_resume",
+      "capability": "停止确认、fork/resume与冷历史",
+      "guiRoute": "Stop→idle→冷开原文、无未知副作用重播",
+      "sourceIds": [
+        "C15",
+        "C17"
+      ],
+      "guiPriority": "high",
+      "qualifier": "实际进程停止需root旅程",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-09",
+      "product": "codex",
+      "category": "user_interaction",
+      "capability": "确认/选择/输入与取消/迟到响应",
+      "guiRoute": "待交互弹窗与换会话/取消/Escape",
+      "sourceIds": [
+        "C15"
+      ],
+      "guiPriority": "high",
+      "qualifier": "MCP/userVerification是扩展条件路径",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-10",
+      "product": "codex",
+      "category": "turn_index",
+      "capability": "轮次预览/书签/消息操作",
+      "guiRoute": "hover/focus/click短线，书签、search定位",
+      "sourceIds": [
+        "C13"
+      ],
+      "guiPriority": "high",
+      "qualifier": "用户附件已有此UI示例，仍需要实际观察",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-11",
+      "product": "codex",
+      "category": "diff_review",
+      "capability": "changed files/Diff/行评论/审查/checks",
+      "guiRoute": "owned fixture Diff→具体行→本地反馈草稿",
+      "sourceIds": [
+        "C05"
+      ],
+      "guiPriority": "high",
+      "qualifier": "外部PR评论/approve/merge不在本轮自动执行",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-12",
+      "product": "codex",
+      "category": "file_artifacts",
+      "capability": "文本/Markdown/图像/HTML/Office/PDF预览与source/annotation",
+      "guiRoute": "New tab File+生成文件卡",
+      "sourceIds": [
+        "C08"
+      ],
+      "guiPriority": "high",
+      "qualifier": "格式与插件/版本条件分别记",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-13",
+      "product": "codex",
+      "category": "terminal",
+      "capability": "per-chat current project/worktree终端",
+      "guiRoute": "New tab Terminal，pwd/固定输出，焦点快捷键",
+      "sourceIds": [
+        "C06"
+      ],
+      "guiPriority": "high",
+      "qualifier": "终端有独立原生执行行为",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-14",
+      "product": "codex",
+      "category": "browser",
+      "capability": "内嵌browser、现有用户浏览器extension、local page反馈",
+      "guiRoute": "New tab URL+本地fixture预览，comments/attach currenttab",
+      "sourceIds": [
+        "C07"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "CLI/IDE无内嵌Browser，预览与操作分开",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-15",
+      "product": "codex",
+      "category": "subagents",
+      "capability": "模型spawn/followup/message/list/interrupt/wait",
+      "guiRoute": "两只读子工作→活动→子过程→独立/全部Stop",
+      "sourceIds": [
+        "C09",
+        "C18"
+      ],
+      "guiPriority": "high",
+      "qualifier": "并行用户任务与内部subagent分开",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-16",
+      "product": "codex",
+      "category": "experts_skills",
+      "capability": "自定义agent、Skills目录、指令/模型/工具选择",
+      "guiRoute": "Settings/插件技能目录和/命令，scope与已采用方法",
+      "sourceIds": [
+        "C09",
+        "C14",
+        "C17"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "无Friend-Pi式两正一反案例发布机制已验证结论",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-17",
+      "product": "codex",
+      "category": "mcp_plugins",
+      "capability": "MCP/Apps/Plugins来源与启停、tools/UI资源",
+      "guiRoute": "现有配置清单、错误/重新加载、scope",
+      "sourceIds": [
+        "C14",
+        "C15"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "缺账号/未装插件列依赖未测",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-18",
+      "product": "codex",
+      "category": "memory",
+      "capability": "local memory read/contribute、全局后台二阶段",
+      "guiRoute": "/memories与Personalization控制，只读查看",
+      "sourceIds": [
+        "C10",
+        "C16"
+      ],
+      "guiPriority": "high",
+      "qualifier": "本轮不读用户memory/auth内容，仅配置能力来源",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-19",
+      "product": "codex",
+      "category": "context",
+      "capability": "native compact/recap、自动阈值/原rollout",
+      "guiRoute": "测试会话manual整理+约束/源文/取消",
+      "sourceIds": [
+        "C17",
+        "C15"
+      ],
+      "guiPriority": "high",
+      "qualifier": "不能用看见压缩图标替代连续性测试",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-20",
+      "product": "codex",
+      "category": "goal_automation",
+      "capability": "持续目标、单独schedule与同chat回访/历史",
+      "guiRoute": "goal暂停恢复，Scheduled模板/规则/关联chat",
+      "sourceIds": [
+        "C11",
+        "C17"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "CLI无Scheduled管理UI；到时真实执行单独验证",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-21",
+      "product": "codex",
+      "category": "remote_cloud",
+      "capability": "远端host/project与Cloud environment",
+      "guiRoute": "现有remote/environment只浏览，缺环境准确标注",
+      "sourceIds": [
+        "C03",
+        "C04"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "执行端状态不能从本机窗口位置推断",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-22",
+      "product": "codex",
+      "category": "settings_usage",
+      "capability": "General/shortcuts/notifications/appearance/browser/personalization/account",
+      "guiRoute": "设置各页打开、查scope与下次生效提示",
+      "sourceIds": [
+        "C12",
+        "C13"
+      ],
+      "guiPriority": "high",
+      "qualifier": "统一新文档包括ChatGPT功能，逐项对照Codexsurface",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-23",
+      "product": "codex",
+      "category": "accessibility_layout",
+      "capability": "键盘focus/Escape、分栏/宽窄窗、字体、模块归属",
+      "guiRoute": "拖分隔条，Tab+快捷键、关闭/冷开恢复",
+      "sourceIds": [
+        "C12",
+        "C13"
+      ],
+      "guiPriority": "high",
+      "qualifier": "实际布局/性能必须Computer Use",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "codex-24",
+      "product": "codex",
+      "category": "extensions_other",
+      "capability": "voice/imagegen/computer-use/pets/Space/dots/CodeReview",
+      "guiRoute": "现有入口分类/依赖，只读浏览可用项",
+      "sourceIds": [
+        "C01",
+        "C14",
+        "C07",
+        "C08"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "公开统一docs不等于已装Codex全部具有或本轮执行",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-01",
+      "product": "dsh",
+      "category": "projects_sessions",
+      "capability": "workspace与session列表、置顶/归档/new/default workspace",
+      "guiRoute": "左栏工作区、会话menu与底部Settings",
+      "sourceIds": [
+        "D01",
+        "D02"
+      ],
+      "guiPriority": "high",
+      "qualifier": "source0.2.1-alpha.1不同installed0.2.0-rc.2",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-02",
+      "product": "dsh",
+      "category": "layout",
+      "capability": "三栏、右pane/tab/fullscreen/floating、中心优先压缩",
+      "guiRoute": "宽窄窗/收起/拖动/多材料/冷开",
+      "sourceIds": [
+        "D02",
+        "D08"
+      ],
+      "guiPriority": "high",
+      "qualifier": "布局doc说reload几何重置，不能视为persist性能更优",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-03",
+      "product": "dsh",
+      "category": "models",
+      "capability": "DeepSeek/自定义provider/模型输入能力/思考",
+      "guiRoute": "Settings Models+composer",
+      "sourceIds": [
+        "D01"
+      ],
+      "guiPriority": "high",
+      "qualifier": "配置成功不等于dispatch成功",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-04",
+      "product": "dsh",
+      "category": "presets",
+      "capability": "Standard/Creator/PTC/Minimal/custom与readonly YAML",
+      "guiRoute": "Settings preset列表、help、默认项、生效边界",
+      "sourceIds": [
+        "D18"
+      ],
+      "guiPriority": "high",
+      "qualifier": "preset插件组合与Expert稳定身份不是同类",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-05",
+      "product": "dsh",
+      "category": "permissions",
+      "capability": "访问preset、sandbox与审批范围",
+      "guiRoute": "composer访问模式、关键确认",
+      "sourceIds": [
+        "D03"
+      ],
+      "guiPriority": "high",
+      "qualifier": "plan指导与sandbox独立",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-06",
+      "product": "dsh",
+      "category": "plan",
+      "capability": "/plan进入、composer关闭、正文审批/历史artifact",
+      "guiRoute": "计划→右全文→批准/拒绝/取消/重开",
+      "sourceIds": [
+        "D03"
+      ],
+      "guiPriority": "high",
+      "qualifier": "安装组合缺plan时控件不出现",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-07",
+      "product": "dsh",
+      "category": "streaming",
+      "capability": "Chat最终答案与工作过程/思考显隐",
+      "guiRoute": "真实fixture请求、过程fold/完成footer",
+      "sourceIds": [
+        "D05"
+      ],
+      "guiPriority": "high",
+      "qualifier": "原record权威与本地乐观UI分离",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-08",
+      "product": "dsh",
+      "category": "steer_queue",
+      "capability": "运行中steer、队列、composer takeover/Stop",
+      "guiRoute": "执行时新消息、queue编辑/移除/stop",
+      "sourceIds": [
+        "D05"
+      ],
+      "guiPriority": "high",
+      "qualifier": "未入模型队列不进入Chat",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-09",
+      "product": "dsh",
+      "category": "trajectory",
+      "capability": "timeline/records、tool input/output/error/timing/TTFT/token",
+      "guiRoute": "页头view环→记录检查器→history/zoom",
+      "sourceIds": [
+        "D06"
+      ],
+      "guiPriority": "high",
+      "qualifier": "查看范围与已加载window有限",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-10",
+      "product": "dsh",
+      "category": "references",
+      "capability": "@file/folder/session，/skill/command",
+      "guiRoute": "补全→folder钻取→file预览→session引用",
+      "sourceIds": [
+        "D07"
+      ],
+      "guiPriority": "high",
+      "qualifier": "subagent @label不解析为续接地址",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-11",
+      "product": "dsh",
+      "category": "attachments",
+      "capability": "persistent普通文件/图像/历史lightbox",
+      "guiRoute": "native附件选择/发送/冷开source",
+      "sourceIds": [
+        "D05"
+      ],
+      "guiPriority": "high",
+      "qualifier": "每种格式真实模型输入支持需另确认",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-12",
+      "product": "dsh",
+      "category": "deliverables_diff",
+      "capability": "文件cards/Changes双列Diff/精确path#line",
+      "guiRoute": "自有fixture改动→卡片→diff/source",
+      "sourceIds": [
+        "D11"
+      ],
+      "guiPriority": "high",
+      "qualifier": "未见完整Git提交/PR原生UI，不混用社区产品",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-13",
+      "product": "dsh",
+      "category": "files_documents",
+      "capability": "文件树监听+document viewer/格式资源",
+      "guiRoute": "右Guide Files→文档/Markdown/图像/HTML/PDF",
+      "sourceIds": [
+        "D08",
+        "D11"
+      ],
+      "guiPriority": "high",
+      "qualifier": "格式依插件/renderer各自能力",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-14",
+      "product": "dsh",
+      "category": "terminal",
+      "capability": "shell列表/PTY/rename/takeover/exitcode/reconnect",
+      "guiRoute": "右Guide Terminal，collapse continues/close stops",
+      "sourceIds": [
+        "D09"
+      ],
+      "guiPriority": "high",
+      "qualifier": "userterminal独立于Agentpermissions",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-15",
+      "product": "dsh",
+      "category": "browser_preview",
+      "capability": "Desktop webview/保活/history；Webiframe",
+      "guiRoute": "右Guide Browser→URL/回退/外部打开",
+      "sourceIds": [
+        "D10"
+      ],
+      "guiPriority": "high",
+      "qualifier": "Desktop默认启，Web默认禁",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-16",
+      "product": "dsh",
+      "category": "browser_use",
+      "capability": "model自动控制provider+Session所有权",
+      "guiRoute": "已启能力时实际tool请求+截图/操作记录",
+      "sourceIds": [
+        "D10",
+        "D17"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "预览不是model browser automation",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-17",
+      "product": "dsh",
+      "category": "subagent",
+      "capability": "页头谱系目录、one-shot/continuable、独立Stop/token/time",
+      "guiRoute": "两只读child→目录→子Chat→续接/停止",
+      "sourceIds": [
+        "D04"
+      ],
+      "guiPriority": "high",
+      "qualifier": "其它inactive终态当前未细分",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-18",
+      "product": "dsh",
+      "category": "agent_team",
+      "capability": "持久成员mailbox与任务DAG/CAS/依赖/owner",
+      "guiRoute": "开启已有配置协作→team投影/任务owner/消息",
+      "sourceIds": [
+        "D12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "writeScopes是advisory，不提供worktree锁",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-19",
+      "product": "dsh",
+      "category": "jobs",
+      "capability": "后台job行、输出/progress、two-click stop",
+      "guiRoute": "产生owned后台命令→job行→stop/查看",
+      "sourceIds": [
+        "D01"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "无人有job时不出控件；kill不撤销已发生操作",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-20",
+      "product": "dsh",
+      "category": "goals_schedule",
+      "capability": "Goal控制与Schedule规则/history/deliveryreceipt",
+      "guiRoute": "goal条带；Schedules列表/未运行/Ruless",
+      "sourceIds": [
+        "D16"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "官方Desktop默认schedule禁用，receipt非模型结果",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-21",
+      "product": "dsh",
+      "category": "context_history",
+      "capability": "nativecompaction/source/sessionQuery/谱系",
+      "guiRoute": "/compact/历史query/原文新input",
+      "sourceIds": [
+        "D13",
+        "D14"
+      ],
+      "guiPriority": "high",
+      "qualifier": "无Friend-Pi式ReBuild独立method验证机制",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-22",
+      "product": "dsh",
+      "category": "memory_mcp",
+      "capability": "thirdparty MCPmemory与通用Skills/MCP",
+      "guiRoute": "Settings Plugins/MCPmemory文档/工具目录",
+      "sourceIds": [
+        "D15"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "外部Memory接入不是内置带版本长期学习闭环",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-23",
+      "product": "dsh",
+      "category": "plugins_creator",
+      "capability": "插件管理/install/enable/diagnostic/config schema/Creator",
+      "guiRoute": "全局Plugins及preset Creator菜单",
+      "sourceIds": [
+        "D01",
+        "D18"
+      ],
+      "guiPriority": "high",
+      "qualifier": "本轮不改变现有profile/安装外部程序",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-24",
+      "product": "dsh",
+      "category": "computer_use",
+      "capability": "CuaDriver MCP/native实验提供方需启用",
+      "guiRoute": "只观察当前配置/不可用说明",
+      "sourceIds": [
+        "D17"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "无session桌面reservation；必须sole GUI协调",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-25",
+      "product": "dsh",
+      "category": "settings_diagnostics",
+      "capability": "General/model/loop/subagent/websearch/shell/shortcuts/sessionlog/account",
+      "guiRoute": "逐个设置页面、错误行、默认和继承",
+      "sourceIds": [
+        "D01",
+        "D18"
+      ],
+      "guiPriority": "high",
+      "qualifier": "设置live配置/visibility不一定是工具授权",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "dsh-26",
+      "product": "dsh",
+      "category": "remote_runtime",
+      "capability": "SSH/Webhost/desktopauth/nativefolder/updates",
+      "guiRoute": "只浏览现有连接/诊断与版本",
+      "sourceIds": [
+        "D01"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "执行地点与Shell runtime依实际host",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-01",
+      "product": "zcode",
+      "category": "navigation",
+      "capability": "workspace tabs、Group/Workspace/Timeline/quickactions",
+      "guiRoute": "左task视图、组拖动/颜色/归档/search",
+      "sourceIds": [
+        "Z02",
+        "Z12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "与Friend指定topprojects结合而非照搬全部shell",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-02",
+      "product": "zcode",
+      "category": "project_remote",
+      "capability": "scratch/local/SSH/remote/bot/channel",
+      "guiRoute": "project选择、现有remote/error/reconnect",
+      "sourceIds": [
+        "Z01"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "网络/账号依赖未具备不计体验",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-03",
+      "product": "zcode",
+      "category": "file_git",
+      "capability": "changed-only tree/状态/AddToChat/preview/OpenWith/GitGraph",
+      "guiRoute": "filetree→filter→preview→reference→read-onlyGraph",
+      "sourceIds": [
+        "Z02"
+      ],
+      "guiPriority": "high",
+      "qualifier": "不进行用户仓库commit/push",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-04",
+      "product": "zcode",
+      "category": "composer_modes",
+      "capability": "Plan独立、Ask/Edit/Full权限、模型/思考",
+      "guiRoute": "toolbar选取与空闲/草稿/运行生效",
+      "sourceIds": [
+        "Z13"
+      ],
+      "guiPriority": "high",
+      "qualifier": "source现有权限3枚举+独立Plan，官网四种描述",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-05",
+      "product": "zcode",
+      "category": "attachments_refs",
+      "capability": "文件/image/网页元素/代码comment上下文",
+      "guiRoute": "drag/@/nativeattach/preview/remove",
+      "sourceIds": [
+        "Z08",
+        "Z02"
+      ],
+      "guiPriority": "high",
+      "qualifier": "丰富context需模型确实读取证据",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-06",
+      "product": "zcode",
+      "category": "queue_stop",
+      "capability": "运行中排队、消息queue编辑/取消、停止/恢复",
+      "guiRoute": "真实只读run→queuedmessage→edit→stop",
+      "sourceIds": [
+        "Z04"
+      ],
+      "guiPriority": "high",
+      "qualifier": "queued edit回到composer并删除queue",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-07",
+      "product": "zcode",
+      "category": "edit_reset",
+      "capability": "仅最新userturn编辑、conditional chat+filesreset",
+      "guiRoute": "ownedfixture editcancel/re-send/reset conflict",
+      "sourceIds": [
+        "Z04"
+      ],
+      "guiPriority": "high",
+      "qualifier": "不可在running/compacting/queued不满足条件时默许reset",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-08",
+      "product": "zcode",
+      "category": "goal",
+      "capability": "持续目标、每轮独立校验、摘要迭代/暂停",
+      "guiRoute": "/goal→summarypanel→真实完成/暂停/恢复",
+      "sourceIds": [
+        "Z03"
+      ],
+      "guiPriority": "high",
+      "qualifier": "模型declared完成不是独立客观证明",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-09",
+      "product": "zcode",
+      "category": "tool_process",
+      "capability": "toolcards/trajectory/summary/contextusage/compact",
+      "guiRoute": "工具详情→返回→manualcompact",
+      "sourceIds": [
+        "Z12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "闭合turn与最终task状态分开",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-10",
+      "product": "zcode",
+      "category": "preview_panes",
+      "capability": "文本/图片/HTML/Office/materials/workbenchtabs",
+      "guiRoute": "sidepane多tab/source/关闭重开/分栏/terminal",
+      "sourceIds": [
+        "Z12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "更多format带额外库/运行依赖",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-11",
+      "product": "zcode",
+      "category": "review_diff",
+      "capability": "linecomments/selectionsidechat/gitdiff/source",
+      "guiRoute": "ownedchangedfile→diff行→context/sidechat",
+      "sourceIds": [
+        "Z02",
+        "Z04"
+      ],
+      "guiPriority": "high",
+      "qualifier": "source有UI，不代表已装每render-path成功",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-12",
+      "product": "zcode",
+      "category": "browser",
+      "capability": "defaultBrowserUse+twoSkills/内嵌visiblecontrol",
+      "guiRoute": "local fixtureURL→model操作→截图反馈",
+      "sourceIds": [
+        "Z08"
+      ],
+      "guiPriority": "high",
+      "qualifier": "Desktop-onlypanel，新session生效边界",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-13",
+      "product": "zcode",
+      "category": "terminal",
+      "capability": "独立底部terminal与sidepaneTerminal",
+      "guiRoute": "pwd/输出、pane切换/恢复",
+      "sourceIds": [
+        "Z12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "用户终端有独立执行权限",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-14",
+      "product": "zcode",
+      "category": "subagents_expert",
+      "capability": "built-in general/Explore/custom user/project/plugin;model/tools",
+      "guiRoute": "Settings Subagents→scope→readonlydefinition/override",
+      "sourceIds": [
+        "Z05"
+      ],
+      "guiPriority": "high",
+      "qualifier": "无Friend-Pi immutablegrowth客观证据门槛资料",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-15",
+      "product": "zcode",
+      "category": "memory",
+      "capability": "projectMarkdown/index、后台提取/召回、source只读viewer",
+      "guiRoute": "Settings Memoryscope/search/refresh/files",
+      "sourceIds": [
+        "Z06",
+        "Z11"
+      ],
+      "guiPriority": "high",
+      "qualifier": "官网暂无management与currentviewer不一致；不能误说GUI无",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-16",
+      "product": "zcode",
+      "category": "mcp",
+      "capability": "source组/user-workspace/stdioHTTPsse/OAuth/formJSON",
+      "guiRoute": "MCP清单/row→config→错误/权限source",
+      "sourceIds": [
+        "Z09"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "externalOAuth本轮不连接新账号",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-17",
+      "product": "zcode",
+      "category": "plugins_skills",
+      "capability": "plugin/components/Skillcatalog/Command/Hooks/source",
+      "guiRoute": "Settings相关page/catalog/scope/enable",
+      "sourceIds": [
+        "Z01",
+        "Z10"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "增功能不自动授更多permissions",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-18",
+      "product": "zcode",
+      "category": "automation_idle",
+      "capability": "scheduled/idle任务+template/config/history/keepawake",
+      "guiRoute": "Automations mainview→formcancel→history/关联chat",
+      "sourceIds": [
+        "Z07"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "实际触发与form保存分开",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-19",
+      "product": "zcode",
+      "category": "usage",
+      "capability": "account/provider/model/时间消费与balance",
+      "guiRoute": "Usage与composercontext/侧栏",
+      "sourceIds": [
+        "Z01",
+        "Z10"
+      ],
+      "guiPriority": "medium",
+      "qualifier": "价格/额度来自不同提供方不能推导统一开销",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-20",
+      "product": "zcode",
+      "category": "settings",
+      "capability": "基础/Agent能力/数据统计的scope分组",
+      "guiRoute": "全页导航/搜索/shortcut/browser/general",
+      "sourceIds": [
+        "Z10"
+      ],
+      "guiPriority": "high",
+      "qualifier": "flags/platform实际出现的才算入口",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-21",
+      "product": "zcode",
+      "category": "layout_keyboard",
+      "capability": "sidebar264min/pixelpersist/16pxkey、responsivepane",
+      "guiRoute": "wide/narrow/resize/keyboard/reset/restore",
+      "sourceIds": [
+        "Z12"
+      ],
+      "guiPriority": "high",
+      "qualifier": "需root实际focus/scroll性能",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-22",
+      "product": "zcode",
+      "category": "computer_use",
+      "capability": "desktop computerUse菜单但包为unavailableplaceholder",
+      "guiRoute": "只观察设置/不可用说明",
+      "sourceIds": [
+        "Z14"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "不得记作已实现系统截图/点击",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-23",
+      "product": "zcode",
+      "category": "wiki",
+      "capability": "带源码引用的repo架构wiki",
+      "guiRoute": "filetree Wiki入口/已有文档/source跳转",
+      "sourceIds": [
+        "Z02"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "生成模型调用需要单独实际journey",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    },
+    {
+      "id": "zcode-24",
+      "product": "zcode",
+      "category": "other_channels",
+      "capability": "Bot/remotecontrol/SSH/ADE/offpeak/feedback/onboarding",
+      "guiRoute": "只浏览可见page与依赖",
+      "sourceIds": [
+        "Z01",
+        "Z14"
+      ],
+      "guiPriority": "conditional",
+      "qualifier": "额外账号/远端未连则明确未执行",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false
+    }
+  ],
+  "extraOpenSourceReferences": [
+    {
+      "id": "ocean-01",
+      "product": "community_harness_theme",
+      "category": "identity",
+      "capability": "非官方Harness封装+Ocean主题",
+      "guiRoute": "作者primaryREADME，未安装",
+      "sourceIds": [
+        "O01"
+      ],
+      "guiPriority": "low",
+      "qualifier": "非官方产品/背景不是官方Agent能力",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false,
+      "isInstalledOcean": false,
+      "identityRelationship": "UNCONFIRMED",
+      "competitor": false
+    },
+    {
+      "id": "ocean-02",
+      "product": "community_harness_theme",
+      "category": "appearance",
+      "capability": "玻璃/本地图像MP4/主题token/小动效",
+      "guiRoute": "仅资料，无GUI",
+      "sourceIds": [
+        "O01"
+      ],
+      "guiPriority": "low",
+      "qualifier": "用户当前强调浅色布局，视觉皮肤仅可选",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false,
+      "isInstalledOcean": false,
+      "identityRelationship": "UNCONFIRMED",
+      "competitor": false
+    },
+    {
+      "id": "ocean-03",
+      "product": "community_harness_theme",
+      "category": "pinned_runtime",
+      "capability": "文档锁定Node22.22.3/DSH0.1.0-rc.7",
+      "guiRoute": "README版本说明+gitls-remoteHEAD",
+      "sourceIds": [
+        "O01"
+      ],
+      "guiPriority": "low",
+      "qualifier": "不同于已装官方DSH，完整包身份未验证",
+      "evidenceLevel": "source_or_official_docs",
+      "actualGUI": "NOT_RUN_BY_RESEARCH_AGENT",
+      "liveModel": "NOT_RUN_BY_RESEARCH_AGENT",
+      "fixtureOrTestExecuted": false,
+      "isInstalledOcean": false,
+      "identityRelationship": "UNCONFIRMED",
+      "competitor": false
+    }
+  ],
+  "identityCorrection": {
+    "installedOcean": {
+      "bundleId": "com.lspjs",
+      "version": "1.18.10",
+      "reportedBy": "root CUA app inventory"
+    },
+    "communityRepository": "renjianxin929-ux/deepseek-harness-desktop",
+    "relationship": "UNCONFIRMED",
+    "mainCompetitorMatrix": "EXCLUDED"
+  }
+}

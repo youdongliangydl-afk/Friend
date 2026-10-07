@@ -38,6 +38,14 @@ Git 写入成员使用独立 worktree；依赖成果通过明确的提交应用�
 
 消息区分已持久化、已投递和已纳入成员上下文；不将队列接收描述为模型理解。共享材料使用短事务锁、版本 CAS、不可变版本文件和原子写入，模型思考不占锁。停止、进程丢失或会话关闭标记副作用未知；显式接续创建新的 attempt，不重放旧工具。
 
+`pause/stop` 先进入 `stopping`，取消成员、客观检查、独立复核和隔离/整合中的 Git 进程，再等待实际关闭收据。每个受管进程拥有宿主新建的 POSIX 进程组；强制退出只针对这些组。`Graph.stopReceipt.objects` 逐项区分 `terminated/unknown`，没有完整回执时暂停，不能称已经停止。已终止也不表示撤销已经发生的效果；中断尝试仍保留为 unknown，用户检查后显式接续。停止途中崩溃不重放，冷启动恢复为暂停和未知回执。宿主可订阅 `swarm.process` 的 started/closed 事件，为 SDK 强制退出登记其实际创建的子组。
+
+复核拒绝使用 `taskIds` 归因到成果；仅这些任务及其下游依赖返工，其他 completed 成果保留。没有有效归因则暂停。原始 `Task.prompt/originalPrompt` 不改写，返工要求进入 `requirementVersions`，尝试绑定采用版本；达到两轮自动上限后要调整方法。用户通过 `rework {graphId,taskIds,reason,prompts?,revision?,confirmUnknown?}` 在安全边界显式调整，不能由模型替用户确认未知副作用。
+
+共享保存成功提交后才发布 `swarm.shared.changed {v,graphId,name,revision,digest}`，订阅通知失败不撤销已保存内容。历史内容可用 `shared.readVersion {graphId,name,revision}` 回查。竞争保存仍会拒绝旧版本覆盖；带已读 `baseDigest`（及可选 baseRevision/operationId）时，控制器自动三方合并无重叠行修改。成员工具自动保留读取的版本与摘要。软文本重叠最多调用/重试两次合并模型，必须保留三方来源、共同内容和独立修改；涉及同一约束/接口、来源不全、无法判断、取消或连续竞争则保留 `shared.conflicts` 材料并拒绝保存。模型思考期间不持锁，不生成冲突覆盖，不自动重放外部工具。当前采用提交后通知及恢复重查，没有持久 outbox 的必达承诺。
+
+安装 Expert 时，图启动冻结目录与选择；每个成员实际采用的 id/version/hash/Skill 摘要记录在其原生 JSONL 和 `Attempt.expertAdoptions`。明确无效专家会在成员启动前报错，不能悄悄退回基础角色。Expert 缺席时保留明确的 unavailable 基础角色；成员不加载整个 Expert 插件，按需采用通过版本化受限请求交给 Expert 控制器，范围只按交集收紧。
+
 成员不加载 Swarm 或其他可派生扩展。`tool_call` 对嵌套调用同样检查：read/write/edit 必须在工作区，写入必须在分配范围；只读成员不开放 Bash。写入成员沿用 Pi 高信任 shell，阻止明显目录逃逸并确认破坏性操作。此策略和 worktree 是协作边界，不是完整 OS 或 shell 沙箱。
 
 桌面 SDK 宿主在加载插件前将实际 `dataDir/pi` 配置目录公布为

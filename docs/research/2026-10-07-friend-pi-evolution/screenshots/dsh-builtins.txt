@@ -1,0 +1,137 @@
+Window: "只读运行测试并报告结果 — DeepSeek Harness", App: DeepSeek Harness.
+0 standard window 只读运行测试并报告结果 — DeepSeek Harness, Secondary Actions: Raise
+	1 container 只读运行测试并报告结果 — DeepSeek Harness
+		2 container
+			3 HTML content 只读运行测试并报告结果 — DeepSeek Harness, URL: dsh-app://app/
+				4 container 设置
+					5 container
+						6 text 设置
+						7 button 账号与余额
+						8 button 通用设置
+						9 button 模型
+						10 button 内置插件
+						11 button Agent 预设
+					12 button 打开配置文件
+					13 button 关闭
+					14 container
+						15 heading 内置插件, Value: 2
+							16 text 内置插件
+						17 text 查看内置部署的插件列表
+						18 container
+							19 text 搜索插件
+							20 search text field (settable) 搜索插件
+						21 container
+							22 button 会话插件
+							23 pop up button 选择要查看的 Agent 预设
+							24 text 由 Agent 预设按会话组成 · 29 个
+							25 content list
+								26 button persona, 已启用
+									27 text persona
+									28 text Composition-authored deployment persona section for the DeepSeek Harness
+								29 button agent-instructions, 已启用
+									30 text agent-instructions
+									31 text Workspace context loader for AGENTS.md/CLAUDE.md instruction files
+								32 button tool-bash, 已启用
+									33 text tool-bash
+									34 text Model-facing bash tool with optional generic background-job and sandbox-escalation support
+								35 button tool-pwsh, 已停用
+									36 text tool-pwsh
+									37 text 已停用
+									38 text Model-facing pwsh tool over the bash executor seam
+								39 button tool-fs, 已启用
+									40 text tool-fs
+									41 text Model-facing filesystem tools (read, write, edit) over the DeepSeek Harness filesystem seam (ctx.fs)
+								42 button tool-fs-search, 已启用
+									43 text tool-fs-search
+									44 text Model-facing filesystem discovery tools (glob, grep) backed by the packaged ripgrep binary (@vscode/ripgrep)
+								45 button tool-jobs, 已启用
+									46 text tool-jobs
+									47 text Model-facing background job control tools (job_output, job_list, job_kill) over the ctx.jobs registry
+								48 button skill-filesystem, 已启用
+									49 text skill-filesystem
+									50 text Local filesystem skill provider for the DeepSeek Harness
+								51 button tool-skill, 已启用
+									52 text tool-skill
+									53 text Model-facing skill loading tool for the DeepSeek Harness
+								54 button command-goal, 已启用
+									55 text command-goal
+									56 text Human-facing slash command for persisted same-session goals
+								57 button tool-goal, 已启用
+									58 text tool-goal
+									59 text Model-facing same-session goal tools with execution-time authority checks
+								60 button tool-ask-user, 已启用
+									61 text tool-ask-user
+									62 text Model-facing ask_user_question tool over the ctx.userQuestions seam
+								63 button tool-todo, 已启用
+									64 text tool-todo
+									65 text Model-facing todo_write tool over the DeepSeek Harness event-sourced session log
+								66 button tool-web, 已启用
+									67 text tool-web
+									68 text Model-facing web tools (web_search, web_fetch) over the DeepSeek Harness web capability seam (ctx.web)
+								69 button tool-present, present, 已启用
+									70 text tool-present
+									71 text Explicit workspace file delivery declarations for the DeepSeek Harness
+									72 text present
+								73 button plugin-manager/tools, tool-plugin-manager, 已停用
+									74 text plugin-manager/tools
+									75 text 已停用
+									76 text tool-plugin-manager
+								77 button plan-mode, 已启用
+									78 text plan-mode
+									79 text Logged per-agent plan mode with deployment guidance, a direct slash command, and a user-reviewed exit
+								80 button compaction-basic, 已启用
+									81 text compaction-basic
+									82 text Token-meter-driven compaction policy and LLM summarization backend for the DeepSeek Harness
+								83 button command-compact, 已启用
+									84 text command-compact
+									85 text Human-facing slash command for explicit session compaction
+								86 button compaction-tool-result-pruner, tool-result-pruner, 已启用
+									87 text compaction-tool-result-pruner
+									88 text Replay-safe model-free head/middle/tail pruning for tool-result surface nodes
+									89 text tool-result-pruner
+								90 button tool-subagent-control, 已启用
+									91 text tool-subagent-control
+									92 text Globally named send_message, interrupt_agent, and list_agents tools over ctx.subagents continuations
+								93 button tool-subagent-control/list-agents, tool-subagent-list-agents, 已启用
+									94 text tool-subagent-control/list-agents
+									95 text tool-subagent-list-agents
+								96 button tool-subagent, 已启用
+									97 text tool-subagent
+									98 text Model-facing subagent delegation tool over the ctx.subagents seam
+								99 button tool-subagent, tool-subagent-fork, 已启用
+									100 text tool-subagent
+									101 text Model-facing subagent delegation tool over the ctx.subagents seam
+									102 text tool-subagent-fork
+								103 button tool-subagent, tool-subagent-codex, 已停用
+									104 text tool-subagent
+									105 text 已停用
+									106 text Model-facing subagent delegation tool over the ctx.subagents seam
+									107 text tool-subagent-codex
+								108 button tool-subagent, tool-subagent-claude-code, 已停用
+									109 text tool-subagent
+									110 text 已停用
+									111 text Model-facing subagent delegation tool over the ctx.subagents seam
+									112 text tool-subagent-claude-code
+								113 button workflow-ptc, 已启用
+									114 text workflow-ptc
+									115 text Workflow orchestration in the shared sandboxed Node PTC runtime
+								116 button tool-workflow, 已启用
+									117 text tool-workflow
+									118 text Model-facing workflow tool: run a JavaScript orchestration script over ctx.workflowEngine
+								119 button tool-ralph, 已停用
+									120 text tool-ralph
+									121 text 已停用
+									122 text Model-facing fresh-agent Ralph loop over the workflow and subagent seams
+						123 container
+							124 button 全局插件
+							125 text 系统与所有会话共用 · 186 个
+	126 close button
+	127 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	128 minimize button
+129 menu bar
+	130 DeepSeek Harness
+	131 文件
+	132 Edit
+	133 Window
+
+The focused UI element is 10 button 内置插件

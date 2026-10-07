@@ -9,7 +9,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import memoryExtension from '../../memory/src/index.js';
 import rebuildExtension, {type WorkingField} from '../src/index.js';
-import {installFixtureProvider,requestPlugin,visibleText,type JsonObject} from '../../core/src/index.js';
+import {installFixtureProvider,requestPlugin,visibleText,sourceFactRefs,historyItems,RecordStore,projectIdentity,type JsonObject} from '../../core/src/index.js';
 import {fauxProvider,fauxAssistantMessage} from '@earendil-works/pi-ai/providers/faux';
 
 test('native Pi combination journals canonical fields, compacts, recalls mixed tokens and resumes cold',async()=>{
@@ -29,7 +29,7 @@ test('native Pi combination journals canonical fields, compacts, recalls mixed t
       await loader.reload({resolveProjectTrust:async()=>true});
       const created=await createAgentSession({cwd:dir,agentDir:join(dir,'agent'),modelRuntime:runtime,model,settingsManager:settings,resourceLoader:loader,sessionManager:sessionFile?SessionManager.open(sessionFile):SessionManager.create(dir,join(dir,'sessions'))});
       assert.deepEqual(created.extensionsResult.errors,[]);
-      const next=created.session;await next.bindExtensions({mode:'json',onError:error=>{errors.push(error.error);}});return next;
+      const next=created.session;await next.bindExtensions({mode:'json',onError:error=>{errors.push(error.error);}});await requestPlugin(bus,'topic-rebuild','settings',{mode:'infinite'},1000,'user');return next;
     };
     session=await open();
     await requestPlugin(bus,'memory','learning.pause',{},1000,'user');
@@ -70,7 +70,34 @@ test('native Pi combination journals canonical fields, compacts, recalls mixed t
   }
 });
 
-test('real Memory GUI correction and forgetting suppress old Pi sources through compaction and cold checkpoints',async()=>{
+test('independent native Pi defaults to native, explicitly opts into infinite, and cancels without another summary call',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-pi-native-rebuild-only-')),prior=process.env.FRIEND_PI_DATA_DIR;
+  process.env.FRIEND_PI_DATA_DIR=join(dir,'state');const bus=createEventBus();let session:AgentSession|undefined;let rebuildCalls=0;let providerCalls=0;let cancel=false;
+  try {
+    initTheme('light',false);const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),allowModelNetwork:false});
+    const fixture=fauxProvider({provider:'rebuild-only-fixture',models:[{id:'offline',name:'Independent rebuild fixture',reasoning:false,input:['text'],contextWindow:32000,maxTokens:4096}]});
+    const respond:Parameters<typeof fixture.setResponses>[0][number]=context=>{
+      fixture.appendResponses([respond]);providerCalls++;const content=context.messages.map(message=>visibleText(message.content)).join('\n');
+      if(content.includes('FRIEND_PI_REBUILD_JSON')){rebuildCalls++;const originals=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const goal=[...originals].reverse().find(item=>item.role==='user')!;return fauxAssistantMessage(JSON.stringify({goal:{text:goal.text.slice(0,500),sourceEntryIds:[goal.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}
+      return fauxAssistantMessage('离线原生Pi摘要与消息测试。');
+    };
+    fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('rebuild-only-fixture','fixture');
+    const settings=SettingsManager.inMemory({extensions:[],packages:[],defaultTools:['read'],compaction:{enabled:false,reserveTokens:128,keepRecentTokens:128}});
+    const loader=new DefaultResourceLoader({cwd:dir,agentDir:join(dir,'agent'),settingsManager:settings,noSkills:true,noPromptTemplates:true,noThemes:true,eventBus:bus,extensionFactories:[pi=>{pi.on('session_before_compact',()=>{if(cancel)session?.abortCompaction();});},rebuildExtension]});await loader.reload({resolveProjectTrust:async()=>true});
+    const created=await createAgentSession({cwd:dir,agentDir:join(dir,'agent'),modelRuntime:runtime,model:fixture.getModel(),settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(dir,join(dir,'sessions'))});session=created.session;await session.bindExtensions({mode:'json'});
+    const legacy=new RecordStore('topic-rebuild',join(dir,'state'));legacy.put(`settings:${projectIdentity(dir)}`,{enabled:true});legacy.close();
+    assert.equal((await requestPlugin(bus,'topic-rebuild','snapshot',{},1000,'user') as JsonObject).mode,'native');
+    await session.prompt('必须保留原始文件。');await session.prompt('核对项目代码和原始来源，不修改任何内容。'.repeat(80));await session.compact();assert.equal(rebuildCalls,0);
+    assert.equal(session.sessionManager.getEntries().filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi:working-field:v1').length,0);
+    await requestPlugin(bus,'topic-rebuild','settings',{mode:'infinite'},1000,'user');
+    await session.prompt('必须使用UTF-8。'+('检查编码和数据库接口并保留来源。'.repeat(80)));await session.compact();assert.equal(rebuildCalls,1);
+    const field=(await requestPlugin(bus,'topic-rebuild','snapshot',{},1000,'user') as JsonObject).field as WorkingField;assert.ok(field.operationId);assert.ok(field.constraints.some(point=>point.text.includes('UTF-8')));
+    await session.prompt('再次检查现场。'+('只读取完整原文，不改变执行状态。'.repeat(80)));const before=providerCalls;cancel=true;
+    await assert.rejects(session.compact(),/cancelled|aborted/iu);assert.equal(providerCalls,before,'cancel does not dispatch an extra native summary');
+  }finally{if(session){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}bus.clear();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(dir,{recursive:true,force:true});}
+});
+
+test('native Memory controller correction and forgetting suppress old Pi sources through compaction and cold checkpoints',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-pi-memory-origin-'));const priorDataDir=process.env.FRIEND_PI_DATA_DIR;process.env.FRIEND_PI_DATA_DIR=join(dir,'state');
   const bus=createEventBus();let session:AgentSession|undefined;const errors:string[]=[];const stale=new Map<string,string>();
   try {
@@ -85,20 +112,20 @@ test('real Memory GUI correction and forgetting suppress old Pi sources through 
     const open=async(file?:string)=>{
       const settings=SettingsManager.inMemory({extensions:[],packages:[],defaultTools:['read'],compaction:{enabled:false,reserveTokens:128,keepRecentTokens:128}});
       const loader=new DefaultResourceLoader({cwd:dir,agentDir:join(dir,'agent'),settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,eventBus:bus,extensionFactories:[memoryExtension,rebuildExtension]});await loader.reload({resolveProjectTrust:async()=>true});
-      const created=await createAgentSession({cwd:dir,agentDir:join(dir,'agent'),modelRuntime:runtime,model,settingsManager:settings,resourceLoader:loader,sessionManager:file?SessionManager.open(file):SessionManager.create(dir,join(dir,'sessions'))});assert.deepEqual(created.extensionsResult.errors,[]);await created.session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});return created.session;
+      const created=await createAgentSession({cwd:dir,agentDir:join(dir,'agent'),modelRuntime:runtime,model,settingsManager:settings,resourceLoader:loader,sessionManager:file?SessionManager.open(file):SessionManager.create(dir,join(dir,'sessions'))});assert.deepEqual(created.extensionsResult.errors,[]);await created.session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});await requestPlugin(bus,'topic-rebuild','settings',{mode:'infinite'},1000,'user');return created.session;
     };
     const field=async()=> (await requestPlugin(bus,'topic-rebuild','snapshot',{},1000,'user') as {field:WorkingField}).field;
     const noStale=async()=>{const current=await field();for(const point of [current.goal,...current.constraints])assert.equal(point.sources.some(source=>stale.has(source.entryId)),false,'suppressed source must not re-enter effective constraints');};
     session=await open();await requestPlugin(bus,'memory','learning.pause',{},1000,'user');
     await session.prompt('必须使用蓝色侧栏。');const origin=session.sessionManager.getEntries().find(entry=>entry.type==='message'&&entry.message.role==='user')!.id;stale.set(origin,'必须使用蓝色侧栏。');
-    const saved=await requestPlugin(bus,'memory','save',{content:'侧栏必须使用蓝色',explicitRemember:true,sources:[{sessionId:session.sessionId,entryId:origin}]},1000,'user') as {id:string;revision:number};
+    const saved=await requestPlugin(bus,'memory','save',{content:'侧栏必须使用蓝色',explicitRemember:true,sources:[sourceFactRefs(historyItems(session.sessionManager.getEntries()).find(item=>item.id===origin)!,session.sessionId)[0]!]},1000,'user') as {id:string;revision:number};
     await session.prompt('继续检查侧栏布局，必须保留用户文件。'+'核对侧栏尺寸和来源证据，保持原项目完整。'.repeat(80));
     await requestPlugin(bus,'memory','update',{id:saved.id,revision:saved.revision,content:'侧栏必须使用绿色'},1000,'user');assert.equal((await requestPlugin(bus,'topic-rebuild','snapshot',{},1000,'user') as {invalidated:boolean}).invalidated,true);
     await session.compact();await noStale();await session.prompt('继续检查侧栏布局。');await noStale();
     const recall=await requestPlugin(bus,'memory','search',{query:'绿色'},1000,'user') as unknown[];assert.equal(recall.length,1,'corrected new version remains available');
     const file=session.sessionFile!;await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();session=undefined;bus.clear();session=await open(file);await session.prompt('冷启动后继续检查侧栏布局。');await noStale();
     await session.prompt('必须使用旧缓存后端。');const forgetOrigin=[...session.sessionManager.getEntries()].reverse().find(entry=>entry.type==='message'&&entry.message.role==='user')!.id;stale.set(forgetOrigin,'必须使用旧缓存后端。');
-    const forgotten=await requestPlugin(bus,'memory','save',{content:'缓存必须使用旧后端',explicitRemember:true,sources:[{sessionId:session.sessionId,entryId:forgetOrigin}]},1000,'user') as {id:string;revision:number};await session.prompt('继续检查缓存接口。'+'逐项核对缓存接口和实际返回值并保留原始来源。'.repeat(80));
+    const forgotten=await requestPlugin(bus,'memory','save',{content:'缓存必须使用旧后端',explicitRemember:true,sources:[sourceFactRefs(historyItems(session.sessionManager.getEntries()).find(item=>item.id===forgetOrigin)!,session.sessionId)[0]!]},1000,'user') as {id:string;revision:number};await session.prompt('继续检查缓存接口。'+'逐项核对缓存接口和实际返回值并保留原始来源。'.repeat(80));
     await requestPlugin(bus,'memory','forget',{id:forgotten.id,revision:forgotten.revision},1000,'user');await session.compact();await noStale();await session.prompt('遗忘后继续检查接口。');await noStale();
     const forgottenFile=session.sessionFile!;await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();session=undefined;bus.clear();session=await open(forgottenFile);await session.prompt('再次冷启动后检查接口。');await noStale();
     const original=await requestPlugin(bus,'topic-rebuild','history.read',{id:origin},1000,'user') as {item:{text:string}};assert.match(original.item.text,/蓝色侧栏/,'source suppression never deletes original Pi history');assert.deepEqual(errors,[]);

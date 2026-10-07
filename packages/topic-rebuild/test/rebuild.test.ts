@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { SessionBeforeCompactEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import { RebuildController, type WorkingField } from '../src/index.js';
-import { historyItems, type HistoryItem, type PluginContext } from '../../core/src/index.js';
+import { historyItems, sourceFactRefs, digest, RecordStore, type HistoryItem, type PluginContext } from '../../core/src/index.js';
 
 function fixture() {
   const dir=mkdtempSync(join(tmpdir(),'friend-pi-rebuild-'));
@@ -31,7 +31,7 @@ function fixture() {
     request:async()=>{throw new Error('Memory not installed');},emit:(event,data)=>events.push({event,data}),notify:()=>{},
     appendEntry:(customType,data)=>{canonical.push({id:`custom-${canonical.length}`,parentId:canonical.at(-1)?.id||null,type:'custom',customType,data,timestamp:new Date().toISOString()});},
   };
-  const create=()=>new RebuildController({entries:()=>canonical,compact:()=>{compactCalls++;},contextWindow:()=>32000});
+  const create=(infinite=true)=>{const controller=new RebuildController({entries:()=>canonical,compact:()=>{compactCalls++;},contextWindow:()=>32000});if(infinite)void controller.dispatch('settings',{mode:'infinite'},ctx);return controller;};
   const event=(signal:AbortSignal=new AbortController().signal)=>({
     type:'session_before_compact',branchEntries:[...canonical],reason:'manual',willRetry:false,signal,
     preparation:{firstKeptEntryId:'u3',tokensBefore:12000,settings:{enabled:true,reserveTokens:1024,keepRecentTokens:2048},messagesToSummarize:[],turnPrefixMessages:[],isSplitTurn:false,fileOps:{read:new Set(),edited:new Set()}},
@@ -74,9 +74,9 @@ test('source suppression ignores other projects and requires body identity for c
   try {
     const draft=c.checkpointDraft(f.ctx)!;f.appendDraft(draft);c.confirmCanonical(f.ctx);
     c.memoryInvalidated({projectId:'other-project',ids:['other'],sources:[{sessionId:'session-a',entryId:'u1'}]},f.ctx);assert.equal(c.snapshot(f.ctx).invalidated,false);
-    c.memoryInvalidated({projectId:'project-a',ids:['old'],sources:[{sessionId:'session-a',entryId:'u1'}]},f.ctx);
+    c.memoryInvalidated({v:2,projectId:'project-a',ids:['old'],reason:'corrected',sources:[sourceFactRefs(historyItems(f.originals)[0]!,'session-a')[1]!]},f.ctx);
     const clone={...f.ctx,sessionId:'cloned-session',readSource:(source:{sessionId:string;entryId:string})=>{const item=historyItems(f.originals).find(item=>item.id===source.entryId);if(!item)throw new Error('missing');return item;}};
-    const cloned=c.checkpointDraft(clone)!;assert.equal(cloned.type,'custom');if(cloned.type==='custom'){const field=cloned.data as WorkingField;assert.equal(field.constraints.some(point=>point.sources.some(source=>source.entryId==='u1')),false);}
+    const cloned=c.checkpointDraft(clone)!;assert.equal(cloned.type,'custom');if(cloned.type==='custom'){const field=cloned.data as WorkingField;assert.equal(field.constraints.some(point=>point.text.includes('必须保留用户原始文件')),false);assert.ok(field.constraints.some(point=>point.text.includes('不要并行写入数据库')));}
     const different={...clone,sessionId:'unrelated-session',history:()=>[{id:'u1',parentId:null,type:'message',role:'user',timestamp:'new',text:'必须采用另一条有效约束。'}],readSource:()=>({id:'u1',parentId:null,type:'message',role:'user',timestamp:'new',text:'必须采用另一条有效约束。'})};
     const unrelated=c.checkpointDraft(different)!;assert.equal(unrelated.type,'custom');if(unrelated.type==='custom')assert.match((unrelated.data as WorkingField).constraints[0].text,/有效约束/);
   }finally{c.dispose();f.cleanup();}
@@ -192,10 +192,10 @@ test('memory invalidation survives restart and cannot be cleared by a shallow ch
 test('cancel, missing model, malformed output and insufficient budget fall back to Pi',async()=>{
   const f=fixture();let c=f.create();
   try {
-    const signal=new AbortController();signal.abort();assert.equal(await c.beforeCompact(f.event(signal.signal),f.ctx),undefined);
+    const signal=new AbortController();signal.abort();assert.deepEqual(await c.beforeCompact(f.event(signal.signal),f.ctx),{cancel:true});
     f.ctx.complete=async()=>{throw new Error('请先配置模型');};assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);
     f.ctx.complete=async()=>'{invalid json';assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);
-    c.dispose();c=new RebuildController({entries:()=>f.canonical,contextWindow:()=>500});
+    c.dispose();c=new RebuildController({entries:()=>f.canonical,contextWindow:()=>500});await c.dispatch('settings',{mode:'infinite'},f.ctx);
     f.ctx.complete=async()=>JSON.stringify({goal:{text:'数据库事务',sourceEntryIds:['u3']},constraints:[],decisions:[],unfinished:[],topics:[]});
     assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);
     assert.equal(c.snapshot(f.ctx).field,undefined);
@@ -233,15 +233,20 @@ test('standalone operation has no Memory dependency; manual request requires act
   } finally {c.dispose();f.cleanup();}
 });
 
-test('temporary recall excludes candidates, stays out of persistent summary, and drops stale results',async()=>{
-  const f=fixture();const c=f.create();
+test('compact selects memory once and records exact revision/hash/source without normal-turn recall',async()=>{
+  const f=fixture();const c=f.create();let selections=0;let completions=0;
+  const source=sourceFactRefs(historyItems(f.originals)[0]!,'session-a')[1]!;
+  const record={id:'m1',revision:7,hash:digest('有效项目方法'),content:'有效项目方法',sources:[source],status:'active',enabled:true};
   try {
-    f.ctx.request=async(_plugin,_action,input)=>{assert.equal(input?.match,'any');return [{id:'m1',revision:1,status:'active',enabled:true,content:'有效项目方法'},{id:'m2',revision:1,status:'candidate',enabled:true,content:'未经验证猜测'}];};
-    const recalled=await c.recall(f.ctx);assert.match(recalled!,/有效项目方法/);assert.doesNotMatch(recalled!,/未经验证/);
-    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.doesNotMatch(result.compaction.summary,/有效项目方法/);
-    f.ctx.request=async()=>{c.memoryInvalidated({ids:['m1']},f.ctx);return [{id:'m1',revision:1,status:'active',enabled:true,content:'过时版本'}];};
-    assert.equal(await c.recall(f.ctx),undefined);
-  } finally {c.dispose();f.cleanup();}
+    const complete=f.ctx.complete;f.ctx.complete=async(prompt,options)=>{completions++;assert.match(prompt,/有效项目方法/);return complete(prompt,options);};
+    f.ctx.request=async(_plugin,action)=>{if(action==='invalidation.snapshot')return {projectId:'project-a',epoch:0,ids:[],sources:[]};if(action==='select'){selections++;return {records:[record],epoch:0};}if(action==='read')return record;throw new Error('unexpected action');};
+    assert.equal(await c.recall(f.ctx),undefined);assert.equal(selections,0);
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
+    assert.equal(selections,1);assert.equal(completions,1);
+    f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
+    assert.deepEqual(field.memoryRefs,[{id:'m1',revision:7,hash:record.hash,sources:[source]}]);
+    assert.doesNotMatch(result.compaction.summary,/有效项目方法/);
+  }finally{c.dispose();f.cleanup();}
 });
 
 test('rejected boundary drafts clear pending at real settlement instead of keeping the UI busy',async()=>{
@@ -283,4 +288,110 @@ test('mixed Latin/CJK originals generate separate hashed tokens instead of one s
     const other={...f.ctx,projectId:'project-b',history:()=>[]};
     assert.deepEqual(await c.dispatch('history.search',{query:'事务 WAL'},other),[]);
   } finally {c.dispose();f.cleanup();}
+});
+
+test('native is the default and legacy enabled never opts into infinite context',async()=>{
+  const f=fixture();let c=f.create(false);let calls=0;
+  try {
+    f.ctx.complete=async()=>{calls++;throw new Error('unexpected model call');};f.ctx.request=async()=>{calls++;throw new Error('unexpected Memory call');};
+    assert.equal(c.snapshot(f.ctx).mode,'native');assert.equal(c.checkpointDraft(f.ctx),undefined);assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);
+    assert.deepEqual(await c.prepareDraft(f.ctx),{prepared:false});assert.equal(calls,0);
+    const store=new RecordStore('topic-rebuild',f.dir);store.put('settings:project-a',{enabled:true});store.close();c.dispose();c=f.create(false);
+    assert.equal(c.snapshot(f.ctx).mode,'native');assert.equal(c.checkpointDraft(f.ctx),undefined);assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);assert.equal(calls,0);
+    await c.dispatch('settings',{mode:'infinite'},f.ctx);assert.equal(c.snapshot(f.ctx).mode,'infinite');assert.ok(c.checkpointDraft(f.ctx));
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('correcting one fact preserves an unrelated constraint in the same message across cold start',async()=>{
+  const f=fixture();let c=f.create();
+  try {
+    f.add('two-facts','user','数据库必须使用 SQLite，必须保留 UTF-8 中文字段。');
+    const draft=c.checkpointDraft(f.ctx)!;f.appendDraft(draft);c.confirmCanonical(f.ctx);
+    const facts=sourceFactRefs(historyItems(f.originals).find(item=>item.id==='two-facts')!,'session-a');assert.equal(facts.length,2);
+    c.memoryInvalidated({v:2,projectId:'project-a',ids:['db'],reason:'corrected',sources:[facts[0]]},f.ctx);
+    f.ctx.complete=async()=>JSON.stringify({goal:{text:'检查数据库和中文字段',sourceEntryIds:['two-facts']},constraints:[{text:'数据库必须使用 SQLite，',sourceFactIds:[facts[0]!.factId]},{text:'必须保留 UTF-8 中文字段。',sourceFactIds:[facts[1]!.factId]}],decisions:[],unfinished:[],topics:[]});
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);const adopted=c.confirmCanonical(f.ctx)!;
+    assert.equal(adopted.constraints.some(point=>point.text.includes('SQLite')),false);assert.ok(adopted.constraints.some(point=>point.text.includes('UTF-8')));
+    c.dispose();c=f.create();f.add('later','user','继续验证，不要破坏项目文件。');const next=c.checkpointDraft(f.ctx)!;f.appendDraft(next);const cold=c.confirmCanonical(f.ctx)!;
+    assert.equal(cold.constraints.some(point=>point.text.includes('数据库必须使用 SQLite')),false);assert.ok(cold.constraints.some(point=>point.text.includes('UTF-8')));
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('explicit conversational correction replaces its addressed fact at the settlement boundary',()=>{
+  const f=fixture();const c=f.create();
+  try {
+    f.add('two-facts','user','数据库必须使用 SQLite，必须保留 UTF-8 中文字段。');const first=c.checkpointDraft(f.ctx)!;f.appendDraft(first);c.confirmCanonical(f.ctx);
+    f.add('db-correction','user','更正：数据库必须改为 PostgreSQL。');const corrected=c.checkpointDraft(f.ctx)!;f.appendDraft(corrected);const field=c.confirmCanonical(f.ctx)!;
+    assert.equal(field.constraints.some(point=>point.text.includes('数据库必须使用 SQLite')),false);assert.ok(field.constraints.some(point=>point.text.includes('UTF-8')));assert.ok(field.constraints.some(point=>point.text.includes('PostgreSQL')));
+    assert.ok(field.constraints.some(point=>point.text.includes('不要并行写入数据库')),'backend correction must not retire the write safety rule');
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('legacy whole-entry invalidation never retires unrelated original facts',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    f.add('two-facts','user','数据库必须使用 SQLite，必须保留 UTF-8 中文字段。');
+    c.memoryInvalidated({projectId:'project-a',ids:['legacy'],reason:'corrected',sources:[{sessionId:'session-a',entryId:'two-facts'}]},f.ctx);
+    f.ctx.complete=async()=>JSON.stringify({goal:{text:'检查中文字段',sourceEntryIds:['two-facts']},constraints:[],decisions:[],unfinished:[],topics:[]});
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
+    assert.ok(field.constraints.some(point=>point.text.includes('UTF-8')));assert.ok(field.constraints.some(point=>point.text.includes('SQLite')));
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('background draft stays out of Pi history and canonical coverage, then matching compact reuses it',async()=>{
+  const f=fixture();const c=f.create();let models=0;
+  try {
+    const complete=f.ctx.complete;f.ctx.complete=async(...args)=>{models++;return complete(...args);};
+    const count=f.canonical.length;const prepared=await c.prepareDraft(f.ctx);assert.equal(prepared.prepared,true);assert.equal(models,1);
+    assert.deepEqual(await c.prepareDraft(f.ctx),{prepared:false,operationId:prepared.operationId});assert.equal(models,1,'unchanged original history does not request another draft');
+    assert.equal(f.canonical.length,count);assert.equal(c.snapshot(f.ctx).field,undefined);assert.equal(c.confirmCanonical(f.ctx),undefined);
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.equal(models,1,'compact may reuse an exactly matching derived draft');
+    assert.equal(c.snapshot(f.ctx).field,undefined);f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;assert.ok(field.operationId);assert.notEqual(field.operationId,prepared.operationId);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('a changed draft model or source requires fresh foreground preparation without awaiting a queue',async()=>{
+  const f=fixture();const c=f.create();let calls=0;
+  try {
+    const complete=f.ctx.complete;f.ctx.complete=async(...args)=>{calls++;return complete(...args);};await c.prepareDraft(f.ctx);assert.equal(calls,1);
+    const result=await c.beforeCompact(f.event(),{...f.ctx,modelId:'new/model'});assert.ok(result?.compaction);assert.equal(calls,2);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('persisted cross-process memory epoch fences canonical adoption even without a local event',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
+    const runtime=new RecordStore('runtime',f.dir);runtime.put('memory-source-epoch:project-a',{v:1,epoch:1});runtime.close();
+    f.appendCompaction(result.compaction);assert.equal(c.confirmCanonical(f.ctx),undefined);assert.equal(c.snapshot(f.ctx).field,undefined);
+    assert.equal((c.snapshot(f.ctx).status as {phase:string}).phase,'fallback');
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('deleted session tombstone rejects a late prepared result and never advances canonical history',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    const complete=f.ctx.complete;f.ctx.complete=async(...args)=>{const result=await complete(...args);const sessions=new RecordStore('sessions',f.dir);sessions.put('tombstone:session-a',{deleted:true});sessions.close();return result;};
+    assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);assert.equal(c.confirmCanonical(f.ctx),undefined);assert.equal(c.snapshot(f.ctx).field,undefined);
+    assert.deepEqual(await c.prepareDraft(f.ctx),{prepared:false});
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('cancellation during the provider request returns cancel without emitting a fallback',async()=>{
+  const f=fixture();const c=f.create();const abort=new AbortController();let started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});
+  try {
+    f.ctx.complete=async(_prompt,options)=>{started();await new Promise((_resolve,reject)=>{options?.signal?.addEventListener('abort',()=>reject(new Error('aborted')),{once:true});});throw new Error('unreachable');};
+    const pending=c.beforeCompact(f.event(abort.signal),f.ctx);await ready;abort.abort();assert.deepEqual(await pending,{cancel:true});
+    assert.equal(f.events.some(event=>event.event==='topic-rebuild.fallback'),false);assert.equal(c.snapshot(f.ctx).field,undefined);
+  }finally{abort.abort();c.dispose();f.cleanup();}
+});
+
+test('cold restart reconciles a real canonical save made before the adoption callback',async()=>{
+  const f=fixture();let c=f.create();
+  try {
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);const entry=f.appendCompaction(result.compaction);c.dispose();c=f.create();
+    const field=c.confirmCanonical(f.ctx)!;assert.ok(field);assert.equal((c.snapshot(f.ctx).status as {phase:string}).phase,'applied');
+    const store=new RecordStore('topic-rebuild',f.dir);const operation=store.get<{state:string;canonicalEntryId:string}>(`operation:project-a:session-a:${field.operationId}`)!.value;
+    assert.equal(operation.state,'adopted');assert.equal(operation.canonicalEntryId,entry.id);store.close();
+  }finally{c.dispose();f.cleanup();}
 });

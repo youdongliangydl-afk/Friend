@@ -21,7 +21,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
     pi.on('tool_call',async event => {
       const input = event.input as Record<string,unknown>;
       const expert=start.expert && typeof start.expert==='object' ? start.expert as Record<string,unknown> : undefined;
-      if (Array.isArray(expert?.toolScope) && !['swarm_message','swarm_shared'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
+      if (Array.isArray(expert?.toolScope) && !['swarm_message','swarm_shared','friend_expert'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
       if (/friend_swarm|subagent|spawn_agent/i.test(event.toolName)) return {block:true,reason:'Swarm 成员不能递归派生'};
       if (['read','write','edit','find','grep','ls'].includes(event.toolName)) {
         const target = resolve(start.cwd,String(input.path || input.cwd || '.'));

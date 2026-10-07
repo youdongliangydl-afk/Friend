@@ -1,0 +1,142 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {fork,type ChildProcess} from 'node:child_process';
+import {closeSync,mkdirSync,mkdtempSync,openSync,rmSync} from 'node:fs';
+import {createServer,type ServerResponse} from 'node:http';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
+import {historyItems,learningHostAvailable,projectIdentity,RecordStore,type PluginContext} from '../packages/core/src/index.js';
+import {MemoryController,type LearningJob,type MemoryRecord} from '../packages/memory/src/index.js';
+import {createProviderRuntime,saveProviderConfiguration} from '../apps/desktop/src/provider-settings.js';
+
+type Stage='reflection'|'distill'|'foreground';
+interface Call {stage:Stage;prompt:string;ended:boolean;closed:boolean;release:()=>void}
+interface IpcMessage {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;data?:unknown;event?:{type:string;data:Record<string,unknown>}}
+const delay=(ms:number)=>new Promise<void>(done=>setTimeout(done,ms));
+async function until(predicate:()=>boolean,label:string,ms=10000){const end=Date.now()+ms;while(!predicate()){if(Date.now()>=end)throw new Error(`Timeout: ${label}`);await delay(25);}}
+
+/** Actual built entry points, public IPC, isolated SQLite and a loopback HTTP provider. */
+async function fixture(hold:(stage:Stage,index:number)=>boolean=()=>false){
+  const directory=mkdtempSync(join(tmpdir(),'friend-pi-learning-host-')),dataDir=join(directory,'state');
+  const calls:Call[]=[],children:Awaited<ReturnType<typeof worker>>[]=[];let active=0,activeLearning=0,maxActive=0,maxLearning=0;
+  const server=createServer(async(req,res)=>{
+    try{
+      let raw='';for await(const chunk of req)raw+=String(chunk);
+      const body=JSON.parse(raw) as {messages:{content:unknown}[]};const content=body.messages.at(-1)?.content;
+      const prompt=typeof content==='string'?content:Array.isArray(content)?content.map(part=>part&&typeof part==='object'&&'text' in part?String(part.text):'').join('\n'):JSON.stringify(content);
+      const stage:Stage=prompt.includes('你是项目经验提取器')?'reflection':prompt.includes('提炼一个文本方法候选')?'distill':'foreground';
+      const index=calls.filter(call=>call.stage===stage).length;
+      let output='前台只读检查已完成。';
+      if(stage==='reflection'){
+        const items=JSON.parse(prompt.slice(prompt.lastIndexOf('\n')+1)) as {id:string;role:string;userText?:string;text:string}[];
+        const source=items.find(item=>item.role==='user')!;const quote=source.userText??source.text;
+        output=JSON.stringify({memories:[{title:quote,content:quote,kind:'experience',sourceEntryIds:[source.id],sourceQuotes:{[source.id]:quote}}]});
+      }else if(stage==='distill')output=JSON.stringify({method:null});
+      const call:Call={stage,prompt,ended:false,closed:false,release:()=>{if(call.ended||res.destroyed)return;call.ended=true;sendSse(res,output,calls.indexOf(call));}};
+      calls.push(call);active++;if(stage!=='foreground')activeLearning++;maxActive=Math.max(maxActive,active);maxLearning=Math.max(maxLearning,activeLearning);
+      res.on('close',()=>{call.closed=true;active--;if(stage!=='foreground')activeLearning--;});
+      res.writeHead(200,{'Content-Type':'text/event-stream'});res.flushHeaders();
+      if(!hold(stage,index)){await delay(35);call.release();}
+    }catch(error){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:String(error)}}));}
+  });
+  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+  const runtime=await createProviderRuntime(dataDir);
+  await saveProviderConfiguration(runtime,dataDir,{provider:'learning-loopback',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-loopback-credential'});
+
+  function rows<T>(table:'memory_jobs'|'memory_records'):T[]{const store=new RecordStore('memory',dataDir);try{if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))return [];return store.db.prepare(`SELECT json FROM ${table}`).all().map(row=>JSON.parse(String(row.json)) as T);}finally{store.close();}}
+  const jobs=()=>rows<LearningJob>('memory_jobs');const memories=()=>rows<MemoryRecord>('memory_records');
+  async function enqueue(name:string){
+    const projectDir=join(directory,name);mkdirSync(projectDir,{recursive:true});const manager=SessionManager.create(projectDir,join(dataDir,'sessions'));
+    const sessionFile=manager.getSessionFile()!;mkdirSync(join(dataDir,'sessions'),{recursive:true});closeSync(openSync(sessionFile,'wx',0o600));manager.setSessionFile(sessionFile);
+    manager.appendCustomEntry('friend-pi.session.created',{v:1,createdAt:new Date().toISOString()});manager.appendMessage({role:'user',content:`${name} 必须保留 UTF-8 中文字段。`,timestamp:Date.now()});
+    const sessionId=manager.getSessionId(),projectId=projectIdentity(projectDir);const registry=new RecordStore('sessions',dataDir);registry.put(sessionId,{path:sessionFile,projectDir});registry.close();
+    const lease=new RecordStore('runtime',dataDir);const previous=lease.get('learning-host');if(!learningHostAvailable(dataDir))lease.put('learning-host',{pid:process.pid,instance:'test-producer',expiresAt:Date.now()+15000});
+    const ctx:PluginContext={origin:'plugin',dataDir,agentDir:join(dataDir,'pi'),projectDir,projectId,sessionId,sessionFile,modelId:'learning-loopback/fixture',thinkingLevel:'off',isIdle:()=>false,history:()=>historyItems(manager.getBranch()),readSource:source=>{const entry=historyItems(manager.getEntries()).find(item=>item.id===source.entryId);if(!entry)throw new Error('Unknown test source');return entry;},complete:async()=>{throw new Error('Producer must not execute a model');},request:async()=>{throw new Error('No producer peer');},appendEntry:(type,data)=>manager.appendCustomEntry(type,data),emit:()=>{},notify:()=>{}};
+    const memory=new MemoryController();try{await memory.settled(ctx);}finally{await memory.dispose();if(!previous&&lease.get<{instance:string}>('learning-host')?.value.instance==='test-producer')lease.remove('learning-host');lease.close();}
+    const job=jobs().find(item=>item.sessionId===sessionId)!;assert.ok(job,'producer persists a learning job');return {projectDir,projectId,sessionId,sessionFile,jobId:job.id};
+  }
+  async function startHost(){const child=await worker('learning-worker',dataDir,{});children.push(child);return child;}
+  async function startForeground(projectDir:string){const child=await worker('sdk-worker',dataDir,{FRIEND_PI_PROJECT:projectDir,FRIEND_PI_MODEL:'learning-loopback/fixture',FRIEND_PI_PLUGINS:JSON.stringify(['memory']),FRIEND_PI_LEARNING_ROLE:'producer'});children.push(child);return child;}
+  const close=async()=>{for(const child of children){if(child.child.exitCode===null&&child.child.signalCode===null)await child.stop().catch(async()=>{child.child.kill('SIGKILL');await child.exited;});}server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));rmSync(directory,{recursive:true,force:true});};
+  return {directory,dataDir,calls,jobs,memories,enqueue,startHost,startForeground,close,get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
+}
+
+function sendSse(res:ServerResponse,text:string,id:number){
+  for(const choice of [{delta:{role:'assistant',content:text},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:`completion-${id}`,object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+  res.end('data: [DONE]\n\n');
+}
+
+async function worker(name:'learning-worker'|'sdk-worker',dataDir:string,extra:Record<string,string>){
+  const env={...process.env};for(const key of Object.keys(env))if(key.startsWith('FRIEND_PI_'))delete env[key];
+  const child:ChildProcess=fork(resolve(`apps/desktop/dist/${name}.mjs`),[],{execPath:process.execPath,cwd:resolve('.'),stdio:['ignore','pipe','pipe','ipc'],env:{...env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_LEARNING_ROLE:'host',...extra}});
+  const events:IpcMessage[]=[];let stderr='';const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  const exited=new Promise<{code:number|null;signal:NodeJS.Signals|null}>(done=>child.once('exit',(code,signal)=>{for(const item of pending.values()){clearTimeout(item.timer);item.reject(new Error(`${name} exited before RPC result`));}pending.clear();done({code,signal});}));
+  child.stderr?.on('data',chunk=>{stderr+=String(chunk);});child.on('message',(raw:IpcMessage)=>{events.push(raw);if(raw.type==='response'&&raw.id){const item=pending.get(raw.id);if(item){clearTimeout(item.timer);pending.delete(raw.id);raw.error?item.reject(new Error(raw.error)):item.resolve(raw.result);}}});
+  try{await until(()=>events.some(event=>event.type==='ready'||event.type==='fatal')||child.exitCode!==null,'worker ready',12000);const initial=events.find(event=>event.type==='ready');if(!initial)throw new Error(`${name} failed to start: ${events.find(event=>event.type==='fatal')?.error||stderr}`);
+    const request=(method:string,input:Record<string,unknown>={})=>new Promise<unknown>((done,reject)=>{const id=randomUUID();const timer=setTimeout(()=>{pending.delete(id);reject(new Error(`RPC timeout: ${name}.${method}`));},8000);pending.set(id,{resolve:done,reject,timer});child.send({type:'request',id,method,input},error=>{if(error){clearTimeout(timer);pending.delete(id);reject(error);}});});
+    const stop=async()=>{if(child.exitCode!==null||child.signalCode!==null)return;await request('shutdown');let timer:ReturnType<typeof setTimeout>|undefined;try{await Promise.race([exited,new Promise<void>((_done,reject)=>{timer=setTimeout(()=>reject(new Error(`${name} did not exit after shutdown`)),8000);})]);}finally{clearTimeout(timer);}};
+    return {child,events,initial,request,exited,stop};
+  }catch(error){child.kill('SIGKILL');await exited;throw new Error(`${String(error)}\n${name} startup events: ${JSON.stringify(events)}\n${stderr}`);}
+}
+
+test('independent Node learning host serializes the durable queue and shuts down without a resident process',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='reflection'&&index===0);try{
+    const a=await f.enqueue('alpha'),b=await f.enqueue('beta');const host=await f.startHost();assert.notEqual(host.child.pid,process.pid);
+    await until(()=>f.calls.some(call=>call.stage==='reflection'),'first host reflection').catch(error=>{throw new Error(`${String(error)}\nJobs: ${JSON.stringify(f.jobs().map(({id,state,stage,error})=>({id,state,stage,error})))}\nNotices: ${JSON.stringify(host.events.filter(event=>event.type==='notice'))}`);});await delay(150);
+    assert.equal(f.calls.length,1);assert.equal(f.jobs().filter(job=>job.state==='running').length,1);assert.equal(f.jobs().find(job=>job.id===a.jobId)?.owner?.pid,host.child.pid);
+    f.calls[0].release();await until(()=>f.jobs().filter(job=>[a.jobId,b.jobId].includes(job.id)).every(job=>job.state==='completed'),'two completed serial jobs');
+    assert.equal(f.calls.filter(call=>call.stage==='reflection').length,2);assert.equal(f.calls.filter(call=>call.stage==='distill').length,2);assert.equal(f.maxLearning,1);assert.equal(f.memories().filter(record=>record.status==='active').length,2);
+    await host.stop();assert.equal((await host.exited).code,0);assert.equal(learningHostAvailable(f.dataDir),false);
+  }finally{await f.close();}
+});
+
+test('actual foreground Pi SDK producer overlaps the host model request without aborting background learning',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='foreground'||stage==='reflection'&&index===0);try{
+    const source=await f.enqueue('parallel');const host=await f.startHost();await until(()=>f.calls.length===1,'background pending request');const bg=f.calls[0];
+    const sdk=await f.startForeground(source.projectDir);const sent=await sdk.request('send',{text:'前台只读检查，不修改文件',mode:'single'}) as {sessionId:string};
+    await until(()=>f.calls.some(call=>call.stage==='foreground'),'foreground pending request');assert.equal((await sdk.request('state') as {isRunning:boolean}).isRunning,true);assert.ok(f.maxActive>=2,'separate SDK and host requests overlap');
+    assert.equal(bg.closed,false);assert.equal(f.jobs().find(job=>job.id===source.jobId)?.owner?.pid,host.child.pid);
+    f.calls.find(call=>call.stage==='foreground')!.release();await until(()=>sdk.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'),'foreground settled');await delay(100);
+    assert.equal(bg.closed,false,'new foreground input and settled event do not preempt learning');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.attempts,0);
+    bg.release();await until(()=>f.jobs().some(job=>job.sessionId===sent.sessionId&&job.state==='completed')&&f.jobs().find(job=>job.id===source.jobId)?.state==='completed','both producer and backlog completed');
+    assert.equal(f.maxLearning,1);assert.ok(f.jobs().filter(job=>job.sessionId===sent.sessionId).every(job=>job.attempts===0));await sdk.stop();await host.stop();
+  }finally{await f.close();}
+});
+
+test('host pause and resume preserve a real distill checkpoint without rerunning reflection',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='distill'&&index===0);try{
+    const source=await f.enqueue('paused');const host=await f.startHost();await until(()=>f.calls.some(call=>call.stage==='distill'),'distill checkpoint');const before=f.jobs().find(job=>job.id===source.jobId)!;
+    assert.equal(before.stage,'distill');assert.equal(before.memoryIds.length,1);await host.request('pause');const paused=f.jobs().find(job=>job.id===source.jobId)!;
+    assert.equal(paused.state,'queued');assert.equal(paused.stage,'distill');assert.equal(paused.attempts,0);assert.deepEqual(paused.memoryIds,before.memoryIds);const count=f.calls.length;await delay(200);assert.equal(f.calls.length,count);
+    await host.request('resume');await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='completed','resumed checkpoint');assert.equal(f.calls.filter(call=>call.stage==='reflection').length,1);assert.equal(f.calls.filter(call=>call.stage==='distill').length,2);await host.stop();
+  }finally{await f.close();}
+});
+
+test('killing a real host recovers its running stage in the replacement host without duplicating completed stages',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='distill'&&index===0);try{
+    const source=await f.enqueue('crashed');const first=await f.startHost();await until(()=>f.calls.some(call=>call.stage==='distill'),'first distill running');const checkpoint=f.jobs().find(job=>job.id===source.jobId)!;
+    first.child.kill('SIGKILL');assert.equal((await first.exited).signal,'SIGKILL');await until(()=>f.calls.find(call=>call.stage==='distill')!.closed,'dead host socket close');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'running');
+    const second=await f.startHost();assert.notEqual(second.child.pid,first.child.pid);await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='completed','replacement stage recovery');
+    const done=f.jobs().find(job=>job.id===source.jobId)!;assert.equal(done.attempts,0);assert.deepEqual(done.memoryIds,checkpoint.memoryIds);assert.equal(f.calls.filter(call=>call.stage==='reflection').length,1);assert.equal(f.calls.filter(call=>call.stage==='distill').length,2);assert.equal(f.memories().filter(record=>record.status==='active').length,1);await second.stop();
+  }finally{await f.close();}
+});
+
+test('a durable source deletion fences a late localhost model result and invalidates its host job',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='reflection'&&index===0);try{
+    const source=await f.enqueue('deleted');const host=await f.startHost();await until(()=>f.calls.length===1,'pending deleted-source reflection');
+    const registry=new RecordStore('sessions',f.dataDir);registry.put(`tombstone:${source.sessionId}`,{deletedAt:new Date().toISOString()});registry.close();
+    f.calls[0].release();await host.request('source.deleted',{sessionId:source.sessionId,projectId:source.projectId,projectDir:source.projectDir,sessionFile:source.sessionFile});
+    await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='invalidated','deleted job invalidated');await delay(200);
+    assert.equal(f.memories().filter(record=>record.enabled&&record.sources.some(ref=>ref.sessionId===source.sessionId)).length,0);assert.equal(f.calls.filter(call=>call.stage==='distill').length,0);assert.equal(f.jobs().find(job=>job.id===source.jobId)?.attempts,0);await host.stop();
+  }finally{await f.close();}
+});
+
+test('shutdown stops an active host, persists its unfinished stage, and a new host resumes it',{timeout:45000},async()=>{
+  const f=await fixture((stage,index)=>stage==='reflection'&&index===0);try{
+    const source=await f.enqueue('shutdown');const first=await f.startHost();await until(()=>f.calls.length===1,'active shutdown request');await first.stop();assert.equal((await first.exited).code,0);assert.equal(learningHostAvailable(f.dataDir),false);
+    const pending=f.jobs().find(job=>job.id===source.jobId)!;assert.equal(pending.state,'queued');assert.equal(pending.stage,'reflection');assert.equal(pending.attempts,0);assert.equal(pending.owner,undefined);
+    const next=await f.startHost();await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='completed','next launch resumes persisted queue');assert.equal(f.calls.filter(call=>call.stage==='reflection').length,2);assert.equal(f.memories().filter(record=>record.status==='active').length,1);await next.stop();
+  }finally{await f.close();}
+});

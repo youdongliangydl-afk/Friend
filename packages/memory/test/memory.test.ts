@@ -39,13 +39,13 @@ test('Chinese bigrams and safe FTS queries handle short text and punctuation',as
   } finally { await c.dispose(); f.cleanup(); }
 });
 
-test('project memory is isolated, personal memory requires explicit remember',async () => {
+test('project memory is isolated, ungrounded model personal writes are rejected',async () => {
   const f = fixture(); const c = new MemoryController();
   try {
     await c.dispatch('save',{content:'项目A使用SQLite',explicitRemember:true},f.ctx);
     const other = {...f.ctx,projectId:'project-b'};
     assert.deepEqual(c.search({query:'SQLite'},other),[]);
-    await assert.rejects(c.dispatch('save',{content:'偏好中文',kind:'preference',scope:'personal'},f.ctx),/明确/);
+    await assert.rejects(c.dispatch('save',{content:'偏好中文',kind:'preference',scope:'personal'},f.ctx),/自动学习|原始来源/);
     const personal = await c.dispatch('save',{content:'我偏好中文解释',kind:'preference',scope:'personal',explicitRemember:true},f.ctx) as MemoryRecord;
     assert.equal(c.search({query:'中文'},other)[0]?.id,personal.id);
     await assert.rejects(c.dispatch('read',{id:((c.snapshot(f.ctx).memories as MemoryRecord[]).find(record => record.scope === 'project'))?.id},other),/不属于/);
@@ -122,25 +122,25 @@ test('background reflection, dream, distill keep method candidates without Exper
     f.ctx.complete = async prompt => {
       calls++;
       if (prompt.includes('项目经验提取器')) return JSON.stringify({memories:[{title:'数据库写入',content:'服务端数据库写操作需要串行',kind:'experience',sourceEntryIds:['user1']}]});
-      const candidate = (c.snapshot(f.ctx).candidates as MemoryRecord[]).find(record => record.kind === 'experience')!;
+      const candidate = (c.snapshot(f.ctx).memories as MemoryRecord[]).find(record => record.kind === 'experience')!;
       return JSON.stringify({method:{title:'事务写入检查',content:'仅本项目：顺序写入，并检查事务完整性。',sourceMemoryIds:[candidate.id]}});
     };
     await c.settled(f.ctx); await c.whenIdle(f.ctx);
     const candidates = c.snapshot(f.ctx).candidates as MemoryRecord[];
-    assert.equal(candidates.length,2); assert.equal(calls,2);
+    assert.equal(candidates.length,1); assert.equal(calls,2);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[])[0]?.confirmedBy,'system');
     assert.equal(candidates.find(record => record.kind === 'method')?.expertDelivery,'unavailable');
     assert.equal(candidates.every(record => record.status === 'candidate'),true);
     await c.settled(f.ctx); await c.whenIdle(f.ctx); assert.equal(calls,2);
   } finally { await c.dispose(); f.cleanup(); }
 });
 
-test('pause and foreground abort background calls without consuming failure retries',async () => {
+test('pause aborts owned learning but foreground input does not preempt it',async () => {
   const f = fixture(); const c = new MemoryController(); let started!:() => void;
-  let start = new Promise<void>(resolve => {started=resolve;});
+  let start = new Promise<void>(resolve => {started=resolve;});let finish!:(value:string)=>void;
   try {
     f.ctx.complete = async (_prompt,options) => {
       started();
-      return new Promise<string>((_resolve,reject) => { options?.signal?.addEventListener('abort',() => reject(new Error('aborted')),{once:true}); });
+      return new Promise<string>((resolve,reject) => {finish=resolve; options?.signal?.addEventListener('abort',() => reject(new Error('aborted')),{once:true}); });
     };
     await c.dispatch('learning.run',{},f.ctx); const run = c.whenIdle(f.ctx); await start;
     await c.dispatch('learning.pause',{},f.ctx); await run;
@@ -148,21 +148,23 @@ test('pause and foreground abort background calls without consuming failure retr
     assert.equal(job.state,'queued'); assert.equal(job.attempts,0);
     start = new Promise<void>(resolve => {started=resolve;});
     await c.dispatch('learning.resume',{},f.ctx); const second = c.whenIdle(f.ctx); await start;
-    f.setIdle(false); c.foregroundStarted(); await second;
+    f.setIdle(false); c.foregroundStarted(); await new Promise<void>(resolve=>setImmediate(resolve));
+    assert.equal((c.snapshot(f.ctx).learning as {jobs:{state:string}[]}).jobs[0]?.state,'running');finish(JSON.stringify({memories:[]}));await second;
     job = (c.snapshot(f.ctx).learning as {jobs:{state:string;attempts:number}[]}).jobs[0]!;
-    assert.equal(job.state,'queued'); assert.equal(job.attempts,0);
+    assert.equal(job.state,'completed'); assert.equal(job.attempts,0);
   } finally { await c.dispose(); f.cleanup(); }
 });
 
 test('failed background work stops after two retries and reports a durable failure',async () => {
-  const f = fixture(); const c = new MemoryController(); let calls=0;
+  const f = fixture(); const c = new MemoryController(); let calls=0;const clock=Date.now;let elapsed=0;Date.now=()=>clock()+elapsed;
   try {
     f.ctx.complete = async () => { calls++; throw new Error('fake provider failed'); };
     await c.dispatch('learning.run',{},f.ctx); await c.whenIdle(f.ctx);
+    for(let i=0;i<2;i++){elapsed+=10000;await c.whenIdle(f.ctx);}
     const job = (c.snapshot(f.ctx).learning as {jobs:{state:string;attempts:number;error:string}[]}).jobs[0]!;
     assert.equal(calls,3); assert.equal(job.state,'failed'); assert.equal(job.attempts,3); assert.match(job.error,/fake provider/);
     assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
-  } finally { await c.dispose(); f.cleanup(); }
+  } finally { Date.now=clock;await c.dispose(); f.cleanup(); }
 });
 
 test('an agent cannot self-confirm by accept, update or explicitRemember',async () => {
@@ -171,7 +173,7 @@ test('an agent cannot self-confirm by accept, update or explicitRemember',async 
     const agent = {...f.ctx,origin:'agent' as const};
     for(const action of ['learning.run','learning.pause','learning.resume','learning.settings','learning.retry'])await assert.rejects(c.dispatch(action,{},agent),/用户操作/);
     const negative={...agent,history:()=>[{id:'negative',parentId:null,type:'message',role:'user',timestamp:new Date().toISOString(),text:'请不要记住我的个人偏好。'}]};
-    await assert.rejects(c.dispatch('save',{scope:'personal',kind:'preference',content:'未经请求的偏好',explicitRemember:true},negative),/明确/);
+    await assert.rejects(c.dispatch('save',{scope:'personal',kind:'preference',content:'未经请求的偏好',explicitRemember:true},negative),/自动学习|原始来源/);
     const candidate = await c.dispatch('save',{content:'未经验证的结果',explicitRemember:true},agent) as MemoryRecord;
     assert.equal(candidate.status,'candidate');
     await assert.rejects(c.dispatch('accept',{id:candidate.id,revision:1},agent),/用户确认/);
@@ -181,7 +183,7 @@ test('an agent cannot self-confirm by accept, update or explicitRemember',async 
     const changedActive=await c.dispatch('update',{id:active.id,revision:active.revision,content:'模型对事实的新改写'},agent) as MemoryRecord;
     assert.equal(changedActive.status,'candidate');assert.equal(changedActive.confirmedBy,undefined);
     assert.deepEqual(c.search({query:'模型对事实'},f.ctx),[]);
-    await assert.rejects(c.dispatch('save',{content:'模型猜测个人偏好',scope:'personal',kind:'preference',explicitRemember:true},agent),/明确/);
+    await assert.rejects(c.dispatch('save',{content:'模型猜测个人偏好',scope:'personal',kind:'preference',explicitRemember:true},agent),/自动学习|原始来源/);
   } finally { await c.dispose(); f.cleanup(); }
 });
 

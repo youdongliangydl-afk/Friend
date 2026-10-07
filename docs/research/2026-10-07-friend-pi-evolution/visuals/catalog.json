@@ -1,0 +1,175 @@
+{
+  "01": {
+    "title": "停止状态与恢复",
+    "beforeSummary": "图已 stopped，但宿主客观检查仍在写入；状态边界与退出事实脱节。",
+    "afterSummary": "停止覆盖成员、客观检查和复核；收到终止确认后才显示已停止。",
+    "evidence": [
+      "SWARM-STOP-OBJECTIVE-CHECK",
+      "CL-04"
+    ]
+  },
+  "02": {
+    "title": "原史缺失保护",
+    "beforeSummary": "已登记 JSONL 缺失时被当作新会话；旧索引静默换到新历史。",
+    "afterSummary": "保留原会话身份和路径，给出恢复原史、查看备份或明确另建会话。",
+    "evidence": [
+      "CL-01"
+    ]
+  },
+  "03": {
+    "title": "完整消息、Markdown 与工具结构",
+    "beforeSummary": "聊天只投影 text，冷恢复丢工具名/输入关联；表格和链接原样显示。",
+    "afterSummary": "按原生消息块呈现文字、图片、思考、工具及关联结果；安全 Markdown。",
+    "evidence": [
+      "CL-03",
+      "EV-03"
+    ]
+  },
+  "04": {
+    "title": "未跟踪文件 Diff",
+    "beforeSummary": "仅 git diff HEAD；真实新文件存在时，面板仍显示没有改动。",
+    "afterSummary": "改动列表包含未跟踪文件，新文件内容可审阅，明确尚未加入索引。",
+    "evidence": [
+      "CL-02"
+    ]
+  },
+  "05": {
+    "title": "约束纠正与事实粒度",
+    "beforeSummary": "同来源中的事实被整体撤回，无关 UTF-8 约束也丢失；普通更正仍冲突。",
+    "afterSummary": "按事实/引用片段维护失效关系；只更正对应事实，保留有效约束。",
+    "evidence": [
+      "R02",
+      "R01"
+    ]
+  },
+  "06": {
+    "title": "遗忘与候选去重",
+    "beforeSummary": "原生 fork 复制旧事实后，可换词形成候选；尚未自动 active。",
+    "afterSummary": "遗忘、候选与去重管理集中于设置；Memory tab 只显示本轮实际采用内容。",
+    "evidence": [
+      "M03"
+    ]
+  },
+  "07": {
+    "title": "前台优先与后台队列",
+    "beforeSummary": "后台彼此串行，但跨会话前台启动没有取消另一实例的调用。",
+    "afterSummary": "后台队列与前台优先策略放设置；工作台不显示后台管理或完整记忆库。",
+    "evidence": [
+      "M02"
+    ]
+  },
+  "08": {
+    "title": "专家采用一致与版本透明",
+    "beforeSummary": "自动 use 和明确采用执行工具范围不一致；界面不显示当轮快照。",
+    "afterSummary": "Expert tab 仅介绍本轮选用专家、专业方向与常用 Skill；版本、范围和验证管理放设置。",
+    "evidence": [
+      "EXPERT-AUTO-TOOL-SCOPE"
+    ]
+  },
+  "09": {
+    "title": "定向返工与 DAG",
+    "beforeSummary": "复核只拒绝一个任务时，全部任务都重跑；当前展示依赖卡片列表。",
+    "afterSummary": "Swarm tab 仅显示当前规划 DAG；定向返工与方法修订进入任务详情或设置。",
+    "evidence": [
+      "SWARM-TARGETED-REWORK"
+    ]
+  },
+  "10": {
+    "title": "共享版本与冲突",
+    "beforeSummary": "CAS 拒绝过期草稿，但通知先于提交；用户需手动重新载入并合并。",
+    "afterSummary": "共享版本和冲突编辑进入设置-任务管理；工作台 Swarm 保持当前 DAG。",
+    "evidence": [
+      "SWARM-SHARED-EVENT-COMMIT"
+    ]
+  },
+  "11": {
+    "title": "Plan 审批与执行转换",
+    "beforeSummary": "计划靠开关转执行，没有明确计划对象/批准动作；陌生目录只读探索不足。",
+    "afterSummary": "只读探索生成计划，显式批准绑定目标/约束/范围/检查后再执行。",
+    "evidence": [
+      "C19",
+      "C26",
+      "plan GUI"
+    ]
+  },
+  "12": {
+    "title": "项目、会话状态与组织",
+    "beforeSummary": "横向项目与状态卡已具备；会话在一个近期列表，没有归档/状态筛选。",
+    "afterSummary": "保留原布局，增加状态分组、固定会话、归档和跨项目名称/正文搜索。",
+    "evidence": [
+      "C02",
+      "C05",
+      "C06"
+    ]
+  },
+  "13": {
+    "title": "轮次预览、书签与定位",
+    "beforeSummary": "短线预览、定位和书签已具备；预览只有请求与最后回复片段。",
+    "afterSummary": "在现有预览与书签上增加主题、关键词、仅书签筛选及轮次范围回查。",
+    "evidence": [
+      "C09",
+      "C24"
+    ]
+  },
+  "14": {
+    "title": "分栏、窄屏与快捷键",
+    "beforeSummary": "已支持拖动、键盘调宽、冷恢复和窄屏；布局按全局像素宽度保存。",
+    "afterSummary": "布局长期设置集中于设置；每项目预设与比例恢复，保持工作台五个轻量 tabs。",
+    "evidence": [
+      "C10",
+      "C11"
+    ]
+  },
+  "15": {
+    "title": "文件附件与多标签工作台",
+    "beforeSummary": "输入路径预览文本、附件名标签；工作台一次只显示一个文件/模块。",
+    "afterSummary": "项目文件树、附件能力检查和图文预览，多标签保留文件/Diff/来源。",
+    "evidence": [
+      "C27",
+      "C28",
+      "C29",
+      "C30"
+    ]
+  },
+  "16": {
+    "title": "设置搜索、配置一致性与模型能力",
+    "beforeSummary": "全局设置已归位，但 Swarm 默认可矛盾；自定义型号能力硬编码。",
+    "afterSummary": "设置可搜索并分全局/项目；型号显式能力，配置依赖校验与有效值确认。",
+    "evidence": [
+      "CL-05",
+      "C13",
+      "C55"
+    ]
+  },
+  "17": {
+    "title": "专家验证模板与管理",
+    "beforeSummary": "手写 JSON 基准，重新打开表单不载已有用例；适用范围是一块文本。",
+    "afterSummary": "验证模板与已有基准全部进入设置-专家管理；Expert tab 不展示管理表单。",
+    "evidence": [
+      "C47",
+      "Expert validation coverage"
+    ]
+  },
+  "18": {
+    "title": "来源导航与连续现场诊断",
+    "beforeSummary": "来源按钮可开原文，但缺会话定位；连续现场的操作/覆盖信息难核对。",
+    "afterSummary": "来源回查与连续现场诊断移至设置-高级；不在工作台新增 Context 页。",
+    "evidence": [
+      "R01",
+      "R02",
+      "C52",
+      "C53"
+    ]
+  },
+  "19": {
+    "title": "统一轻量工作台与真实采用收据",
+    "beforeSummary": "六个模块入口分散；能力工作台混合运行信息与管理，Memory 展示库而非本轮采用。",
+    "afterSummary": "用户已选方向：单一工作台入口 + 五个极简 tabs，只展示当前规划、选用专家和实际采用记忆。",
+    "evidence": [
+      "USER-SELECTED-WORKBENCH",
+      "C55",
+      "C45",
+      "C48"
+    ]
+  }
+}

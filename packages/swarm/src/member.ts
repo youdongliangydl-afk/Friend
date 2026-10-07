@@ -6,7 +6,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { installFixtureProvider } from '@friend-pi/core';
+import { installFixtureProvider,object,digest } from '@friend-pi/core';
 import { guardMember } from './guard.js';
 import type { MemberInput, MemberOutput, MemberStart } from './types.js';
 
@@ -18,17 +18,29 @@ const confirmations = new Map<string,(value:boolean)=>void>();
 const pendingMessages = new Set<string>();
 const requests = new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
 function output(message: MemberOutput): void { if (process.connected) process.send?.(message); }
-function request(action:'send'|'shared.read'|'shared.write',input:Record<string,unknown>):Promise<unknown> {
+function request(action:'send'|'shared.read'|'shared.write'|'expert.adopt',input:Record<string,unknown>):Promise<unknown> {
   if (stopped || !process.connected) return Promise.reject(new Error('协调者连接已结束'));
   const requestId=randomUUID();return new Promise((resolveResult,reject)=>{
     const timer=setTimeout(()=>{requests.delete(requestId);reject(new Error('协作请求超时'));},60000);
     requests.set(requestId,{resolve:resolveResult,reject,timer});output({v:1,type:'request',requestId,action,input});
   });
 }
-const collaboration:ExtensionFactory=pi=>{
+function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined):ExtensionFactory{return pi=>{
   pi.registerTool({name:'swarm_message',label:'Swarm 成员消息',description:'向同一任务图中的另一个任务发消息。仅协作，不派生任务。',parameters:Type.Object({to:Type.String(),body:Type.String()}),async execute(_id,params) {const result=await request('send',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-  pi.registerTool({name:'swarm_shared',label:'Swarm 共享材料',description:'读取或使用版本 CAS 更新同一任务图的共享材料。更新须提供读取到的 revision，新建为 0。',parameters:Type.Object({action:Type.Union([Type.Literal('read'),Type.Literal('write')]),name:Type.String(),content:Type.Optional(Type.String()),expectedRevision:Type.Optional(Type.Number())}),async execute(_id,params) {const result=await request(params.action==='read'?'shared.read':'shared.write',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-};
+  const bases=new Map<string,{revision:number;digest:string}>();
+  pi.registerTool({name:'swarm_shared',label:'Swarm 共享材料',description:'读取或使用版本 CAS 更新同一任务图的共享材料。更新须提供读取到的 revision，新建为 0。工具保留已读版本和摘要，竞争时自动三方合并；不能判断的约束冲突会保留材料。',parameters:Type.Object({action:Type.Union([Type.Literal('read'),Type.Literal('write')]),name:Type.String(),content:Type.Optional(Type.String()),expectedRevision:Type.Optional(Type.Number()),operationId:Type.Optional(Type.String())}),async execute(id,params) {const base=bases.get(params.name);const input=params.action==='write'?{...params,operationId:params.operationId||`${start.attemptId}:${id}`,...(base&&params.expectedRevision===base.revision?{baseRevision:base.revision,baseDigest:base.digest}: {})}:params;const result=await request(params.action==='read'?'shared.read':'shared.write',input);if(result&&typeof result==='object'){const row=object(result);const revision=Number(row.revision??row.version);if(Number.isInteger(revision)&&typeof row.digest==='string')bases.set(params.name,{revision,digest:row.digest});}return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+  if(expert&&!expert.unavailable){
+    const catalog=(Array.isArray(expert.experts)?expert.experts:[]).map(object);const adopted=new Set(Array.isArray(expert.adoptedIds)?expert.adoptedIds.map(String):[]),useReceipts=new Map<string,Record<string,unknown>>();
+    pi.registerTool({name:'friend_expert',label:'采用冻结专家方法',description:'仅可使用当前成员已冻结的专家。采用后工具范围立即按交集收紧，新版本不影响本次执行。',parameters:Type.Object({action:Type.Literal('use'),input:Type.Object({id:Type.String()},{additionalProperties:false})},{additionalProperties:false}),async execute(_id,params){
+      const frozen=catalog.find(item=>item.id===params.input.id);if(!frozen)throw new Error('专家不在本次成员冻结目录中');
+      const response=object(await request('expert.adopt',{id:params.input.id}));if(response.id!==frozen.id||response.version!==frozen.version||response.hash!==frozen.hash)throw new Error('成员采用版本与已冻结方法不匹配');
+      adopted.add(String(frozen.id));const scopes=catalog.filter(item=>adopted.has(String(item.id))).map(item=>Array.isArray(item.tools)?item.tools.map(String):[]).filter(scope=>scope.length);if(Array.isArray(expert.toolScope))scopes.unshift(expert.toolScope.map(String));
+      const scope=scopes.length?scopes[0].filter(tool=>scopes.every(item=>item.includes(tool))):undefined;expert.toolScope=scope;expert.adoptedIds=[...adopted];
+      const prior=useReceipts.get(params.input.id);const adoption=prior||{...object(response.adoption),runId:start.attemptId,taskId:start.taskId,graphId:start.graphId,toolScope:scope};if(!prior){pi.appendEntry('friend-pi.expert.adoption',adoption);useReceipts.set(params.input.id,adoption);output({v:1,type:'expert.adopted',adoption,toolScope:scope});}
+      return {content:[{type:'text',text:String(response.prompt)}],details:{adoption,toolScope:scope}};
+    }});
+  }
+};}
 function stopRequests():void {for (const pending of requests.values()) {clearTimeout(pending.timer);pending.reject(new Error('成员已停止'));}requests.clear();}
 async function disposeSession():Promise<void> {
   if (shutdown) return;shutdown=true;stopRequests();
@@ -55,7 +67,7 @@ async function run(start:MemberStart): Promise<void> {
   const allowed=start.mode === 'read' ? ['read','grep','find','ls'] : ['read','write','edit','bash'];
   const scope=Array.isArray(expert?.toolScope) ? expert.toolScope as unknown[] : undefined;
   const tools=scope ? allowed.filter(tool=>scope.includes(tool)) : allowed;
-  let reviewSubmission:Readonly<{approved:boolean;findings:string}>|undefined;
+  let reviewSubmission:Readonly<{approved:boolean;findings:string;taskIds?:string[];resultVersions?:Record<string,number>}>|undefined;
   let reviewConflict=false;
   const rawReviewArguments=new Map<string,unknown>();
   const review:ExtensionFactory=pi=>{
@@ -64,22 +76,27 @@ async function run(start:MemberStart): Promise<void> {
     pi.on('message_end',event=>{if(event.message.role==='assistant')for(const part of event.message.content)if(part.type==='toolCall'&&part.name==='swarm_review_result')rawReviewArguments.set(part.id,structuredClone(part.arguments));});
     pi.on('tool_call',event=>{if(!['read','grep','find','ls','swarm_review_result'].includes(event.toolName))return {block:true,reason:'独立复核只开放 read/grep/find/ls 和 swarm_review_result'};});
     pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n你是独立只读复核器。可用文件工具只有 read、grep、find、ls；没有 Bash、wc、Git 命令、写入工具、消息或共享材料工具。使用宿主已执行的客观检查证据，不要求重跑命令。完成审查后必须且只能用 swarm_review_result 提交 approved 布尔值及 findings 事实；助手文字不算提交。提交后不得改写判断。`}));
-    pi.registerTool({name:'swarm_review_result',label:'提交独立复核结论',description:'提交一次不可变独立复核结论。approved 必须是布尔值，findings 必须说明查阅的事实、宿主客观检查证据及具体问题；仅凭成员自评不能批准。助手说明文字不作为结论。',parameters:Type.Object({approved:Type.Boolean(),findings:Type.String({minLength:1,maxLength:100000})},{additionalProperties:false}),async execute(id,_params){
+    pi.registerTool({name:'swarm_review_result',label:'提交独立复核结论',description:'提交一次不可变独立复核结论。拒绝时用taskIds指向受影响任务；无法归因用空数组让宿主暂停。approved 必须是布尔值，findings 必须说明事实与证据；助手文字不作为结论。',parameters:Type.Object({approved:Type.Boolean(),findings:Type.String({minLength:1,maxLength:100000}),taskIds:Type.Optional(Type.Array(Type.String()))},{additionalProperties:false}),async execute(id,_params){
       const raw=rawReviewArguments.get(id);rawReviewArguments.delete(id);const params=raw && typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:undefined;
-      if(!params||Object.keys(params).length!==2||typeof params.approved!=='boolean'||typeof params.findings!=='string'||!params.findings.trim()||params.findings.length>100000){if(reviewSubmission)reviewConflict=true;throw new Error('复核原始提交需要布尔判断和非空事实，不能转换字段类型');}
-      if(reviewSubmission && (reviewSubmission.approved!==params.approved || reviewSubmission.findings!==params.findings)){reviewConflict=true;throw new Error('独立复核结论冲突；已提交结论不可改写，成果保留');}
+      if(!params||Object.keys(params).some(key=>!['approved','findings','taskIds'].includes(key))||typeof params.approved!=='boolean'||typeof params.findings!=='string'||!params.findings.trim()||params.findings.length>100000||(params.taskIds!==undefined&&(!Array.isArray(params.taskIds)||params.taskIds.some(id=>typeof id!=='string'||(start.resultVersions&&!Object.hasOwn(start.resultVersions,id)))))){if(reviewSubmission)reviewConflict=true;throw new Error('复核原始提交需要布尔判断、非空事实和有效任务标识，不能转换字段类型');}
+      const submission={approved:params.approved,findings:params.findings,...(params.taskIds===undefined?{}:{taskIds:[...new Set(params.taskIds as string[])]}),...(start.resultVersions?{resultVersions:start.resultVersions}:{})};
+      if(reviewSubmission && digest(reviewSubmission)!==digest(submission)){reviewConflict=true;throw new Error('独立复核结论冲突；已提交结论不可改写，成果保留');}
       if(reviewConflict)throw new Error('独立复核已出现冲突，需重新复核');
-      reviewSubmission ??= Object.freeze({approved:params.approved,findings:params.findings});
+      reviewSubmission ??= Object.freeze(submission);
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.reviewResult?['swarm_review_result']:['swarm_message','swarm_shared'];
+  const coordinationTools=start.reviewResult?['swarm_review_result']:['swarm_message','swarm_shared',...(expert&&!expert.unavailable?['friend_expert']:[])];
   const settings = SettingsManager.inMemory({extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
-  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[guardMember(start,confirm),start.reviewResult?review:collaboration]});
+  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
   session = created.session;
+  if(expert&&!start.reviewResult){
+    session.sessionManager.appendCustomEntry('friend-pi.expert.run',{v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,frozen:expert});
+    for(const raw of Array.isArray(expert.experts)?expert.experts:[]){const item=object(raw);if(!Array.isArray(expert.adoptedIds)||!expert.adoptedIds.includes(item.id))continue;const adoption={v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,mode:'selected',id:item.id,version:item.version,hash:item.hash,snapshotHash:expert.hash,skills:(Array.isArray(item.skillContents)?item.skillContents:[]).map(raw=>{const skill=object(raw);return {path:skill.path,hash:skill.hash};}),toolScope:expert.toolScope};session.sessionManager.appendCustomEntry('friend-pi.expert.adoption',adoption);output({v:1,type:'expert.adopted',adoption,toolScope:Array.isArray(expert.toolScope)?expert.toolScope.map(String):undefined});}
+  }
   let settled=false;
   session.subscribe(event => {
     // Raw transcript lives in Pi JSONL, never copied to Swarm records.

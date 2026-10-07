@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync,existsSync,readFileSync,realpathSync } from 'node:fs';
+import { mkdirSync,existsSync,readFileSync,realpathSync,openSync,closeSync } from 'node:fs';
 import { join,resolve,relative,extname } from 'node:path';
 import { createAgentSession,DefaultResourceLoader,SessionManager,SettingsManager,ModelRuntime,createEventBus,initTheme,type AgentSession,type ExtensionUIContext,type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider } from '@friend-pi/core';
+import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted } from '@friend-pi/core';
+import {Type} from 'typebox';
+import {PlanStore} from './plan-store.js';
+import {projectMessages} from './message-projection.js';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 
@@ -14,17 +17,19 @@ const agentDir=join(dataDir,'pi');mkdirSync(agentDir,{recursive:true,mode:0o700}
 process.env.FRIEND_PI_AGENT_DIR=agentDir;
 const plugins=['swarm','expert','memory','topic-rebuild'];
 let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGINS) as string[]:plugins;
-let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
+let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode:'single'|'swarm'=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>}>();
+const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;
+const pendingInputs:{text:string;runId?:string}[]=[];let stopping=false;
 function output(message:unknown){if(process.connected)process.send?.(message);}
 function publish(type:string,data:unknown){output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000):Promise<unknown>{
   const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer});publish('dialog',{id,kind,title,...input});});
 }
-const busyGraphStatuses=new Set(['running','awaiting_review','ready']);
-const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate']);
+const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']);
+const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
 function swarmBusy(){return swarmRunning||pendingSwarmGraphIds.size>0;}
-function current(){return {sessionId:session.sessionId,messages:historyItems(session.sessionManager.getBranch()).filter(item=>item.type==='message'&&item.role!=='system'&&item.text.trim()).map(item=>({id:item.id,role:item.role,text:item.text})),lifecycleStatus,isRunning:!session.isIdle||swarmBusy(),planMode,executionMode,modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
+function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||stopping,planMode,executionMode,modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=executionMode==='swarm'&&!planMode&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
@@ -46,20 +51,21 @@ function publishAuthorityNotice(authority=swarmAuthority()){
 }
 function settledStatus(){
   const last=[...session.messages].reverse().find(message=>message.role==='assistant');
-  return cancelRequested?'stopped':swarmAuthority()?.status|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
+  const authority=swarmAuthority();if(cancelRequested)return authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return authority?.status|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
 }
 function modelState(){return providerMetadata(runtime);}
 function selectedModel(id:string){const slash=id.indexOf('/');const model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(slash<1||!model)throw new Error('型号不可用，请重新选择');return model;}
 function guard():ExtensionFactory{return pi=>{
+  pi.registerTool({name:'friend_plan',label:'提交计划',description:'只读规划完成后提交可供用户批准的计划；模型不能批准或启动。',parameters:Type.Object({action:Type.Union([Type.Literal('submit'),Type.Literal('read')]),body:Type.Optional(Type.String())}),async execute(_id,input){const result=input.action==='read'?plans.current():plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});publish('state',current());return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.on('before_agent_start',event=>{
-    const instructions=planMode?'当前是计划模式。只读取项目与历史，给出目标、步骤、依赖和验证方式；不要修改文件、运行 shell 或启动协作成员。用户明确切换执行后再实施。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
+    const instructions=planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
     return instructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}`}:undefined;
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);
     if(planMode){
       const readActions=new Set(['snapshot','search','read','get','versions','history.search','history.read','history.around']);
-      if(event.toolName!=='read'&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取和历史回查；切换到执行模式后再修改文件或启动成员。'};
+      if(!['read','ls','find','grep'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
     if(event.toolName==='bash'&&typeof input.command==='string'&&/(?:^|[;&|\s])(?:sudo|rm|rmdir|dd|mkfs|shutdown|reboot)(?:\s|$)|\bgit\s+(?:reset\s+--hard|clean\b|push\b|branch\s+-[dD])|\b(?:npm|pnpm|yarn)\s+publish\b/i.test(input.command)){
       if(!await ctx.ui.confirm('确认关键操作',input.command))return {block:true,reason:'用户未批准该操作'};
@@ -86,17 +92,28 @@ async function initialize(){
   let model=process.env.FRIEND_PI_TEST_PROVIDER==='1'?await installFixtureProvider(runtime):undefined;
   if(process.env.FRIEND_PI_MODEL)model=selectedModel(process.env.FRIEND_PI_MODEL);
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
-  const settings=SettingsManager.inMemory({extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
+  const settings=SettingsManager.inMemory({extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
   const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard()]});
   await loader.reload({resolveProjectTrust:async()=>true});
-  const manager=process.env.FRIEND_PI_SESSION_FILE?SessionManager.open(process.env.FRIEND_PI_SESSION_FILE):SessionManager.create(cwd,join(dataDir,'sessions'));
+  const priorFile=process.env.FRIEND_PI_SESSION_FILE;
+  if(priorFile){if(!existsSync(priorFile))throw new Error('原始会话历史缺失，未创建替代历史');const raw=readFileSync(priorFile,'utf8');if(!raw.trim())throw new Error('原始历史为空，不能恢复');const entries=raw.trim().split('\n').map(line=>JSON.parse(line));if(entries[0]?.type!=='session'||typeof entries[0].id!=='string')throw new Error('原始历史头部无效，未创建替代历史');const known=new Set<string>();for(const entry of entries.slice(1)){if(!entry||typeof entry.type!=='string'||typeof entry.id!=='string'||!entry.id||known.has(entry.id)||typeof entry.timestamp!=='string'||!Number.isFinite(Date.parse(entry.timestamp))||entry.parentId!==null&&(typeof entry.parentId!=='string'||!known.has(entry.parentId))||entry.type==='message'&&(!entry.message||typeof entry.message.role!=='string'))throw new Error('原始历史条目损坏，索引保留，未创建替代历史');known.add(entry.id);}}
+  const manager=priorFile?SessionManager.open(priorFile):SessionManager.create(cwd,join(dataDir,'sessions'));
+  if(!priorFile){const file=manager.getSessionFile();if(!file)throw new Error('新会话原史路径不可用');closeSync(openSync(file,'wx',0o600));manager.setSessionFile(file);}
+  if(!priorFile)manager.appendCustomEntry('friend-pi.session.created',{v:1,desktopId:process.env.FRIEND_PI_DESKTOP_SESSION_ID,createdAt:new Date().toISOString()});
+  if(process.env.FRIEND_PI_PI_SESSION_ID&&manager.getSessionId()!==process.env.FRIEND_PI_PI_SESSION_ID)throw new Error('原始历史会话身份不匹配');
+  if(priorFile&&projectIdentity(manager.getCwd())!==projectIdentity(cwd))throw new Error('原始历史项目身份不匹配');
+  if(isSessionDeleted(dataDir,manager.getSessionId()))throw new Error('会话已删除');
+  if(priorFile){const branch=manager.getBranch();const latestUser=projectMessages(branch).findLast(message=>message.role==='user');runId=latestUser?.runId;if(!runId&&latestUser){const userIndex=branch.findIndex(entry=>entry.id===latestUser.id);const receipt=branch.slice(userIndex+1).findLast(entry=>entry.type==='custom'&&/friend-pi\.(memory\.usage|expert\.(run|adoption))/.test(entry.customType)&&typeof object(entry.data).runId==='string');if(receipt?.type==='custom')runId=String(object(receipt.data).runId);}if(runId){process.env.FRIEND_PI_RUN_ID=runId;settledRunId=runId;}}
+  plans=new PlanStore(businessStore,projectIdentity(cwd),manager.getSessionId());
   const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager});session=created.session;
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
   session.subscribe(event=>{
     publish('pi',event);
+    if(event.type==='message_end'&&event.message.role==='user'&&pendingInputs.length){const input=pendingInputs.shift()!;const entry=[...session.sessionManager.getBranch()].reverse().find(e=>e.type==='message'&&e.message.role==='user');if(entry)session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=swarmBusy();
+      if(planMode){const last=[...session.messages].reverse().find(m=>m.role==='assistant');const body=last?visibleText(last.content):'';if(body&&(!plans.current()||Date.parse(plans.current()!.createdAt)<runStartedAt))plans.submit(body,{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});}
       if(swarmAuthority()?.message)publishAuthorityNotice();
       else if(lifecycleStatus==='failed'){
         const last=[...session.messages].reverse().find(message=>message.role==='assistant');
@@ -136,7 +153,7 @@ async function initialize(){
     }
     publish('state',current());
   });
-  await bind();output({type:'ready',state:current(),...modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
+  await bind();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 function readAttachment(path:string):{text?:string;image?:ImageContent}{
   const absolute=realpathSync(path);const bytes=readFileSync(absolute);if(bytes.length>10*1024*1024)throw new Error('附件超过 10 MiB，请缩小后再发送');
@@ -145,9 +162,19 @@ function readAttachment(path:string):{text?:string;image?:ImageContent}{
   if(bytes.includes(0))throw new Error('附件不是可读取的文本或图片');return {text:`\n附件 ${absolute}：\n${bytes.toString('utf8')}`};
 }
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
+  if(disposed&&method!=='shutdown')throw new Error('会话已结束');
+  if(session&&isSessionDeleted(dataDir,session.sessionId)&&method!=='shutdown')throw new Error('会话已删除');
   if(method==='state')return {...current(),...modelState()};
+  if(method==='plan.read')return plans.current();
+  if(method==='plan.revise'){if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');return plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});}
+  if(method==='plan.approve'||method==='plan.reject'){
+    if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');
+    const plan=plans.decide(method==='plan.approve'?'approve':'reject',input,{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});session.sessionManager.appendCustomEntry('friend-pi.plan.decision',{plan,origin:'user'});
+    if(method==='plan.reject'){planMode=false;publish('state',current());return current();}
+    return await handle('send',{text:`执行用户已批准的计划 ${plan.id} v${plan.revision}，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
+  }
   if(method==='send'){
-    const prompt=text(input.text,'消息');const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];
+    text(input.text,'消息');const prompt=String(input.text);const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
     const mode=input.mode==='swarm'?'swarm':'single';if(mode==='swarm'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
@@ -158,27 +185,30 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       // cannot satisfy (or invalidate) this run's completion authority.
       const snapshot=enabled.includes('swarm')?object(await requestPlugin(bus,'swarm','snapshot',{},1000)):{};
       baselineGraphIds.clear();for(const graph of Array.isArray(snapshot.graphs)?snapshot.graphs:[])baselineGraphIds.add(String(object(graph).id));
-      planMode=nextPlan;executionMode=mode;runId=randomUUID();runStartedAt=Date.now();foregroundOpen=true;
+      planMode=nextPlan;executionMode=mode;runId=typeof input.runId==='string'?input.runId:randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;
       activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;authorityNotice='';
     }
     lifecycleStatus='running';
+    pendingInputs.push({text:prompt,runId});
     void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>{foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
   if(method==='stop'){
-    if(!session.isIdle||swarmBusy()){cancelRequested=true;lifecycleStatus='stopped';}
+    if(!session.isIdle||swarmBusy()){cancelRequested=true;stopping=true;lifecycleStatus='stopping';publish('state',current());}
     for(const [id,pending] of dialogs){clearTimeout(pending.timer);pending.resolve(undefined);publish('dialog.closed',{id});}dialogs.clear();
-    if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id)))&&busyGraphStatuses.has(String(graph.status)))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},5000,'user');}}
-    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();return current();
+    try{if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id)))&&busyGraphStatuses.has(String(graph.status)))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},20000,'user');}}
+    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return current();}finally{stopping=false;publish('state',current());}
   }
   if(method==='configure'){
-    if(!session.isIdle||swarmBusy())throw new Error('请等待当前执行停止，再修改配置');
+    if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
+    const nextModel=typeof input.modelId==='string'&&input.modelId?selectedModel(input.modelId):session.model;const supported=providerMetadata(runtime).models.find(model=>model.id===(nextModel?`${nextModel.provider}/${nextModel.id}`:''))?.thinkingLevels||['off'];if(input.thinkingLevel&&!supported.includes(String(input.thinkingLevel)))throw new Error('当前模型不支持此思考等级');if(input.plugins!==undefined&&(!Array.isArray(input.plugins)||input.plugins.some(name=>!plugins.includes(String(name)))))throw new Error('插件无效');const nextPlugins=Array.isArray(input.plugins)?input.plugins.map(String):enabled;if(input.contextMode&&!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(input.contextMode==='infinite'&&!nextPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
     if(input.modelId)await session.setModel(selectedModel(text(input.modelId)));
-    if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!['off','minimal','low','medium','high','xhigh'].includes(level))throw new Error('思考等级无效');session.setThinkingLevel(level as ThinkingLevel);}
+    if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!session.getAvailableThinkingLevels().includes(level as ThinkingLevel))throw new Error('当前模型不支持此思考等级');session.setThinkingLevel(level as ThinkingLevel);}
     if(Array.isArray(input.plugins)){
       const next=input.plugins.map(String);if(next.some(name=>!plugins.includes(name)))throw new Error('插件无效');
       if(JSON.stringify(enabled)!==JSON.stringify(next)){enabled=next;session.settingsManager.setExtensionPaths(next.map(name=>join(root,'packages',name,'dist','index.js')));await session.reload();await bind();}
     }
+    if(input.contextMode){if(!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(!enabled.includes('topic-rebuild')&&input.contextMode==='infinite')throw new Error('无限上下文需要启用 Topic & ReBuild');if(enabled.includes('topic-rebuild'))await requestPlugin(bus,'topic-rebuild','settings',{mode:input.contextMode},1000,'user');process.env.FRIEND_PI_CONTEXT_MODE=String(input.contextMode);}
     return current();
   }
   if(method==='plugin'){

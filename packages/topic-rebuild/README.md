@@ -1,7 +1,6 @@
 # @friend-pi/topic-rebuild
 
-Native Pi working fields, safe context rebuilding and original-history lookup.
-Extract the generated tarball and install its package directory:
+Source-backed working fields, optional infinite-context preparation and Pi original-history lookup. Node 24 and the host Pi packages are required. Memory is optional; Pi owns execution and JSONL history.
 
 ```sh
 mkdir -p /absolute/path/plugins/topic-rebuild
@@ -9,62 +8,57 @@ tar -xzf /absolute/path/friend-pi-topic-rebuild-VERSION-HASH.tgz -C /absolute/pa
 pi install /absolute/path/plugins/topic-rebuild/package
 ```
 
-Pi does not automatically unpack local `.tgz` sources. You may also install
-the absolute path of `.artifacts/packages/unpacked/topic-rebuild/package`.
-Node 24 and the host Pi packages are required; Memory is optional.
+Pi does not unpack local tarballs automatically. The generated unpacked package directory can also be installed directly.
 
-Pi's original JSONL history is authoritative. At settlement, the plugin appends
-an incremental working-field **custom entry** through Pi's boundary draft API.
-It preserves existing drafts from other extensions. This deterministic
-checkpoint costs no extra model call per message. The checkpoint stores goals,
-explicit constraints, source-backed decisions and unfinished work, and implicit
-history organization. Topic labels are not a user-managed taxonomy.
+## Modes
 
-Native `session_before_compact` handles manual, threshold and overflow
-rebuilding. The plugin calls the currently configured model through the public
-SDK, validates source citations, preserves Pi's exact `firstKeptEntryId`, and
-returns a structured compaction. The old field remains effective until the
-actual Pi journal contains the unique operation identity. Confirmation scans
-canonical entries rather than trusting summary equality or the callback's
-entry. Identical summaries therefore cannot be mistaken for a new commit.
+The default is **native**: Pi decides when and how to compact. Installing this plugin adds no normal-turn model call, no automatic Memory recall and no working-field checkpoint. Existing `{enabled:true}` records do not opt the user into infinite context.
 
-`coveredThroughId` is the end of the captured original-message prefix;
-`compactedThroughId` records the prefix actually replaced before Pi's retained
-tail. Messages arriving during preparation remain in the original tail and
-are outside the operation's captured coverage. Source rewrites, invalidated
-versions, cancellation, missing models, malformed output or insufficient
-budget leave the valid field in place and fall back to Pi native behavior.
+Explicitly select infinite mode through the same controller used by the desktop:
 
-`/topic-rebuild ACTION JSON` and `friend_topic_rebuild` use the same controller
-as the desktop workbench:
+```text
+/topic-rebuild settings {"mode":"infinite"}
+/topic-rebuild settings {"mode":"native"}
+```
 
-- `snapshot`: current field, enabled state, applied/preparing/fallback status,
-  invalidation flag and indexed original-entry count. Topics stay internal.
-- `settings {enabled}`: user-owned enable/disable setting; model tools cannot change it.
-- `rebuild {}`: request actual native `ExtensionContext.compact()` at idle.
-  A request is not reported as an adopted result. Stop/cancellation stays Pi's.
-- `history.search {query,limit?,sessionId?}`: search source references in the
-  current project. CJK bigrams and short-query fallback are supported.
-- `history.read {id,sessionId?}` and
-  `history.around {id,sessionId?,radius?}`: retrieve actual original entries,
-  reporting unavailable sources instead of synthesizing text.
+Settings are user-owned. In infinite mode, `agent_before_settle` can contribute an incremental deterministic working-field custom draft, preserving other extensions' drafts. This costs no additional model call per message. Goals, constraints, decisions, unfinished work and implicit topics are derived from original source fragments. Topic labels never control tools or execution.
 
-The SQLite index stores only original-entry references, source/term hashes and
-operation receipts. It can be rebuilt from Pi history. It contains no second
-transcript. Memory correction/forget events invalidate dependent working
-fields durably and trigger rebuilding at the next safe idle boundary. Optional
-memory recall uses a 750 ms request, includes only active records, is temporary
-per provider call, and is never baked into persistent compaction summaries.
+## Preparation and adoption
 
-Explicit conversational corrections keep a canonical superseded-source ledger.
-Memory GUI corrections and forgetting also persist project-scoped source
-suppression (references and verified body hashes). Deterministic checkpoints
-and model-proposed points cannot revive those sources after later compactions,
-cold starts or forked entry copies. Short entry-id collisions require the same
-verified body; another project's event cannot suppress this project's history.
-The original Pi JSONL remains available for explicit source lookup. A corrected
-new Memory version stays available through temporary recall.
+Pi's public `session_before_compact` hook handles manual, threshold and overflow compaction. It selects at most four current Memory records through the optional, non-model `memory.select` request, then makes one summary model request. It records each selected Memory ID, revision, content hash and source references; it does not claim that the model necessarily relied on a particular record. Normal-turn memory injection belongs to the Memory plugin.
 
-Tests use fake completion only and verify early constraints, multiple topics,
-identical summaries, canonical-write failures, new input, invalidation and
-cold restart, source isolation, cancellation and native fallback.
+The result belongs only to the session. Preparation never creates or updates long-term Memory. The plugin preserves Pi's exact retained-tail entry, validates citations and budget, and returns a structured compaction. `coveredThroughId` describes the captured original prefix; `compactedThroughId` describes the prefix actually replaced before the retained tail. Added inputs remain original messages outside the captured coverage.
+
+Adoption requires Pi's actual canonical journal entry with the unique operation identity. Provider success, a draft, an event callback or equal summary text cannot advance the effective watermark. Source changes, persisted Memory epoch changes and session deletion fence a late result. Missing models, malformed summaries and budget failure return control to Pi's normal compaction. Cancellation returns `cancel:true`, preserving the effective field and avoiding an additional native summary request.
+
+A learning host can call:
+
+```ts
+await controller.prepareDraft(context, {
+  reason: 'threshold',
+  signal,
+});
+```
+
+The optional `memorySelection` input uses `{records,epoch}` from `memory.select`. Supply `NativeBindings.entries` when the host has Pi canonical entries available. Background preparation writes only a derived draft and hashed index in SQLite: it does not append the foreground JSONL or advance canonical coverage. An unchanged matching draft avoids another preparation request. Foreground compaction can reuse a draft with matching source digest, base revision, Memory epoch/version, model and thinking level; it still rechecks Pi's current retained-tail budget and requires actual Pi adoption. Foreground compaction never waits for a background queue.
+
+## Corrections and old data
+
+Source ranges are UTF-16 half-open offsets into `HistoryItem.text`. Each fragment carries its SHA256 and a stable fact identity. A correction retires only overlapping verified fragments, including verified copies in Pi forks. Other facts in the same original entry remain available. Uniquely addressed explicit conversational corrections apply at the settlement boundary without another model request; ambiguous corrections are shown as conflicts and do not become competing effective constraints.
+
+Memory's versioned invalidation snapshot survives cold starts and cross-process learning. Legacy whole-entry invalidations trigger revalidation but never silently retire every fact in that entry. Legacy points gain ranges only when the literal or a sole source fact can be verified. The original history remains available for explicit lookup. A deleted-session tombstone prevents indexing, preparation or adoption from reviving that history.
+
+## Public actions
+
+`/topic-rebuild ACTION JSON` and `friend_topic_rebuild` call the same controller:
+
+- `snapshot`: mode, last source-backed field, preparation/adoption status, invalidation and indexed-entry count. Topics remain implicit.
+- `settings {mode:"native"|"infinite"}`: explicit user-owned mode. The old `enabled:false` request remains a stop-compatible alias; `enabled:true` is not an implicit migration.
+- `rebuild {}`: request Pi's bound idle compaction interface. A request is not an adoption receipt.
+- `prepare {}`: host/user preparation only; model tools use `rebuild` instead.
+- `history.search {query,limit?,sessionId?}`: project-scoped hashed FTS5 tokens, CJK bigrams and short-query fallback.
+- `history.read {id,sessionId?}` / `history.around {id,sessionId?,radius?}`: retrieve original Pi entries; missing or disallowed sources are reported rather than synthesized.
+
+SQLite holds plugin settings, derived drafts/receipts and original-entry references/hashes. It never holds a second raw transcript. Personal Memory references can point to another project; preparation does not bypass Pi's project-scoped original-history access.
+
+Tests use fake providers and the public Pi SDK. They cover independent native/infinite operation, optional Memory, same-entry fact correction, cold reconstruction, canonical write failure, cancellation, retained-tail coverage, draft reuse, cross-process epochs and deletion fences. GUI and real-model acceptance belong to the desktop delivery candidate.

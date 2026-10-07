@@ -125,7 +125,7 @@ test('prepare validates completed tasks and returns immediately while one actual
 });
 function completingLauncher(reviewApproved=true): MemberLauncher {
   return (start,output,_exited)=>{
-    const timer=setTimeout(()=>{output({v:1,type:'ready',sessionId:`member-${start.attemptId}`});if (start.taskId==='independent-review') output({v:1,type:'settled',summary:JSON.stringify({approved:reviewApproved,findings:reviewApproved?'Read source files; objective check passed':'Needs revision based on actual source'}),sessionId:`member-${start.attemptId}`});else {if (start.mode==='write') writeFileSync(join(start.cwd,`${start.taskId}.txt`),`${start.taskId} outcome\n`);output({v:1,type:'settled',summary:`${start.taskId} completed with local self-check`,sessionId:`member-${start.attemptId}`});}},10);
+    const timer=setTimeout(()=>{output({v:1,type:'ready',sessionId:`member-${start.attemptId}`});if (start.taskId==='independent-review') output({v:1,type:'settled',summary:JSON.stringify({approved:reviewApproved,findings:reviewApproved?'Read source files; objective check passed':'Needs revision based on actual source',...(reviewApproved?{}:{taskIds:['a']})}),sessionId:`member-${start.attemptId}`});else {if (start.mode==='write') writeFileSync(join(start.cwd,`${start.taskId}.txt`),`${start.taskId} outcome\n`);output({v:1,type:'settled',summary:`${start.taskId} completed with local self-check`,sessionId:`member-${start.attemptId}`});}},10);
     return {send:()=>{},stop:()=>clearTimeout(timer)};
   };
 }

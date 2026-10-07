@@ -1,0 +1,168 @@
+Window: "Friend-Pi", App: Friend-Pi.
+0 标准窗口 Friend-Pi, Secondary Actions: Raise
+	1 container Friend-Pi
+		2 container
+			3 HTML 内容 Friend-Pi, URL: file:///Users/youdongliang/Desktop/Friend-Pi/.artifacts/mac/Friend-Pi.app/Contents/Resources/app/apps/desktop/dist/renderer/index.html
+				4 container
+					5 标签组 项目
+						6 标签 (settable, integer) real-workspace, Help: /Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/real-workspace, Value: 0
+						7 标签 (settable, integer) friend-pi-final-cua-iALTXf, Help: /private/var/folders/94/wmtph9h55md7cwpy00mf_z0m0000gn/T/friend-pi-final-cua-iALTXf, Value: 0
+						8 标签 (selected) friend-pi-completeness-hUhsSe, Help: /private/var/folders/94/wmtph9h55md7cwpy00mf_z0m0000gn/T/friend-pi-completeness-hUhsSe, Value: 1
+						9 按钮 打开新项目
+					10 工具栏 界面模块
+						11 切换按钮 Description: 收起会话侧栏, Value: 1
+						12 切换按钮 Description: 文件, Value: 0
+						13 切换按钮 Description: Diff, Value: 0
+						14 切换按钮 Description: Swarm, Value: 0
+						15 切换按钮 Description: Expert, Value: 0
+						16 切换按钮 Description: Memory, Value: 0
+						17 切换按钮 Description: 上下文, Value: 1
+					18 container friend-pi-completeness-hUhsSe
+						19 文本 Friend
+						20 文本 Pi
+						21 按钮 新建会话 ⌘N
+							22 文本 新建会话
+							23 文本 ⌘N
+						24 按钮 历史会话
+						25 container
+							26 文本栏 (settable) Description: 搜索会话, Placeholder: 搜索会话…
+							27 文本 ⌘K
+						28 文本 近期
+						29 container
+							30 text 1  个
+						31 container
+							32 按钮 本轮已结束 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8 会话 · DeepSeek V4.1 Flash, Help: 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8 · 本轮已结束
+								33 container 本轮已结束
+									34 文本 ✓
+								35 文本 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8
+								36 container
+									37 text 会话 ·  DeepSeek V4.1 Flash
+							38 按钮 Description: 重命名 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8, Help: 重命名
+						39 按钮 设置
+					40 分离器 Description: 调整会话侧栏宽度, Help: 调整会话侧栏宽度：拖动或使用左右方向键调整, Value: 319
+					41 container
+						42 标题 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8, Value: 2
+							43 文本 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8
+						44 text /private/var/folders/94/wmtph9h55md7cwpy00mf_z0m0000gn/T/friend-pi-completeness-hUhsSe 准备就绪
+						45 切换按钮 Description: 工作台, Value: 1
+					46 container
+						47 container 会话轮次定位
+							48 按钮 定位第 1 轮：本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8 中文字段。只读 README.md 并给出原文和行号。再用一个
+							49 按钮 定位第 2 轮：更正侧栏颜色：不要蓝色，必须绿色。数据库和 UTF-8 中文字段的约束仍保持有效。仅用一句中文确认，不调用工具。
+						50 container
+							51 text 你 本轮是隔离项目的产品核验。要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8 中文字段。只读 README.md 并给出原文和行号。再用一个两行 Markdown 表格和编号步骤回答，附 https://example.com 链接。不要修改文件。
+						52 container
+							53 text Friend I'll start by exploring the isolated project directory and reading README.md.
+						54 开合三角标记 工具结果
+							55 文本 工具结果
+						56 开合三角标记 工具结果
+							57 文本 工具结果
+						58 开合三角标记 工具结果
+							59 文本 工具结果
+						60 container
+							61 text Friend README.md 全文共 4 行。原文与行号如下： | 行号 | 原文 |
+| --- | --- |
+| 1 | 
+							62 文本 # Friend-Pi Completeness Audit
+							63 文本  |
+| 2 | 
+							64 文本 此临时项目专供产品验证。
+							65 文本  |
+| 3 | 
+							66 文本 约束：保留 UTF-8 中文字段。
+							67 文本  |
+| 4 | 
+							68 文本 数据库：SQLite。
+							69 text  | 核对结果（仅只读检查 README.md，未读取或修改其他文件）： 1. 侧栏必须蓝色：README.md 全文 4 行中无任何与侧栏或颜色相关的陈述，
+							70 文本 未声明
+							71 文本 ，当前无法据 README 核对。
+2. 数据库必须使用 SQLite：README 第 4 行 
+							72 文本 数据库：SQLite。
+							73 文本  明确声明，与要求一致。
+3. 必须保留 UTF-8 中文字段：README 第 3 行 
+							74 文本 约束：保留 UTF-8 中文字段。
+							75 text  明确声明，且第 2 行本身即中文文本。 参考链接：https://example.com 说明：本次仅执行只读操作（目录列举 + 读取 README.md），未修改任何文件。侧栏蓝色这一项在 README.md 中无对应原文；若需核验，需由你确认授权后读取 
+							76 文本 src/
+							77 文本  或预览文件（如 
+							78 文本 preview.txt
+							79 文本 ）。
+						80 container
+							81 text 你 更正侧栏颜色：不要蓝色，必须绿色。数据库和 UTF-8 中文字段的约束仍保持有效。仅用一句中文确认，不调用工具。
+						82 container
+							83 text Friend 已更正：侧栏必须为绿色（不再要求蓝色），数据库仍必须使用 SQLite，UTF-8 中文字段约束保持有效。
+					84 文本输入区 (settable) Description: 消息, Placeholder: 描述你想完成的工作…
+					85 按钮 Description: 添加附件, Help: 添加文本或图片附件
+					86 container 先规划：只读分析，切换到执行后才修改项目
+						87 文本 先规划
+						88 切换 Description: 计划模式（只读分析）, Value: off
+					89 container Agent 协作方式
+						90 切换按钮 Description: Single, Help: Single：单个 Agent 完成任务, Value: 1
+						91 切换按钮 Description: Swarm, Help: Swarm：多个 Agent 分工协作, Value: 0
+					92 弹出式按钮 Description: 模型, Value: DeepSeek V4.1 Flash · deepseek
+						93 (selected) DeepSeek V4.1 Flash · deepseek
+					94 弹出式按钮 Description: 思考等级, Value: 不思考
+						95 (selected) 不思考
+					96 按钮 (disabled) Description: 发送消息, Help: ⌘ / Ctrl + Enter 发送
+					97 分离器 Description: 调整工作台宽度, Help: 调整工作台宽度：拖动或使用左右方向键调整, Value: 434
+					98 container 上下文工作台
+						99 container
+							100 标题 上下文, Value: 2
+								101 文本 上下文
+							102 按钮 关闭工作台
+						103 text 启用  上下文
+						104 切换 Description: 启用 上下文, Value: on
+						105 container
+							106 标题 让长任务保持连续, Value: 2
+								107 文本 让长任务保持连续
+							108 文本 在有限窗口里保留目标、约束、决定和工作现场，需要时沿来源找回原文。
+							109 标题 上下文整理, Value: 3
+								110 文本 上下文整理
+							111 container
+								112 文本 自动重建
+								113 切换 Description: 自动重建, Value: on
+							114 文本 预算压力或必要纠正时，在安全边界整理。近期原文与未覆盖的新消息持续保留。
+							115 按钮 现在整理上下文
+							116 文本 已采用
+							117 container
+								118 text 现场 v 2
+							119 标题 当前工作现场, Value: 3
+								120 文本 当前工作现场
+							121 文本 当前目标
+							122 文本 更正侧栏颜色：不要蓝色，必须绿色。数据库和 UTF-8 中文字段的约束仍保持有效。仅用一句中文确认，不调用工具。
+							123 按钮 来源 1
+								124 文本 来源 
+								125 文本 1
+							126 文本 有效约束
+							127 文本 要求：侧栏必须蓝色；数据库必须使用 SQLite；必须保留 UTF-8 中文字段。
+							128 按钮 来源 1
+								129 文本 来源 
+								130 文本 1
+							131 文本 不要修改文件。
+							132 按钮 来源 1
+								133 文本 来源 
+								134 文本 1
+							135 文本 更正侧栏颜色：不要蓝色，必须绿色。
+							136 按钮 来源 1
+								137 文本 来源 
+								138 文本 1
+							139 文本 关键决定
+							140 文本 暂无记录
+							141 文本 未完成工作
+							142 文本 暂无记录
+							143 文本 2026-10-07T08:44:07.423Z
+							144 标题 回查原始历史, Value: 3
+								145 文本 回查原始历史
+							146 container
+								147 text 8  条历史记录可回查
+							148 container
+								149 文本栏 (settable) Description: 搜索历史, Placeholder: 目标、决定或历史关键词
+								150 按钮 (disabled) 查找
+	151 关闭按钮
+	152 全屏幕按钮 Help: 此按钮也可以执行缩放窗口的操作, Secondary Actions: 缩放窗口
+	153 最小化按钮
+154 menu bar
+	155 Friend-Pi
+	156 编辑
+	157 显示
+
+The focused UI element is 17 切换按钮 Description: 上下文, Value: 1

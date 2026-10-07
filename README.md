@@ -7,9 +7,9 @@
 交付的客户端位于 `.artifacts/mac/Friend-Pi.app`。打开项目，新建会话，在左下角设置配置供应商，再选择模型和思考等级。认证由 Pi 存在 Friend-Pi 独立目录，界面和日志不展示 Key。
 
 - 顶栏横向切换项目，左栏选择和重命名会话。
-- 会话左侧短线轮次导航支持悬停预览、键盘定位和书签；右上角按需打开文件、Diff 和四项能力工作台。
-- 输入框底部切换计划／执行与 Single／Swarm。计划模式在工具边界限制为读取，不修改文件或启动成员。`⌘ Enter` 发送，`⌘ N` 新会话，停止按钮中止执行。
-- 文本和图片可作为附件；图片需当前模型支持，单附件上限 10 MiB，文本总量上限 128 KiB。文件预览为当前项目内不超过 1 MiB 的文本。
+- 会话左侧短线轮次导航支持悬停预览、键盘定位和书签；右上角两个按钮分别控制会话栏与右侧工作台；工作台内部切换文件、Diff、Swarm、Expert、Memory，详细配置在设置。
+- 输入框底部切换计划／执行与 Single／Swarm。计划模式使用原生只读探索工具，提交版本化计划；用户批准当前版本后才执行，修改会使旧批准失效。`⌘ Enter` 发送，`⌘ N` 新会话，停止按钮中止执行。
+- 文本和图片可作为附件；图片需当前模型支持，单附件上限 10 MiB，文本总量上限 128 KiB。文件页支持只读文件树、预览标签、文本/Markdown/代码/图片和行号定位，大文件按 256 KiB 分段；其他类型提供系统打开入口。
 
 客户端数据默认为 `~/Library/Application Support/Friend-Pi`；原生插件默认为 `~/.local/share/friend-pi`。可用 `FRIEND_PI_DATA_DIR` 显式指定测试目录。不会导入旧 Friend 或覆盖现有 Pi 配置。
 
@@ -36,7 +36,7 @@ Pi 固定为 `eb326d265ae0b88489a6d10319307780df827cdf`（1.0.4）。[底座构�
 |---|---|---|
 | `@friend-pi/swarm` | 任务图、成员、消息、共享材料和成果复核 | DAG、尝试、收据、工作区、客观检查及复核记录 |
 | `@friend-pi/expert` | 五类专家、明确采用、编辑版本、验证方法候选 | 不可变版本、内容摘要、采用记录和限域验证结果 |
-| `@friend-pi/memory` | 搜索、来源、纠正、停用、遗忘及后台学习 | 项目经验、用户确认的偏好、候选及抑制记录 |
+| `@friend-pi/memory` | 搜索、来源、纠正、停用、遗忘及后台学习 | 自动学习的项目经验、个人偏好、来源版本及抑制记录 |
 | `@friend-pi/topic-rebuild` | 自动／手动整理、工作现场和历史回查 | 来源覆盖、水位、现场版本及可重建的历史索引 |
 
 四个本地 `.tgz` 位于 `.artifacts/packages`，需先 `tar -xzf package.tgz -C /absolute/path/unpacked`，再 `pi install /absolute/path/unpacked/package` 安装至已有 Pi，或使用 `pi -e /absolute/path/packages/memory/dist/index.js` 临时加载。使用固定版本 Pi/Node 24；各包声明 Pi 和 TypeBox peers。公共库已打入各插件，不需安装第五个能力插件。
@@ -55,11 +55,13 @@ Pi 固定为 `eb326d265ae0b88489a6d10319307780df827cdf`（1.0.4）。[底座构�
 
 专家身份独立于模型。任务采用的版本、Skill 正文和摘要被冻结；后续修改不改写既有记录。专家方法候选必须通过两个独立适用案例、一个范围外反例及可比的客观 JSON 输出检查，才在本项目中发布文本方法；缺少基准时保持候选，不自动增加脚本、工具或权限。
 
-项目经验自动提炼为有来源的候选；个人偏好仅在用户明确保存时生效。纠正使用版本检查，立即失效旧派生结果；遗忘保留抑制信息，防止冷启动重新学习相同错误。长期记忆以 SQLite 为权威，Markdown 为导出。中文检索使用 FTS5 词元和短查询回退，不引入向量数据库。
+项目经验与个人偏好全自动学习；明确、有来源的经验原子发布，歧义保持内部待验证。偏好依据用户原话与重复纠正，单次任务要求和附件指令不直接泛化为全局偏好。纠正使用版本检查，立即失效旧派生结果；遗忘保留抑制信息，防止冷启动重新学习相同错误。长期记忆以 SQLite 为权威，Markdown 为导出。中文检索使用 FTS5 词元和短查询回退，不引入向量数据库。
 
-Reflection、Dream、Distill 和专家验证在空闲边界串行运行，前台优先，可暂停。后台调用不设额度上限，失败有有限重试；请使用工作台观察实际队列与错误。
+Reflection、Dream、Distill 由一个独立 Node 宿主和持久队列串行运行，前台可同时工作。模型继承触发会话快照或设置指定值。关闭窗口仅隐藏，后台继续；⌘Q/菜单退出保存进度并结束进程，下次启动接续。可在设置中暂停，缺模型配置等待，普通失败最多三次。专家方法仍须客观验证。
 
 ### Topic & ReBuild
+
+默认使用 Pi 原生压缩，不替换其触发和保存流程。仅在设置开启“无限上下文”时，结合有效历史记忆生成保留片段与上下文摘要；后台只准备草稿，前台压缩钩子校验与采用，保留内容不回写长期记忆。
 
 Pi JSONL 是原始历史的唯一来源。工作现场绑定原文 ID 和覆盖范围，仅在 Pi 实际保存检查点或压缩条目后采用新水位。整理期间新增输入仍保留为原文。Topic 隐式参与选材，不出现在必须由用户管理的标签流程中。
 
@@ -83,3 +85,7 @@ Electron / React 客户端
 感谢 [Pi](https://github.com/earendil-works/pi)、[pi-gui](https://github.com/minghinmatthewlam/pi-gui)、[DeepSeekHarness](https://github.com/deepseek-ai/deepseek-harness)、[pi-subagents](https://github.com/tintinweb/pi-subagents)、[pi-agent-orchestrator](https://github.com/GroepOnline/pi-agent-orchestrator)、[MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code)、[Mem0](https://github.com/mem0ai/mem0)、[MiniMax Code](https://github.com/MiniMax-AI/minimax-code)、[ZCode](https://github.com/zai-org/ZCode) 和 [Codex](https://github.com/openai/codex) 的公开实现。固定来源、复用边界、版权和许可证见 [第三方说明](THIRD_PARTY_NOTICES.md)及各插件 `SOURCES.md`。README 致谢不代替原许可证。
 
 本版本只交付本地源码和 macOS 应用，不创建远端、不发布 npm、不执行证书签名发行或公证。ARM64 应用使用本地 ad-hoc 代码签名满足系统的可执行要求，不具有发布证书身份。
+
+## 完备性核验与后续演进
+
+2026-10-07 的独立核验重跑原95项测试与制品检查通过，但另确认13项需求缺口，当前不能声明首版全部功能完备。详情、竞品逐项体验范围及19个带前后对比图的优化点见 [后续演进规划书](docs/research/2026-10-07-friend-pi-evolution/规划书.md)与[可交互决策稿](docs/research/2026-10-07-friend-pi-evolution/index.html)。统一轻量工作台是用户已确定的方向；修复前的研究记录作为历史快照保留；本批已按新的实施计划落地，逐项实施边界和前后示意见 [修复清单](docs/implementation/2026-10-07/修复清单.md)、[产品对比图](docs/implementation/2026-10-07/comparison.html)。最终候选的真实模型、桌面操作与制品摘要以本批验证报告为准。

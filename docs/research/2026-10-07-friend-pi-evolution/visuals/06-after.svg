@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="876" viewBox="0 0 1280 876" role="img" aria-labelledby="title description">
+<title id="title">遗忘与候选去重</title>
+<desc id="description">产品界面示意，示例数据；当前参考固定候选，未来方案未实现。</desc>
+<rect x="0" y="0" width="1280" height="876" rx="0" fill="#FFFFFF" stroke="none" stroke-width="1"/>
+<rect x="16" y="10" width="111.0" height="23" rx="11" fill="#ECF4FA" stroke="none" stroke-width="1"/>
+<text x="25" y="26" fill="#356D8E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">未来方案 · 未实现</text>
+<text x="16" y="65" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="26" font-weight="600" text-anchor="start">遗忘与候选去重</text>
+<text x="16" y="90" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">已采用用户最新工作台约束；能力方案尚未实施。</text>
+<rect x="16" y="112" width="1248" height="740" rx="18" fill="#F3F5F1" stroke="#DCE5D8" stroke-width="1"/>
+<circle cx="39" cy="134" r="5" fill="#FF625A" stroke="none" stroke-width="1"/>
+<circle cx="58" cy="134" r="5" fill="#FDBD35" stroke="none" stroke-width="1"/>
+<circle cx="77" cy="134" r="5" fill="#30C847" stroke="none" stroke-width="1"/>
+<rect x="115" y="120" width="196" height="34" rx="9" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="130" y="142" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="500" text-anchor="start">□  演进验证项目</text>
+<text x="328" y="142" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">□  第二个项目</text>
+<text x="472" y="142" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">＋ 打开项目</text>
+<rect x="1139" y="120" width="104" height="34" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="1191.0" y="141.76" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">▥  工作台</text>
+<line x1="28" y1="161" x2="1252" y2="161" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="26" y="173" width="246" height="668" rx="14" fill="#F8FAF6" stroke="#DCE5D8" stroke-width="1"/>
+<polygon points="45,202 69,202 69,208 52,208 52,215 66,215 66,221 52,221 52,231 45,231" fill="#3B8069" stroke="none" stroke-width="1"/>
+<text x="81" y="223" fill="#3B8069" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="27" font-weight="600" text-anchor="start">Friend</text>
+<text x="176" y="223" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="400" text-anchor="start">Pi</text>
+<rect x="41" y="251" width="181" height="38" rx="8" fill="#3B8069" stroke="none" stroke-width="1"/>
+<text x="131.5" y="275.32" fill="#FFFFFF" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">＋ 新建会话     ⌘N</text>
+<rect x="229" y="251" width="30" height="38" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="244.0" y="275.32" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">◷</text>
+<rect x="41" y="303" width="218" height="34" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="53" y="325" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">搜索会话…</text>
+<text x="223" y="325" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="start">⌘K</text>
+<text x="44" y="368" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="600" text-anchor="start">近期  4 个</text>
+<rect x="41" y="380" width="218" height="68" rx="9" fill="#EAF3E8" stroke="#DCE5D8" stroke-width="1"/>
+<text x="54" y="409" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="17" font-weight="400" text-anchor="start">○</text>
+<text x="81" y="407.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="600" text-anchor="start">当前演进验证</text>
+<text x="81" y="429" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="start">准备就绪 · Flash</text>
+<text x="54" y="487" fill="#3B8069" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="17" font-weight="400" text-anchor="start">✓</text>
+<text x="81" y="485.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="600" text-anchor="start">文件预览与约束检查</text>
+<text x="81" y="507" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="start">本轮已结束 · Flash</text>
+<text x="54" y="565" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="17" font-weight="400" text-anchor="start">Ⅱ</text>
+<text x="81" y="563.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="600" text-anchor="start">Swarm 客户端验证</text>
+<text x="81" y="585" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="start">已停止 · Flash</text>
+<text x="54" y="643" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="17" font-weight="400" text-anchor="start">○</text>
+<text x="81" y="641.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="600" text-anchor="start">研究项目结构</text>
+<text x="81" y="663" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="start">准备就绪 · Flash</text>
+<line x1="28" y1="790" x2="270" y2="790" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="29" y="793" width="240" height="45" rx="8" fill="#EAF3E8" stroke="none" stroke-width="1"/>
+<text x="46" y="821" fill="#3B8069" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="400" text-anchor="start">⚙  设置</text>
+<line x1="279" y1="191" x2="279" y2="823" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="277" y="479.0" width="4" height="56" rx="2" fill="#A3BC9A" stroke="none" stroke-width="1"/>
+<rect x="289" y="173" width="648" height="668" rx="14" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<rect x="948" y="173" width="304" height="668" rx="14" fill="#F8FAF4" stroke="#DCE5D8" stroke-width="1"/>
+<line x1="942" y1="188" x2="942" y2="826" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="940" y="479.0" width="4" height="56" rx="2" fill="#A3BC9A" stroke="none" stroke-width="1"/>
+<text x="313" y="205" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="19" font-weight="600" text-anchor="start">设置</text>
+<text x="313" y="230" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">项目 / 记忆 · 遗忘与候选</text>
+<text x="913" y="207" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="400" text-anchor="end">准备就绪</text>
+<line x1="289" y1="246" x2="937" y2="246" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<text x="964" y="205" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="15" font-weight="600" text-anchor="start">工作台</text>
+<text x="1234" y="205" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="17" font-weight="400" text-anchor="end">×</text>
+<line x1="948" y1="225" x2="1252" y2="225" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="960.0" y="235" width="53.6" height="27" rx="6" fill="#F8FAF4" stroke="none" stroke-width="1"/>
+<text x="986.8" y="253" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="500" text-anchor="middle">文件</text>
+<rect x="1016.6" y="235" width="53.6" height="27" rx="6" fill="#F8FAF4" stroke="none" stroke-width="1"/>
+<text x="1043.4" y="253" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="500" text-anchor="middle">Diff</text>
+<rect x="1073.2" y="235" width="53.6" height="27" rx="6" fill="#F8FAF4" stroke="none" stroke-width="1"/>
+<text x="1100.0" y="253" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="500" text-anchor="middle">Swarm</text>
+<rect x="1129.8" y="235" width="53.6" height="27" rx="6" fill="#F8FAF4" stroke="none" stroke-width="1"/>
+<text x="1156.6" y="253" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="500" text-anchor="middle">Expert</text>
+<rect x="1186.4" y="235" width="53.6" height="27" rx="6" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="1213.2" y="253" fill="#3B8069" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="10" font-weight="500" text-anchor="middle">Memory</text>
+<line x1="960" y1="272" x2="1240" y2="272" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<text x="313" y="269" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">通用</text>
+<text x="386" y="269" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">模型</text>
+<text x="459" y="269" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">项目</text>
+<text x="532" y="269" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">专家</text>
+<text x="605" y="269" fill="#3B8069" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">记忆</text>
+<text x="678" y="269" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="start">高级</text>
+<line x1="311" y1="283" x2="915" y2="283" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<line x1="312" y1="765" x2="914" y2="765" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<rect x="766" y="784" width="145" height="32" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="838.5" y="804.48" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">返回当前会话</text>
+<text x="314" y="805" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">长期配置与详细管理集中于设置。</text>
+<text x="962" y="300" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="15" font-weight="600" text-anchor="start">本轮实际采用</text>
+<text x="962" y="328" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">当前会话 · 第 6 轮 · 2 条</text>
+<rect x="962" y="351" width="276" height="115" rx="10" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="976" y="377" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="14" font-weight="600" text-anchor="start">UTF-8 中文规范</text>
+<rect x="1194.0" y="361" width="30.0" height="23" rx="11" fill="#EAF3E8" stroke="none" stroke-width="1"/>
+<text x="1203.0" y="377" fill="#287257" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="500" text-anchor="start">v4</text>
+<text x="976" y="411.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">必须保留 UTF-8 中文字段。</text>
+<text x="976" y="449" fill="#356D8E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">已注入本轮 · 查看来源  ↗</text>
+<rect x="962" y="485" width="276" height="115" rx="10" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="976" y="511" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="14" font-weight="600" text-anchor="start">项目阅读方法</text>
+<rect x="1194.0" y="495" width="30.0" height="23" rx="11" fill="#EAF3E8" stroke="none" stroke-width="1"/>
+<text x="1203.0" y="511" fill="#287257" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="500" text-anchor="start">v2</text>
+<text x="976" y="545.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">先读原文，再给出结论。</text>
+<text x="976" y="583" fill="#356D8E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">已注入本轮 · 查看来源  ↗</text>
+<text x="962" y="641.0" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="400" text-anchor="start">只展示真实采用收据，搜索命中与候选不会出现在这里。</text>
+<text x="962" y="709" fill="#356D8E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">完整记忆管理在设置  ↗</text>
+<text x="314" y="321" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="20" font-weight="600" text-anchor="start">遗忘与候选管理</text>
+<rect x="314" y="344" width="598" height="135" rx="10" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="328" y="370" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="14" font-weight="600" text-anchor="start">重新学习抑制</text>
+<rect x="858.0" y="354" width="40.0" height="23" rx="11" fill="#EAF3E8" stroke="none" stroke-width="1"/>
+<text x="867.0" y="370" fill="#287257" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="11" font-weight="500" text-anchor="start">生效</text>
+<text x="330" y="392" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="14" font-weight="400" text-anchor="start">遗忘事实以证据谱系和内容摘要识别。</text>
+<text x="330" y="420.0" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="13" font-weight="400" text-anchor="start">原生 fork 复制的同一旧事实被过滤，不通过换词重复进入候选。</text>
+<rect x="314" y="502" width="598" height="102" rx="7" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<rect x="314" y="502" width="598" height="34" rx="7" fill="#EAF3E8" stroke="none" stroke-width="1"/>
+<text x="324" y="524.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="600" text-anchor="start">候选</text>
+<text x="575.16" y="524.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="600" text-anchor="start">判断</text>
+<text x="724.66" y="524.0" fill="#304A3B" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="600" text-anchor="start">下一步</text>
+<line x1="314" y1="536" x2="912" y2="536" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<text x="324" y="558.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">旧事实换词摘要</text>
+<text x="575.16" y="558.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">已过滤</text>
+<text x="724.66" y="558.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">查看抑制原因</text>
+<line x1="314" y1="570" x2="912" y2="570" stroke="#DCE5D8" stroke-width="1" stroke-linecap="round"/>
+<text x="324" y="592.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">新的独立经验</text>
+<text x="575.16" y="592.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">待判断</text>
+<text x="724.66" y="592.0" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">人工检查来源</text>
+<rect x="314" y="637" width="148" height="32" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="388.0" y="657.48" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">查看完整记忆库</text>
+<rect x="476" y="637" width="132" height="32" rx="8" fill="#FFFFFF" stroke="#DCE5D8" stroke-width="1"/>
+<text x="542.0" y="657.48" fill="#455D4E" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="500" text-anchor="middle">查看遗忘记录</text>
+<text x="314" y="698" fill="#738777" font-family="&#x27;PingFang SC&#x27;,&#x27;Noto Sans CJK SC&#x27;,&#x27;Arial Unicode MS&#x27;,&#x27;Inter&#x27;,sans-serif" font-size="12" font-weight="400" text-anchor="start">这些是设置页；Memory tab 仅显示右侧采用收据。</text>
+</svg>

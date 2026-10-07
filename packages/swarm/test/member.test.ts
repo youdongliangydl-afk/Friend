@@ -12,6 +12,7 @@ import swarmExtension,{ SwarmController, type Graph, type MemberInput, type Memb
 import {requestPlugin,type PluginContext} from '@friend-pi/core';
 import {Compile} from 'typebox/compile';
 import type {TSchema} from 'typebox';
+import {ExpertController} from '../../expert/src/index.js';
 
 type LocalResponse=string|{tool:string;args:Record<string,unknown>};
 type ModelRequest=Record<string,unknown>;
@@ -128,4 +129,25 @@ test('real controller schedules standalone SDK member and a different independen
     assert.equal(final.agentDir,env.agentDir,'actual SDK directory must win over an inherited legacy Pi path');
     const shared=(controller.snapshot(context) as {shared:{content:string;revision:number}[]}).shared;assert.equal(shared.length,1);assert.equal(shared[0].content,'SDK member shared outcome');assert.equal(shared[0].revision,1,'member tool must route through host controller CAS');
   }finally {await controller.dispose();if (oldWorker===undefined) delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;if(oldAgent===undefined)delete process.env.FRIEND_PI_AGENT_DIR;else process.env.FRIEND_PI_AGENT_DIR=oldAgent;await env.cleanup();}
+});
+
+test('standalone Pi member automatically adopts frozen expert and blocks Bash through its real tool hook',async()=>{
+  let expertId='';const env=await environment(input=>{
+    const review=reviewResponse(input);if(review)return review;
+    const messages=input.messages as {role:string;content?:string;tool_calls?:{function:{name:string}}[]}[];const results=messages.filter(message=>message.role==='tool');const called=new Set(messages.flatMap(message=>message.tool_calls?.map(call=>call.function.name)||[]));
+    if(!called.has('friend_expert'))return {tool:'friend_expert',args:{action:'use',input:{id:expertId}}};
+    if(!called.has('bash'))return {tool:'bash',args:{command:'echo forbidden > forbidden.txt'}};
+    assert.match(results.at(-1)?.content||'',/范围/);return 'Readonly expert adopted; Bash correctly denied.';
+  });
+  const prior=process.env.FRIEND_PI_MEMBER_WORKER;process.env.FRIEND_PI_MEMBER_WORKER=env.worker;
+  const ctx:PluginContext={origin:'user',dataDir:join(env.root,'data'),agentDir:env.agentDir,projectDir:env.project,projectId:'sdk-expert-fixture',sessionId:'host',modelId:'swarm-fixture/fixture',isIdle:()=>true,history:()=>[],readSource:()=>{throw Error('unused');},complete:async()=>{throw Error('unused');},request:async()=>undefined,emit:()=>{},notify:()=>{},appendEntry:()=>{}};
+  const expert=new ExpertController(ctx.dataDir),controller=new SwarmController();ctx.request=async(plugin,action,input)=>{assert.equal(plugin,'expert');return expert.dispatch(action,input||{},{...ctx,origin:'plugin'});};
+  try{
+    const method=await expert.dispatch('create',{title:'Readonly method',prompt:'Only inspect source. Do not execute shell.',tools:['read'],skills:[]},ctx) as {id:string};expertId=method.id;
+    const graph=await controller.dispatch('create',{goal:'verify automatic expert policy',tasks:[{id:'a',title:'a',prompt:'Adopt readonly method then attempt Bash to prove guard.',mode:'write',dependencies:[],writeScopes:['.']}],checks:[{command:process.execPath,args:['-e',"if(require('node:fs').existsSync('forbidden.txt'))process.exit(9)"]}]},ctx) as Graph;
+    await controller.dispatch('start',{graphId:graph.id},ctx);await waitFor(()=>['integrated','paused'].includes((controller.snapshot(ctx) as {graphs:Graph[]}).graphs[0].status),20000);
+    const result=(controller.snapshot(ctx) as {graphs:Graph[]}).graphs[0];assert.equal(result.status,'integrated',result.error);assert.equal(readdirSync(env.project).includes('forbidden.txt'),false);
+    assert.equal(result.attempts[0].expertAdoptions?.length,1);const adoption=result.attempts[0].expertAdoptions![0] as {id:string;version:number;toolScope:string[]};assert.equal(adoption.id,expertId);assert.equal(adoption.version,1);assert.deepEqual(adoption.toolScope,['read']);
+    const entries=readFileSync(result.attempts[0].sessionFile!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(entries.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.expert.adoption'&&entry.data.id===expertId));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='bash'&&entry.message.isError));
+  }finally{await controller.dispose();expert.dispose();if(prior===undefined)delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=prior;await env.cleanup();}
 });

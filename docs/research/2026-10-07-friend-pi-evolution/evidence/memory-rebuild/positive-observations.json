@@ -1,0 +1,29 @@
+{
+  "sourceCommit": "5ec4b39fb7301ac57715976458f602909fc0a0fb",
+  "kind": "fresh isolated controller and public Pi journal fixtures; no actual desktop UI or model network",
+  "observations": [
+    {
+      "id": "P01",
+      "updateStorageFailure": "PASS",
+      "originalRevision": 1,
+      "derivedStatus": "active",
+      "invalidationEvents": 0,
+      "suppressionRows": 0
+    },
+    {
+      "id": "P02",
+      "forgetStorageFailure": "PASS",
+      "searchableMemories": 2,
+      "invalidationEvents": 0,
+      "suppressionRows": 0
+    },
+    {
+      "id": "P03",
+      "coldSameProjectRegistry": "PASS",
+      "originalSessionId": "01a11580-acc7-75a2-a2e4-9fa3c4973555",
+      "lookupFrom": "01a11580-acc9-75a2-a2e4-9fa5fc064f3c",
+      "foreignProjectDenied": true,
+      "storedHistoryAuthority": "native Pi JSONL"
+    }
+  ]
+}

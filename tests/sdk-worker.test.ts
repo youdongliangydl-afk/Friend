@@ -117,6 +117,7 @@ test('automatic Rebuild at the settled boundary cannot restore a stale running l
  try {
    const call=(plugin:string,action:string,input:Record<string,unknown>={})=>fixture.request('plugin',{plugin,action,input});
    await call('memory','learning.pause');
+   await call('topic-rebuild','settings',{mode:'infinite'});
    await fixture.request('send',{text:'必须保留中文字段。'+('只读检查数据库事务并保留原始文件。'.repeat(80)),mode:'single'});
    await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
    const first=await call('topic-rebuild','snapshot') as {field?:{operationId:string}};
@@ -141,5 +142,29 @@ test('automatic Rebuild at the settled boundary cannot restore a stale running l
    assert.equal(field.invalidated,false);assert.equal(field.status.phase,'applied');
    assert.notEqual(field.field?.operationId,first.field.operationId);
    assert.match(readFileSync(after.sessionFile,'utf8'),/"type":"compaction"/);
+ }finally{await fixture.close();}
+});
+
+test('a newly registered empty native session survives a cold restart without fabricated conversation',{timeout:30000},async()=>{const first=await start();const state=await first.request('state') as {sessionFile:string;sessionId:string;messages:unknown[]};assert.ok(existsSync(state.sessionFile));assert.equal(state.messages.length,0);await first.close(true);const second=await start({directory:first.directory,sessionFile:state.sessionFile});try{const restored=await second.request('state') as typeof state;assert.equal(restored.sessionId,state.sessionId);assert.equal(restored.messages.length,0);}finally{await second.close();}});
+
+test('model acknowledgement cannot replace a versioned plan actually submitted through the native tool',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('send',{text:'QA_PLAN_SUBMIT',planMode:true});await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));const state=await fixture.request('state') as {plan:{revision:number;body:string;hash:string};runId:string};assert.equal(state.plan.revision,1);assert.match(state.plan.body,/verify the documented UTF-8/);assert.doesNotMatch(state.plan.body,/complete plan was submitted/);}finally{await fixture.close();}});
+
+test('cold worker restores the latest validated run receipt and does not borrow one before a new unrecorded user',{timeout:30000},async()=>{
+ const {digest}=await import('../packages/core/src/index.js');
+ const directory=mkdtempSync(join(tmpdir(),'friend-pi-cold-receipt-')),dataDir=join(directory,'data');
+ const manager=SessionManager.create(directory,join(dataDir,'sessions')),sessionId=manager.getSessionId();
+ const append=(body:string,runId:string,hash=digest(body))=>{const entryId=manager.appendMessage({role:'user',content:body,timestamp:Date.now()});manager.appendCustomEntry('friend-pi.input.v1',{v:1,entryId,textEnd:body.length,hash,runId});return entryId;};
+ append('earlier recorded task','old-run');
+ manager.appendCustomEntry('friend-pi.memory.usage:v1',{v:1,operationId:'old-receipt',sessionId,projectId:projectIdentity(directory),runId:'old-run',stage:'injected-to-context',records:[]});
+ append('latest recorded task','latest-run');
+ manager.appendCustomEntry('friend-pi.memory.usage:v1',{v:1,operationId:'latest-receipt',sessionId,projectId:projectIdentity(directory),runId:'latest-run',stage:'injected-to-context',records:[]});
+ let fixture=await start({directory,sessionFile:manager.getSessionFile(),status:'completed'});
+ try {
+  const restored=await fixture.request('state') as {runId?:string;receipts:{data:{runId:string}}[];messages:{role:string;runId?:string}[]};
+  assert.equal(restored.runId,'latest-run');assert.ok(restored.receipts.some(entry=>entry.data.runId==='latest-run'));assert.equal(restored.messages.filter(message=>message.role==='user').at(-1)?.runId,'latest-run');
+  await fixture.close(true);
+  const reopened=SessionManager.open(manager.getSessionFile()!);const last=reopened.appendMessage({role:'user',content:'new unrecorded request',timestamp:Date.now()});reopened.appendCustomEntry('friend-pi.input.v1',{v:1,entryId:last,textEnd:'new unrecorded request'.length,hash:'invalid-content-hash',runId:'must-not-be-restored'});
+  fixture=await start({directory,sessionFile:manager.getSessionFile(),status:'stopped'});
+  const next=await fixture.request('state') as {runId?:string;messages:{role:string;runId?:string}[]};assert.equal(next.runId,undefined,'a receipt before the latest user is not evidence for that user');assert.equal(next.messages.filter(message=>message.role==='user').at(-1)?.runId,undefined,'invalid original-input hashes cannot mint a run identity');
  }finally{await fixture.close();}
 });

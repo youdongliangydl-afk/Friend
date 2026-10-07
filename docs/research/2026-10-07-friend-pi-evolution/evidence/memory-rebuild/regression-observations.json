@@ -1,0 +1,59 @@
+{
+  "sourceCommit": "5ec4b39fb7301ac57715976458f602909fc0a0fb",
+  "kind": "isolated controller regressions, fake completion, no GUI or real model",
+  "observations": [
+    {
+      "id": "R01",
+      "compactRequests": 0,
+      "constraints": [
+        "必须使用蓝色侧栏。",
+        "更正：不再使用蓝色侧栏，必须改为绿色侧栏。"
+      ],
+      "phase": "applied"
+    },
+    {
+      "id": "R02",
+      "constraints": [],
+      "oldOriginalStillReadable": "数据库必须使用 SQLite。必须保留 UTF-8 中文字段。"
+    },
+    {
+      "id": "M01",
+      "userRequest": "请帮我记住，我更喜欢中文解释。",
+      "outcome": {
+        "error": "个人偏好仅在用户明确要求记住时保存"
+      }
+    },
+    {
+      "id": "M02",
+      "backgroundInProject": "p-a",
+      "foregroundInProject": "p-b",
+      "backgroundSignalAborted": false,
+      "firstJobs": [
+        {
+          "state": "running",
+          "stage": "reflection"
+        }
+      ]
+    },
+    {
+      "id": "M03",
+      "nativePiFork": true,
+      "originalSessionId": "01a11580-017e-741d-a1c1-302eae573067",
+      "sameOriginalEntryId": "dfa025b2",
+      "sameOriginalBody": "数据库必须使用旧 SQLite 后端。",
+      "cloneSessionId": "01a11580-0183-741d-a1c1-30305888a409",
+      "candidates": [
+        {
+          "content": "本项目要求沿用先前的 SQLite 数据层",
+          "sources": [
+            {
+              "sessionId": "01a11580-0183-741d-a1c1-30305888a409",
+              "entryId": "dfa025b2"
+            }
+          ],
+          "status": "candidate"
+        }
+      ]
+    }
+  ]
+}

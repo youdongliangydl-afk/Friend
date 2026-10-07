@@ -16,6 +16,10 @@ Pi 不会自动解包本地 `.tgz`。也可直接安装 `.artifacts/packages/unp
 
 启动时冻结专家定义、工具范围、Skill 的路径、实际 Markdown 正文和内容摘要。Skill 必须位于当前项目，不支持脚本或可执行权限成长。`use` 返回本次实际冻结正文和采用记录；后续文件变动不会悄然进入本次任务。明确选择的工具范围在 Pi `tool_call` 钩子中检查，也覆盖嵌套调用；`friend_expert` 自身仍可用于按需读取方法，其他插件工具不会被整体豁免。
 
+自动按需 `use` 与明确选择采用同一范围策略：本轮已经采用的限制按交集组合，后续采用只能收紧，空交集禁止执行工具；定义中的空 tools 表示不新增限制。冻结目录和版本摘要保持不可变，`adoptedIds/adoptions/toolScope` 是当前实际采用投影。重复 use 不制造重复的本轮 use 收据；明确选择与第一次实际 use 分别留证。SDK 可传 `PluginContext.runId`，原生 Pi 使用新 UUID。
+
+Swarm 通过版本化请求 `freeze {catalog:true}` 取得完整冻结目录，再用 `adopt.frozen {catalogHash,id}` 读取同一版方法；目录按项目隔离，来源撤回后拒绝采用。成员在自己的原生 JSONL 写实际采用收据并立即收紧工具范围；模型和专家身份保持分开，不增加工具权限。
+
 每次实际 `before_agent_start` 为运行生成独立 UUID，并在原生 Pi JSONL
 追加 `friend-pi.expert.run` 冻结快照。明确选中的专家同时追加
 `friend-pi.expert.adoption`；按需 `use` 的采用也绑定同一运行 UUID。

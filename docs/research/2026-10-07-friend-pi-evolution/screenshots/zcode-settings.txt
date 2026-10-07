@@ -1,0 +1,82 @@
+Window: "ZCode", App: ZCode.
+0 standard window ZCode, Secondary Actions: Raise
+	1 container ZCode
+		2 container
+			3 ZCode, URL: file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html?restoreSession=true&supportsSettings=true&zcodeLaunchMarks=%7B%22createdAt%22%3A1790093625757.159%2C%22mainStart%22%3A1790093628349%2C%22appReady%22%3A1790093628870%2C%22loadUrl%22%3A1790093630281%7D
+				4 container
+					5 button 返回工作区
+					6 container 主要项
+						7 container 基础设置
+							8 text 基础设置
+							9 button 常规
+							10 button 外观
+							11 button 模型设置
+							12 button 浏览器控制
+							13 button 电脑控制
+							14 button 键盘快捷键
+						15 container Agent 能力
+							16 text Agent 能力
+							17 button 记忆
+							18 button 子智能体
+							19 button 插件
+							20 button MCP 服务器
+							21 button 技能
+							22 button 命令
+							23 button 钩子
+						24 container 数据与统计
+							25 text 数据与统计
+							26 button 使用统计
+						27 button 引导
+					28 container
+						29 pop up button 连接使用
+						30 button 返回工作区
+					31 container
+						32 pop up button 帮助
+						33 heading 模型设置, Value: 2
+							34 text 模型设置
+						35 text 管理自定义模型供应商，配置后可在聊天时选择使用。
+						36 button 刷新
+						37 button 添加供应商
+						38 container
+							39 heading 智谱, Value: 3
+								40 text 智谱
+							41 button BigModel
+								42 text BigModel
+								43 image 未就绪
+							44 button Start Plan
+								45 text Start Plan
+								46 image 未就绪
+						47 container
+							48 heading BigModel, Value: 3
+								49 text BigModel
+							50 text 连接方式
+							51 combo box (settable) Description: 连接方式, Value: 选择
+								52 text 选择
+							53 heading 编程套餐, Value: 3
+								54 text 编程套餐
+							55 text 150% 配额
+							56 pop up button 查看 150% 配额活动说明
+							57 text 未连接
+							58 button 连接 BigModel
+							59 button 个人套餐 ¥118.00 人民币 起 适合个人开发者，独享 Coding Plan 额度。
+								60 text 个人套餐
+								61 text ¥118.00
+								62 text 人民币 起
+								63 text 适合个人开发者，独享 Coding Plan 额度。
+							64 button 团队套餐 ¥598.00 人民币 起 适合团队协作，支持席位和集中结算。
+								65 text 团队套餐
+								66 text ¥598.00
+								67 text 人民币 起
+								68 text 适合团队协作，支持席位和集中结算。
+	69 close button
+	70 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	71 minimize button
+72 menu bar
+	73 ZCode
+	74 文件
+	75 编辑
+	76 视图
+	77 窗口
+	78 帮助
+
+The focused UI element is 3 ZCode, URL: file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html?restoreSession=true&supportsSettings=true&zcodeLaunchMarks=%7B%22createdAt%22%3A1790093625757.159%2C%22mainStart%22%3A1790093628349%2C%22appReady%22%3A1790093628870%2C%22loadUrl%22%3A1790093630281%7D

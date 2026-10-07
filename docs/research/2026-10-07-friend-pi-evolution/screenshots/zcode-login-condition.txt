@@ -1,0 +1,34 @@
+Window: "ZCode", App: ZCode.
+0 standard window ZCode, Secondary Actions: Raise
+	1 container ZCode
+		2 container
+			3 ZCode, URL: file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html?restoreSession=true&supportsSettings=true&zcodeLaunchMarks=%7B%22createdAt%22%3A1790093625757.159%2C%22mainStart%22%3A1790093628349%2C%22appReady%22%3A1790093628870%2C%22loadUrl%22%3A1790093630281%7D
+				4 container
+					5 container
+						6 image ZCode
+						7 heading 欢迎来到 ZCode, Value: 1
+							8 text 欢迎来到 ZCode
+						9 text 连接账号，开始使用 ZCode
+					10 heading API Key, Value: 2
+						11 text API Key
+					12 combo box (settable) Description: API key 提供方, Value: BigModel
+						13 text BigModel
+					14 container
+						15 secure text field (settable) 输入 API key
+						16 button 获取 API Key
+					17 container
+						18 button (disabled) 继续
+						19 button 取消
+						20 button 暂时跳过
+	21 close button
+	22 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	23 minimize button
+24 menu bar
+	25 ZCode
+	26 文件
+	27 编辑
+	28 视图
+	29 窗口
+	30 帮助
+
+The focused UI element is 3 ZCode, URL: file:///Applications/ZCode.app/Contents/Resources/app.asar/out/renderer/index.html?restoreSession=true&supportsSettings=true&zcodeLaunchMarks=%7B%22createdAt%22%3A1790093625757.159%2C%22mainStart%22%3A1790093628349%2C%22appReady%22%3A1790093628870%2C%22loadUrl%22%3A1790093630281%7D

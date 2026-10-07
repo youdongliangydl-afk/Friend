@@ -10,13 +10,13 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 
 export type JsonObject = Record<string, unknown>;
-export interface SourceRef { sessionId: string; entryId: string; label?: string }
-export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string }
+export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
+export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
 export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
 export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
   dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
-  signal?: AbortSignal; modelId?: string; thinkingLevel?: string; isIdle(): boolean;
+  signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string; isIdle(): boolean;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
   complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
   request(plugin: string, action: string, input?: JsonObject, timeoutMs?: number): Promise<unknown>;
@@ -55,6 +55,7 @@ export function atomicWrite(path: string, value: string): void {
 /** Small namespace-owned durable records. SQLite serializes compare-and-swap writes across Pi processes. */
 export class RecordStore {
   readonly db: DatabaseSync;
+  private committed: (()=>void)[]=[];
   constructor(readonly namespace: string, readonly dataDir = dataDirectory()) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dataDir, 'plugins.sqlite'));
@@ -77,10 +78,15 @@ export class RecordStore {
     });
   }
   remove(key: string): void { this.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(this.namespace,key); }
+  afterCommit(fn:()=>void):void {if(this.db.isTransaction)this.committed.push(fn);else {try{fn();}catch {/* Persistence succeeded; refresh notifications cannot roll it back. */}}}
   transaction<T>(fn: () => T): T {
     if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
-    try { const value = fn(); this.db.exec('COMMIT'); return value; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    const offset=this.committed.length;
+    let value:T;
+    try { value=fn(); this.db.exec('COMMIT'); } catch (error) { this.committed.splice(offset);this.db.exec('ROLLBACK'); throw error; }
+    const callbacks=this.committed.splice(offset);for(const callback of callbacks){try{callback();}catch {/* Durable state is authoritative; consumers refresh on restart. */}}
+    return value;
   }
   close(): void { this.db.close(); }
 }
@@ -91,10 +97,29 @@ export function visibleText(value: unknown): string {
   return '';
 }
 export function historyItems(entries: readonly unknown[]): HistoryItem[] {
+  const boundaries=new Map<string,{textEnd:number;hash:string}>();for(const raw of entries){const entry=object(raw);if(entry.type==='custom'&&entry.customType==='friend-pi.input.v1'&&entry.data){const data=object(entry.data);boundaries.set(String(data.entryId),data as unknown as {textEnd:number;hash:string});}}
   return entries.map(raw => {
     const entry = object(raw); const message = entry.message && typeof entry.message === 'object' ? object(entry.message) : undefined;
-    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: message?.role ? String(message.role) : undefined, text: message ? visibleText(message.content) : entry.type === 'compaction' || entry.type === 'branch_summary' ? String(entry.summary || '') : entry.type === 'custom_message' ? visibleText(entry.content) : '' };
+    const value=message?visibleText(message.content):entry.type==='compaction'||entry.type==='branch_summary'?String(entry.summary||''):entry.type==='custom_message'?visibleText(entry.content):'';const boundary=boundaries.get(String(entry.id));const userText=boundary&&digest(value.slice(0,boundary.textEnd))===boundary.hash?value.slice(0,boundary.textEnd):undefined;
+    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: message?.role ? String(message.role) : undefined, text:value,userText };
   });
+}
+/** Source offsets use UTF-16, matching Pi's JavaScript text. Old whole-entry refs remain readable. */
+export function readSourceSpan(item:HistoryItem,ref:SourceRef):string {
+  const start=ref.start??0,end=ref.end??item.text.length;
+  if(!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<start||end>item.text.length)throw new Error('来源片段范围已不可用');
+  const value=item.text.slice(start,end);if(ref.hash&&digest(value)!==ref.hash)throw new Error('来源片段摘要不匹配');return value;
+}
+export function sourceFactRefs(item:HistoryItem,sessionId:string):SourceRef[] {
+  const result:SourceRef[]=[];
+  const chunks=(item.userText??item.text).matchAll(/[^。！？!?;；\n]+[。！？!?;；\n]?/gu);
+  for(const chunk of chunks){const base=chunk.index!,parts=chunk[0].split(/(?<=[,，])(?=\s*(?:必须|不得|不要|保留|只允许|不能|must\b|keep\b|never\b))/iu);let offset=base;
+    for(const part of parts){const leading=part.length-part.trimStart().length;const value=part.trim();if(value){const start=offset+leading,end=start+value.length,hash=digest(value);result.push({sessionId,entryId:item.id,start,end,hash,factId:digest([item.id,start,end,hash]).slice(0,32)});}offset+=part.length;}}
+  return result;
+}
+export function isSessionDeleted(dataDir:string,sessionId:string):boolean {const store=new RecordStore('sessions',dataDir);try{return !!store.get(`tombstone:${sessionId}`);}finally{store.close();}}
+export function learningHostAvailable(dataDir:string):boolean {
+  const store=new RecordStore('runtime',dataDir);try{const host=store.get<{pid:number;expiresAt:number}>('learning-host')?.value;if(!host||host.expiresAt<Date.now())return false;try{process.kill(host.pid,0);return true;}catch{return false;}}finally{store.close();}
 }
 const REQUEST = 'friend-pi:v1:request';
 const RESPONSE = 'friend-pi:v1:response';
@@ -120,17 +145,19 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   }
   return {
     origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
-    modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,
+    modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,runId:process.env.FRIEND_PI_RUN_ID,
     isIdle:() => ctx.isIdle(), history:() => historyItems(ctx.sessionManager.getBranch()),
     readSource: source => {
+      if(isSessionDeleted(dataDir,source.sessionId))throw new Error('来源会话已删除');
       let entries: readonly unknown[];
       if (source.sessionId === sessionId) entries = ctx.sessionManager.getEntries();
       else {
         const registry = new RecordStore('sessions',dataDir); const saved = registry.get<{path:string;projectDir:string}>(source.sessionId); registry.close();
-        if (!saved || projectIdentity(saved.value.projectDir) !== projectIdentity(ctx.cwd) || !existsSync(saved.value.path)) throw new Error('来源不存在或不属于当前项目');
+        let personalSource=false;if(saved&&projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd)){const memories=new RecordStore('memory',dataDir);try{if(memories.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_records'").get())personalSource=memories.db.prepare("SELECT json FROM memory_records WHERE scope='personal' AND status='active' AND enabled=1").all().some(row=>{const record=JSON.parse(String(row.json));return Array.isArray(record.sources)&&record.sources.some((ref:SourceRef)=>ref.sessionId===source.sessionId&&ref.entryId===source.entryId&&ref.start===source.start&&ref.end===source.end&&ref.hash===source.hash);});}finally{memories.close();}}
+        if (!saved || !personalSource&&projectIdentity(saved.value.projectDir) !== projectIdentity(ctx.cwd) || !existsSync(saved.value.path)) throw new Error('来源不存在或不属于当前项目及有效个人记忆');
         entries = SessionManager.open(saved.value.path).getEntries();
       }
-      const item = historyItems(entries).find(entry => entry.id === source.entryId); if (!item) throw new Error('来源已不可用'); return item;
+      const item = historyItems(entries).find(entry => entry.id === source.entryId); if (!item) throw new Error('来源已不可用');readSourceSpan(item,source); return item;
     },
     complete:async (prompt, options = {}) => {
       if (!model) throw new Error('请先配置模型');
@@ -215,6 +242,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
       try{const result=JSON.parse(visibleText(results.at(-1)!.content));if(result.id&&result.status==='created')return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'start',input:{graphId:result.id}}),{stopReason:'toolUse'});}catch{}
       return fauxAssistantMessage('离线 Swarm 已派发。成员执行和复核状态以任务图为准。');
     }
+    if(content.includes('QA_PLAN_SUBMIT')){if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='friend_plan'))return fauxAssistantMessage(fauxToolCall('friend_plan',{action:'submit',body:'Read README.md and verify the documented UTF-8 constraint. Change no files.'}),{stopReason:'toolUse'});return fauxAssistantMessage('The complete plan was submitted. Please approve it.');}
     if(content.includes('QA_WRITE')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'fixture-result.txt',content:'Friend-Pi SDK tool execution verified.\n'}),{stopReason:'toolUse'});
     if(/APPROVE|approved|独立复核|独立审查/.test(content))return fauxAssistantMessage('{"approved":true,"findings":"离线测试复核，不代表真实模型质量"}');
     if(/仅输出JSON|仅输出 JSON/.test(content))return fauxAssistantMessage('{"result":true,"memories":[],"items":[],"summary":"离线验证工作现场，保留来源与当前目标","goals":[],"constraints":[],"decisions":[],"unfinished":[]}');

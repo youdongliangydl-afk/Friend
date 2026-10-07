@@ -1,0 +1,1049 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-07T09:46:33.611103+00:00",
+  "candidate": {
+    "sourceCommit": "5ec4b39fb7301ac57715976458f602909fc0a0fb",
+    "piCommit": "eb326d265ae0b88489a6d10319307780df827cdf",
+    "artifactSha256": "a066e009e9d073ee3f49fc5b0e73307da857d57d6b2a425cabd16e7fbc6097d4"
+  },
+  "generator": "generate_visuals.py",
+  "drawingPolicy": "No business modifications, no GUI input, no credentials. SVG/PNG are illustrative product layouts, not screenshots. Future proposals remain unimplemented.",
+  "theme": "light Friend original layout",
+  "fontFamily": "'PingFang SC','Noto Sans CJK SC','Arial Unicode MS','Inter',sans-serif",
+  "pngRenderer": {
+    "library": "Pillow",
+    "font": "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "scale": 1.5,
+    "browserUsed": false
+  },
+  "pointCount": 19,
+  "futureWorkbenchContract": {
+    "entryCount": 1,
+    "tabs": [
+      "文件",
+      "Diff",
+      "Swarm",
+      "Expert",
+      "Memory"
+    ],
+    "contextTab": false,
+    "swarmScope": "current planning DAG only",
+    "expertScope": "current selected expert intro/direction/common Skills",
+    "memoryScope": "actual current session/round adoption receipts only",
+    "allManagementAndPersistentConfiguration": "settings",
+    "userSelectedDirectionIds": [
+      "19"
+    ]
+  },
+  "items": [
+    {
+      "id": "01",
+      "title": "停止状态与恢复",
+      "beforeSummary": "图已 stopped，但宿主客观检查仍在写入；状态边界与退出事实脱节。",
+      "afterSummary": "停止覆盖成员、客观检查和复核；收到终止确认后才显示已停止。",
+      "evidenceIds": [
+        "SWARM-STOP-OBJECTIVE-CHECK",
+        "CL-04"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Swarm",
+      "files": {
+        "before": {
+          "file": "01-before.svg",
+          "sha256": "b2602f7b49d118880fe26c1e29e6c3debe1858a3c7ef544bf0769205e3cd5170",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 115
+        },
+        "after": {
+          "file": "01-after.svg",
+          "sha256": "921a1c2bd0810af308b186e82fa0379ff81a45a0d35d1ff076945c7dd1e5c1f0",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 134
+        },
+        "comparison": {
+          "file": "01-comparison.svg",
+          "sha256": "7dbe1ad57ade87e188da7d33f48906fa36246c261ceafcc6f2a61b772764e9c6",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 260
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/01-before.png",
+          "sha256": "2b8b751b6ec67535575b98d83d5f9a79af0d57c20be96dbc15e2b4e3b03c5810"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/01-after.png",
+          "sha256": "db6fc9b142941be1060713a2e8a3a92c79970b587686350e8fc860f0b5ae8cad"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/01-comparison.png",
+          "sha256": "9a847c126e07ce8ae663408f19595775b34911aab509bfa143208f8ff5a590f4"
+        }
+      }
+    },
+    {
+      "id": "02",
+      "title": "原史缺失保护",
+      "beforeSummary": "已登记 JSONL 缺失时被当作新会话；旧索引静默换到新历史。",
+      "afterSummary": "保留原会话身份和路径，给出恢复原史、查看备份或明确另建会话。",
+      "evidenceIds": [
+        "CL-01"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "02-before.svg",
+          "sha256": "afa5dc10dfcb60ed113a5b8971ba928e9db2adf86002f2332a1741cb13e28b6a",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 107
+        },
+        "after": {
+          "file": "02-after.svg",
+          "sha256": "97dd01e0ae7878254887a2cc82349756e1a07938fe7ba9b78a16a15e8f28902a",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 125
+        },
+        "comparison": {
+          "file": "02-comparison.svg",
+          "sha256": "8a9feb01557ce39cc0c39100325953522c2b4324f6e5a612e85b31fea6152441",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 243
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/02-before.png",
+          "sha256": "863cf345e83231cc741e6138469ef06df156708cc7c81645c9d79360e118e50c"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/02-after.png",
+          "sha256": "bb32bd6dd244e75e69ec91bb619d2c425ca47037a38d7aefa24b81f119b8a541"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/02-comparison.png",
+          "sha256": "686f164ca85e50de777853413330225a904953163960ea44c82d8b9095a071a2"
+        }
+      }
+    },
+    {
+      "id": "03",
+      "title": "完整消息、Markdown 与工具结构",
+      "beforeSummary": "聊天只投影 text，冷恢复丢工具名/输入关联；表格和链接原样显示。",
+      "afterSummary": "按原生消息块呈现文字、图片、思考、工具及关联结果；安全 Markdown。",
+      "evidenceIds": [
+        "CL-03",
+        "EV-03"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "03-before.svg",
+          "sha256": "98846519e65481d9d7c996b4107bdd7a0536b15acc1fa57ddafdc6c6ab3db35f",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 117
+        },
+        "after": {
+          "file": "03-after.svg",
+          "sha256": "309a5870669c66917a6a2d346a21a90551f70759a356e204e4c0e17098e20137",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 136
+        },
+        "comparison": {
+          "file": "03-comparison.svg",
+          "sha256": "234e931c69a33c18b7469875a1824bf8f99a2634f1c8fd0c4fd2733c21e626c7",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 264
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/03-before.png",
+          "sha256": "1b03c2fe0ac7fd62e604c7a58a33d2398d483fe10f2390e17a4f9857858b6440"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/03-after.png",
+          "sha256": "0a14d360746a69965999fafdb94ee9f335d210624b5602dcfb3a0a0ee6fd6eab"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/03-comparison.png",
+          "sha256": "8dd84f2040ba2664918118dd345de43c91ef92320f5d0f6ef8c8158d2b18dff7"
+        }
+      }
+    },
+    {
+      "id": "04",
+      "title": "未跟踪文件 Diff",
+      "beforeSummary": "仅 git diff HEAD；真实新文件存在时，面板仍显示没有改动。",
+      "afterSummary": "改动列表包含未跟踪文件，新文件内容可审阅，明确尚未加入索引。",
+      "evidenceIds": [
+        "CL-02"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Diff",
+      "files": {
+        "before": {
+          "file": "04-before.svg",
+          "sha256": "cc31fe7c858599de7b8849d653fe8e8e724d3e228c48b3bf64b315ce47c513db",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 106
+        },
+        "after": {
+          "file": "04-after.svg",
+          "sha256": "cdbdd4b1a24b9e1c6a6fe54d61ad80076e6fd56782c40569139d5cb2dbc427ea",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 119
+        },
+        "comparison": {
+          "file": "04-comparison.svg",
+          "sha256": "445798cc330d8d039e2ec1c4ce79c7fb1bdd8c8ce174c8853534aa8996547e3a",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 236
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/04-before.png",
+          "sha256": "2705a4dba3c2caefff4f3031e7f4bdc1731e1df039be48aee86dee4310b48a33"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/04-after.png",
+          "sha256": "35dcf3262da2a33712590120702ad0f7688a1a6abfdcf0ea7098264a581601d6"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/04-comparison.png",
+          "sha256": "996e339712a1e7fa406eacc1c843ef89a1b6b9168ec8337ff6d325b7201f9460"
+        }
+      }
+    },
+    {
+      "id": "05",
+      "title": "约束纠正与事实粒度",
+      "beforeSummary": "同来源中的事实被整体撤回，无关 UTF-8 约束也丢失；普通更正仍冲突。",
+      "afterSummary": "按事实/引用片段维护失效关系；只更正对应事实，保留有效约束。",
+      "evidenceIds": [
+        "R02",
+        "R01"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "05-before.svg",
+          "sha256": "5c40cc4d01ba929a6bff187988603729edaeea9ac03481f92924d4126b254515",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 111
+        },
+        "after": {
+          "file": "05-after.svg",
+          "sha256": "6a6f8dea6fc2bc6b4d20b8c75de31e3ab749bc3e8afce6147af871d4a45a8823",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 116
+        },
+        "comparison": {
+          "file": "05-comparison.svg",
+          "sha256": "ed756ff18a87ac8b620ed6bbed9e543a28a203b3a7b761f3bb90123a3105a15e",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 238
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/05-before.png",
+          "sha256": "0a4dd5b7ac275ceb99c9839e470ca8b343b8a838d071297add06b4ad5fa06d3e"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/05-after.png",
+          "sha256": "dc13b6691dae542783112a9990c6c21037e9183755a62bc5162e53bb88586b1a"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/05-comparison.png",
+          "sha256": "5e3f8b762607d9a06a666c84b42557393b3a158cdca1412579a2a2754e61e5cb"
+        }
+      }
+    },
+    {
+      "id": "06",
+      "title": "遗忘与候选去重",
+      "beforeSummary": "原生 fork 复制旧事实后，可换词形成候选；尚未自动 active。",
+      "afterSummary": "遗忘、候选与去重管理集中于设置；Memory tab 只显示本轮实际采用内容。",
+      "evidenceIds": [
+        "M03"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "06-before.svg",
+          "sha256": "0384c51024919357355d6277bb459abfa5fa2d95038f581949680dd2ab2f05b0",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 114
+        },
+        "after": {
+          "file": "06-after.svg",
+          "sha256": "03c67ecd210daa081c189b5247a64a01b3940fed5f00613747f3916f50fc74f1",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 120
+        },
+        "comparison": {
+          "file": "06-comparison.svg",
+          "sha256": "4bbb4681d27bd47cd64767cab218dfbb7638d36c5af170507452f2150c1837a3",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 245
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/06-before.png",
+          "sha256": "7eed4bc8e81bce592622b7958c90d75790905ad1e645695496c3265f4d0ebf29"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/06-after.png",
+          "sha256": "40d004c1060a26e5889f101da814a7368e02af3423407e5092cfe041be77f40c"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/06-comparison.png",
+          "sha256": "e91101995689aa00bd41886fa1aab9e0ab73be873d777b462151cd1b2a05e56b"
+        }
+      }
+    },
+    {
+      "id": "07",
+      "title": "前台优先与后台队列",
+      "beforeSummary": "后台彼此串行，但跨会话前台启动没有取消另一实例的调用。",
+      "afterSummary": "后台队列与前台优先策略放设置；工作台不显示后台管理或完整记忆库。",
+      "evidenceIds": [
+        "M02"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "07-before.svg",
+          "sha256": "7c2b9a2284791d2a1e4cc8f5eb4376c1eeddf49b8482f71c3c3cb982ddb04777",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 113
+        },
+        "after": {
+          "file": "07-after.svg",
+          "sha256": "0ac5055bc9e3a9985d9c385e88f7227c238e841fc89afabd253f3cd38aa49edd",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 123
+        },
+        "comparison": {
+          "file": "07-comparison.svg",
+          "sha256": "d37de60468c41d9c248ebe39552c89c14507d6f58569388c8f14dbb510b3007e",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 247
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/07-before.png",
+          "sha256": "22d16005ee1e75e9ffb19ba6fe97c57f73b373ca771ee6911a0d884d566cfba5"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/07-after.png",
+          "sha256": "61a093495a534931aec00321b1b5e6125fb2aeee0c3ed8034c34a37da8cfd774"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/07-comparison.png",
+          "sha256": "34297560391ced000fa519518b659218592d276a2bd0856e7f8120b4331e635d"
+        }
+      }
+    },
+    {
+      "id": "08",
+      "title": "专家采用一致与版本透明",
+      "beforeSummary": "自动 use 和明确采用执行工具范围不一致；界面不显示当轮快照。",
+      "afterSummary": "Expert tab 仅介绍本轮选用专家、专业方向与常用 Skill；版本、范围和验证管理放设置。",
+      "evidenceIds": [
+        "EXPERT-AUTO-TOOL-SCOPE"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Expert",
+      "files": {
+        "before": {
+          "file": "08-before.svg",
+          "sha256": "53ffaf770f31f0adc122c0f272fdd9f155595ef4b41fa3a5f26cfb8bfa4ee641",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 114
+        },
+        "after": {
+          "file": "08-after.svg",
+          "sha256": "f77dccf2fef64a24508b3449faf839e29a9226e82897810f89ef767473c78382",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 119
+        },
+        "comparison": {
+          "file": "08-comparison.svg",
+          "sha256": "77c989e9a184f67c390943752b055c82bccf309442c1b029f7a8602c9180f7e5",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 244
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/08-before.png",
+          "sha256": "9360856b04df2980b48f17116b56ccb3048a811a90e63e617ee0b78bc84b1eaf"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/08-after.png",
+          "sha256": "1de8f7668c255a3374558b4f973b6bfe5e3eb88fcaeeb60660b04304bb343d57"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/08-comparison.png",
+          "sha256": "5995fa572c1158956204dc092db10ddc58e909510c453be0de6051cc72a49eee"
+        }
+      }
+    },
+    {
+      "id": "09",
+      "title": "定向返工与 DAG",
+      "beforeSummary": "复核只拒绝一个任务时，全部任务都重跑；当前展示依赖卡片列表。",
+      "afterSummary": "Swarm tab 仅显示当前规划 DAG；定向返工与方法修订进入任务详情或设置。",
+      "evidenceIds": [
+        "SWARM-TARGETED-REWORK"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Swarm",
+      "files": {
+        "before": {
+          "file": "09-before.svg",
+          "sha256": "162be921d37252e08688c50d56062df7500c46ed71fef76f1478ff73d8b477aa",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 117
+        },
+        "after": {
+          "file": "09-after.svg",
+          "sha256": "b18b51e09cd17a70d12b82fb306fb3ae6dfd8d0620a6b61785c9d30f8df0d237",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 131
+        },
+        "comparison": {
+          "file": "09-comparison.svg",
+          "sha256": "cfa754e760411694abb12f4aabb76014b4c02e3c8b6f011025a93eb53e4afea5",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 259
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/09-before.png",
+          "sha256": "afb02068fb37ffb9867e5f7bbd0103ad04c42542fba65b9a9f3886af45460791"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/09-after.png",
+          "sha256": "246783433193305bddcacec8040db2abbb222adc006400e077b636fe873e6fed"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/09-comparison.png",
+          "sha256": "b4abf0d6a7d25f81b1d0b0d2c832937504d114df5dd38ef8ba60c10ae3331bbd"
+        }
+      }
+    },
+    {
+      "id": "10",
+      "title": "共享版本与冲突",
+      "beforeSummary": "CAS 拒绝过期草稿，但通知先于提交；用户需手动重新载入并合并。",
+      "afterSummary": "共享版本和冲突编辑进入设置-任务管理；工作台 Swarm 保持当前 DAG。",
+      "evidenceIds": [
+        "SWARM-SHARED-EVENT-COMMIT"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Swarm",
+      "files": {
+        "before": {
+          "file": "10-before.svg",
+          "sha256": "216b339e2ccd29a9489f0f2afcbc06d548acf6f35b135ca5342840a5142a9895",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 113
+        },
+        "after": {
+          "file": "10-after.svg",
+          "sha256": "a1b1ed1b9abd3f7c4cd710846f619bbf8331cea5cfc8279e480d7d60622d41d2",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 124
+        },
+        "comparison": {
+          "file": "10-comparison.svg",
+          "sha256": "4ff32b5740710156b24530a66b558756c7f1517496b58b8fc5514c057931f79d",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 248
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/10-before.png",
+          "sha256": "c8ab974668bd681a1ab3759865fb2335b291ee575592e811a51fab8bca89be57"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/10-after.png",
+          "sha256": "dcc2ab4ca8645892aa9a58806823193131b8b8a4aa6a1baf4ac0d8564ac4921c"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/10-comparison.png",
+          "sha256": "3aeaf4715d31f9892098878ab42de58a1c9899e802efb14b41d4b1c5b56ca1bd"
+        }
+      }
+    },
+    {
+      "id": "11",
+      "title": "Plan 审批与执行转换",
+      "beforeSummary": "计划靠开关转执行，没有明确计划对象/批准动作；陌生目录只读探索不足。",
+      "afterSummary": "只读探索生成计划，显式批准绑定目标/约束/范围/检查后再执行。",
+      "evidenceIds": [
+        "C19",
+        "C26",
+        "plan GUI"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Swarm",
+      "files": {
+        "before": {
+          "file": "11-before.svg",
+          "sha256": "cde045970a1af50f7632f573d235ee4c511bd780b7d0d32c36e3889bf768ff78",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 114
+        },
+        "after": {
+          "file": "11-after.svg",
+          "sha256": "7fe2db38758cf821fcd71d9ee2cf240bab637d43e24d771266b46c37aef888a1",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 142
+        },
+        "comparison": {
+          "file": "11-comparison.svg",
+          "sha256": "5821ed4a05f11a742cafc97931dbc7f0231323d9e4ac1578b764530acfcc4f53",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 267
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/11-before.png",
+          "sha256": "91eb99914c3e3e49a01367cd062c68bfb23085ce6d95da51424376714a4dad80"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/11-after.png",
+          "sha256": "bed33a35c16b3eebebf67b3a36c7a0daece0e79fea4055ef43899758e67b28c0"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/11-comparison.png",
+          "sha256": "eb3d7dd319330c5c72c85819abb0b7ab07c85ebf9ee219d33a3b8773e3677bb2"
+        }
+      }
+    },
+    {
+      "id": "12",
+      "title": "项目、会话状态与组织",
+      "beforeSummary": "横向项目与状态卡已具备；会话在一个近期列表，没有归档/状态筛选。",
+      "afterSummary": "保留原布局，增加状态分组、固定会话、归档和跨项目名称/正文搜索。",
+      "evidenceIds": [
+        "C02",
+        "C05",
+        "C06"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "12-before.svg",
+          "sha256": "5a8ad823f158bad9419c996285f2077c89333ca3ac884ffd6149a5cab8955ae1",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 113
+        },
+        "after": {
+          "file": "12-after.svg",
+          "sha256": "146cc75ce4ec82494762c90afb8a0c3b903a676e2fcd1482740404b96bd60943",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 130
+        },
+        "comparison": {
+          "file": "12-comparison.svg",
+          "sha256": "165682a4e9192d07327dbf228acf3c67a9c72969e39ff0a481f5b63d5f146814",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 254
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/12-before.png",
+          "sha256": "07c860c0be2883cd2d9f1ad6571b91a002bacc035f73db5ecaa0d140907ba4de"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/12-after.png",
+          "sha256": "1c4dadee26a236814b28e0e91f24e7fbe7ab801fa4b547fc1d81b61982d887e8"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/12-comparison.png",
+          "sha256": "b145278b4d274b0a12e25e99e70c2b6059a4b4ebd6de1fa5aeaa647fff488e2c"
+        }
+      }
+    },
+    {
+      "id": "13",
+      "title": "轮次预览、书签与定位",
+      "beforeSummary": "短线预览、定位和书签已具备；预览只有请求与最后回复片段。",
+      "afterSummary": "在现有预览与书签上增加主题、关键词、仅书签筛选及轮次范围回查。",
+      "evidenceIds": [
+        "C09",
+        "C24"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "13-before.svg",
+          "sha256": "b4ee39eae2186add6e39558900c2a8629d2969e79ff4ba0cb5130246218d2c0e",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 110
+        },
+        "after": {
+          "file": "13-after.svg",
+          "sha256": "f9629bbe39a967b45993bf14b55602fc445c0dd303a44f4693ad8fd139250ee4",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 131
+        },
+        "comparison": {
+          "file": "13-comparison.svg",
+          "sha256": "cb42f9ea89d4f3bc70e912beb3a9c581b6a8560eb6481c4e3ee0266c2c2d7661",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 252
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/13-before.png",
+          "sha256": "b7b29e1277c58f321156de38932fa9a0ad6b99a57e14f3f65e5ab3226beeddea"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/13-after.png",
+          "sha256": "09f8ddf017286f1c35b9cf0b3b8c4b85666e861ee715fff077e2b76238baf51e"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/13-comparison.png",
+          "sha256": "4c8365ef48444067ded210f52107292fe62bacd485ea49ecc95153853c35cbae"
+        }
+      }
+    },
+    {
+      "id": "14",
+      "title": "分栏、窄屏与快捷键",
+      "beforeSummary": "已支持拖动、键盘调宽、冷恢复和窄屏；布局按全局像素宽度保存。",
+      "afterSummary": "布局长期设置集中于设置；每项目预设与比例恢复，保持工作台五个轻量 tabs。",
+      "evidenceIds": [
+        "C10",
+        "C11"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "14-before.svg",
+          "sha256": "4136948213bde2f98016b9fcf2dd44608b5d41be754b9d5cce91da4c45c1a145",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 115
+        },
+        "after": {
+          "file": "14-after.svg",
+          "sha256": "bfa0f7e9b5d46440ac865b532f0f6c1d1681041f292f857d31477f9eecd7141e",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 131
+        },
+        "comparison": {
+          "file": "14-comparison.svg",
+          "sha256": "fb8a00c0dd68c3c631e18c2536fed58c8d28946be7d3434bdc9c4d3e46a2aa53",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 257
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/14-before.png",
+          "sha256": "1722ef66544f0a1fc226c2abf92779bfe96c7b818a4f8ffef958b24b15db796e"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/14-after.png",
+          "sha256": "4af43bb3cc7bf03251136a5be2e7a40196cb51e08fcd757d6303d3c156319486"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/14-comparison.png",
+          "sha256": "d61c68952f67db5594002ef33666a40bf746f886c37772fee215f286bac32872"
+        }
+      }
+    },
+    {
+      "id": "15",
+      "title": "文件附件与多标签工作台",
+      "beforeSummary": "输入路径预览文本、附件名标签；工作台一次只显示一个文件/模块。",
+      "afterSummary": "项目文件树、附件能力检查和图文预览，多标签保留文件/Diff/来源。",
+      "evidenceIds": [
+        "C27",
+        "C28",
+        "C29",
+        "C30"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "15-before.svg",
+          "sha256": "8b7b7eb8a51e0dcd6bb886212d8b2dbba5e4490846cf34fa8e0f5a10380c548b",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 118
+        },
+        "after": {
+          "file": "15-after.svg",
+          "sha256": "58418136f0c7917539a68aa8307bd86906c4f4b24462d87144d825d1450c2254",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 124
+        },
+        "comparison": {
+          "file": "15-comparison.svg",
+          "sha256": "b6e42fa41152e752d393726bb0996e4b0784b6aebf963fb7da68f55df5510db5",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 253
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/15-before.png",
+          "sha256": "5a02645068470e48bd3aec77ded1a1abfe80128f741a0f0fda7a6287ba956bd1"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/15-after.png",
+          "sha256": "81411ee57ce6a6309ca9a92b90d2310ff236e2de8856bef8108ab746ae5c54f5"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/15-comparison.png",
+          "sha256": "c26f2f6b8c0e971a0e80d6faa6900a023c5bdaa644905831c3caf68a04565b15"
+        }
+      }
+    },
+    {
+      "id": "16",
+      "title": "设置搜索、配置一致性与模型能力",
+      "beforeSummary": "全局设置已归位，但 Swarm 默认可矛盾；自定义型号能力硬编码。",
+      "afterSummary": "设置可搜索并分全局/项目；型号显式能力，配置依赖校验与有效值确认。",
+      "evidenceIds": [
+        "CL-05",
+        "C13",
+        "C55"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "文件",
+      "files": {
+        "before": {
+          "file": "16-before.svg",
+          "sha256": "7e21592fd354ef45332f02b048df0427e875ce1b01f00610f3cdb157ce9f2703",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 114
+        },
+        "after": {
+          "file": "16-after.svg",
+          "sha256": "f2a131318fb895d39e82722350e60b92c9333aa5f715e5785acb921eb7677bd3",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 124
+        },
+        "comparison": {
+          "file": "16-comparison.svg",
+          "sha256": "662c358ad57f94227a929d4cc870e3c5882d65a6664bc64e5f3497ee02d08e6a",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 249
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/16-before.png",
+          "sha256": "535886d94de43943c2506becc517b833f19ffc5b1b977d869db56fa47f9b0bcb"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/16-after.png",
+          "sha256": "55a945ed2e072497626bba1094795dc23caccde4ba2aca252868cf336c06f9ee"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/16-comparison.png",
+          "sha256": "4938b9524fc4800920fb9af7735cc6196337f895731e3205d468731f5bc76924"
+        }
+      }
+    },
+    {
+      "id": "17",
+      "title": "专家验证模板与管理",
+      "beforeSummary": "手写 JSON 基准，重新打开表单不载已有用例；适用范围是一块文本。",
+      "afterSummary": "验证模板与已有基准全部进入设置-专家管理；Expert tab 不展示管理表单。",
+      "evidenceIds": [
+        "C47",
+        "Expert validation coverage"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Expert",
+      "files": {
+        "before": {
+          "file": "17-before.svg",
+          "sha256": "b3e8716f6bdc070b3f2e1a33534fce18bb47d07dab558f16aa7f4cb5264a8f56",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 118
+        },
+        "after": {
+          "file": "17-after.svg",
+          "sha256": "ac1616cc0cdfe85620944c7451b93f5e84569ecea28e94668eee5474dee4c8cb",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 126
+        },
+        "comparison": {
+          "file": "17-comparison.svg",
+          "sha256": "e9e5d9459387e8c346272a2c0085c24b7294236bcc970773f0a923ac35a11101",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 255
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/17-before.png",
+          "sha256": "0e474a319ff02561622d119bb0a0544548ff8395fdc7a85711483ac2a25adcb3"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/17-after.png",
+          "sha256": "ab6216e2b5340bacb75c221491b6cf08638331848efe906d1949ec87df898757"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/17-comparison.png",
+          "sha256": "ce3f434121d4f66c894548b7ebe1b51f8095cea34091f207c384e3eaa2f268ab"
+        }
+      }
+    },
+    {
+      "id": "18",
+      "title": "来源导航与连续现场诊断",
+      "beforeSummary": "来源按钮可开原文，但缺会话定位；连续现场的操作/覆盖信息难核对。",
+      "afterSummary": "来源回查与连续现场诊断移至设置-高级；不在工作台新增 Context 页。",
+      "evidenceIds": [
+        "R01",
+        "R02",
+        "C52",
+        "C53"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "proposal",
+      "futureSurface": "settings",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "18-before.svg",
+          "sha256": "cb3d796666ec536b82571a85737028c27cc6c441fb4bc4ac662524985628266c",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 118
+        },
+        "after": {
+          "file": "18-after.svg",
+          "sha256": "89a28ae177c57c52a4c6cd51eca819eb33cd89c3377bd112c2e6f57db65fa198",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 113
+        },
+        "comparison": {
+          "file": "18-comparison.svg",
+          "sha256": "5334cf6b2bee9442b1aa5878bc78e075354ecac78cc4338a9149f23c9e5a25fa",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 242
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/18-before.png",
+          "sha256": "80e8f91fb3fa55e070fdcb09284e4e1ff85b21c453de1a27f086f1bfb928c6b8"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/18-after.png",
+          "sha256": "27333c95de76a3370ce0b1e2f819d8ab58aefca1713f4f2a41cdec50b3ef2471"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/18-comparison.png",
+          "sha256": "d7a74faee9dd53b4452cc7ccca08767ed738d750c39fb71b96549c4c19e6516e"
+        }
+      }
+    },
+    {
+      "id": "19",
+      "title": "统一轻量工作台与真实采用收据",
+      "beforeSummary": "六个模块入口分散；能力工作台混合运行信息与管理，Memory 展示库而非本轮采用。",
+      "afterSummary": "用户已选方向：单一工作台入口 + 五个极简 tabs，只展示当前规划、选用专家和实际采用记忆。",
+      "evidenceIds": [
+        "USER-SELECTED-WORKBENCH",
+        "C55",
+        "C45",
+        "C48"
+      ],
+      "type": "product-layout-comparison",
+      "currentEvidenceLevel": "source-and-recorded-observation schematic; example data",
+      "futureImplemented": false,
+      "directionStatus": "user-selected",
+      "futureSurface": "conversation-and-light-workbench",
+      "futureWorkbenchTab": "Memory",
+      "files": {
+        "before": {
+          "file": "19-before.svg",
+          "sha256": "c09cdfe1a51602b38c67e3b2fdad320dd34eba365ca3fcc746b4085a6f2ab112",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 133
+        },
+        "after": {
+          "file": "19-after.svg",
+          "sha256": "1afa3bfbeac79898d0aee2f6628bdce60e77f95a951adc91c029ed6ea9b52c4d",
+          "width": 1280,
+          "height": 876,
+          "primitiveCount": 121
+        },
+        "comparison": {
+          "file": "19-comparison.svg",
+          "sha256": "e650e94a9107ec8d03ccc3b59b33f98f2413f6965e261353c4001579e76d2c10",
+          "width": 2632,
+          "height": 1190,
+          "primitiveCount": 265
+        }
+      },
+      "renders": {
+        "before": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/19-before.png",
+          "sha256": "ccd595ffc839c57abe2e63bffa0d5ef5fc418ea6893f558d623cf9c493c66a43"
+        },
+        "after": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/19-after.png",
+          "sha256": "9103e8b0b08a4e49bcc7001c0d51e3ff36c35ddefb12e2145f4cb8f2da778d62"
+        },
+        "comparison": {
+          "file": "/Users/youdongliang/Desktop/Friend-Pi/.artifacts/qa/evolution-audit/report-render/19-comparison.png",
+          "sha256": "c8c4030ab70b17019176d1d649aa2bc2c8039a85f8c858e55a56e48174caee69"
+        }
+      }
+    }
+  ]
+}
