@@ -1,19 +1,21 @@
 export interface Project { id: string; path: string; name: string }
-export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string }
+export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string;status?:string;modelId?:string }
 export interface Message { role: string; text: string; id?: string }
 export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number }
+export interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'swarm';defaultPlanMode:boolean}
 export interface AppState {
   projects: Project[];
   sessions: SessionSummary[];
-  current: { sessionId: string; projectId: string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string; plugins: string[]; planMode?: boolean } | null;
+  current: { sessionId: string; projectId: string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string; plugins: string[]; planMode?: boolean;executionMode?:'single'|'swarm' } | null;
   models: Model[];
   providers: { id: string; name: string; configured: boolean }[];
+  preferences?:Preferences;
 }
 export interface BridgeEvent { type: 'state' | 'pi' | 'plugin' | 'dialog' | 'notice'; sessionId?: string; data: unknown }
 export interface FriendBridge { request<T = unknown>(method: string, input?: Record<string, unknown>): Promise<T>; onEvent(callback: (event: BridgeEvent) => void): () => void }
 declare global { interface Window { friendPi: FriendBridge } }
 export type PluginName = 'swarm' | 'expert' | 'memory' | 'topic-rebuild';
-export type WorkspaceTab = PluginName | 'file' | 'diff' | 'providers';
+export type WorkspaceTab = PluginName | 'file' | 'diff' | 'settings';
 export type JsonObject = Record<string, unknown>;
 export interface DialogRequest { id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string; message?: string; options?: string[]; prefill?: string }
 export function asObject(value: unknown): JsonObject { return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}; }

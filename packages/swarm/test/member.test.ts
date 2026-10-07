@@ -41,14 +41,15 @@ test('real controller schedules standalone SDK member and a different independen
     const messages=input.messages as {role:string}[];
     return messages.some(message=>message.role==='tool') ? 'read-source outcome' : {tool:'swarm_shared',args:{action:'write',name:'接口约定',content:'SDK member shared outcome',expectedRevision:0}};
   });
-  const oldWorker=process.env.FRIEND_PI_MEMBER_WORKER;process.env.FRIEND_PI_MEMBER_WORKER=env.worker;
-  const context:PluginContext={dataDir:join(env.root,'data'),projectDir:env.project,projectId:'sdk-fixture',sessionId:'host-fixture',modelId:'swarm-fixture/fixture',isIdle:()=>true,history:()=>[],readSource:()=>{throw new Error('unused');},complete:async()=>{throw new Error('unused');},request:async()=>{throw new Error('optional absent');},emit:()=>{},notify:()=>{},appendEntry:()=>{}};
+  const oldWorker=process.env.FRIEND_PI_MEMBER_WORKER;const oldAgent=process.env.FRIEND_PI_AGENT_DIR;process.env.FRIEND_PI_MEMBER_WORKER=env.worker;process.env.FRIEND_PI_AGENT_DIR=join(env.root,'unconfigured-legacy-pi');
+  const context:PluginContext={dataDir:join(env.root,'data'),agentDir:env.agentDir,projectDir:env.project,projectId:'sdk-fixture',sessionId:'host-fixture',modelId:'swarm-fixture/fixture',isIdle:()=>true,history:()=>[],readSource:()=>{throw new Error('unused');},complete:async()=>{throw new Error('unused');},request:async()=>{throw new Error('optional absent');},emit:()=>{},notify:()=>{},appendEntry:()=>{}};
   const controller=new SwarmController();
   try {
     const graph=await controller.dispatch('create',{goal:'read source',tasks:[{id:'read-source',title:'read source',prompt:'read readme.txt',mode:'read',dependencies:[]}]},context) as Graph;
-    await controller.dispatch('start',{graphId:graph.id,agentDir:env.agentDir,thinkingLevel:'off'},context);const began=Date.now();let final:Graph;
+    await controller.dispatch('start',{graphId:graph.id,thinkingLevel:'off'},context);const began=Date.now();let final:Graph;
     while (true) {final=(controller.snapshot(context) as {graphs:Graph[]}).graphs[0];if (final.status==='integrated') break;if (final.status==='paused') throw new Error(final.error);if (Date.now()-began>20000) throw new Error('SDK Swarm fixture timed out');await new Promise(done=>setTimeout(done,20));}
     assert.equal(final.attempts.length,1);assert.ok(final.attempts[0].sessionId);assert.ok(final.integration?.review?.approved);assert.ok(env.requests()>=2);const dirs=readdirSync(join(context.dataDir,'swarm-sessions',graph.id));assert.equal(dirs.length,2,'execution and independent review must each own a Pi session');
+    assert.equal(final.agentDir,env.agentDir,'actual SDK directory must win over an inherited legacy Pi path');
     const shared=(controller.snapshot(context) as {shared:{content:string;revision:number}[]}).shared;assert.equal(shared.length,1);assert.equal(shared[0].content,'SDK member shared outcome');assert.equal(shared[0].revision,1,'member tool must route through host controller CAS');
-  }finally {await controller.dispose();if (oldWorker===undefined) delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;await env.cleanup();}
+  }finally {await controller.dispose();if (oldWorker===undefined) delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;if(oldAgent===undefined)delete process.env.FRIEND_PI_AGENT_DIR;else process.env.FRIEND_PI_AGENT_DIR=oldAgent;await env.cleanup();}
 });

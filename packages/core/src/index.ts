@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { SessionManager, getAgentDir } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -15,8 +15,8 @@ export interface HistoryItem { id: string; parentId: string | null; type: string
 export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
 export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
-  dataDir: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
-  signal?: AbortSignal; modelId?: string; isIdle(): boolean;
+  dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
+  signal?: AbortSignal; modelId?: string; thinkingLevel?: string; isIdle(): boolean;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
   complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
   request(plugin: string, action: string, input?: JsonObject, timeoutMs?: number): Promise<unknown>;
@@ -42,6 +42,10 @@ export function text(value: unknown, name = '内容', max = 200000): string {
 export function projectIdentity(path: string): string { return createHash('sha256').update(realpathSync(resolve(path))).digest('hex').slice(0, 24); }
 export function digest(value: unknown): string { return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex'); }
 export function dataDirectory(): string { const dir = resolve(process.env.FRIEND_PI_DATA_DIR || join(homedir(), '.local', 'share', 'friend-pi')); mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; }
+/** Pi's extension context does not expose the SDK's agentDir. SDK hosts advertise their
+ * actual directory; native Pi uses its public getAgentDir (including its native override).
+ * This carries only the path, never authentication material or private runtime fields. */
+export function agentDirectory(): string { return resolve(process.env.FRIEND_PI_AGENT_DIR || getAgentDir()); }
 export function atomicWrite(path: string, value: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -108,13 +112,15 @@ export function requestPlugin(bus: Bus, plugin: string, action: string, input: J
 }
 export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent'): PluginContext {
   const model = ctx.model;
+  const thinkingLevel = pi.getThinkingLevel();
+  const agentDir = agentDirectory();
   const dataDir = dataDirectory(); const sessionId = ctx.sessionManager.getSessionId(); const sessionFile = ctx.sessionManager.getSessionFile();
   if (sessionFile) {
     const registry = new RecordStore('sessions',dataDir); registry.put(sessionId,{path: sessionFile,projectDir:ctx.cwd}); registry.close();
   }
   return {
-    origin, dataDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
-    modelId:model ? `${model.provider}/${model.id}` : undefined,
+    origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
+    modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,
     isIdle:() => ctx.isIdle(), history:() => historyItems(ctx.sessionManager.getBranch()),
     readSource: source => {
       let entries: readonly unknown[];

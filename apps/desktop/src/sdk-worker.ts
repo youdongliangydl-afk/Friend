@@ -5,20 +5,28 @@ import { createAgentSession,DefaultResourceLoader,SessionManager,SettingsManager
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider } from '@friend-pi/core';
 import type { ImageContent } from '@earendil-works/pi-ai';
+import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 
 const dataDir=dataDirectory();const root=resolve(process.env.FRIEND_PI_ROOT || process.cwd());const cwd=resolve(process.env.FRIEND_PI_PROJECT || process.cwd());
 const agentDir=join(dataDir,'pi');mkdirSync(agentDir,{recursive:true,mode:0o700});
+// Advertise the actual SDK directory before loading native plugins. Their public
+// ExtensionContext has no SDK agentDir field, and inherited shell Pi paths may differ.
+process.env.FRIEND_PI_AGENT_DIR=agentDir;
 const plugins=['swarm','expert','memory','topic-rebuild'];
 let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGINS) as string[]:plugins;
-let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=false;let executionMode='single';
+let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();let swarmFingerprint='';let swarmTerminalStatus:string|undefined;let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>}>();
 function output(message:unknown){if(process.connected)process.send?.(message);}
 function publish(type:string,data:unknown){output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000):Promise<unknown>{
   const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer});publish('dialog',{id,kind,title,...input});});
 }
-function current(){return {sessionId:session.sessionId,messages:session.messages.map(message=>({role:message.role,text:'content' in message?visibleText(message.content):''})).filter(message=>message.role!=='system'&&message.text.trim()),isRunning:session.isStreaming||swarmRunning,planMode,modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
-function modelState(){return {models:runtime.getModels().map(model=>({id:`${model.provider}/${model.id}`,provider:model.provider,name:model.name,reasoning:model.reasoning,contextWindow:model.contextWindow,input:model.input})),providers:runtime.getProviders().map(provider=>({id:provider.id,name:provider.name,configured:runtime.hasConfiguredAuth(provider.id)}))};}
+function current(){return {sessionId:session.sessionId,messages:historyItems(session.sessionManager.getBranch()).filter(item=>item.type==='message'&&item.role!=='system'&&item.text.trim()).map(item=>({id:item.id,role:item.role,text:item.text})),lifecycleStatus,isRunning:!session.isIdle||swarmRunning,planMode,executionMode,modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
+function settledStatus(){
+  const last=[...session.messages].reverse().find(message=>message.role==='assistant');
+  return swarmRunning?'running':cancelRequested?'stopped':swarmTerminalStatus|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
+}
+function modelState(){return providerMetadata(runtime);}
 function selectedModel(id:string){const slash=id.indexOf('/');const model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(slash<1||!model)throw new Error('型号不可用，请重新选择');return model;}
 function guard():ExtensionFactory{return pi=>{
   pi.on('before_agent_start',event=>{
@@ -52,7 +60,7 @@ async function bind(){
 }
 async function initialize(){
   initTheme('light',false);
-  runtime=await ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false});
+  runtime=await createProviderRuntime(dataDir);
   let model=process.env.FRIEND_PI_TEST_PROVIDER==='1'?await installFixtureProvider(runtime):undefined;
   if(process.env.FRIEND_PI_MODEL)model=selectedModel(process.env.FRIEND_PI_MODEL);
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
@@ -62,8 +70,48 @@ async function initialize(){
   const manager=process.env.FRIEND_PI_SESSION_FILE?SessionManager.open(process.env.FRIEND_PI_SESSION_FILE):SessionManager.create(cwd,join(dataDir,'sessions'));
   const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager});session=created.session;
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
-  session.subscribe(event=>{publish('pi',event);if(event.type==='message_end'||event.type==='agent_settled'||event.type==='compaction_end')publish('state',current());});
-  bus.on('friend-pi:v1:event',raw=>{publish('plugin',raw);if(raw&&typeof raw==='object'){const event=object(raw);if(event.pluginEvent==='swarm.changed'&&event.data&&typeof event.data==='object'){const snapshot=object(event.data);swarmRunning=Array.isArray(snapshot.graphs)&&snapshot.graphs.some(rawGraph=>['running','awaiting_review'].includes(String(object(rawGraph).status)));publish('state',current());}}});
+  session.subscribe(event=>{
+    publish('pi',event);
+    if(event.type==='agent_settled'&&!disposed){
+      settledRunId=runId;lifecycleStatus=settledStatus();
+      if(lifecycleStatus==='failed'){
+        const last=[...session.messages].reverse().find(message=>message.role==='assistant');
+        publish('notice',{level:'error',message:publicError(last?.errorMessage||'模型执行未完成')});
+      }
+    }
+    if(event.type==='compaction_start'&&event.reason==='manual'){
+      statusBeforeCompaction=lifecycleStatus;lifecycleStatus='rebuilding';
+    }
+    if(event.type==='compaction_end'&&statusBeforeCompaction){
+      // Pi may execute deferred compaction after its public agent_settled event.
+      // Never restore a captured "running" status over that completed run.
+      lifecycleStatus=runId&&settledRunId===runId?settledStatus():statusBeforeCompaction;
+      statusBeforeCompaction=undefined;
+    }
+    if(['message_end','agent_settled','compaction_start','compaction_end'].includes(event.type))publish('state',current());
+  });
+  bus.on('friend-pi:v1:event',raw=>{
+    publish('plugin',raw);
+    if(!raw||typeof raw!=='object')return;
+    const event=object(raw);
+    if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
+    const snapshot=object(event.data);
+    const graphs=Array.isArray(snapshot.graphs)?snapshot.graphs.map(object):[];
+    const active=graphs.filter(graph=>['running','awaiting_review'].includes(String(graph.status)));
+    for(const graph of active)activeGraphIds.add(String(graph.id));
+    swarmRunning=active.length>0;
+    const fingerprint=JSON.stringify(graphs.map(graph=>[graph.id,graph.revision,graph.status]));
+    if(!disposed&&fingerprint!==swarmFingerprint){
+      swarmFingerprint=fingerprint;
+      // Historical snapshots may be opened at any time. Only graphs observed executing
+      // in this host can change the current execution's terminal state.
+      const latest=graphs.filter(graph=>activeGraphIds.has(String(graph.id))).sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+      if(latest)swarmTerminalStatus=latest.status==='integrated'?'completed':latest.status==='stopped'?'stopped':latest.status==='failed'?'failed':latest.status==='paused'?(Array.isArray(latest.tasks)&&latest.tasks.some(task=>object(task).status==='unknown')?'interrupted':'paused'):undefined;
+      if(swarmRunning)lifecycleStatus=active.some(graph=>graph.status==='awaiting_review')?'awaiting_review':'running';
+      else if(latest&&!session.isStreaming)lifecycleStatus=swarmTerminalStatus||lifecycleStatus;
+    }
+    publish('state',current());
+  });
   await bind();output({type:'ready',state:current(),...modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 function readAttachment(path:string):{text?:string;image?:ImageContent}{
@@ -80,19 +128,20 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
     const mode=input.mode==='swarm'?'swarm':'single';if(mode==='swarm'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
     const nextPlan=input.planMode===true;
-    if((session.isStreaming||swarmRunning)&&(nextPlan!==planMode||mode!==executionMode))throw new Error('请先停止当前执行，再切换计划或协作方式');
-    if(!session.isStreaming&&!swarmRunning){planMode=nextPlan;executionMode=mode;}
-    if(!session.isStreaming)runId=randomUUID();
-    void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>publish('notice',{level:'error',message:error instanceof Error?error.message:String(error)}));
+    if((!session.isIdle||swarmRunning)&&(nextPlan!==planMode||mode!==executionMode))throw new Error('请先停止当前执行，再切换计划或协作方式');
+    if(session.isIdle&&!swarmRunning){planMode=nextPlan;executionMode=mode;}
+    if(session.isIdle){runId=randomUUID();if(!swarmRunning)activeGraphIds.clear();cancelRequested=false;swarmTerminalStatus=undefined;}lifecycleStatus='running';
+    void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>{lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
   if(method==='stop'){
+    if(!session.isIdle||swarmRunning){cancelRequested=true;lifecycleStatus='stopped';}
     for(const [id,pending] of dialogs){clearTimeout(pending.timer);pending.resolve(undefined);publish('dialog.closed',{id});}dialogs.clear();
     if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(['running','awaiting_review'].includes(String(graph.status)))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},5000,'user');}}
-    await session.abort();return current();
+    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();return current();
   }
   if(method==='configure'){
-    if(session.isStreaming||swarmRunning)throw new Error('请等待当前执行停止，再修改配置');
+    if(!session.isIdle||swarmRunning)throw new Error('请等待当前执行停止，再修改配置');
     if(input.modelId)await session.setModel(selectedModel(text(input.modelId)));
     if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!['off','minimal','low','medium','high','xhigh'].includes(level))throw new Error('思考等级无效');session.setThinkingLevel(level as ThinkingLevel);}
     if(Array.isArray(input.plugins)){
@@ -105,24 +154,18 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='dialog.respond'){
     const pending=dialogs.get(text(input.id));if(!pending)throw new Error('交互已结束');clearTimeout(pending.timer);dialogs.delete(String(input.id));pending.resolve(input.cancelled?undefined:input.confirmed!==undefined?Boolean(input.confirmed):input.value);return {ok:true};
   }
-  if(method==='provider.save'){
-    if(session.isStreaming||swarmRunning)throw new Error('请先停止当前执行，再修改供应商配置');
-    const provider=text(input.provider,'供应商',120);const auth=join(agentDir,'auth.json');
-    if(input.baseUrl||input.modelId){
-      const modelId=text(input.modelId||runtime.getModels(provider)[0]?.id,'型号',200);const baseUrl=text(input.baseUrl||runtime.getModels(provider)[0]?.baseUrl,'地址',2000);const parsed=new URL(baseUrl);if(!['https:','http:'].includes(parsed.protocol))throw new Error('地址须为 HTTP(S)');
-      const path=join(agentDir,'models.json');const config=existsSync(path)?object(JSON.parse(readFileSync(path,'utf8'))):{};const providers=object(config.providers||{});
-      providers[provider]={baseUrl,api:typeof input.api==='string'?input.api:'openai-completions',models:[{id:modelId,name:modelId,reasoning:false,input:['text'],contextWindow:32768,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}]};
-      atomicWrite(path,JSON.stringify({...config,providers},null,2));
-    }
-    await runtime.refresh();
-    if(input.apiKey){const key=text(input.apiKey,'Key',8192);await runtime.login(provider,'api_key',{prompt:async()=>key,notify:()=>{}});}
-    await runtime.refresh();const available=await runtime.getAvailable(provider);if(available[0]&&!session.isStreaming)await session.setModel(available[0]);return {...current(),...modelState()};
+  if(method==='provider.save'||method==='provider.refresh'){
+    if(!session.isIdle||swarmRunning)throw new Error('请先停止当前执行，再修改供应商配置');
+    const provider=method==='provider.save'?await saveProviderConfiguration(runtime,dataDir,input):typeof input.provider==='string'?input.provider:undefined;await runtime.refresh();
+    if(method==='provider.save'&&provider){const available=await runtime.getAvailable(provider);if(available[0])await session.setModel(available[0]);}else if(session.model){const latest=runtime.getModel(session.model.provider,session.model.id);if(latest)await session.setModel(latest);}
+    return {...current(),...modelState()};
   }
   if(method==='rename'){session.setSessionName(text(input.name,'名称',200));return current();}
   if(method==='shutdown'){await shutdown();return {ok:true};}
   throw new Error(`未知操作：${method}`);
 }
-async function shutdown(){if(disposed)return;disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();bus.clear();}
-process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result});if(request.method==='shutdown')setImmediate(()=>process.disconnect?.());}).catch(error=>output({type:'response',id:request.id,error:error instanceof Error?error.message:String(error)}));});
+function publicError(error:unknown):string{return (error instanceof Error?error.message:String(error)).replace(/sk-[A-Za-z0-9_-]{8,}/g,'[密钥已隐藏]');}
+async function shutdown(){if(disposed)return;if(session&&!session.isIdle||swarmRunning)lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();bus.clear();}
+process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result});if(request.method==='shutdown')setImmediate(()=>process.disconnect?.());}).catch(error=>output({type:'response',id:request.id,error:publicError(error)}));});
 process.on('disconnect',()=>{void shutdown();});
-void initialize().catch(error=>{output({type:'fatal',error:error instanceof Error?error.message:String(error)});process.exitCode=1;setImmediate(()=>process.disconnect?.());});
+void initialize().catch(error=>{output({type:'fatal',error:publicError(error)});process.exitCode=1;setImmediate(()=>process.disconnect?.());});

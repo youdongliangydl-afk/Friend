@@ -4,9 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { atomicWrite, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text } from '@friend-pi/core';
+import { agentDirectory, atomicWrite, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text } from '@friend-pi/core';
 import type { JsonObject, PluginContext, PluginController, StoredDocument } from '@friend-pi/core';
 import { contains, destructiveCommand } from './guard.js';
 import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, SharedDocument, Task } from './types.js';
@@ -24,6 +23,11 @@ function number(value:unknown,fallback:number,min:number,max:number): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || Number(value)<min || Number(value)>max) throw new Error(`数值必须在 ${min}–${max} 之间`);
   return Number(value);
+}
+function thinkingLevel(value:unknown,fallback?:string):string|undefined {
+  if(value===undefined)return fallback;
+  if(typeof value!=='string'||!['off','minimal','low','medium','high','xhigh'].includes(value))throw new Error('未知思考等级');
+  return value;
 }
 function strings(value:unknown): string[] {if (!Array.isArray(value) || value.some(x=>typeof x !== 'string')) throw new Error('必须提供字符串数组'); return value as string[];}
 function graphKey(projectId:string,id:string): string {return `graph:${projectId}:${id}`;}
@@ -51,7 +55,7 @@ function checkSpecs(input:unknown): Check[] {
 function productionLauncher(start:MemberStart,output:(message:MemberOutput)=>void,exited:(code:number|null)=>void): MemberHandle {
   const worker=process.env.FRIEND_PI_MEMBER_WORKER || fileURLToPath(new URL('./member.js',import.meta.url));
   if (!existsSync(worker)) throw new Error(`Swarm 成员运行器不存在：${worker}；请构建或完整安装 Swarm 包`);
-  const child=fork(worker,[],{cwd:start.cwd,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:start.dataDir,ELECTRON_RUN_AS_NODE:'1'},execArgv:[]});
+  const child=fork(worker,[],{cwd:start.cwd,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:start.dataDir,FRIEND_PI_AGENT_DIR:start.agentDir,ELECTRON_RUN_AS_NODE:'1'},execArgv:[]});
   // Keep diagnostics bounded and never echo environment/configuration containing credentials.
   let diagnostics=''; child.stderr?.on('data',chunk=>{diagnostics=(diagnostics+String(chunk)).slice(-4000);});
   child.stdout?.resume();
@@ -136,7 +140,7 @@ export class SwarmController implements PluginController {
     const tasks=raw.map(taskSpec);validateDAG(tasks);
     let checks=checkSpecs(input.checks);
     if (input.checks===undefined && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
-    const graph:Graph={id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:typeof input.thinkingLevel==='string'?input.thinkingLevel:undefined,checks};
+    const graph:Graph={id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks};
     this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
   private async baseline(projectDir:string): Promise<Baseline|undefined> {
@@ -153,7 +157,7 @@ export class SwarmController implements PluginController {
       if (await git(baseline.repoRoot,['status','--porcelain'])) throw new Error('项目有未提交改动，暂不能启动隔离写入；保留这些改动后仍可使用 Single 或只读 Swarm');
       if (await git(baseline.repoRoot,['rev-parse','HEAD'])!==baseline.head) throw new Error('项目基线已变化，请创建新任务图；旧成果保留');
     }
-    this.update(id,ctx,g=>{g.baseline=baseline;g.status='running';g.error=undefined;if (!g.attempts.length) {g.modelId=typeof input.modelId==='string'?input.modelId:ctx.modelId;g.thinkingLevel=typeof input.thinkingLevel==='string'?input.thinkingLevel:g.thinkingLevel;g.agentDir=typeof input.agentDir==='string'?resolve(input.agentDir):(process.env.FRIEND_PI_AGENT_DIR || getAgentDir());}});
+    this.update(id,ctx,g=>{g.baseline=baseline;g.status='running';g.error=undefined;if (!g.attempts.length) {g.modelId=typeof input.modelId==='string'?input.modelId:ctx.modelId;g.thinkingLevel=thinkingLevel(input.thinkingLevel,ctx.thinkingLevel??g.thinkingLevel);g.agentDir=typeof input.agentDir==='string'?resolve(input.agentDir):(ctx.agentDir || agentDirectory());}});
     this.changed(ctx);void this.pump(id,ctx);
   }
   /** Atomic claim is intentionally public for deterministic race verification. */
@@ -192,7 +196,7 @@ export class SwarmController implements PluginController {
     graph=this.update(id,ctx,g=>{const target=g.attempts.find(a=>a.id===attempt.id)!;target.cwd=cwd;target.expert=expert;});
     if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running') return;
     const dependencies=task.dependencies.map(dep=>{const previous=graph.attempts.find(a=>a.id===graph.tasks.find(t=>t.id===dep)?.currentAttempt);return {taskId:dep,summary:previous?.summary};});
-    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || process.env.FRIEND_PI_AGENT_DIR || getAgentDir(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${task.prompt}\n前置成果：${JSON.stringify(dependencies)}\n共享资料通过协调者提供，不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes};
+    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${task.prompt}\n前置成果：${JSON.stringify(dependencies)}\n共享资料通过协调者提供，不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes};
     const handle=this.launcher(start,message=>void this.memberOutput(id,attempt.id,message,ctx),code=>{
       if (this.disposed) return;
       this.members.delete(attempt.id);const current=this.get(id,ctx).value.attempts.find(a=>a.id===attempt.id);
@@ -309,7 +313,7 @@ export class SwarmController implements PluginController {
     return {command:check.command,args:check.args,exitCode,output:output.slice(-20000),at:now()};
   }
   private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<{approved:boolean;findings:string}> {
-    const id=randomUUID();const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||process.env.FRIEND_PI_AGENT_DIR||getAgentDir(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时只读原文件。不能修改或派生。输出纯 JSON {"approved":true|false,"findings":"事实和具体问题"}，不能只凭成员自评批准。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.prompt,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n客观检查：${JSON.stringify(graph.integration?.checks || [])}`};
+    const id=randomUUID();const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时只读原文件。不能修改或派生。输出纯 JSON {"approved":true|false,"findings":"事实和具体问题"}，不能只凭成员自评批准。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.prompt,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n客观检查：${JSON.stringify(graph.integration?.checks || [])}`};
     return new Promise((resolveResult,reject)=>{
       let done=false;let handle:MemberHandle;
       const finish=(error?:Error,value?:{approved:boolean;findings:string})=>{if (done) return;done=true;clearTimeout(timer);this.members.delete(id);if (error) {handle?.stop();reject(error);}else resolveResult(value!);};

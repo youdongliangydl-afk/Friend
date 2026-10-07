@@ -4,7 +4,7 @@
 
 Pi EventBus 请求频道 `friend-pi:v1:request`：`{v:1,id,plugin,action,input,origin}`。响应频道 `friend-pi:v1:response`：`{id,result}` 或 `{id,error}`。事件频道 `friend-pi:v1:event`：`{pluginEvent,sessionId,data}`。请求 ID 是 UUID，监听在响应或超时后释放；可选能力短超时，无依赖时退回自身能力。
 
-`PluginContext` 包含项目真实路径的稳定身份、Pi sessionId、来源读取、空闲状态、冻结模型 ID/complete、统一 request/emit 和 appendEntry。来源是 `{sessionId,entryId}`；跨会话来源必须是已登记的同项目 JSONL，缺失或越界拒绝。
+`PluginContext` 包含项目真实路径的稳定身份、Pi sessionId、来源读取、空闲状态、冻结模型 ID/思考等级/complete、宿主 agentDir、统一 request/emit 和 appendEntry。SDK 宿主明确声明自己的认证目录，成员与复核继承同一冻结目录；原生 Pi 使用公开默认目录。来源是 `{sessionId,entryId}`；跨会话来源必须是已登记的同项目 JSONL，缺失或越界拒绝。
 
 | 插件 | 核心 actions |
 |---|---|
@@ -18,5 +18,9 @@ GUI 请求为用户 origin，模型工具为 agent，插件相互请求为 plugi
 模型工具名称分别为 `friend_swarm`、`friend_expert`、`friend_memory`、`friend_topic_rebuild`，参数为 `{action,input?}`。原生 `/命令 action JSON`、GUI 与工具均进入相同 dispatch。
 
 Electron Preload 只暴露 request/onEvent。Main 校验顶级 webContents/frame 和方法白名单，SDK 工作进程隔离执行，交互 ID 路由到发起会话。`session.send` 接受 text、attachments、mode=single|swarm、planMode 和 inputMode=steer|followUp；计划范围在执行启动时冻结，执行中切换需先停止。`project.select{projectId}` 切换到该项目最近会话。
+
+`settings.get/update` 管理全局供应商及新会话默认模型、思考等级、插件、协作方式和计划模式；默认值不改写已有会话。`provider.save` 不要求先创建会话，认证只写入独立数据目录内 Pi 原生存储，响应不包含凭证。供应商修改要求所有会话空闲，再刷新各自运行时。
+
+客户端聊天快照读取 Pi JSONL 当前分支的原生消息 ID，压缩后仍能预览原始轮次；本地书签仅保存来源 ID。SQLite 会话卡保存可重建的型号、状态和配置索引，不复制消息正文。完成状态依据 `agent_settled` 及 Swarm 调度终态；进程中断与冷启动中的未完成执行标记为 interrupted，不自动重放。
 
 当前执行不热卸载插件。空闲 configure 调用公开 reload，然后重新绑定确认／选择／输入等 UI；取消和超时返回未批准。关闭发送 session_shutdown，取消后台任务和成员，未确认副作用不自动重放。

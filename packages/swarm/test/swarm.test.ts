@@ -55,6 +55,17 @@ test('claim enforces dependencies and serializes non-Git writers while allowing 
     controller.claim(graph.id,'a',f.context);assert.throws(()=>controller.claim(graph.id,'b',f.context),/串行/);controller.claim(graph.id,'c',f.context);assert.throws(()=>controller.claim(graph.id,'d',f.context),/依赖/);
   }finally {await controller.dispose();f.cleanup();}
 });
+test('Swarm inherits off/high at actual start and keeps the existing execution snapshot on resume',async()=>{
+  const f=fixture();const worker=controlled();const controller=new SwarmController(worker.launcher);
+  try {
+    const off={...f.context,origin:'user' as const,thinkingLevel:'off'};const high={...off,thinkingLevel:'high'};
+    const a=await controller.dispatch('create',{goal:'off inheritance',tasks:[spec('a')]},off) as Graph;assert.equal(a.thinkingLevel,'off');await controller.dispatch('start',{graphId:a.id},off);await waitFor(()=>worker.starts.size===1);assert.equal([...worker.starts.values()][0].thinkingLevel,'off');
+    await controller.dispatch('pause',{graphId:a.id},off);await controller.dispatch('resume',{graphId:a.id,confirmUnknown:true,thinkingLevel:'high'},high);await waitFor(()=>worker.starts.size===2);assert.equal([...worker.starts.values()][1].thinkingLevel,'off');assert.equal(snapshot(controller,off).graphs.find(graph=>graph.id===a.id)!.thinkingLevel,'off');await controller.dispatch('pause',{graphId:a.id},off);
+    const b=await controller.dispatch('create',{goal:'high inheritance',tasks:[spec('b')]},off) as Graph;await controller.dispatch('start',{graphId:b.id},high);await waitFor(()=>worker.starts.size===3);assert.equal([...worker.starts.values()][2].thinkingLevel,'high','latest user selection at actual launch is authoritative');await controller.dispatch('pause',{graphId:b.id},high);
+    const c=await controller.dispatch('create',{goal:'explicit override',tasks:[spec('c')]},high) as Graph;await controller.dispatch('start',{graphId:c.id,thinkingLevel:'off'},high);await waitFor(()=>worker.starts.size===4);assert.equal([...worker.starts.values()][3].thinkingLevel,'off');
+    await assert.rejects(controller.dispatch('create',{goal:'invalid',thinkingLevel:'unsupported',tasks:[spec('bad')]},high),/未知思考等级/);
+  }finally{await controller.dispose();f.cleanup();}
+});
 test('shared files use durable version CAS and immutable atomic version files',async()=>{
   const f=fixture();const first=new SwarmController();const second=new SwarmController();
   try {
