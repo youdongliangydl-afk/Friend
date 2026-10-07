@@ -116,12 +116,16 @@ export default function App() {
   useEffect(() => {
     let saved:JsonObject={};try{if(sessionId)saved=asObject(JSON.parse(localStorage.getItem(`friend-pi.draft.v1:${sessionId}`)||'{}'));}catch{}
     setDraft(typeof saved.text==='string'?saved.text:'');setAttachments(asList<JsonObject>(saved.attachments).filter(item=>typeof item.path==='string').map(item=>({path:String(item.path)})));setDraftOwner(sessionId);
-    setLiveText(''); setThinking(''); setTools([]); setDialogs([]); setLocalRunning(false); setSwarmRunning(false); lastSubmitted.current = null; followScroll.current=true; setPlanMode(state.current?.planMode??state.preferences?.defaultPlanMode??false);setMode(state.current?.executionMode||state.preferences?.defaultMode||'single'); if (state.current?.projectId) setSelectedProject(state.current.projectId);
+    setLiveText(''); setThinking(''); setTools([]); setDialogs([]); setLocalRunning(false); setSwarmRunning(false); lastSubmitted.current = null; followScroll.current=true;
+    setPlanMode(typeof saved.planMode==='boolean'?saved.planMode:state.current?.planMode??state.preferences?.defaultPlanMode??false);
+    setMode(saved.mode==='single'||saved.mode==='swarm'?saved.mode:state.current?.executionMode||state.preferences?.defaultMode||'single');
+    if (state.current?.projectId) setSelectedProject(state.current.projectId);
   }, [sessionId]);
   useEffect(()=>{
     if(!sessionId||draftOwner!==sessionId)return;
-    try{const key=`friend-pi.draft.v1:${sessionId}`;if(draft||attachments.length)localStorage.setItem(key,JSON.stringify({text:draft,attachments}));else localStorage.removeItem(key);}catch{/* The current in-memory draft is retained if local storage is full. */}
-  },[sessionId,draftOwner,draft,attachments]);
+    // Pending composer intent belongs to the draft, even before text is entered.
+    try{localStorage.setItem(`friend-pi.draft.v1:${sessionId}`,JSON.stringify({text:draft,attachments,planMode,mode}));}catch{/* The current in-memory draft is retained if local storage is full. */}
+  },[sessionId,draftOwner,draft,attachments,planMode,mode]);
   useEffect(() => { if (followScroll.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'instant' }); }, [state.current?.messages, liveText, tools, thinking]);
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape' && dialogs.length === 0) { setTab(null); composer.current?.focus(); } }; window.addEventListener('keydown', handle); return () => window.removeEventListener('keydown', handle); }, [dialogs.length]);
   const send = async () => {
@@ -160,7 +164,7 @@ export default function App() {
   useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'&&!document.querySelector('[role=dialog]')){event.preventDefault();setSidebar(true);requestAnimationFrame(()=>searchInput.current?.focus());}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   const addAttachments = () => { void window.friendPi.request('file.pick').then(value => setAttachments(previous => [...new Map([...previous, ...pickedPaths(value).map(path => ({ path }))].map(item => [item.path, item])).values()])).catch(error => report(errorText(error), true)); };
   const currentPlugins = state.current?.plugins || []; const messages = state.current?.messages || [];
-  useEffect(()=>{if(mode==='swarm'&&!currentPlugins.includes('swarm'))setMode('single');},[mode,currentPlugins]);
+  useEffect(()=>{if(sessionId&&draftOwner===sessionId&&Array.isArray(state.current?.plugins)&&mode==='swarm'&&!currentPlugins.includes('swarm'))setMode('single');},[sessionId,draftOwner,mode,currentPlugins]);
   const lastAssistant = [...messages].reverse().find(message => message.role === 'assistant'); const showLive = liveText && lastAssistant?.text !== liveText;
   const navigateProject=(event:React.KeyboardEvent<HTMLButtonElement>,index:number)=>{
     const next=event.key==='ArrowLeft'?Math.max(0,index-1):event.key==='ArrowRight'?Math.min(state.projects.length-1,index+1):event.key==='Home'?0:event.key==='End'?state.projects.length-1:null;
