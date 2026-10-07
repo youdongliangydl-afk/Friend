@@ -196,6 +196,10 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     fixture.appendResponses([respond]);
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
+    if(messages.some(message=>message.role==='system'&&message.toolsAdded?.some(tool=>tool.name==='swarm_review_result'))){
+      if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='swarm_review_result'))return fauxAssistantMessage(fauxToolCall('swarm_review_result',{approved:true,findings:'离线测试复核，不代表真实模型质量'}),{stopReason:'toolUse'});
+      return fauxAssistantMessage('离线复核说明文字；结构化工具提交才是验收结果。');
+    }
     if(content.includes('QA_CONFIRM')&&!hasResult)return fauxAssistantMessage(fauxToolCall('bash',{command:'rm -f fixture-confirm.txt'}),{stopReason:'toolUse'});
     if(content.includes('QA_SLOW'))return fauxAssistantMessage('正在进行可中止的离线流式验证。'.repeat(300));
     if(content.includes('FRIEND_PI_REBUILD_JSON')){
