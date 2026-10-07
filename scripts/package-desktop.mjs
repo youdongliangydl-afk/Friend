@@ -132,7 +132,7 @@ async function verifyWorker(node, appRoot, piCommit) {
 
 async function main() {
   const { values } = parseArgs({ options: { 'skip-build': { type: 'boolean', default: false }, 'require-clean': { type: 'boolean', default: false }, 'no-zip': { type: 'boolean', default: false }, help: { type: 'boolean', default: false } } });
-  if (values.help) { console.log('Usage: node scripts/package-desktop.mjs [--skip-build] [--require-clean] [--no-zip]\nProduces an unsigned self-contained macOS arm64 application. Final delivery must use --require-clean and verify this exact candidate.'); return; }
+  if (values.help) { console.log('Usage: node scripts/package-desktop.mjs [--skip-build] [--require-clean] [--no-zip]\nProduces a self-contained macOS arm64 application with a local ad-hoc outer signature. No Developer ID or notarization. Final delivery must use --require-clean and verify this exact candidate.'); return; }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('This first release packages macOS arm64 only');
   const piLock = assertToolchain();
   if (!values['skip-build']) command(process.execPath, [join(root, 'scripts/build.mjs')]);
@@ -171,8 +171,14 @@ async function main() {
   const plist = join(stagedApp, 'Contents/Info.plist');
   for (const [key, value] of Object.entries({ CFBundleName: 'Friend-Pi', CFBundleDisplayName: 'Friend-Pi', CFBundleIdentifier: 'local.friendpi.desktop', CFBundleExecutable: 'Friend-Pi', CFBundleShortVersionString: appMetadata.version, CFBundleVersion: appMetadata.version })) command('/usr/bin/plutil', ['-replace', key, '-string', value, plist]);
   renameSync(join(stagedApp, 'Contents/MacOS/Electron'), join(stagedApp, 'Contents/MacOS/Friend-Pi'));
-  // Removing the outer inherited Electron signature is not signing this project.
+  // ARM64 requires a loadable code signature. Replace only the outer local seal;
+  // preserve upstream nested framework signatures and never use --deep signing.
   try { command('/usr/bin/codesign', ['--remove-signature', stagedApp], root, true); } catch (error) { if (!String(error.stderr || '').includes('not signed')) throw error; }
+  command('/usr/bin/codesign', ['--force', '--sign', '-', stagedApp], root, true);
+  command('/usr/bin/codesign', ['--verify', '--strict', stagedApp], root, true);
+  const electronVersion = json(join(root, 'node_modules/electron/package.json')).version;
+  const nativeVersion = command(join(stagedApp, 'Contents/MacOS/Friend-Pi'), ['--version'], tmpdir(), true, { ELECTRON_RUN_AS_NODE: undefined }).trim();
+  if (nativeVersion !== `v${electronVersion}`) throw new Error(`Packaged native Electron cannot execute: ${nativeVersion}`);
   verifyInternalLinks(stagedApp);
   const sdkUrl = pathToFileURL(join(appRoot, 'node_modules/@earendil-works/pi-coding-agent/dist/index.js')).href;
   const coreUrl = pathToFileURL(join(appRoot, 'node_modules/@friend-pi/core/dist/index.js')).href;
@@ -188,7 +194,7 @@ async function main() {
   const timestamp = Date.now(); if (existsSync(finalApp)) renameSync(finalApp, join(out, `Friend-Pi.previous-${timestamp}.app`)); renameSync(stagedApp, finalApp);
   let archive;
   if (!values['no-zip']) { const target = join(out, 'Friend-Pi-mac-arm64.zip'); if (existsSync(target)) renameSync(target, join(out, `Friend-Pi.previous-${timestamp}.zip`)); command('/usr/bin/ditto', ['-c', '-k', '--keepParent', finalApp, target]); archive = { file: relative(root, target), sha256: fileHash(target) }; }
-  const delivery = { schemaVersion: 1, kind: 'unsigned-macos-arm64', source, buildInfo, buildInfoSha256: fileHash(join(finalApp, 'Contents/Resources/app/build-info.json')), piCommit: piLock.commit, piArtifactManifestSha256: fileHash(join(root, piLock.artifactManifest)), dependencyLockSha256: fileHash(join(root, 'package-lock.json')), nodeVersion: piLock.nodeVersion, nodeSha256: fileHash(join(finalApp, 'Contents/Resources/runtime/node')), npmVersion: piLock.npmVersion, electronVersion: json(join(root, 'node_modules/electron/package.json')).version, app: relative(root, finalApp), artifactHashAlgorithm: digested.algorithm, artifactSha256: digested.sha256, archive, checks: { internalSymlinks: true, noDevelopmentEntryPaths: true, bundledSdkImport: true, bundledPiCliVersion: cliVersion, packagedSdkFork: workerSmoke, actualGUI: 'NOT_RUN', realModel: 'NOT_RUN' }, packagedAt: new Date().toISOString() };
+  const delivery = { schemaVersion: 1, kind: 'local-adhoc-macos-arm64', source, buildInfo, buildInfoSha256: fileHash(join(finalApp, 'Contents/Resources/app/build-info.json')), piCommit: piLock.commit, piArtifactManifestSha256: fileHash(join(root, piLock.artifactManifest)), dependencyLockSha256: fileHash(join(root, 'package-lock.json')), nodeVersion: piLock.nodeVersion, nodeSha256: fileHash(join(finalApp, 'Contents/Resources/runtime/node')), npmVersion: piLock.npmVersion, electronVersion, app: relative(root, finalApp), signing: { identity: 'adhoc', developerId: false, notarized: false, distributionSigning: false, nestedFrameworksResigned: false, verified: true }, artifactHashAlgorithm: digested.algorithm, artifactSha256: digested.sha256, archive, checks: { internalSymlinks: true, noDevelopmentEntryPaths: true, bundledSdkImport: true, bundledPiCliVersion: cliVersion, nativeElectronVersion: nativeVersion, codesignVerified: true, packagedSdkFork: workerSmoke, actualGUI: 'NOT_RUN', realModel: 'NOT_RUN' }, packagedAt: new Date().toISOString() };
   if (existsSync(join(out, 'delivery-manifest.json'))) renameSync(join(out, 'delivery-manifest.json'), join(out, `delivery-manifest.previous-${timestamp}.json`));
   writeFileSync(join(out, 'delivery-manifest.json'), `${JSON.stringify(delivery, null, 2)}\n`); renameSync(join(stage, 'files.json'), join(out, 'files.json'));
   const alias = join(root, '.artifacts/delivery-manifest.json');

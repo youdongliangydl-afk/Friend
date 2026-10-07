@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { RecordStore,object,text,projectIdentity } from '@friend-pi/core';
 
+if(process.argv.includes('--version')){console.log(`v${process.versions.electron}`);app.exit(0);}
 const __dirname=dirname(fileURLToPath(import.meta.url));
 const execute=promisify(execFile);const root=app.isPackaged?app.getAppPath():resolve(__dirname,'../../..');
 const dataDir=resolve(process.env.FRIEND_PI_DATA_DIR||join(app.getPath('appData'),'Friend-Pi'));process.env.FRIEND_PI_DATA_DIR=dataDir;

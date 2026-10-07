@@ -82,4 +82,4 @@ Electron / React 客户端
 
 感谢 [Pi](https://github.com/earendil-works/pi)、[pi-gui](https://github.com/minghinmatthewlam/pi-gui)、[DeepSeekHarness](https://github.com/deepseek-ai/deepseek-harness)、[pi-subagents](https://github.com/tintinweb/pi-subagents)、[pi-agent-orchestrator](https://github.com/GroepOnline/pi-agent-orchestrator)、[MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code)、[Mem0](https://github.com/mem0ai/mem0)、[MiniMax Code](https://github.com/MiniMax-AI/minimax-code)、[ZCode](https://github.com/zai-org/ZCode) 和 [Codex](https://github.com/openai/codex) 的公开实现。固定来源、复用边界、版权和许可证见 [第三方说明](THIRD_PARTY_NOTICES.md)及各插件 `SOURCES.md`。README 致谢不代替原许可证。
 
-本版本只交付本地源码和未签名 macOS 应用，不创建远端、不发布 npm、不执行签名发行。
+本版本只交付本地源码和 macOS 应用，不创建远端、不发布 npm、不执行证书签名发行或公证。ARM64 应用使用本地 ad-hoc 代码签名满足系统的可执行要求，不具有发布证书身份。

@@ -1,6 +1,6 @@
 # 本地交付打包
 
-使用 Node 24.15.0 / npm 11.12.1。先运行 `npm run bootstrap`，按项目构建流程显式安装 Electron 下载生命周期，再执行测试和构建。下面的打包脚本不创建远端、不发布 npm、不签名或公证。
+使用 Node 24.15.0 / npm 11.12.1。先运行 `npm run bootstrap`，按项目构建流程显式安装 Electron 下载生命周期，再执行测试和构建。打包使用 Apple Silicon 执行所需的本地 ad-hoc 外层签名，不使用 Developer ID、证书或公证；不创建远端、不发布 npm。
 
 ```sh
 node scripts/package-plugins.mjs
@@ -41,7 +41,7 @@ Friend-Pi.app/Contents
 
 打包离线复制锁文件对应的实际 production 依赖，校验版本和完整 Pi tarball 摘要，并重新解包规范 Pi 文件。Workspace 包复制为实体目录；所有 symlink 必须仍在 `.app` 内。自带 Node 从仓库外 smoke import SDK/core，并运行自带 Pi CLI 的 `--version`。客户端默认使用自身 runtime 与独立 Friend-Pi 用户目录；QA 可以明确覆盖环境变量。Electron 主入口中不允许开发机 checkout 的绝对路径。
 
-上游 Electron 二进制和 framework 保持原发行内容；只改应用标识并移除外层继承签名。不执行项目签名或公证。原始 npm/Node 及 Electron/Chromium 的许可证随包保存，浏览器中内联的 React 许可证另行保存。
+只改 Electron 应用标识和外层代码封装签名，嵌套 framework 保留上游签名，不使用 `--deep` 重签。改完标识后移除失效的继承签名，再执行 `codesign --force --sign -`，生成本机 ARM64 可执行所需的 ad-hoc 签名。该签名不提供开发者身份或发行信任，不是 Developer ID 签名或公证发行。打包门槛实际运行原生 Electron `--version` 并执行 `codesign --verify --strict`；SDK import 不能替代这一启动检查。原始 npm/Node 及 Electron/Chromium 的许可证随包保存，浏览器中内联的 React 许可证另行保存。
 
 ## 最终候选与摘要
 
