@@ -119,9 +119,10 @@ test('disabled memory stays disabled after automatic relearning and cold restart
 test('background reflection, dream, distill keep method candidates without Expert',async () => {
   const f = fixture(); const c = new MemoryController(); let calls = 0;
   try {
+    f.entries.push({id:'verified1',parentId:'reply1',type:'message',timestamp:new Date().toISOString(),role:'toolResult',text:'服务端数据库写操作串行验证通过。'});
     f.ctx.complete = async prompt => {
       calls++;
-      if (prompt.includes('项目经验提取器')) return JSON.stringify({memories:[{title:'数据库写入',content:'服务端数据库写操作需要串行',kind:'experience',sourceEntryIds:['user1']}]});
+      if (prompt.includes('项目经验提取器')) return JSON.stringify({memories:[{title:'数据库写入',content:'服务端数据库写操作需要串行',kind:'experience',sourceEntryIds:['verified1']}]});
       const candidate = (c.snapshot(f.ctx).memories as MemoryRecord[]).find(record => record.kind === 'experience')!;
       return JSON.stringify({method:{title:'事务写入检查',content:'仅本项目：顺序写入，并检查事务完整性。',sourceMemoryIds:[candidate.id]}});
     };

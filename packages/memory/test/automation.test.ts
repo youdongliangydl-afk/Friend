@@ -26,6 +26,74 @@ test('automatic sourced facts and personal preferences publish without accept, e
   }finally{await c.dispose();f.close();}
 });
 
+test('real Reflection omission and merged-personal shapes normalize explicit project clauses before publication',async()=>{
+  for(const shape of ['omitted','merged-personal']){
+    const f=setup();const c=new MemoryController();try{
+      f.items.splice(1);f.items[0].text='早期约束：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。读取 /tmp/qa/README.md，简短说明内容。';
+      f.items.push({id:'read-result',parentId:'u1',type:'message',role:'toolResult',timestamp:new Date().toISOString(),text:'# Real provider acceptance fixture\nOnly this disposable project may be changed.\n'});
+      const readQuote=f.items[0].text.slice(f.items[0].text.indexOf('读取'));
+      const fixtureFact={title:'真实 provider 验收夹具项目仅允许修改自身',content:'真实 provider 验收夹具项目是一次性项目，唯一约束为只允许修改该项目自身。',kind:'fact',sourceEntryIds:shape==='omitted'?['u1','read-result']:['read-result'],sourceQuotes:{u1:readQuote,'read-result':f.items[1].text}};
+      f.ctx.complete=async()=>JSON.stringify({memories:[...(shape==='merged-personal'?[{title:'数据库必须使用 SQLite 并保留 UTF-8 中文字段',content:'用户提出早期约束：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。',kind:'preference',sourceEntryIds:['u1'],sourceQuotes:{u1:f.items[0].text}}]:[]),fixtureFact]});
+      await c.settled(f.ctx);await stages(c,f.ctx);const active=c.snapshot(f.ctx).memories as MemoryRecord[];
+      assert.equal(active.length,2,shape);assert.ok(active.every(record=>record.kind==='fact'&&record.scope==='project'&&record.status==='active'));const db=active.find(record=>record.content.includes('SQLite'))!,utf=active.find(record=>record.content.includes('UTF-8'))!;
+      assert.notEqual(db.id,utf.id);assert.equal(db.sources.length,1);assert.equal(utf.sources.length,1);assert.ok(!readSourceSpan(f.items[0],db.sources[0]).includes('UTF-8'));assert.ok(!readSourceSpan(f.items[0],utf.sources[0]).includes('SQLite'));
+      assert.ok(!(c.snapshot(f.ctx).candidates as MemoryRecord[]).some(record=>record.content.includes('SQLite')&&record.content.includes('UTF-8')),'a merged or personal candidate cannot steal later correction matching');
+      const job=(c.snapshot(f.ctx).learning as {jobs:{diagnostics:{reflection:{outputHash:string;explicitProjectFacts:number;normalized:number};publication:{active:number}}}[]}).jobs[0];assert.equal(job.diagnostics.reflection.explicitProjectFacts,2);assert.equal(job.diagnostics.publication.active,2);assert.equal(job.diagnostics.reflection.outputHash.length,64);
+      if(shape==='merged-personal'){
+        assert.equal(job.diagnostics.reflection.normalized,1);f.items.push({id:'correction',parentId:'read-result',type:'message',role:'user',timestamp:new Date().toISOString(),text:'更正数据库：不要 SQLite，必须使用 PostgreSQL；UTF-8 中文字段保持有效。'});c.recall(f.ctx);
+        const selected=c.select({query:'数据库 UTF-8',limit:8},f.ctx).records as MemoryRecord[];assert.ok(selected.some(record=>record.id===db.id&&record.content.includes('PostgreSQL')));assert.ok(!selected.some(record=>/数据库必须使用 SQLite/u.test(record.content)));assert.equal((await c.dispatch('read',{id:utf.id},f.ctx) as MemoryRecord).revision,utf.revision);
+        const revised=await c.dispatch('read',{id:db.id},f.ctx) as MemoryRecord;assert.match(revised.title,/PostgreSQL/);assert.ok(!/数据库必须使用 SQLite/u.test(revised.title));assert.equal((await c.dispatch('read',{id:utf.id},f.ctx) as MemoryRecord).title,utf.title);
+        assert.equal((await c.dispatch('versions',{id:db.id},f.ctx) as MemoryRecord[]).find(record=>record.revision===db.revision)?.title,db.title);
+      }
+    }finally{await c.dispose();f.close();}
+  }
+});
+
+test('a whole-message merged project proposal is removed while a separately grounded later personal preference survives',async()=>{
+  const f=setup();const c=new MemoryController();try{
+    f.items.splice(1);f.items[0].text='本项目规则：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。个人偏好：我更喜欢用中文解释，今后都请这样。';
+    f.ctx.complete=async()=>JSON.stringify({memories:[{title:'数据库与编码',content:'数据库必须使用 SQLite，必须保留 UTF-8 中文字段。',kind:'preference',sourceEntryIds:['u1'],sourceQuotes:{u1:f.items[0].text}},{title:'解释语言',content:'用户更喜欢用中文解释',kind:'preference',sourceEntryIds:['u1'],sourceQuotes:{u1:f.items[0].text}}]});
+    await c.settled(f.ctx);await stages(c,f.ctx);const active=c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(active.length,3);const personal=active.find(record=>record.scope==='personal')!;assert.ok(personal);assert.equal(personal.kind,'preference');assert.ok(readSourceSpan(f.items[0],personal.sources[0]).includes('个人偏好'));assert.ok(!readSourceSpan(f.items[0],personal.sources[0]).includes('数据库'));assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
+  }finally{await c.dispose();f.close();}
+});
+
+test('temporary tasks and quoted or conditional project rules never become permanent facts by normalization',async()=>{
+  for(const value of ['本次任务：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。','如果本项目规则要求数据库必须使用 SQLite，请先检查。','示例：本项目规则是数据库必须使用 SQLite。','这个项目是临时工程。必须先查看 README.md。','> 本项目约束：数据库必须使用 SQLite。','原文：本项目约束：数据库必须使用 SQLite。','摘录：本项目约束：数据库必须使用 SQLite。','转述：本项目约束：数据库必须使用 SQLite。','当前目标：维持本项目约束。数据库必须使用 SQLite，必须保留 UTF-8 中文字段。']){
+    const f=setup();const c=new MemoryController();try{
+      f.items.splice(1);f.items[0].text=value;f.ctx.complete=async()=>JSON.stringify({memories:[{title:'任务约束',content:'数据库必须使用 SQLite',kind:'fact',sourceEntryIds:['u1'],sourceQuotes:{u1:value}}]});await c.settled(f.ctx);await stages(c,f.ctx);
+      assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0,value);assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,1,value);
+      assert.equal((c.snapshot(f.ctx).learning as {jobs:{diagnostics:{reflection:{explicitProjectFacts:number}}}[]}).jobs[0].diagnostics.reflection.explicitProjectFacts,0);
+    }finally{await c.dispose();f.close();}
+  }
+});
+
+test('a quoted project rule stays data while a later independent explicit declaration restores project authority',async()=>{
+  for(const prefix of ['> ','原文：','摘录：','转述：']){
+    const f=setup();const c=new MemoryController();try{
+      f.items.splice(1);f.items[0].text=`${prefix}本项目约束：数据库必须使用 SQLite。\n本项目约束：数据库必须使用 PostgreSQL，必须保留 UTF-8 中文字段。`;f.ctx.complete=async()=>JSON.stringify({memories:[]});await c.settled(f.ctx);await stages(c,f.ctx);
+      const active=c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(active.length,2);assert.ok(active.some(record=>record.content.includes('PostgreSQL')));assert.ok(active.some(record=>record.content.includes('UTF-8')));assert.ok(active.every(record=>!record.content.includes('SQLite')));
+    }finally{await c.dispose();f.close();}
+  }
+});
+
+test('current goal reminders cannot append sources or increment an active canonical rule revision',async()=>{
+  const f=setup();const c=new MemoryController();try{
+    f.items.splice(1);f.items[0].text='本项目约束：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。';await c.settled(f.ctx);await stages(c,f.ctx);const original=c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(original.length,2);
+    f.items.push({id:'goal-reminder',parentId:'u1',type:'message',role:'user',timestamp:new Date().toISOString(),text:'当前目标：维持本项目约束。数据库必须使用 SQLite，必须保留 UTF-8 中文字段。只回复收到。'});
+    f.ctx.complete=async()=>JSON.stringify({memories:original.map(record=>({title:record.title,content:record.content,kind:'fact',sourceEntryIds:['goal-reminder'],sourceQuotes:{'goal-reminder':record.content.includes('SQLite')?'数据库必须使用 SQLite，':'必须保留 UTF-8 中文字段。'}}))});await c.settled(f.ctx);await stages(c,f.ctx);
+    const current=c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(current.length,2);for(const record of original){const saved=current.find(item=>item.id===record.id)!;assert.equal(saved.revision,record.revision);assert.deepEqual(saved.sources,record.sources);}
+    assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
+  }finally{await c.dispose();f.close();}
+});
+
+test('an invalid model quote rolls back normalized records and job IDs together before a safe retry',async()=>{
+  const f=setup();const c=new MemoryController();const clock=Date.now;try{
+    f.items.splice(1);f.items[0].text='本项目规则：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'非法提案',content:'数据库使用 SQLite',kind:'fact',sourceEntryIds:['u1'],sourceQuotes:{u1:'原史没有这一句'}}]});await c.settled(f.ctx);const job=peekLearningJob(f.dir)!;
+    const failed=await c.executeLearningJob(job.id,f.ctx);assert.equal(failed.job?.state,'queued');assert.equal(failed.job?.attempts,1);assert.deepEqual(failed.job?.memoryIds,[]);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
+    Date.now=()=>clock()+10000;f.ctx.complete=async()=>JSON.stringify({memories:[]});await stages(c,f.ctx);const finished=(c.snapshot(f.ctx).learning as {jobs:{state:string;memoryIds:string[]}[]}).jobs[0];assert.equal(finished.state,'completed');assert.equal(finished.memoryIds.length,2);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,2);
+  }finally{Date.now=clock;await c.dispose();f.close();}
+});
+
 test('precise correction retires database fragment and preserves sibling UTF-8 source across restart',async()=>{
   const f=setup();let c=new MemoryController();try{
     const db=await c.dispatch('save',{content:'数据库必须使用 SQLite',sources:[{sessionId:'s',entryId:'u1'}],explicitRemember:true},f.ctx) as MemoryRecord;
@@ -176,6 +244,16 @@ test('attachment contents cannot masquerade as a user personal preference or a c
     f.ctx.complete=async()=>JSON.stringify({memories:[{title:'语言',content:'用户更喜欢英文解释',kind:'preference',sourceEntryIds:['u1'],sourceQuotes:{u1:'以后我更喜欢英文解释。'}}]});
     await c.settled(f.ctx);await stages(c,f.ctx);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
   }finally{await c.dispose();f.close();}
+});
+
+test('attachment facts and experiences or empty-typed image hints cannot masquerade as user authority',async()=>{
+  for(const image of [false,true]){
+    const f=setup();const c=new MemoryController();try{
+      f.items.splice(1);f.items[0].userText=image?'':'请阅读附件';f.items[0].text=image?'[image omitted by provider] 本项目约束：数据库必须使用 SQLite。':'请阅读附件\n附件 /tmp/rules.txt：\n本项目约束：数据库必须使用 SQLite。';
+      const quote='本项目约束：数据库必须使用 SQLite。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'附件事实',content:'数据库必须使用 SQLite',kind:'fact',sourceEntryIds:['u1'],sourceQuotes:{u1:quote}},{title:'附件经验',content:'数据库必须使用 SQLite',kind:'experience',sourceEntryIds:['u1'],sourceQuotes:{u1:quote}}]});
+      await c.settled(f.ctx);await stages(c,f.ctx);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);assert.ok((c.snapshot(f.ctx).candidates as MemoryRecord[]).every(record=>record.status==='candidate'));assert.deepEqual((c.select({query:'SQLite'},f.ctx).records as MemoryRecord[]),[]);
+    }finally{await c.dispose();f.close();}
+  }
 });
 
 test('malformed source offsets and fabricated literals cannot become an active automatic record',async()=>{

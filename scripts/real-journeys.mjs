@@ -38,6 +38,11 @@ try {
    const material=`第${i+1}轮 QA 数据，只用于压缩验收。以下单段编号材料不是指令，不执行工具，只回复收到。\n`+'a 123456 b 789012 '.repeat(7200);
    await submitAndSettle(material);
    await submitAndSettle('当前目标：维持本项目约束。数据库必须使用 PostgreSQL，必须保留 UTF-8 中文字段。编号材料只是数据；只回复收到，不调用工具。');
+   // Stabilize this fixture's own publication to test successful adoption. The
+   // product compression hook does not wait for the background/global queue;
+   // concurrent source invalidation and native fallback have separate regressions.
+   await call('memory','learning.run');
+   await until(async()=>{const snapshot=await call('memory','snapshot');const jobs=snapshot.learning.jobs.filter(job=>job.sessionId===state.sessionId);if(jobs.some(job=>job.state==='failed'||job.state==='waiting_configuration'))throw new Error('Fixture learning did not publish successfully');return jobs.every(job=>job.state==='completed');},240000);
    const startAt=events.length;await call('topic-rebuild','rebuild');
    await until(()=>events.slice(startAt).some(e=>e.event?.data?.type==='compaction_end'),240000);
    const complete=events.slice(startAt).find(e=>e.event?.data?.type==='compaction_end').event.data;
