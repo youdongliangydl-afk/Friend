@@ -20,7 +20,9 @@ let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGI
 let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode:'single'|'swarm'=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>}>();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;
-const pendingInputs:{id:string;text:string;combinedHash:string;runId?:string}[]=[];let stopping=false;
+interface PendingInput {id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;nativeMessage?:unknown;runId?:string}
+const pendingInputs:PendingInput[]=[];let startedInputId:string|undefined;let stopping=false;
+function imageIdentity(images:readonly unknown[]){return digest(JSON.stringify(images.map(raw=>{const image=object(raw);return [image.mimeType,image.data];})));}
 function output(message:unknown){if(process.connected)process.send?.(message);}
 function publish(type:string,data:unknown){output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000):Promise<unknown>{
@@ -58,6 +60,10 @@ function selectedModel(id:string){const slash=id.indexOf('/');const model=runtim
 function guard():ExtensionFactory{return pi=>{
   pi.registerTool({name:'friend_plan',label:'提交计划',description:'只读规划完成后提交可供用户批准的计划；模型不能批准或启动。',parameters:Type.Object({action:Type.Union([Type.Literal('submit'),Type.Literal('read')]),body:Type.Optional(Type.String())}),async execute(_id,input){const result=input.action==='read'?plans.current():plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});publish('state',current());return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.on('before_agent_start',event=>{
+    // Public Pi input hooks identify the submitted prompt before Pi appends image
+    // normalization hints. Bind its next new native user object, never an old
+    // history entry or another input with the same empty text.
+    startedInputId=pendingInputs.find(input=>input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(event.prompt)&&input.imageHash===imageIdentity(event.images||[]))?.id;
     const instructions=planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
     return instructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}`}:undefined;
   });
@@ -109,7 +115,15 @@ async function initialize(){
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
   session.subscribe(event=>{
     publish('pi',event);
-    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;const combinedHash=digest(visibleText(nativeMessage.content));queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.combinedHash===combinedHash);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});pendingInputs.splice(position,1);publish('state',current());});}
+    if(event.type==='message_start'&&event.message.role==='user'){
+      const nativeMessage=event.message;const nativeText=visibleText(nativeMessage.content);
+      const started=pendingInputs.find(input=>input.id===startedInputId);startedInputId=undefined;
+      // Queued steering/follow-up inputs do not run before_agent_start. They are
+      // delivered unchanged by Pi, so require both complete text and image hashes.
+      const input=started||pendingInputs.find(input=>!input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(nativeText)&&input.imageHash===imageIdentity(typeof nativeMessage.content==='string'?[]:nativeMessage.content.filter(part=>part.type==='image')));
+      if(input&&digest(nativeText.slice(0,input.combinedLength))===input.combinedHash)input.nativeMessage=nativeMessage;
+    }
+    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});pendingInputs.splice(position,1);publish('state',current());});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=swarmBusy();
@@ -175,7 +189,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='send'){
     if(stopping)throw new Error('正在停止，请等待终止回执');
-    text(input.text,'消息');const prompt=String(input.text);const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];
+    const prompt=typeof input.text==='string'?input.text:'';const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];if(prompt.trim()||!attachments.length)text(input.text,'消息');else if(input.text!==undefined&&typeof input.text!=='string')throw new Error('消息需要文本');
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
     const mode=input.mode==='swarm'?'swarm':'single';if(mode==='swarm'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
@@ -190,8 +204,9 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;authorityNotice='';
     }
     lifecycleStatus='running';
-    const inputRecord={id:randomUUID(),text:prompt,combinedHash:digest(combined),runId};pendingInputs.push(inputRecord);
-    void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
+    const images=attachments.flatMap(item=>item.image?[item.image]:[]);
+    const inputRecord:PendingInput={id:randomUUID(),text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
+    void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
   if(method==='stop'){

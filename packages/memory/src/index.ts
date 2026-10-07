@@ -591,9 +591,10 @@ ${redactMemorySecrets(JSON.stringify(experiences.map(record=>({id:record.id,titl
         if(mutation.ids.length)this.invalidate(mutation.ids,'deleted',0,ctx,mutation.sources);return {withdrawn:mutation.ids};
       }
       case 'read': {
-        const stored = this.get(input.id,ctx);const sources=stored.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId));
-        const record={...stored,sources,...(stored.sources.length&&!sources.length?{status:'invalidated' as const,enabled:false,invalidatedReason:'原始来源已删除；历史版本不再作为有效记忆'}:{})};
-        return input.source === true ? {memory:record,originals:record.sources.map(source => { try { return {source,item:ctx.readSource(source)}; } catch (error) { return {source,error:errorMessage(error)}; } })} : record;
+        const current = this.get(input.id,ctx);let stored=current;let historical=false;
+        if(input.revision!==undefined){if(!Number.isInteger(input.revision)||Number(input.revision)<1)throw new Error('记忆版本无效');if(input.revision!==current.revision){const saved=this.database(ctx).db.prepare('SELECT json FROM memory_versions WHERE id=? AND revision=?').get(current.id,Number(input.revision));if(!saved)throw new Error('记忆历史版本不存在');stored=JSON.parse(String(saved.json)) as MemoryRecord;historical=true;}}
+        const sources=stored.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId));const record={...stored,sources,...(stored.sources.length&&!sources.length?{status:'invalidated' as const,enabled:false,invalidatedReason:'原始来源已删除；历史版本不再作为有效记忆'}:{}),...(historical?{historical:true,currentRevision:current.revision}:{})};
+        return input.source === true ? {memory:record,historical,currentRevision:current.revision,originals:record.sources.map(source => { try { return {source,item:ctx.readSource(source)}; } catch (error) { return {source,error:errorMessage(error)}; } })} : record;
       }
       case 'versions': { const record = this.get(input.id,ctx); return this.store!.db.prepare('SELECT json FROM memory_versions WHERE id=? ORDER BY revision DESC').all(record.id).map(row => JSON.parse(String(row.json))); }
       case 'accept': {
