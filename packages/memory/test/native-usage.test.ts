@@ -5,8 +5,8 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createAgentSession,createEventBus,DefaultResourceLoader,initTheme,ModelRuntime,SessionManager,SettingsManager,type AgentSession} from '@earendil-works/pi-coding-agent';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
-import {requestPlugin,type JsonObject} from '../../core/src/index.js';
-import memoryExtension,{type MemoryRecord} from '../src/index.js';
+import {makeContext,requestPlugin,type JsonObject,type PluginContext} from '../../core/src/index.js';
+import memoryExtension,{MemoryController,peekLearningJob,type MemoryRecord} from '../src/index.js';
 
 test('Memory alone injects exact versions into actual public Pi faux requests, journals receipts and restores them cold',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-native-memory-'));const prior=process.env.FRIEND_PI_DATA_DIR,role=process.env.FRIEND_PI_LEARNING_ROLE;process.env.FRIEND_PI_DATA_DIR=join(dir,'state');process.env.FRIEND_PI_LEARNING_ROLE='producer';
@@ -24,4 +24,31 @@ test('Memory alone injects exact versions into actual public Pi faux requests, j
     await session.reload();await session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});const restored=await requestPlugin(bus,'memory','usage',{},1000,'user') as JsonObject;assert.equal((restored.records as MemoryRecord[])[0].revision,2);assert.deepEqual(errors,[]);
     await session.prompt('READ_MEMORY');const toolReceipts=readFileSync(session.sessionFile!,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi.memory.usage:v1'&&entry.data.channel==='model-tool');assert.ok(toolReceipts.some(entry=>entry.data.stage==='tool-read'&&entry.data.records[0].revision===2));assert.deepEqual(errors,[]);
   }finally{if(session){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}bus.clear();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;if(role===undefined)delete process.env.FRIEND_PI_LEARNING_ROLE;else process.env.FRIEND_PI_LEARNING_ROLE=role;rmSync(dir,{recursive:true,force:true});}
+});
+
+test('native Pi foreground correction fences a delayed background provider and preserves its sibling through cold replay',{timeout:30000},async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-native-memory-race-')),dataDir=join(dir,'state');const prior=process.env.FRIEND_PI_DATA_DIR,role=process.env.FRIEND_PI_LEARNING_ROLE;process.env.FRIEND_PI_DATA_DIR=dataDir;process.env.FRIEND_PI_LEARNING_ROLE='producer';
+  const bus=createEventBus();let session:AgentSession|undefined,ctx:PluginContext|undefined,worker=new MemoryController();const errors:string[]=[],learningInputs:string[]=[];let release!:()=>void,started!:()=>void;const began=new Promise<void>(done=>{started=done;});
+  try{
+    initTheme('light',false);const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),allowModelNetwork:false});const provider=fauxProvider({provider:'memory-race',models:[{id:'native',reasoning:false,input:['text'],contextWindow:32000,maxTokens:4096}]});
+    const respond:Parameters<typeof provider.setResponses>[0][number]=async context=>{
+      provider.appendResponses([respond]);const message=context.messages.at(-1);const prompt=message&&'content' in message?(typeof message.content==='string'?message.content:message.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')):'';
+      if(!prompt.includes('你是项目经验提取器'))return fauxAssistantMessage('收到。');
+      learningInputs.push(prompt);if(learningInputs.length===1){started();await new Promise<void>(done=>{release=done;});}
+      const sources=JSON.parse(prompt.slice(prompt.lastIndexOf('\n')+1)) as {id:string;role:string;text:string}[];const source=sources.find(item=>item.role==='user')!;
+      const replaced=source.text.includes('PostgreSQL');const quote=replaced?source.text.split('；')[0]+'；':source.text.split('\n').find(part=>part.includes('UTF-8'))!;
+      return fauxAssistantMessage(JSON.stringify({memories:[{title:replaced?'数据库':'编码',content:replaced?'数据库必须使用 PostgreSQL':'必须保留 UTF-8 中文字段',kind:'fact',sourceEntryIds:[source.id],sourceQuotes:{[source.id]:quote}}]}));
+    };provider.setResponses([respond]);runtime.registerNativeProvider(provider.provider);await runtime.setRuntimeApiKey('memory-race','fixture');
+    const settings=SettingsManager.inMemory({extensions:[],packages:[],compaction:{enabled:false}});const loader=new DefaultResourceLoader({cwd:dir,agentDir:join(dir,'agent'),settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,eventBus:bus,extensionFactories:[memoryExtension,pi=>{pi.on('agent_settled',(_event,context)=>{ctx=makeContext(pi,context,'plugin');});}]});await loader.reload();
+    const created=await createAgentSession({cwd:dir,agentDir:join(dir,'agent'),modelRuntime:runtime,model:provider.getModel(),settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(dir,join(dir,'sessions')),tools:['friend_memory']});session=created.session;await session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});
+    await session.prompt('早期约束：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。');const job=peekLearningJob(dataDir)!;assert.ok(job);const pending=worker.executeLearningJob(job.id,ctx!);await began;
+    await session.prompt('更正数据库：不要 SQLite，必须使用 PostgreSQL；UTF-8 中文字段保持有效。只回复已更正，不调用工具。');const invalidation=await requestPlugin(bus,'memory','invalidation.snapshot',{},1000,'user') as {epoch:number;sources:MemoryRecord['sources']};assert.equal(invalidation.epoch,1);assert.equal(invalidation.sources.length,1);
+    assert.equal((await requestPlugin(bus,'memory','select',{query:'数据库 UTF-8'},1000,'user') as {records:MemoryRecord[]}).records.length,0,'the correction is durable provenance, not fabricated long-term knowledge');
+    release();const late=await pending;assert.equal(late.job?.state,'queued');assert.equal(late.job?.attempts,0);await worker.dispose();worker=new MemoryController();
+    for(let i=0;i<8;i++){const next=peekLearningJob(dataDir);if(!next)break;await worker.executeLearningJob(next.id,ctx!);}
+    assert.ok(learningInputs[0].includes('SQLite'));assert.ok(!learningInputs[1].includes('SQLite'));assert.ok(learningInputs[1].includes('UTF-8'));
+    const selected=await requestPlugin(bus,'memory','select',{query:'数据库 UTF-8',limit:8},1000,'user') as {records:MemoryRecord[]};assert.equal(selected.records.length,2);assert.ok(selected.records.some(record=>record.content.includes('PostgreSQL')));assert.ok(selected.records.some(record=>record.content.includes('UTF-8')));assert.ok(selected.records.every(record=>!record.content.includes('SQLite')));
+    await session.prompt('检查数据库和 UTF-8 约束。');const usage=await requestPlugin(bus,'memory','usage',{},1000,'user') as {records:MemoryRecord[]};assert.equal(usage.records.length,2);assert.ok(usage.records.every(record=>!record.content.includes('SQLite')));assert.equal(errors.length,0);
+    await session.reload();await session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});const cold=await requestPlugin(bus,'memory','select',{query:'数据库 UTF-8',limit:8},1000,'user') as {records:MemoryRecord[]};assert.equal(cold.records.length,2);assert.deepEqual(errors,[]);
+  }finally{release?.();await worker.dispose();if(session){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}bus.clear();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;if(role===undefined)delete process.env.FRIEND_PI_LEARNING_ROLE;else process.env.FRIEND_PI_LEARNING_ROLE=role;rmSync(dir,{recursive:true,force:true});}
 });

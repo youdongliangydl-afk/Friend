@@ -161,7 +161,7 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
     },
     complete:async (prompt, options = {}) => {
       if (!model) throw new Error('请先配置模型');
-      const result = await ctx.modelRegistry.complete(model, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048});
+      const result = await ctx.modelRegistry.complete(model, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
       if (result.stopReason === 'error' || result.stopReason === 'aborted') throw new Error(result.errorMessage || '模型调用未完成');
       return visibleText(result.content);
     },

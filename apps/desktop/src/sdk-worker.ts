@@ -20,7 +20,7 @@ let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGI
 let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode:'single'|'swarm'=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>}>();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;
-const pendingInputs:{text:string;runId?:string}[]=[];let stopping=false;
+const pendingInputs:{id:string;text:string;combinedHash:string;runId?:string}[]=[];let stopping=false;
 function output(message:unknown){if(process.connected)process.send?.(message);}
 function publish(type:string,data:unknown){output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000):Promise<unknown>{
@@ -109,7 +109,7 @@ async function initialize(){
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
   session.subscribe(event=>{
     publish('pi',event);
-    if(event.type==='message_end'&&event.message.role==='user'&&pendingInputs.length){const input=pendingInputs.shift()!;const entry=[...session.sessionManager.getBranch()].reverse().find(e=>e.type==='message'&&e.message.role==='user');if(entry)session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});}
+    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;const combinedHash=digest(visibleText(nativeMessage.content));queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.combinedHash===combinedHash);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});pendingInputs.splice(position,1);publish('state',current());});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=swarmBusy();
@@ -174,6 +174,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     return await handle('send',{text:`执行用户已批准的计划 ${plan.id} v${plan.revision}，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
   }
   if(method==='send'){
+    if(stopping)throw new Error('正在停止，请等待终止回执');
     text(input.text,'消息');const prompt=String(input.text);const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
@@ -189,15 +190,15 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;authorityNotice='';
     }
     lifecycleStatus='running';
-    pendingInputs.push({text:prompt,runId});
-    void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>{foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
+    const inputRecord={id:randomUUID(),text:prompt,combinedHash:digest(combined),runId};pendingInputs.push(inputRecord);
+    void session.prompt(combined,{images:attachments.flatMap(item=>item.image?[item.image]:[]),streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>publish('state',current())).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
   if(method==='stop'){
     if(!session.isIdle||swarmBusy()){cancelRequested=true;stopping=true;lifecycleStatus='stopping';publish('state',current());}
     for(const [id,pending] of dialogs){clearTimeout(pending.timer);pending.resolve(undefined);publish('dialog.closed',{id});}dialogs.clear();
     try{if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id)))&&busyGraphStatuses.has(String(graph.status)))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},20000,'user');}}
-    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return current();}finally{stopping=false;publish('state',current());}
+    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';}finally{pendingInputs.length=0;stopping=false;publish('state',current());}return current();
   }
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');

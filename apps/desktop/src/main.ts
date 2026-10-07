@@ -163,8 +163,8 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.relocate'){const {record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});currentId=record.id;store.put('current',record.id);publishState();return state();}
   if(method==='settings.get')return await settings(typeof input.projectId==='string'?input.projectId:undefined);
   if(method==='settings.update'){
-    const projectId=typeof input.projectId==='string'?input.projectId:undefined;const key=projectId?`preferences:${projectId}`:'preferences';
-    if(input.reset===true&&projectId){store.remove(key);await applyPreferenceSnapshots(projectId);publishState();return await settings(projectId);}
+    const projectId=typeof input.projectId==='string'?input.projectId:undefined;if(projectId&&!store.get(`project:${projectId}`))throw new Error('项目不存在');const key=projectId?`preferences:${projectId}`:'preferences';
+    if(input.reset===true&&projectId){store.remove(key);await applyPreferenceSnapshots(projectId);await learningRequest('refresh').catch(()=>{});publishState();return await settings(projectId);}
     const next={...preferences(projectId)};
     if(input.defaultModelId!==undefined){const id=String(input.defaultModelId);if(id&&!providerMetadata(await getProviderRuntime()).models.some(model=>model.id===id))throw new Error('默认型号不可用');next.defaultModelId=id;}
     if(input.defaultThinkingLevel!==undefined){if(!thinkingLevels.includes(String(input.defaultThinkingLevel)))throw new Error('思考等级无效');next.defaultThinkingLevel=String(input.defaultThinkingLevel);}
@@ -177,7 +177,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(next.contextMode==='infinite'&&!next.defaultPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
     const metadata=providerMetadata(await getProviderRuntime());if(next.backgroundModelId&&!metadata.models.some(model=>model.id===next.backgroundModelId))throw new Error('后台学习模型不可用');const available=await (await getProviderRuntime()).getAvailable();const fallback=available[0];const model=metadata.models.find(model=>model.id===(next.defaultModelId||(fallback?`${fallback.provider}/${fallback.id}`:'')));if(model&&!model.thinkingLevels.includes(next.defaultThinkingLevel as never))throw new Error('默认模型不支持此思考等级');
     requireActive();store.put(key,next);
-    await applyPreferenceSnapshots(projectId);
+    await applyPreferenceSnapshots(projectId);await learningRequest('refresh').catch(()=>{});
     publishState();return await settings(projectId);
   }
   if(method==='provider.save'){
