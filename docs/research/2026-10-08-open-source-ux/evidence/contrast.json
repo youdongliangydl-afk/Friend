@@ -1,0 +1,70 @@
+{
+  "kind": "static CSS contrast calculation; not a whole-app WCAG certification",
+  "standard": "https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum",
+  "sourceCommit": "c1415c7e9ec7cde75796716fc26f69db2e09f319",
+  "pairs": [
+    {
+      "label": "会话卡辅助文字",
+      "fg": "#9bad8d",
+      "bg": "#edf3e8",
+      "cssSize": 10,
+      "ratio": 2.122760911086903,
+      "regularTextThreshold": 4.5,
+      "pass": false
+    },
+    {
+      "label": "会话路径",
+      "fg": "#9caf8f",
+      "bg": "#ffffff",
+      "cssSize": 11,
+      "ratio": 2.34841358382056,
+      "regularTextThreshold": 4.5,
+      "pass": false
+    },
+    {
+      "label": "模型/思考标签",
+      "fg": "#81976e",
+      "bg": "#fdfefa",
+      "cssSize": 10,
+      "ratio": 3.1485141279506066,
+      "regularTextThreshold": 4.5,
+      "pass": false
+    },
+    {
+      "label": "先规划关闭时标签",
+      "fg": "#8a9f7b",
+      "bg": "#fdfefa",
+      "cssSize": 10,
+      "ratio": 2.830180327002746,
+      "regularTextThreshold": 4.5,
+      "pass": false
+    },
+    {
+      "label": "通用提示修正后",
+      "fg": "#6b7e61",
+      "bg": "#ffffff",
+      "cssSize": 12,
+      "ratio": 4.391362199342681,
+      "regularTextThreshold": 4.5,
+      "pass": false
+    },
+    {
+      "label": "正文",
+      "fg": "#242b2a",
+      "bg": "#ffffff",
+      "cssSize": 13,
+      "ratio": 14.442937690502703,
+      "regularTextThreshold": 4.5,
+      "pass": true
+    },
+    {
+      "label": "建议辅助正文",
+      "fg": "#5a655f",
+      "bg": "#ffffff",
+      "cssSize": 12,
+      "ratio": 6.066824001093894,
+      "regularTextThreshold": 4.5,
+      "pass": true
+    }
+  ]
+}
