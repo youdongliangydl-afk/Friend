@@ -156,7 +156,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();currentId=id;store.put('current',id);publishState();return state();
   }
   if(method==='session.rename'){
-    const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker)await request(worker,'rename',{name:record.name});publishState();return state();
+    const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker){worker.record.name=record.name;await request(worker,'rename',{name:record.name});}publishState();return state();
   }
   if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加附件',properties:['openFile','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
   if(method==='file.read'){const path=pathInProject(text(input.projectId),text(input.path));const bytes=readFileSync(path);if(bytes.length>1024*1024||bytes.includes(0))throw new Error('仅预览 1 MiB 内文本文件');return {path,content:bytes.toString('utf8')};}

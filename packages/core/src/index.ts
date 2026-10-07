@@ -175,7 +175,17 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   pi.on('session_shutdown',async() => { current = undefined; off(); await controller.dispose?.(); });
 }
 
-export function parseModelJson(value: string): JsonObject { return object(JSON.parse(value.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''))); }
+export function parseModelJson(value: string): JsonObject {
+  const trimmed=value.trim();
+  try { return object(JSON.parse(trimmed)); }
+  catch(error) { if(!(error instanceof SyntaxError))throw error; }
+  // Only an unambiguous Markdown block is a fallback. Do not guess objects from prose,
+  // evaluate JavaScript, or change field types that the caller still has to validate.
+  const lines=trimmed.split(/\r?\n/);const fences:{index:number;language:string}[]=[];
+  for(let index=0;index<lines.length;index++){const match=/^[ \t]*```(.*?)[ \t]*$/.exec(lines[index]);if(match)fences.push({index,language:match[1].trim()});}
+  if(fences.length!==2||!['','json'].includes(fences[0].language.toLowerCase())||fences[1].language!=='')throw new Error('模型结果需要完整 JSON 对象或恰好一个 JSON 代码块');
+  return object(JSON.parse(lines.slice(fences[0].index+1,fences[1].index).join('\n').trim()));
+}
 
 /** Explicit test-only provider. Never registered for an ordinary launch. */
 export async function installFixtureProvider(runtime:ModelRuntime) {
