@@ -1,0 +1,27 @@
+/* Secondary content remains readable on the light workstation backgrounds. */
+.panel-intro p, .hint, .card small, .field small, .field>span,
+.expert-item>p, .memory-item small, .learning-job, .history-result small,
+.working-field small, .rebuild-meta, .provider-list, .provider-list small,
+.message-receipt small, .task-node small, .dependencies {
+  color: #6b7e61;
+}
+.candidate-item .markdown, .memory-item .markdown, .working-field .markdown,
+.history-result p, .message-receipt p, .task-node p, .modal .markdown, .modal p {
+  color: #455d3b;
+}
+.code-view, .diff-view { color: #49683c; }
+.field>input, .field>textarea, .field>select { color: #3f5138; }
+.item-heading strong, .expert-item .check, .modal-heading h2 { color: #4b663b; }
+.badge { color: #607653; }
+.badge-failed, .badge-blocked, .badge-unknown, .badge-invalidated { color: #915a39; }
+.badge-running, .badge-validating { color: #86712f; }
+.badge-completed, .badge-active, .badge-integrated, .badge-published, .badge-ready { color: #547638; }
+.text-button, details>summary, .attempt-link, .selection-option { color: #67854e; }
+.empty, .empty p, .muted, .selection-option small, .card-heading h3 { color: #718265; }
+.composer-hint, .welcome>p, .session-status { color: #7a8774; }
+.inline-error { color: #936349; }
+.diff-add { color: #487522; }
+.diff-remove { color: #987444; }
+.field-point .button-row { margin-top: 0; }
+.working-field .hint { font-size: 11px; margin-top: 6px; }
+.panel-content .search-row { margin-top: 10px; }

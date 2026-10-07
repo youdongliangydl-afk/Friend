@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/earendil-works/pi.git",
+  "commit": "eb326d265ae0b88489a6d10319307780df827cdf",
+  "packageVersion": "1.0.4",
+  "nodeVersion": "24.15.0",
+  "npmVersion": "11.12.1",
+  "modelCatalog": {
+    "revision": "sha256-c5d5070c7592ca8e27743e892a7eec1d6c883be8034f888735238cdfdb3ab70f",
+    "url": "https://pi.dev/api/models/revisions/sha256-c5d5070c7592ca8e27743e892a7eec1d6c883be8034f888735238cdfdb3ab70f?types=chat,image,classifier"
+  },
+  "directPackages": [
+    "@earendil-works/pi-coding-agent",
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-agent-core"
+  ],
+  "artifactManifest": ".cache/pi/artifacts/manifest.json",
+  "packages": [
+    {
+      "name": "@earendil-works/chord",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-chord-1.0.4-776259c36bad.tgz",
+      "integrity": "sha512-d2JZw2utoa/reoSmL07O71wsXiMDhIlnnxTb4LCNV+Oq8Evj2rGLvjVuYrlXZGbXUr0IDNfvd1RT/utCY1UhkQ=="
+    },
+    {
+      "name": "@earendil-works/pi-agent-core",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz",
+      "integrity": "sha512-BlC0QJ8pbn7zMWKCf4pHgVBnYuL53mSduh8RZndP18MNp9U+nGMERF71YUz04MBtU3H/Xblv+i/4XDGDCDa+Ww=="
+    },
+    {
+      "name": "@earendil-works/pi-ai",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-ai-1.0.4-a76ca247dfc4.tgz",
+      "integrity": "sha512-p2yiR9/EhJHGZJMEJJT4pL6nJXTndjKAcv6tv5cinfEexS0mnSexDNg7bNXogK1GypYhY0PGR8bNETVfXnpNtw=="
+    },
+    {
+      "name": "@earendil-works/pi-client",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-client-1.0.4-693b4fbe3bc7.tgz",
+      "integrity": "sha512-aTtPvjvHgS6lpwkRLMNH6KyXfQzlV1eefpe+JsB9eQtvDqmu/ygc3yynO3IG/UMl3Yu95d1ADmX0AkZOwgfYaA=="
+    },
+    {
+      "name": "@earendil-works/pi-codemode",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-codemode-1.0.4-97530ebcb598.tgz",
+      "integrity": "sha512-l1MOvLWY1jaxRUdtw83tK3k9nxJuRdkvsR5u7+98z/muQlAWozIxZShORoMuoumUVGj9DeHtFAvRAJ9r+hLDkQ=="
+    },
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+      "integrity": "sha512-jrk0n22CAmnB8McBdcGGvCKpDjSIc7zHEKVRwfulWo8SLYOyKBhsMF2Fdkyj2zygNE7hNb6JSu4nDCiXz06/KQ=="
+    },
+    {
+      "name": "@earendil-works/pi-durable",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-durable-1.0.4-df99197797fa.tgz",
+      "integrity": "sha512-35kZd5f6sDi9xKZ0vfEIXDTyL3V/FCjQcMdHD9YYvpfyLBEnnL4btlnubKM8ShQJEGE9Pd9h8N8Yi9D6ikFBlw=="
+    },
+    {
+      "name": "@earendil-works/pi-env",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-env-1.0.4-1d63572e8b06.tgz",
+      "integrity": "sha512-HWNXLosGoaBRiABHq0XJyZhjTFqT2bVIRUF8xLje+hlA4hpnHE87XiPP9I4sv3jacAUaqZGBA3y15semEqbVmQ=="
+    },
+    {
+      "name": "@earendil-works/pi-mcp",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-mcp-1.0.4-154bb99940c8.tgz",
+      "integrity": "sha512-FUu5mUDI43uXgWg3gvDPS0jDilTNWIfoVynNSo9QmxZTASuxMJ5Cha2mlA1NXS1SF+b52zUr0m8eNE4qduJxdg=="
+    },
+    {
+      "name": "@earendil-works/pi-protocol",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-protocol-1.0.4-189d6279225d.tgz",
+      "integrity": "sha512-GJ1ieSJdguV3VaO5fXD+LEm6w1Rx0HKk7P1g8I6ZelmiGpmQAYOneUZaCUhAz5BeC6FpyUFzBb+AOo0Npfxtvw=="
+    },
+    {
+      "name": "@earendil-works/pi-server",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-server-1.0.4-6583308c6021.tgz",
+      "integrity": "sha512-ZYMwjGAhivaXyGJ2jfdFHyVkhlkitBfk0ZLmOVYa9qnojKtrfLHTDY/O4LvUFcc7sLmQccnuiJHvM6Aokv7hlw=="
+    },
+    {
+      "name": "@earendil-works/pi-telemetry",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-telemetry-1.0.4-0cbd9e5d7b67.tgz",
+      "integrity": "sha512-DL2eXXtnL5/VQkuQd97fL57GXTG1/zKHtMmDsrv8tGeJ5EgYYTWvzy44dqbYL0lD0Z22v/NOwqU3PHO75HVrqA=="
+    },
+    {
+      "name": "@earendil-works/pi-tui",
+      "version": "1.0.4",
+      "tarball": "tarballs/earendil-works-pi-tui-1.0.4-b1f01816dd5e.tgz",
+      "integrity": "sha512-sfAYFt1eFDn/Bpv61G6CfjeDgYq56tZfW/4dYuInLS0F6EvkY8IuJUoiRexyEILIT1TxOP0tmJCjhBLAZ3DzNQ=="
+    }
+  ]
+}

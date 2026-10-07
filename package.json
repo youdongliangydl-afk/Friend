@@ -1,0 +1,53 @@
+{
+  "name": "friend-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap-pi.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts packages/*/test/*.test.ts",
+    "start": "node scripts/launch.mjs",
+    "package:plugins": "node scripts/package-plugins.mjs",
+    "package:mac": "node scripts/package-desktop.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "electron": "43.5.0",
+    "esbuild": "0.28.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "4.22.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+    "@earendil-works/pi-ai": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-ai-1.0.4-a76ca247dfc4.tgz",
+    "@earendil-works/pi-agent-core": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz"
+  },
+  "overrides": {
+    "@earendil-works/chord": "file:./.cache/pi/artifacts/tarballs/earendil-works-chord-1.0.4-776259c36bad.tgz",
+    "@earendil-works/pi-agent-core": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz",
+    "@earendil-works/pi-ai": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-ai-1.0.4-a76ca247dfc4.tgz",
+    "@earendil-works/pi-client": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-client-1.0.4-693b4fbe3bc7.tgz",
+    "@earendil-works/pi-codemode": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-codemode-1.0.4-97530ebcb598.tgz",
+    "@earendil-works/pi-coding-agent": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+    "@earendil-works/pi-durable": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-durable-1.0.4-df99197797fa.tgz",
+    "@earendil-works/pi-env": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-env-1.0.4-1d63572e8b06.tgz",
+    "@earendil-works/pi-mcp": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-mcp-1.0.4-154bb99940c8.tgz",
+    "@earendil-works/pi-protocol": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-protocol-1.0.4-189d6279225d.tgz",
+    "@earendil-works/pi-server": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-server-1.0.4-6583308c6021.tgz",
+    "@earendil-works/pi-telemetry": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-telemetry-1.0.4-0cbd9e5d7b67.tgz",
+    "@earendil-works/pi-tui": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-tui-1.0.4-b1f01816dd5e.tgz"
+  }
+}

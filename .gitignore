@@ -1,0 +1,8 @@
+node_modules/
+.cache/
+.artifacts/
+dist/
+*.tsbuildinfo
+.DS_Store
+.friend-pi-data/
+build-info.json
