@@ -39,8 +39,8 @@ interface Worker {child:ChildProcess;record:SessionRecord;state:Record<string,un
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
 let models:unknown[]=[];let providers:unknown[]=[];
 let learningReady=false;let learning:ChildProcess|undefined;let learningRestarts=0;const learningPending=new Map<string,{resolve:(v:unknown)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-const ownedChildren=new Map<Worker,Map<number,ProcessIdentity>>();
-function startLearning(){if(shuttingDown||learning)return;learning=fork(join(root,'apps/desktop/dist/learning-worker.mjs'),[],{execPath:node,cwd:root,detached:process.platform!=='win32',stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_LEARNING_ROLE:'host',FRIEND_PI_DESKTOP_MANAGED:'1'}});const child=learning;learningReady=false;child.on('message',raw=>{if(!raw||typeof raw!=='object')return;const message=object(raw);if(message.type==='ready'){learningReady=true;child.emit('friend-ready');}else if(message.type==='response'){const pending=learningPending.get(String(message.id));if(pending){clearTimeout(pending.timer);learningPending.delete(String(message.id));message.error?pending.reject(new Error(String(message.error))):pending.resolve(message.result);}}else if(message.type==='event')publish('plugin',message.data);else if(message.type==='notice')publish('notice',message.data);else if(message.type==='state')publish('learning',message.data);});child.stderr?.on('data',bytes=>{const value=String(bytes);if(!value.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:value.replace(/sk-[A-Za-z0-9_-]{8,}/g,'[隐藏]').slice(0,1000)});});child.on('exit',()=>{if(learning===child){learning=undefined;learningReady=false;}for(const pending of learningPending.values()){clearTimeout(pending.timer);pending.reject(new Error('后台学习进程已退出，进度保留'));}learningPending.clear();if(!shuttingDown&&learningRestarts++<3)setTimeout(startLearning,1000*learningRestarts);});child.on('error',()=>publish('notice',{level:'warning',message:'后台学习未启动，队列已保留'}));}
+const ownedChildren=new Map<Worker,Map<number,ProcessIdentity>>();const learningOwned=new Map<number,ProcessIdentity>();
+function startLearning(){if(shuttingDown||learning)return;processSnapshot();learning=fork(join(root,'apps/desktop/dist/learning-worker.mjs'),[],{execPath:node,cwd:root,detached:process.platform!=='win32',stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_LEARNING_ROLE:'host',FRIEND_PI_DESKTOP_MANAGED:'1'}});const child=learning;child.once('error',()=>{});try{const identity=processSnapshot().get(child.pid!);if(identity)learningOwned.set(identity.pid,identity);else throw new Error('后台宿主身份未能登记');}catch(error){child.kill('SIGKILL');learning=undefined;throw error;}learningReady=false;child.on('message',raw=>{if(!raw||typeof raw!=='object')return;const message=object(raw);if(message.type==='ready'){learningReady=true;child.emit('friend-ready');}else if(message.type==='response'){const pending=learningPending.get(String(message.id));if(pending){clearTimeout(pending.timer);learningPending.delete(String(message.id));message.error?pending.reject(new Error(String(message.error))):pending.resolve(message.result);}}else if(message.type==='event')publish('plugin',message.data);else if(message.type==='notice')publish('notice',message.data);else if(message.type==='state')publish('learning',message.data);});child.stderr?.on('data',bytes=>{const value=String(bytes);if(!value.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:value.replace(/sk-[A-Za-z0-9_-]{8,}/g,'[隐藏]').slice(0,1000)});});child.on('exit',()=>{if(learning===child){learning=undefined;learningReady=false;}for(const pending of learningPending.values()){clearTimeout(pending.timer);pending.reject(new Error('后台学习进程已退出，进度保留'));}learningPending.clear();if(!shuttingDown&&learningRestarts++<3)setTimeout(startLearning,1000*learningRestarts);});child.on('error',()=>publish('notice',{level:'warning',message:'后台学习未启动，队列已保留'}));}
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('link.open');allowed.add('model.test');
@@ -73,14 +73,14 @@ function retireWorker(worker:Worker,error:Error,interrupted=false):void {
 }
 function captureOwned(worker:Worker,pid?:number){
   const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>();const snapshot=processSnapshot();
-  if(pid&&pid>1){const identity=snapshot.get(pid);if(identity&&!known.has(pid))known.set(pid,identity);}
+  if(pid&&pid>1){const identity=snapshot.get(pid);if(identity)known.set(pid,identity);}
   for(const identity of [...known.values()])ownedDescendants(identity,snapshot,known);ownedChildren.set(worker,known);
 }
 let ownershipTracker:ReturnType<typeof setTimeout>|undefined;
 function trackOwned(_worker:Worker){if(ownershipTracker)return;const track=()=>{ownershipTracker=undefined;if(!liveWorkers.size)return;try{const snapshot=processSnapshot();for(const known of ownedChildren.values())for(const identity of [...known.values()])ownedDescendants(identity,snapshot,known);}catch{}ownershipTracker=setTimeout(track,200);ownershipTracker.unref?.();};ownershipTracker=setTimeout(track,200);ownershipTracker.unref?.();}
 function terminateWorker(worker:Worker):Promise<void>{
  if(worker.termination)return worker.termination;
- worker.termination=(async()=>{try{captureOwned(worker);for(let round=0;round<8;round++){const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>(),count=known.size;if(!await terminateOwned(known.values(),known))throw new Error('所属进程清理未能核实');if(known.size===count){worker.phase='exited';liveWorkers.delete(worker);ownedChildren.delete(worker);return;}}throw new Error('清理期间仍出现新的所属进程');}catch(error){worker.termination=undefined;if(!storeClosed)publish('notice',{level:'error',message:String(error)},worker.record.id);throw error;}})();
+ worker.termination=Promise.resolve().then(async()=>{try{captureOwned(worker);for(let round=0;round<8;round++){const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>(),count=known.size;if(!await terminateOwned(known.values(),known))throw new Error('所属进程清理未能核实');if(known.size===count){worker.phase='exited';liveWorkers.delete(worker);ownedChildren.delete(worker);return;}}throw new Error('清理期间仍出现新的所属进程');}catch(error){worker.termination=undefined;if(!storeClosed)publish('notice',{level:'error',message:String(error)},worker.record.id);throw error;}});
  return worker.termination;
 }
 function request(worker:Worker,method:string,input:Record<string,unknown>={},timeoutMs=125000):Promise<unknown>{
@@ -103,16 +103,18 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   const ready=new Promise<void>((resolveResult,reject)=>{resolveReady=resolveResult;rejectReady=reject;});
   const initialThinking=record.thinkingLevel;
   const groupOwned=process.platform!=='win32';
-  const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
+  processSnapshot(); // Fail before spawning when ownership inspection is unavailable.
+  const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_SUPERVISED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
   // The renderer initializes its draft and execution controls from this first snapshot.
   // Keep the persisted configuration visible while native Pi history is loading.
-  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);captureOwned(worker,child.pid);trackOwned(worker);
+  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);let supervisedReady=false;
   worker.startupTimer=setTimeout(()=>{
     const error=new Error('Pi 初始化超时；请检查系统文件访问授权，重新打开会话后显式继续');
     retireWorker(worker,error,true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown)publishState();
   },45000);
   child.on('message',raw=>{
     if(!raw||typeof raw!=='object')return;const message=object(raw);
+    if(message.type==='supervisor.await'){if(supervisedReady&&child.connected)child.send({type:'supervisor.ready'});return;}
     if(message.type==='event'){const event=object(message.event),plugin=object(event.data);if(event.type==='plugin'&&['swarm.process','runtime.process'].includes(String(plugin.pluginEvent))){const data=object(plugin.data);if(data.action==='started'&&data.groupOwned===true)try{captureOwned(worker,Number(data.pid));}catch{} }}
     if(worker.phase==='stopping'||worker.phase==='exited'||workers.get(record.id)!==worker||store.get(`deleting:${record.id}`))return;
     if(message.type==='ready'){
@@ -138,6 +140,7 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
     void terminateWorker(worker).catch(()=>{});
     if(wasActive&&!shuttingDown){publish('notice',{level:'error',message:'运行时已退出。历史已保留，重新打开会话后显式继续。'},record.id);publishState();}
   });
+  try{captureOwned(worker,child.pid);if(!ownedChildren.get(worker)?.has(child.pid!))throw new Error('SDK 宿主身份未能登记');supervisedReady=true;trackOwned(worker);}catch(error){retireWorker(worker,error instanceof Error?error:new Error(String(error)),true);child.kill('SIGKILL');}
   await ready;if(initialThinking){const levels=Array.isArray(worker.state.thinkingLevels)?worker.state.thinkingLevels:['off'];if(levels.includes(initialThinking))worker.state=object(await request(worker,'configure',{thinkingLevel:initialThinking}));else publish('notice',{level:'warning',message:'旧思考设置不受当前模型支持，已采用 Pi 的有效等级；请在设置中重新选择。'},record.id);}if(worker.phase!=='ready'||workers.get(record.id)!==worker)throw new Error('运行时已退出，请重新打开会话');persistWorker(worker);return worker;
 }
 async function target(input:Record<string,unknown>):Promise<Worker>{const id=text(input.sessionId||currentId,'会话');const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话已不可用');return await startWorker(record);}
@@ -295,11 +298,11 @@ else {
   app.on('before-quit',event=>{
     if(quitComplete)return;event.preventDefault();if(shuttingDown)return;shuttingDown=true;
     void (async()=>{
-      const children=[...liveWorkers];const closing=new Error('应用正在退出，执行已中断；未自动重放请求');
+      const children=[...liveWorkers];let hostCleanupFailed=false;const closing=new Error('应用正在退出，执行已中断；未自动重放请求');
       try {
-        await terminalBroker.shutdown().catch(error=>console.error(String(error)));
+        await terminalBroker.shutdown().catch(error=>{hostCleanupFailed=true;publish('notice',{level:'error',message:String(error)});});
         await learningRequest('shutdown',{},3000).catch(()=>{});
-        if(learning?.pid){try{process.kill(process.platform!=='win32'?-learning.pid:learning.pid,'SIGTERM');}catch {}}
+        if(learningOwned.size){try{if(!await terminateOwned(learningOwned.values(),learningOwned))throw new Error('后台学习宿主清理未能核实');learningOwned.clear();}catch(error){hostCleanupFailed=true;publish('notice',{level:'error',message:String(error)});}}
         // Never wait on startup or on a cached rejected ready promise. Ready workers
         // have three seconds to persist shutdown state before their own process groups stop.
         for(const worker of children)if(worker.phase!=='ready'){retireWorker(worker,closing,true);void terminateWorker(worker).catch(()=>{});}
@@ -307,7 +310,7 @@ else {
       }finally {
         for(const worker of children)retireWorker(worker,closing,worker.phase==='starting'||['running','awaiting_review','rebuilding'].includes(worker.record.status||''));
         const cleanup=await Promise.allSettled(children.map(terminateWorker));
-        if(cleanup.some(result=>result.status==='rejected')){shuttingDown=false;return;}
+        if(hostCleanupFailed||cleanup.some(result=>result.status==='rejected')){shuttingDown=false;return;}
         try{store.close();}finally{storeClosed=true;quitComplete=true;app.quit();}
       }
     })();

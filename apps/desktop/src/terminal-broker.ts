@@ -1,7 +1,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { terminateOwned, type ProcessIdentity } from './terminal-processes.js';
+import { terminateOwned,processSnapshot, type ProcessIdentity } from './terminal-processes.js';
 import type { TerminalContext } from './terminal-controller.js';
 export class TerminalBroker {
   private child?:ChildProcess;private ready?:Promise<void>;private closing=false;
@@ -17,7 +17,8 @@ export class TerminalBroker {
       const owned=new Map<number,ProcessIdentity>();this.owned=owned;
       const env={...process.env,FRIEND_PI_DATA_DIR:this.dataDir,PATH:dirname(this.node)+':'+(process.env.PATH||'')};
       for(const key of ['ELECTRON_RUN_AS_NODE','npm_config_target','npm_config_runtime','npm_config_disturl','NODE_OPTIONS'])delete (env as Record<string,unknown>)[key];
-      const child=fork(join(this.root,'apps/desktop/dist/terminal-host.mjs'),[],{execPath:this.node,execArgv:[],cwd:this.root,detached:true,stdio:['ignore','ignore','pipe','ipc'],env});this.child=child;
+      processSnapshot();
+      const child=fork(join(this.root,'apps/desktop/dist/terminal-host.mjs'),[],{execPath:this.node,execArgv:[],cwd:this.root,detached:true,stdio:['ignore','ignore','pipe','ipc'],env});this.child=child;child.once('error',()=>{});try{const host=processSnapshot().get(child.pid!);if(!host)throw new Error('终端宿主身份未能登记');owned.set(host.pid,host);}catch(error){child.kill('SIGKILL');throw error;}
       await new Promise<void>((yes,no)=>{
         const timeout=setTimeout(()=>{no(new Error('终端宿主初始化超时'));child.kill('SIGTERM');},15000);
         child.on('message',(message:any)=>{
@@ -25,12 +26,12 @@ export class TerminalBroker {
           else if(message.type==='response'){const request=this.pending.get(message.id);if(request){clearTimeout(request.timer);this.pending.delete(message.id);message.error?request.reject(new Error(message.error)):request.resolve(message.result);}}
           else if(message.type==='event'){if(message.event.kind==='owned')for(const identity of message.event.identities)owned.set(identity.pid,identity);else this.emit(message.event);}
         });
-        child.on('error',error=>{clearTimeout(timeout);if(this.child===child){this.child=undefined;this.ready=undefined;}this.cleanup=terminateOwned(owned.values()).catch(()=>false);no(error);});
+        child.on('error',error=>{clearTimeout(timeout);if(this.child===child){this.child=undefined;this.ready=undefined;}this.cleanup=terminateOwned(owned.values(),owned).catch(()=>false);no(error);});
         child.on('exit',()=>{
           clearTimeout(timeout);no(new Error('终端宿主已退出'));
           for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(new Error('终端连接已中断，记录保留'));}this.pending.clear();
           if(this.child===child){this.child=undefined;this.ready=undefined;}
-          this.cleanup=terminateOwned(owned.values()).catch(()=>false);this.emit({kind:'disconnected'});
+          this.cleanup=terminateOwned(owned.values(),owned).catch(()=>false);this.emit({kind:'disconnected'});
         });
         child.stderr?.on('data',data=>{if(!String(data).includes('ExperimentalWarning'))this.emit({kind:'notice',message:'终端宿主发生错误，请检查运行环境'});});
       });
@@ -46,7 +47,7 @@ export class TerminalBroker {
     if(this.closing||!child?.connected)throw new Error('终端连接已中断');
     return this.send(child,method,input,context);
   }
-  async hasRunning(context:TerminalContext){if(!await this.cleanup)throw new Error('终端清理未完成');if(!this.child){if(!await terminateOwned(this.owned.values()))throw new Error('终端清理未完成');return false;}const result=await this.request('list',{},context) as {terminals:{state:string}[]};return result.terminals.some(t=>['running','stopping','cleanup_failed'].includes(t.state));}
+  async hasRunning(context:TerminalContext){if(!await this.cleanup)throw new Error('终端清理未完成');if(!this.child){if(!await terminateOwned(this.owned.values(),this.owned))throw new Error('终端清理未完成');return false;}const result=await this.request('list',{},context) as {terminals:{state:string}[]};return result.terminals.some(t=>['running','stopping','cleanup_failed'].includes(t.state));}
   async stopAgentServices(context:TerminalContext){if(this.child)await this.request('stopAgentServices',{},context);}
   async shutdown(){
     this.closing=true;const child=this.child;
@@ -57,7 +58,7 @@ export class TerminalBroker {
       await Promise.race([exited,new Promise<void>(yes=>setTimeout(yes,4000))]);
       if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await Promise.race([exited,new Promise<void>(yes=>setTimeout(yes,1000))]);}
     }
-    const cleaned=await this.cleanup;const verified=await terminateOwned(this.owned.values()).catch(()=>false);
-    if(!cleaned||!verified)throw new Error('终端进程清理未能核实');
+    await this.cleanup.catch(()=>false);this.cleanup=terminateOwned(this.owned.values(),this.owned).catch(()=>false);const verified=await this.cleanup;
+    if(!verified)throw new Error('终端进程清理未能核实');
   }
 }

@@ -24,8 +24,8 @@ const compiled=transformSync(mainSource,{loader:'ts',format:'cjs',target:'node24
 function fixture(){
   const directory=fs.mkdtempSync(path.join(tmpdir(),'friend-pi-desktop-lifecycle-'));
   const project=path.join(directory,'project'),dataDir=path.join(directory,'data');fs.mkdirSync(project);fs.mkdirSync(dataDir);
-  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;
-  const app:any=new EventEmitter();app.isPackaged=true;app.getAppPath=()=>root;app.getPath=()=>dataDir;app.setName=()=>{};app.setPath=()=>{};app.requestSingleInstanceLock=()=>true;app.whenReady=()=>new Promise(()=>{});app.quit=()=>{};
+  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;const control={psFailures:0,terminalFailures:0,born:'fixture'};let quitCalls=0;
+  const app:any=new EventEmitter();app.isPackaged=true;app.getAppPath=()=>root;app.getPath=()=>dataDir;app.setName=()=>{};app.setPath=()=>{};app.requestSingleInstanceLock=()=>true;app.whenReady=()=>new Promise(()=>{});app.quit=()=>{quitCalls++;};
   const fork=(_file:string,_args:unknown,options:unknown)=>{
     const child:any=new EventEmitter();child.pid=40000+children.length;child.connected=true;child.stderr=new EventEmitter();child.commands=[];child.options=options;
     child.send=(message:any,callback?:(error?:Error)=>void)=>{child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:message.method==='state'||message.method==='configure'?child.state:message.method==='send'?{accepted:true}:message.method==='plugin'?{observed:true}:{ok:true}}));return true;};
@@ -46,15 +46,15 @@ function fixture(){
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
-      if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){}async request(){return {terminals:[]};}}};
-      if(specifier==='./terminal-processes.js')return {processSnapshot:()=>new Map(children.map(child=>[child.pid,{pid:child.pid,ppid:1,pgid:child.pid,tty:'??',born:'fixture',state:'S'}])),ownedDescendants:()=>{},terminateOwned:async(owned:Iterable<any>)=>{for(const identity of owned)signals.push({pid:identity.pid,signal:'SIGKILL'});return true;}};
+      if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){if(control.terminalFailures-->0)throw Error('fixture terminal cleanup failed');}async request(){return {terminals:[]};}}};
+      if(specifier==='./terminal-processes.js')return {processSnapshot:()=>{if(control.psFailures-->0)throw Error('fixture ps failed');return new Map(children.map(child=>[child.pid,{pid:child.pid,ppid:1,pgid:child.pid,tty:'??',born:control.born,state:'S'}]));},ownedDescendants:()=>{},terminateOwned:async(owned:Iterable<any>)=>{for(const identity of owned)signals.push({pid:identity.pid,signal:'SIGKILL'});return true;}};
       if(specifier==='./model-readiness.js')return modelReadiness;
       if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>modelRuntime,providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
       throw new Error(`Unrecognized production dependency: ${specifier}`);
     },
   };
   context.globalThis=context;
-  vm.runInNewContext(compiled+'\nglobalThis.audit={startWorker,workers,store,handle,finishDeletion,retireWorker,stopAudit:()=>{shuttingDown=true;storeClosed=true;}};',context);
+  vm.runInNewContext(compiled+'\nglobalThis.audit={startWorker,workers,store,handle,finishDeletion,retireWorker,terminateWorker,captureOwned,ownedChildren,liveWorkers,isClosed:()=>storeClosed,stopAudit:()=>{shuttingDown=true;storeClosed=true;}};',context);
   const api=context.audit;assert.equal(typeof api.handle,'function');assert.equal(typeof api.finishDeletion,'function');
   api.store.put('project:fixture',{id:'fixture',path:project,name:'Fixture'});
   function history(content:string){const manager=SessionManager.create(project,path.join(dataDir,'sessions'));manager.appendMessage({role:'user',content,timestamp:Date.now()});return {id:manager.getSessionId(),file:manager.getSessionFile()!};}
@@ -62,8 +62,8 @@ function fixture(){
   async function ready(value:ReturnType<typeof record>){const starting=api.startWorker(value),child=children.at(-1);child.state={isRunning:false,lifecycleStatus:'idle',sessionId:value.piSessionId,sessionFile:value.path,plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});await starting;return child;}
   async function flush(){for(let i=0;i<100;i++)await Promise.resolve();}
   async function tick(duration:number){const end=now+duration;await flush();while(true){const row=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!row)break;now=row[1].at;timers.delete(row[0]);row[1].callback();await flush();}now=end;await flush();}
-  function cleanup(){for(const worker of api.workers.values())api.retireWorker(worker,new Error('audit fixture closed'));api.stopAudit();timers.clear();api.store.close();fs.rmSync(directory,{recursive:true,force:true});}
-  return {directory,project,dataDir,modelRuntime,api,children,signals,unlinkFailures,record,history,ready,flush,tick,cleanup};
+  function cleanup(){for(const worker of api.workers.values())api.retireWorker(worker,new Error('audit fixture closed'));const closed=api.isClosed();api.stopAudit();timers.clear();if(!closed)api.store.close();fs.rmSync(directory,{recursive:true,force:true});}
+  return {directory,project,dataDir,modelRuntime,api,children,signals,unlinkFailures,record,history,ready,flush,tick,cleanup,control,app,get quitCalls(){return quitCalls;}};
 }
 
 function ownedGraph(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType<typeof fixture>['record']>){
@@ -152,3 +152,8 @@ test('project order persists exact permutations without altering active executio
 test('desktop refuses inference before dispatch and first-send workspace allocation unless exact model passed a test',async()=>{
  const f=fixture();try{fs.mkdirSync(path.join(f.dataDir,'pi'),{recursive:true});modelReadiness.registerSavedModel(f.dataDir,'main-fixture/unit');const record=f.record('model-guard'),child=await f.ready(record);child.state.modelId='main-fixture/unit';const before=child.commands.length;await assert.rejects(f.api.handle('session.send',{sessionId:record.id,text:'must not run',ready:true}),/连接测试/);await assert.rejects(f.api.handle('plan.approve',{sessionId:record.id,ready:true}),/连接测试/);assert.equal(child.commands.slice(before).some((command:any)=>['send','plan.approve'].includes(command.method)),false);const count=f.api.store.list('session:').length;await assert.rejects(f.api.handle('session.new',{forSend:true,modelId:'main-fixture/unit'}),/连接测试/);assert.equal(f.api.store.list('session:').length,count);assert.equal(fs.existsSync(path.join(f.dataDir,'workspaces')),false);await modelReadiness.testConfiguredModel(f.modelRuntime as never,f.dataDir,'main-fixture/unit');await f.api.handle('session.send',{sessionId:record.id,text:'now accepted'});assert.ok(child.commands.some((command:any)=>command.method==='send'));}finally{f.cleanup();}
 });
+
+test('a failed ownership scan clears its termination cache and permits verified retry',async()=>{const f=fixture();try{const record=f.record('retry-scan');await f.ready(record);const worker=f.api.workers.get(record.id);f.control.psFailures=1;await assert.rejects(f.api.terminateWorker(worker),/fixture ps failed/);assert.equal(worker.termination,undefined);assert.equal(f.api.liveWorkers.has(worker),true);await f.api.terminateWorker(worker);assert.equal(f.api.liveWorkers.has(worker),false);}finally{f.cleanup();}});
+test('only trusted new ownership may replace a reused PID birth identity',async()=>{const f=fixture();try{const record=f.record('birth');const child=await f.ready(record),worker=f.api.workers.get(record.id);f.control.born='new birth';f.api.captureOwned(worker);assert.equal(f.api.ownedChildren.get(worker).get(child.pid).born,'fixture');f.api.captureOwned(worker,child.pid);assert.equal(f.api.ownedChildren.get(worker).get(child.pid).born,'new birth');}finally{f.cleanup();}});
+test('unavailable ownership inspection fails before creating an SDK child',async()=>{const f=fixture();try{f.control.psFailures=1;await assert.rejects(f.api.startWorker(f.record('before-fork')),/fixture ps failed/);assert.equal(f.children.length,0);}finally{f.cleanup();}});
+test('terminal cleanup failure keeps the application and permits a later verified quit',async()=>{const f=fixture();try{f.control.terminalFailures=1;const event={preventDefault(){}};f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,0);assert.equal(f.api.isClosed(),false);f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,1);assert.equal(f.api.isClosed(),true);}finally{f.cleanup();}});
