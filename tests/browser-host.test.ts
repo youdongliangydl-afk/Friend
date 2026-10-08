@@ -65,4 +65,10 @@ test('popup self-close removes its dead native entry and restores the opener tab
 
 test('switching desktop context hides every native surface while retaining guest identity',()=>{const f=fixture();f.owner('a');f.host.present('a','web-a',bounds);const first=f.made[0];f.host.hide();assert.equal(first.visible,false);assert.equal(first.webContents.destroyed,false);f.host.present('a','web-a',bounds);assert.equal(f.made.length,1);assert.equal(first.visible,true);f.host.destroy();});
 
+test('switching sessions puts trusted composer above guest regardless of presentation order',()=>{
+  const f=fixture();f.owner('a');f.owner('b');f.host.present('a','web-a',bounds);f.host.syncComposer('a',{sessionId:'a'},bounds);const overlay=f.made[1];
+  f.host.hide();f.host.present('b','web-b',bounds);assert.notEqual(f.children.at(-1),overlay);f.host.syncComposer('b',{sessionId:'b'},bounds);assert.equal(f.children.at(-1),overlay);assert.equal(overlay.visible,true);
+  f.host.hide();f.host.syncComposer('a',{sessionId:'a'},bounds);f.host.present('a','web-a',bounds);assert.equal(f.children.at(-1),overlay);f.host.destroy();
+});
+
 test('untrusted history navigation cannot crash the host or persist credential/local URLs',()=>{const f=fixture();f.owner('a');f.host.present('a','web-a',bounds);const guest=f.made[0];for(const url of ['https://user:password@example.com/','file:///etc/passwd','javascript:alert(1)'])assert.doesNotThrow(()=>guest.webContents.emit('did-navigate-in-page',{},url,true));assert.equal(f.contexts.get('a').ui.tabs[0].url,'https://example.com/');assert.equal(f.host.snapshot('a').tabs[0].url,'https://example.com/');assert.ok(f.host.snapshot('a').tabs[0].error);f.host.destroy();});

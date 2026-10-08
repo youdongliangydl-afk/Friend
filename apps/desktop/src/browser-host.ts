@@ -93,7 +93,10 @@ export class BrowserHost {
       view.webContents.on('will-navigate',event=>event.preventDefault());view.webContents.setWindowOpenHandler(()=>({action:'deny'}));this.security(view);
       void view.webContents.loadFile(join(this.root,'apps/desktop/dist/renderer/index.html'),{query:{surface:'composer'}}).then(()=>{if(!this.closed)view.webContents.send('friend-composer:snapshot',{...this.overlaySnapshot,token:this.overlayToken});}).catch(()=>{});
     }
-    this.overlaySnapshot=snapshot;if(this.overlayOwner!==owner){this.overlayToken=randomUUID();}this.overlayOwner=owner;this.overlay.setBounds(this.clamp(bounds));this.overlay.setVisible(true);this.overlay.webContents.setZoomFactor(this.window.webContents.getZoomFactor());this.overlay.webContents.send('friend-composer:snapshot',{...snapshot,token:this.overlayToken});
+    const ownerChanged=this.overlayOwner!==owner;
+    this.overlaySnapshot=snapshot;if(ownerChanged){this.overlayToken=randomUUID();}this.overlayOwner=owner;this.overlay.setBounds(this.clamp(bounds));this.overlay.setVisible(true);
+    if(ownerChanged&&this.entries.get(this.presented)?.owner===owner)this.window.contentView.addChildView(this.overlay);
+    this.overlay.webContents.setZoomFactor(this.window.webContents.getZoomFactor());this.overlay.webContents.send('friend-composer:snapshot',{...snapshot,token:this.overlayToken});
   }
   readyOverlay(){return {...this.overlaySnapshot,token:this.overlayToken};}
   acceptsOverlay(event:Electron.IpcMainInvokeEvent){return !!this.overlay&&event.sender===this.overlay.webContents&&event.senderFrame===this.overlay.webContents.mainFrame;}
