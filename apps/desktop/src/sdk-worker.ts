@@ -176,7 +176,15 @@ async function initialize(){
     if(event.pluginEvent==='expert.role.delivery'){const data=object(event.data);if(data.approved===false&&typeof data.runId==='string'){roleDeliveryErrors.set(data.runId,String(data.error||'角色交付合同未通过'));services.goals.deliveryFailure(services.context(),data,services.generation());}else if(typeof data.runId==='string')roleDeliveryErrors.delete(data.runId);return;}
     if(event.pluginEvent==='swarm.member-event'){const data=object(event.data),native=object(data.event);if(native.type==='message_end'){const message=object(native.message),graph=swarmGraphs.get(String(data.graphId)),goal=services.currentGoal();if(message.role==='assistant'&&goal&&(graph?.goalId===goal.id||graph?.runId===goal.sourceRunId)){const usage=message.usage?object(message.usage):undefined;services.account(typeof usage?.totalTokens==='number'?usage.totalTokens:undefined,`member:${data.attemptId}:${message.timestamp}:${digest(message.content)}`);}}return;}
     if(event.pluginEvent==='team.result'){services.teamResult(object(event.data));return;}
-    if(event.pluginEvent==='workflow.changed'){const data=object(event.data);workflowStatuses.set(String(data.workflowId),String(data.status));workflowRunning=[...workflowStatuses.values()].some(status=>['running','waiting_review'].includes(status));publish('state',current());return;}
+    if(event.pluginEvent==='workflow.changed'){
+      const data=object(event.data),wasRunning=workflowRunning;
+      // Controllers publish both per-workflow changes and full snapshots.
+      if(Array.isArray(data.workflows)){workflowStatuses.clear();for(const raw of data.workflows){const flow=object(raw);if(typeof flow.id==='string')workflowStatuses.set(flow.id,String(flow.status));}}
+      else if(typeof data.workflowId==='string')workflowStatuses.set(data.workflowId,String(data.status));
+      workflowRunning=[...workflowStatuses.values()].some(status=>['running','waiting_review'].includes(status));
+      if(wasRunning&&!workflowRunning&&!stopping&&session.isIdle&&!swarmBusy()){lifecycleStatus=settledStatus();foregroundOpen=finiteJobs();publishAuthorityNotice();}
+      publish('state',current());return;
+    }
     if(event.pluginEvent==='swarm.process'&&object(event.data).action==='closed'){void services.drain();return;}
     if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
     const snapshot=object(event.data);services.observeSwarm(snapshot);
@@ -271,10 +279,14 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='plugin'){
     const plugin=text(input.plugin);if(!enabled.includes(plugin)&&!(['team','workflow'].includes(plugin)&&enabled.includes('swarm')))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','delegate','review','integrate','rework','validate','validation.run','generate','reflect','learn'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});
-    if(!runId&&['team','workflow','swarm'].includes(plugin)&&['delegate','start','resume'].includes(action)){await applyAssignedRole(true);await ensureModelReady();runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;cancelRequested=false;policyRevision++;}
+    if(['team','workflow','swarm'].includes(plugin)&&['delegate','start','resume'].includes(action)&&(!runId||plugin==='workflow'&&action==='start'&&session.isIdle&&!swarmBusy()&&!finiteJobs()&&!stopping)){
+      await applyAssignedRole(true);await ensureModelReady();const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
+      baselineGraphIds.clear();for(const graph of Array.isArray(snapshot.graphs)?snapshot.graphs:[])baselineGraphIds.add(String(object(graph).id));
+      activeGraphIds.clear();runGraphIds.clear();authorityNotice='';runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;cancelRequested=false;policyRevision++;
+    }
     const graphId=['swarm','team'].includes(plugin)&&swarmExecutionActions.has(action)&&typeof args.graphId==='string'?args.graphId:undefined;
     if(graphId)pendingSwarmGraphIds.add(graphId);
-    try{if(stopping&&!['stop','snapshot','list','read','status','result','logs'].includes(action))throw new Error('正在停止，不能开始新操作');const result=await requestPlugin(bus,plugin,action,args,120000,'user');if(result&&typeof result==='object'&&'id' in result&&['team','workflow','swarm'].includes(plugin)&&['start','resume','delegate'].includes(action)){const id=String((result as {id:unknown}).id);if(plugin!=='workflow')activeGraphIds.add(id);swarmRunning=[...activeGraphIds].some(key=>busyGraphStatuses.has(String(swarmGraphs.get(key)?.status)));publish('state',current());}return result;}
+    try{if(stopping&&!['stop','snapshot','list','read','status','result','logs'].includes(action))throw new Error('正在停止，不能开始新操作');const result=await requestPlugin(bus,plugin,action,args,120000,'user');if(result&&typeof result==='object'&&'id' in result&&['team','workflow','swarm'].includes(plugin)&&['start','resume','delegate'].includes(action)){const id=plugin==='workflow'?object(result).graphId:object(result).id;if(typeof id==='string'){activeGraphIds.add(id);if(plugin==='workflow')runGraphIds.add(id);}swarmRunning=[...activeGraphIds].some(key=>busyGraphStatuses.has(String(swarmGraphs.get(key)?.status)));publish('state',current());}return result;}
     finally{if(graphId){pendingSwarmGraphIds.delete(graphId);swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));if(!session.isStreaming&&activeGraphIds.has(graphId)){lifecycleStatus=settledStatus();publishAuthorityNotice();}publish('state',current());}}
   }
   if(method==='dialog.respond'){

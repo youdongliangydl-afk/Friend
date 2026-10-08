@@ -75,6 +75,10 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
    assert.equal(after.lifecycleStatus,'stopped');assert.equal(after.isRunning,false);
    await fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'只创建待启动的手动图',tasks:[{id:'manual',title:'待启动',prompt:'只读检查',mode:'read',dependencies:[]}]}});
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a manual unstarted graph cannot overwrite a cold terminal record');
+   await fixture.request('configure',{executionMode:'swarm'});
+   await fixture.request('plugin',{plugin:'workflow',action:'snapshot'});
+   await fixture.request('plugin',{plugin:'workflow',action:'create',input:{definition:{v:1,title:'draft only',goal:'read',nodes:[{id:'read',title:'read',prompt:'inspect',mode:'read',dependencies:[]}]}}});
+   assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a workflow draft snapshot is not evidence of execution');
  }finally{await fixture.close();}
 });
 
@@ -240,6 +244,27 @@ test('natural-language workflow uses public model call and event-driven stages; 
  const second=await f.request('plugin',{plugin:'workflow',action:'create',input:{definition:{v:1,title:'stop during stage',goal:'read',nodes:[{id:'slow',title:'slow',prompt:'QA_SLOW',mode:'read',dependencies:[]}]}}}) as {id:string};await f.request('plugin',{plugin:'workflow',action:'start',input:{workflowId:second.id}});const state=await f.request('stop') as {isRunning:boolean};assert.equal(state.isRunning,false);const stopped=await f.request('plugin',{plugin:'workflow',action:'snapshot'}) as {workflows:{id:string;status:string}[]};assert.equal(stopped.workflows.find(flow=>flow.id===second.id)?.status,'stopped');
  }finally{await f.close();}});
 
+test('completed Team goal followed by Swarm workflow releases navigation and admits the next message',{timeout:40000},async()=>{
+  const f=await start();try{
+    await f.request('configure',{executionMode:'team'});
+    await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}});
+    await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+    const before=await f.request('state') as {runId:string};
+    await f.request('configure',{executionMode:'swarm'});
+    const flow=await f.request('workflow.generate',{prompt:'只读检查并汇总'}) as {id:string};
+    const started=await f.request('plugin',{plugin:'workflow',action:'start',input:{workflowId:flow.id}}) as {graphId:string};
+    await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='workflow.changed'&&(e.event.data.data as {workflowId?:string;status?:string})?.workflowId===flow.id&&(e.event.data.data as {status?:string})?.status==='completed'),25000);
+    const after=await f.request('state') as {isRunning:boolean;navigationLocked:boolean;lifecycleStatus:string;runId:string};
+    assert.equal(after.isRunning,false);assert.equal(after.navigationLocked,false);assert.equal(after.lifecycleStatus,'completed');assert.notEqual(after.runId,before.runId);
+    const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{id:string;runId:string;status:string}[]};
+    assert.ok(graphs.graphs.some(graph=>graph.id===started.graphId&&graph.runId===after.runId&&graph.status==='integrated'));
+    await f.request('configure',{executionMode:'single'});
+    const settled=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length;
+    await f.request('send',{text:'继续只读说明当前目录'});
+    await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length>settled);
+    assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
+  }finally{await f.close();}
+});
 test('goal completion uses Single self checks and Team independent native reviewer',{timeout:30000},async()=>{for(const mode of ['single','team']){const f=await start();try{await f.request('configure',{executionMode:mode});await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}});await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const snap=await f.request('runtime',{action:'snapshot'}) as {goal:{status:string;audit:{independent?:boolean}}};assert.equal(snap.goal.status,'completed');const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;attempts:unknown[];reviewAttempts?:unknown[]}[]};if(mode==='single')assert.equal(graphs.graphs.length,0);else{assert.ok(graphs.graphs.some(graph=>graph.audit===true&&graph.reviewAttempts?.length===1));assert.equal(snap.goal.audit.independent,true);}assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');}finally{await f.close();}}});
 test('goal pause and stop terminate foreground work while preserving their distinct durable states',{timeout:30000},async()=>{
   const f=await start();try{
