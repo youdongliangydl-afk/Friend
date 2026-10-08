@@ -6,6 +6,9 @@ import {TurnIndex,messageAnchor} from './TurnIndex.js';
 import {Icon,type IconName} from './Icons.js';
 import {ResizeHandle} from './ResizeHandle.js';
 import {Workbench,type WorkbenchPage,type Material} from './Workbench.js';
+import {ModelPicker} from './model-picker.js';
+import {PlanPreview} from './plan-preview.js';
+import {ProviderPanel} from './provider-panel.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -18,12 +21,6 @@ function pickedPaths(value: unknown): string[] {
   return values.map(item => typeof item === 'string' ? item : String(asObject(item).path || '')).filter(Boolean);
 }
 
-function ProviderPanel({ state, report, refresh }: { state: AppState; report(message: string, error?: boolean): void; refresh(): Promise<AppState> }) {
-  const [provider, setProvider] = useState(state.current?.modelId?.split('/')[0] || state.providers[0]?.id || 'openai');
-  const [custom, setCustom] = useState(''); const [apiKey, setApiKey] = useState(''); const [baseUrl, setBaseUrl] = useState(''); const [modelId, setModelId] = useState(''); const [api, setApi] = useState('openai-completions');
-  const [pending, setPending] = useState(false);const [reasoning,setReasoning]=useState(false),[images,setImages]=useState(false),[contextWindow,setContextWindow]=useState(128000),[testing,setTesting]=useState('');
-  return <div className="panel-content"><div className="panel-intro"><h2>选择你自己的模型</h2><p>配置供应商认证和兼容接口。保存后可为新会话选择默认模型，也可调整当前会话型号。</p></div><form className="card" onSubmit={event => { event.preventDefault(); setPending(true); void window.friendPi.request('provider.save', { provider: provider === '__custom' ? custom : provider, apiKey, ...(baseUrl.trim() ? { baseUrl: baseUrl.trim(), api, modelId: modelId.trim(),reasoning,input:images?['text','image']:['text'],contextWindow } : {}) }).then(async () => { setApiKey(''); await refresh(); report('供应商配置已保存'); }).catch(error => report(errorText(error), true)).finally(() => setPending(false)); }}><Field label="供应商"><select value={provider} onChange={event => { setProvider(event.target.value); setApiKey(''); }}>{state.providers.map(item => <option key={item.id} value={item.id}>{item.name}{item.configured ? ' · 已配置' : ''}</option>)}{state.providers.length === 0 && <option value="openai">OpenAI</option>}<option value="__custom">其他兼容供应商</option></select></Field>{provider === '__custom' && <Field label="供应商 ID"><input value={custom} onChange={event => setCustom(event.target.value)} placeholder="例如 my-provider" required /></Field>}<Field label="API Key"><input type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="输入新凭证；留空保留已配置凭证" /></Field><details open={provider === '__custom'}><summary>兼容接口设置</summary><Field label="Base URL"><input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://example.com/v1" type="url" /></Field><Field label="型号 ID"><input value={modelId} onChange={event => setModelId(event.target.value)} placeholder="供应商提供的实际型号" /></Field><Field label="API 协议"><select value={api} onChange={event => setApi(event.target.value)}><option value="openai-completions">OpenAI Chat Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></Field><label className="check"><input type="checkbox" checked={reasoning} onChange={e=>setReasoning(e.target.checked)}/>支持思考</label><label className="check"><input type="checkbox" checked={images} onChange={e=>setImages(e.target.checked)}/>支持图片输入</label><Field label="上下文容量"><input type="number" min={4096} value={contextWindow} onChange={e=>setContextWindow(Number(e.target.value))}/></Field></details><button type="submit" className="primary full" disabled={pending || (!apiKey.trim()&&!baseUrl.trim()) || baseUrl.trim() !== '' && !modelId.trim() || provider === '__custom' && !custom.trim()}>{pending ? '保存中…' : '保存配置'}</button></form><div className="provider-list">{state.providers.filter(item => item.configured).map(item => <div key={item.id}><span className="status-dot" />{item.name}<small>已配置</small><button disabled={!!testing} onClick={()=>{const model=state.models.find(m=>m.provider===item.id);if(!model)return;setTesting(item.id);void window.friendPi.request('model.test',{modelId:model.id}).then(()=>report('模型连接测试通过：'+model.name)).catch(error=>report(errorText(error),true)).finally(()=>setTesting(''));}}>{testing===item.id?'测试中…':'测试连接'}</button></div>)}</div></div>;
-}
 
 interface SettingsData {preferences:Preferences;models:AppState['models'];providers:AppState['providers'];paths:{dataDir:string};piSource:string}
 function SettingsPanel({state,report,refresh,projectId}:{projectId?:string;state:AppState;report(message:string,error?:boolean):void;refresh():Promise<AppState>}) {
@@ -37,20 +34,20 @@ function SettingsPanel({state,report,refresh,projectId}:{projectId?:string;state
   useEffect(()=>{void window.friendPi.request('learning.state').then(raw=>setLearning(asObject(raw))).catch(()=>{});},[]);
   const defaultModel=settings.models.find(model=>model.id===form.defaultModelId)||(!form.defaultModelId?settings.models.find(model=>settings.providers.some(provider=>provider.id===model.provider&&provider.configured)):undefined);
   return <div ref={settingsRoot} className="panel-content settings-panel"><input aria-label="搜索设置" placeholder="搜索设置…" value={query} onChange={event=>setQuery(event.target.value)}/><Field label="设置作用域"><select value={scope} onChange={event=>setScope(event.target.value)}><option value="global">全局默认</option><option value="project" disabled={!projectId}>当前项目覆盖</option></select></Field><div className="panel-intro"><h2>设置</h2><p>模型与协作默认值用于新会话；插件与上下文策略在安全边界应用。</p></div>
+    <ProviderPanel state={{...state,models:settings.models,providers:settings.providers,preferences:settings.preferences}} report={report} refresh={providerRefresh}/>
     <section className="card"><h3>新会话默认值</h3><form onSubmit={event=>{event.preventDefault();setSaving(true);void window.friendPi.request<SettingsData>('settings.update',{...form,projectId:scope==='project'?projectId:undefined}).then(async next=>{setSettings(next);setForm(next.preferences);await refresh();report('设置已保存；模型默认值用于新会话，能力与上下文在安全边界生效');}).catch(error=>report(errorText(error),true)).finally(()=>setSaving(false));}}>
-      <Field label="默认模型"><select value={form.defaultModelId||''} onChange={event=>{const id=event.target.value;const model=settings.models.find(model=>model.id===id);setForm({...form,defaultModelId:id,defaultThinkingLevel:model?.thinkingLevels?.includes(form.defaultThinkingLevel)?form.defaultThinkingLevel:'off'});}}><option value="">自动选择已配置模型</option>{settings.models.map(model=><option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
-      <Field label="默认思考等级"><select value={form.defaultThinkingLevel} onChange={event=>setForm({...form,defaultThinkingLevel:event.target.value})}>{[['off','不思考'],['minimal','最少'],['low','低'],['medium','中'],['high','高'],['xhigh','最高']].filter(([value])=>(defaultModel?.thinkingLevels||['off']).includes(value)).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></Field>
-      <Field label="默认 Agent 方式"><select value={form.defaultMode} onChange={event=>setForm({...form,defaultMode:event.target.value as Preferences['defaultMode']})}><option value="single">Single</option><option value="swarm">Swarm</option></select></Field>
+      <Field label="默认模型"><select value={form.defaultModelId||''} onChange={event=>{const id=event.target.value;const model=settings.models.find(model=>model.id===id);setForm({...form,defaultModelId:id,defaultThinkingLevel:model?.thinkingLevels?.includes(form.defaultThinkingLevel)?form.defaultThinkingLevel:model?.thinkingLevels?.[0]||'off'});}}><option value="">自动选择已配置模型</option>{settings.models.filter(model=>settings.providers.some(provider=>provider.id===model.provider&&provider.configured)).map(model=><option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
+      <Field label="默认思考等级"><select value={form.defaultThinkingLevel} onChange={event=>setForm({...form,defaultThinkingLevel:event.target.value})}>{[['off','不思考'],['minimal','最少'],['low','低'],['medium','中'],['high','高'],['xhigh','最高'],['max','Max']].filter(([value])=>(defaultModel?.thinkingLevels||['off']).includes(value)).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></Field>
+      <Field label="默认 Agent 方式"><select value={form.defaultMode} onChange={event=>setForm({...form,defaultMode:event.target.value as Preferences['defaultMode']})}><option value="single">Single</option><option value="team">Team</option><option value="swarm">Swarm</option></select></Field>
       <label className="switch-row settings-plan"><span>新会话默认先规划</span><input type="checkbox" role="switch" checked={form.defaultPlanMode} onChange={event=>setForm({...form,defaultPlanMode:event.target.checked})}/></label>
       <fieldset className="default-plugins"><legend>默认启用能力</legend>{plugins.map(plugin=><label className="check" key={plugin}><input type="checkbox" checked={form.defaultPlugins.includes(plugin)} onChange={event=>setForm({...form,defaultPlugins:event.target.checked?[...form.defaultPlugins,plugin]:form.defaultPlugins.filter(item=>item!==plugin)})}/>{pluginLabels[plugin]}</label>)}</fieldset>
       <label className="switch-row"><span>无限上下文</span><input type="checkbox" role="switch" checked={form.contextMode==='infinite'} onChange={event=>setForm({...form,contextMode:event.target.checked?'infinite':'native'})}/></label><p className="hint">默认使用 Pi 原生压缩。开启后结合有效历史记忆选择保留内容与摘要，仅保存到会话现场。</p>
-      <Field label="后台学习模型"><select value={form.backgroundModelId||''} onChange={event=>setForm({...form,backgroundModelId:event.target.value})}><option value="">继承触发会话模型</option>{settings.models.map(model=><option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
+      <Field label="后台学习模型"><select value={form.backgroundModelId||''} onChange={event=>setForm({...form,backgroundModelId:event.target.value})}><option value="">继承触发会话模型</option>{settings.models.filter(model=>settings.providers.some(provider=>provider.id===model.provider&&provider.configured)).map(model=><option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
       <button className="primary full" type="submit" disabled={saving}>{saving?'保存中…':'保存默认设置'}</button>
     </form></section>
     {scope==='project'&&<button onClick={()=>void window.friendPi.request<SettingsData>('settings.update',{projectId:projectId,reset:true}).then(next=>{setSettings(next);setForm(next.preferences);return refresh();}).catch(error=>report(String(error),true))}>恢复全局默认</button>}
     {state.current&&<p className="settings-snapshot">当前快照：{state.current.modelId} · {state.current.thinkingLevel} · {state.current.plugins.join(' / ')}{Boolean(state.current.pendingConfiguration)&&' · 配置等待空闲生效'}</p>}
     <section className="card"><h3>自动学习</h3><p>项目经验和个人偏好由常驻后台串行整理，前台可以同时工作。</p><p className="hint">{learning.alive?'后台服务在线':'等待后台服务'} · {learning.paused?'已暂停':'自动学习'}</p><button onClick={()=>void window.friendPi.request(learning.paused?'learning.resume':'learning.pause').then(()=>window.friendPi.request('learning.state')).then(raw=>setLearning(asObject(raw))).catch(error=>report(String(error),true))}>{learning.paused?'恢复学习':'暂停学习'}</button></section>
-    <ProviderPanel state={{...state,models:settings.models,providers:settings.providers}} report={report} refresh={providerRefresh}/>
     <section className="card environment-card"><h3>本地环境</h3><Field label="数据目录"><code>{settings.paths.dataDir||'读取中…'}</code></Field><Field label="Pi 源码版本"><code>{settings.piSource||'读取中…'}</code></Field></section>
   </div>;
 }
@@ -71,7 +68,7 @@ export default function App() {
   const [navigating,setNavigating]=useState(false); const [planMode,setPlanMode]=useState(false);
   const [draft, setDraft] = useState(''); const draftRef = useRef(draft); draftRef.current = draft;
   const [draftOwner,setDraftOwner]=useState<string|undefined>();
-  const [mode, setMode] = useState<'single' | 'swarm'>('single'); const [attachments, setAttachments] = useState<{ path: string }[]>([]);
+  const [mode, setMode] = useState<'single' | 'team' | 'swarm'>('single'); const [attachments, setAttachments] = useState<{ path: string }[]>([]);
   const [sending, setSending] = useState(false); const [localRunning, setLocalRunning] = useState(false); const [swarmRunning, setSwarmRunning] = useState(false);
   const [liveText, setLiveText] = useState(''); const [thinking, setThinking] = useState(''); const [tools, setTools] = useState<ToolRun[]>([]);
   const [dialogs, setDialogs] = useState<DialogRequest[]>([]); const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
@@ -80,6 +77,7 @@ export default function App() {
   const sessionId = state.current?.sessionId; const projectId = state.current?.projectId || selectedProject || state.projects[0]?.id;
   const project = state.projects.find(item => item.id === projectId); const activeSession = state.sessions.find(item => item.id === sessionId);
   const running = Boolean(state.current?.isRunning || localRunning || swarmRunning);
+  const navigationBusy=Boolean(state.current?.navigationLocked||localRunning||swarmRunning);
   const report = useCallback((message: string, error = false) => setNotice({ message, error }), []);
   const refresh = useCallback(async () => { const next = await window.friendPi.request<AppState>('app.state'); setState({ ...EMPTY, ...next }); return next; }, []);
   const invoke = useCallback(async (method: string, input: JsonObject = {}) => { try { const result = await window.friendPi.request(method, input); await refresh(); return result; } catch (error) { report(errorText(error), true); throw error; } }, [report, refresh]);
@@ -115,7 +113,7 @@ export default function App() {
     setDraft(typeof saved.text==='string'?saved.text:'');setAttachments(asList<JsonObject>(saved.attachments).filter(item=>typeof item.path==='string').map(item=>({path:String(item.path)})));setDraftOwner(sessionId);
     setLiveText(''); setThinking(''); setTools([]); setDialogs([]); setLocalRunning(false); setSwarmRunning(false); lastSubmitted.current = null; followScroll.current=true;
     setPlanMode(typeof saved.planMode==='boolean'?saved.planMode:state.current?.planMode??state.preferences?.defaultPlanMode??false);
-    setMode(saved.mode==='single'||saved.mode==='swarm'?saved.mode:state.current?.executionMode||state.preferences?.defaultMode||'single');
+    setMode(saved.mode==='single'||saved.mode==='team'||saved.mode==='swarm'?saved.mode:state.current?.executionMode||state.preferences?.defaultMode||'single');
     if (state.current?.projectId) setSelectedProject(state.current.projectId);
   }, [sessionId]);
   useEffect(()=>{
@@ -123,7 +121,7 @@ export default function App() {
     // Pending composer intent belongs to the draft, even before text is entered.
     try{localStorage.setItem(`friend-pi.draft.v1:${sessionId}`,JSON.stringify({text:draft,attachments,planMode,mode}));}catch{/* The current in-memory draft is retained if local storage is full. */}
   },[sessionId,draftOwner,draft,attachments,planMode,mode]);
-  useEffect(() => { if (followScroll.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'instant' }); }, [state.current?.messages, liveText, tools, thinking]);
+  useEffect(() => { if (followScroll.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'instant' }); }, [state.current?.messages, state.current?.plan, liveText, tools, thinking]);
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape' && dialogs.length === 0) { setTab(null); composer.current?.focus(); } }; window.addEventListener('keydown', handle); return () => window.removeEventListener('keydown', handle); }, [dialogs.length]);
   const send = async () => {
     if (!sessionId || !draft.trim() || sending || running) return;
@@ -133,26 +131,26 @@ export default function App() {
     finally { setSending(false); }
   };
   const selectProject = async (id:string) => {
-    if(running || sending || navigating || id===projectId && state.current) return;
+    if(navigationBusy || sending || navigating || id===projectId && state.current) return;
     setNavigating(true);
     try { await invoke('project.select',{projectId:id});setSelectedProject(id);setTab(null); }
     catch { /* Keep the current project visible. */ }
     finally {setNavigating(false);}
   };
   const openProject = () => {
-    if(running || navigating)return;setNavigating(true);
+    if(navigationBusy || navigating)return;setNavigating(true);
     void invoke('project.open').then(async value=>{
       const chosen=asObject(value);if(chosen.cancelled || !chosen.id)return;
       await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setTab(null);
     }).catch(()=>{}).finally(()=>setNavigating(false));
   };
   const newSession = () => {
-    if(running || navigating)return;
+    if(navigationBusy || navigating)return;
     if(projectId){setNavigating(true);void invoke('session.new',{projectId}).catch(()=>{}).finally(()=>setNavigating(false));}
     else openProject();
   };
   useEffect(() => {
-    const keyboard = (event: KeyboardEvent) => { if (event.key.toLowerCase() === 'n' && (event.metaKey || event.ctrlKey) && !running && !document.querySelector('[role="dialog"]')) { event.preventDefault(); newSession(); } };
+    const keyboard = (event: KeyboardEvent) => { if (event.key.toLowerCase() === 'n' && (event.metaKey || event.ctrlKey) && !navigationBusy && !document.querySelector('[role="dialog"]')) { event.preventDefault(); newSession(); } };
     window.addEventListener('keydown', keyboard); return () => window.removeEventListener('keydown', keyboard);
   });
   useEffect(()=>{try{localStorage.setItem('friend-pi.layout.v1',JSON.stringify(layout));}catch{}},[layout]);
@@ -166,12 +164,12 @@ export default function App() {
   const lastAssistant = [...messages].reverse().find(message => message.role === 'assistant'); const showLive = liveText && lastAssistant?.text !== liveText;
   const navigateProject=(event:React.KeyboardEvent<HTMLButtonElement>,index:number)=>{
     const next=event.key==='ArrowLeft'?Math.max(0,index-1):event.key==='ArrowRight'?Math.min(state.projects.length-1,index+1):event.key==='Home'?0:event.key==='End'?state.projects.length-1:null;
-    if(next===null || running || navigating)return;event.preventDefault();
+    if(next===null || navigationBusy || navigating)return;event.preventDefault();
     const target=state.projects[next];if(target){event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[data-project-id]')[next]?.focus();void selectProject(target.id);}
   };
   const currentSessions=state.sessions.filter(item=>item.projectId===projectId&&Boolean(item.archived)===historyOpen).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   const matchingSessions=currentSessions.filter(item=>item.name.toLowerCase().includes(sessionSearch.toLowerCase()));
-  const openSession=(id:string)=>{if(running||navigating)return;setNavigating(true);void invoke('session.open',{id}).catch(()=>{}).finally(()=>setNavigating(false));};
+  const openSession=(id:string)=>{if(navigationBusy||navigating)return;setNavigating(true);void invoke('session.open',{id}).catch(()=>{}).finally(()=>setNavigating(false));};
   const sidebarWidth=Math.min(layout.sidebarWidth,Math.max(180,viewportWidth-360));
   const workspaceWidth=Math.min(layout.workspaceWidth,Math.max(300,viewportWidth-(sidebar?sidebarWidth:0)-384));
   const moduleIcons:Record<Exclude<WorkspaceTab,'settings'>,IconName>={file:'file',diff:'diff',swarm:'swarm',expert:'expert',memory:'memory','topic-rebuild':'context'};
@@ -182,8 +180,8 @@ export default function App() {
       <nav className="project-tabs" aria-label="项目" role="tablist">
         {state.projects.map((item,index)=><button type="button" role="tab" aria-selected={projectId===item.id} aria-controls="current-project-sessions" tabIndex={projectId===item.id?0:-1}
           data-project-id={item.id} id={`project-tab-${item.id}`} className={`project-tab ${projectId===item.id?'active':''}`} key={item.id} title={item.path}
-          disabled={navigating || running && item.id!==projectId} onClick={()=>void selectProject(item.id)} onKeyDown={event=>navigateProject(event,index)}><Icon name="folder" size={16}/><span>{item.name}</span></button>)}
-        <button type="button" className="project-add" aria-label="打开新项目" title="打开新项目" onClick={openProject} disabled={running || navigating}><Icon name="plus" size={17}/><span>打开项目</span></button>
+          disabled={navigating || navigationBusy && item.id!==projectId} onClick={()=>void selectProject(item.id)} onKeyDown={event=>navigateProject(event,index)}><Icon name="folder" size={16}/><span>{item.name}</span></button>)}
+        <button type="button" className="project-add" aria-label="打开新项目" title="打开新项目" onClick={openProject} disabled={navigationBusy || navigating}><Icon name="plus" size={17}/><span>打开项目</span></button>
       </nav>
       <div className="module-controls" role="toolbar" aria-label="界面模块">
         <button type="button" className={sidebar?'selected':''} aria-pressed={sidebar} aria-label={sidebar?'收起会话侧栏':'展开会话侧栏'} title={sidebar?'收起会话侧栏':'展开会话侧栏'} onClick={()=>setSidebar(value=>!value)}><Icon name="sidebar"/></button>
@@ -193,11 +191,11 @@ export default function App() {
     {sidebar&&<button type="button" className="sidebar-scrim" aria-label="关闭会话侧栏" onClick={()=>setSidebar(false)}/>}
     <aside className="sidebar" aria-label="当前项目会话" id="current-project-sessions" role="tabpanel" aria-labelledby={projectId?`project-tab-${projectId}`:undefined}>
       <div className="brand sidebar-brand"><Icon name="friend" size={32}/><span>Friend</span><small>Pi</small></div>
-      <div className="sidebar-new"><button className="new-chat" onClick={newSession} disabled={running||sending||navigating}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button type="button" className="history-button" aria-label={historyOpen?"查看近期会话":"查看归档会话"} title={historyOpen?"查看近期会话":"查看归档会话"} aria-pressed={historyOpen} onClick={()=>setHistoryOpen(value=>!value)}><Icon name="history"/></button></div>
+      <div className="sidebar-new"><button className="new-chat" onClick={newSession} disabled={navigationBusy||sending||navigating}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button type="button" className="history-button" aria-label={historyOpen?"查看近期会话":"查看归档会话"} title={historyOpen?"查看近期会话":"查看归档会话"} aria-pressed={historyOpen} onClick={()=>setHistoryOpen(value=>!value)}><Icon name="history"/></button></div>
       <label className="session-search"><Icon name="search" size={16}/><input ref={searchInput} aria-label="搜索会话" placeholder="搜索会话…" value={sessionSearch} onChange={event=>setSessionSearch(event.target.value)}/><kbd>⌘K</kbd></label>
       <div className="sidebar-label"><span>{historyOpen?"已归档":"近期"}</span><small className="session-count">{currentSessions.length} 个</small></div>
       <div className="session-list current-session-list">{matchingSessions.map(item=><div className={`session-row ${item.id===sessionId?'active':''}`} key={item.id} onContextMenu={event=>{event.preventDefault();setMenu({...item,x:Math.min(event.clientX,window.innerWidth-170),y:Math.min(event.clientY,window.innerHeight-180)});}}>
-        <button type="button" className="session-button" aria-current={item.id===sessionId?'page':undefined} title={`${item.name||'新会话'} · ${lifecycleLabel[item.status||'idle']||item.status}`} disabled={navigating||running&&item.id!==sessionId} onClick={()=>openSession(item.id)}>
+        <button type="button" className="session-button" aria-current={item.id===sessionId?'page':undefined} title={`${item.name||'新会话'} · ${lifecycleLabel[item.status||'idle']||item.status}`} disabled={navigating||navigationBusy&&item.id!==sessionId} onClick={()=>openSession(item.id)}>
           <span className={`session-lifecycle status-${item.status||'idle'}`} aria-label={lifecycleLabel[item.status||'idle']||item.status}>{item.status==='completed'?'✓':item.status==='failed'?'!':item.status==='running'?'◌':item.status==='stopped'||item.status==='paused'?'Ⅱ':item.status==='interrupted'?'↯':item.status==='awaiting_review'?'◷':'○'}</span>
           <span className="session-card-text"><strong>{item.name||'新会话'}</strong><small>会话 · {modelLabel(item.modelId)}</small></span>
         </button>
@@ -211,12 +209,17 @@ export default function App() {
         <div className="heading-actions"><span className="session-status">{navigating?'正在打开会话':running?'正在工作':'准备就绪'}</span></div>
       </header>
       {notice && <div className={`notice ${notice.error ? 'error' : ''}`} role={notice.error ? 'alert' : 'status'}><span>{notice.message}</span><button aria-label="关闭提示" className="icon-button" onClick={() => setNotice(null)}>×</button></div>}
-      {state.current?.plan&&asObject(state.current.plan).status==='proposed'&&<div className="plan-approval card"><strong>计划已就绪 · v{String(asObject(state.current.plan).revision)}</strong><div className="button-row"><button onClick={()=>{setMaterial({title:'计划全文',text:String(asObject(state.current!.plan).body)});setTab('file');}}>阅读全文</button><button onClick={()=>{const plan=asObject(state.current!.plan);void invoke('plan.approve',{...plan,sessionId}).catch(()=>{});}}>批准并执行</button><button onClick={()=>{setDraft('请修改上述计划：');composer.current?.focus();}}>要求修改</button><button onClick={()=>void invoke('plan.reject',{...asObject(state.current!.plan),sessionId}).catch(()=>{})}>退出计划</button></div></div>}
+
       {activeSession?.archived&&<div className="notice">当前为归档会话，只读查看。<button onClick={()=>void invoke('session.archive',{id:sessionId,archived:false}).catch(()=>{})}>恢复并继续</button></div>}
       <div className="conversation-stage">
         <TurnIndex messages={messages} container={scroll} sessionId={sessionId} onLocate={()=>{followScroll.current=false;}}/>
       <div className="conversation" ref={scroll} onScroll={event => { const element = event.currentTarget; followScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; }}>
-        {booting ? <Empty title="正在打开工作空间…" /> : !messages.length && !liveText ? <div className="welcome"><div className="welcome-mark">F<span>·</span></div><h1>从一个小任务开始</h1><p>和 Friend 一起写代码，留下经验，完成长任务。</p><div className="welcome-suggestions">{['先阅读项目，告诉我整体架构', '帮我实现一个小改动，并验证结果', '找回这个项目的约束与关键决定'].map(text => <button key={text} onClick={() => { setDraft(text); composer.current?.focus(); }}>{text}<span>↗</span></button>)}</div>{!state.current && <button className="primary" onClick={state.projects.length ? newSession : openProject}>{state.projects.length ? '创建一个会话' : '打开项目开始'}</button>}</div> : <div className="messages">{messages.map((message, i) => message.role === 'toolResult' ? <details className="history-tool" key={message.id || `tool-${i}`}><summary>{message.toolName||'工具结果'} · {message.isError?'失败':'已返回'} · {message.toolCallId}</summary><RichMessage message={message}/></details> : <article className={`chat-message ${message.role === 'user' ? 'user' : 'assistant'}`} data-message-id={messageAnchor(message,i)} key={message.id || i}><div className="message-role">{message.role === 'user' ? '你' : message.role === 'assistant' ? 'Friend' : message.role}</div><RichMessage message={message} /></article>)}{showLive && <article className="chat-message assistant live"><div className="message-role">Friend <span className="pulse-dot" /></div><Markdown text={liveText} /></article>}{thinking && <details className="thinking-block"><summary>思考过程</summary><pre>{thinking}</pre></details>}{tools.length > 0 && <div className="tool-runs">{tools.map(tool => <details key={tool.id}><summary><span className={`tool-indicator ${tool.status}`} /><strong>{tool.name}</strong><Badge value={tool.status} /></summary><JsonView value={tool.input} />{tool.output !== undefined && <JsonView value={tool.output} />}</details>)}</div>}{running && !liveText && <div className="working-indicator"><span /><span /><span />正在处理任务</div>}</div>}
+        {booting ? <Empty title="正在打开工作空间…" /> : !messages.length && !liveText ? <div className="welcome"><div className="welcome-mark">F<span>·</span></div><h1>从一个小任务开始</h1><p>和 Friend 一起写代码，留下经验，完成长任务。</p><div className="welcome-suggestions">{['先阅读项目，告诉我整体架构', '帮我实现一个小改动，并验证结果', '找回这个项目的约束与关键决定'].map(text => <button key={text} onClick={() => { setDraft(text); composer.current?.focus(); }}>{text}<span>↗</span></button>)}</div>{!state.current && <button className="primary" onClick={state.projects.length ? newSession : openProject}>{state.projects.length ? '创建一个会话' : '打开项目开始'}</button>}</div> : <div className="messages">{messages.map((message, i) => message.role === 'toolResult' ? <details className="history-tool" key={message.id || `tool-${i}`}><summary>{message.toolName||'工具结果'} · {message.isError?'失败':'已返回'} · {message.toolCallId}</summary><RichMessage message={message}/></details> : <article className={`chat-message ${message.role === 'user' ? 'user' : 'assistant'}`} data-message-id={messageAnchor(message,i)} key={message.id || i}><div className="message-role">{message.role === 'user' ? '你' : message.role === 'assistant' ? 'Friend' : message.role==='automatic'?'自动接续':message.role}</div><RichMessage message={message} /></article>)}{showLive && <article className="chat-message assistant live"><div className="message-role">Friend <span className="pulse-dot" /></div><Markdown text={liveText} /></article>}{thinking && <details className="thinking-block"><summary>思考过程</summary><pre>{thinking}</pre></details>}{tools.length > 0 && <div className="tool-runs">{tools.map(tool => <details key={tool.id}><summary><span className={`tool-indicator ${tool.status}`} /><strong>{tool.name}</strong><Badge value={tool.status} /></summary><JsonView value={tool.input} />{tool.output !== undefined && <JsonView value={tool.output} />}</details>)}</div>}{running && !liveText && <div className="working-indicator"><span /><span /><span />正在处理任务</div>}</div>}
+        {state.current?.plan&&asObject(state.current.plan).status==='proposed'&&<div className="messages plan-tail"><PlanPreview body={String(asObject(state.current.plan).body||'')} disabled={running||sending||!!activeSession?.archived}
+          onRead={()=>{setMaterial({title:'计划全文',text:String(asObject(state.current!.plan).body)});setTab('file');}}
+          onApprove={()=>void invoke('plan.approve',{...asObject(state.current!.plan),sessionId}).catch(()=>{})}
+          onRevise={()=>{setDraft('请修改上述计划：');composer.current?.focus();}}
+          onReject={()=>void invoke('plan.reject',{...asObject(state.current!.plan),sessionId}).catch(()=>{})}/></div>}
       </div></div>
       <div className="composer-wrap"><div className="composer"><textarea ref={composer} aria-label="消息" placeholder={state.current?'描述你想完成的工作…':'打开项目并创建会话后开始'} value={draft} disabled={!state.current||activeSession?.archived} rows={3} onChange={event=>setDraft(event.target.value)} onKeyDown={event=>{if(event.nativeEvent.isComposing)return;if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();void send();}}}/>
         {attachments.length>0&&<div className="attachment-list">{attachments.map(item=><span key={item.path} title={item.path}>{item.path.split('/').at(-1)}<button aria-label={`移除附件 ${item.path.split('/').at(-1)}`} onClick={()=>setAttachments(previous=>previous.filter(file=>file.path!==item.path))}>×</button></span>)}</div>}
@@ -225,11 +228,12 @@ export default function App() {
           <span className="permission-hint" title="当前采用 Pi 高信任执行；检测到关键删除或 Git 操作时会请求确认。"><Icon name="shield" size={16}/><span>关键操作确认</span></span>
           <label className={`plan-control ${planMode?'active':''}`} title="先规划：只读分析，切换到执行后才修改项目"><Icon name="plan" size={16}/><span>先规划</span><input type="checkbox" role="switch" aria-label="计划模式（只读分析）" checked={planMode} disabled={!state.current||running||sending} onChange={event=>setPlanMode(event.target.checked)}/></label>
           <div className="agent-mode-control" role="group" aria-label="Agent 协作方式" data-mode={mode}><span className="agent-mode-thumb" aria-hidden="true"/>
-            <button type="button" aria-label="Single" aria-pressed={mode==='single'} className={mode==='single'?'selected':''} disabled={!state.current||running||sending} onClick={()=>setMode('single')} title="Single：单个 Agent 完成任务"><Icon name="single" size={17}/><span>Single</span></button>
-            <button type="button" aria-label="Swarm" aria-pressed={mode==='swarm'} className={mode==='swarm'?'selected':''} disabled={!state.current||running||sending||!currentPlugins.includes('swarm')} onClick={()=>setMode('swarm')} title="Swarm：多个 Agent 分工协作"><Icon name="swarm" size={17}/><span>Swarm</span></button>
+            <button type="button" aria-label="Single" aria-pressed={mode==='single'} className={mode==='single'?'selected':''} disabled={!state.current||running||sending} onClick={()=>void invoke('session.configure',{sessionId,executionMode:'single'}).then(()=>setMode('single')).catch(()=>{})} title="Single：单个 Agent 完成任务"><Icon name="single" size={17}/><span>Single</span></button>
+            <button type="button" aria-label="Team" aria-pressed={mode==='team'} className={mode==='team'?'selected':''} disabled={!state.current||running||sending||!currentPlugins.includes('swarm')} onClick={()=>void invoke('session.configure',{sessionId,executionMode:'team'}).then(()=>setMode('team')).catch(()=>{})} title="Team：主 Agent 委派，成员成果返回后由主 Agent 整合"><Icon name="swarm" size={17}/><span>Team</span></button>
+            <button type="button" aria-label="Swarm" aria-pressed={mode==='swarm'} className={mode==='swarm'?'selected':''} disabled={!state.current||running||sending||!currentPlugins.includes('swarm')} onClick={()=>void invoke('session.configure',{sessionId,executionMode:'swarm'}).then(()=>setMode('swarm')).catch(()=>{})} title="Swarm：多个 Agent 分工协作"><Icon name="swarm" size={17}/><span>Swarm</span></button>
           </div>
-          <div className="composer-model-controls"><select aria-label="模型" className="model-select" value={state.current?.modelId||''} disabled={!state.current||running} onChange={event=>void invoke('session.configure',{sessionId,modelId:event.target.value}).catch(()=>{})}><option value="" disabled>选择模型</option>{state.models.map(model=><option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select>
-          <select aria-label="思考等级" className="thinking-select" value={state.current?.thinkingLevel||'off'} disabled={!state.current||running} onChange={event=>void invoke('session.configure',{sessionId,thinkingLevel:event.target.value}).catch(()=>{})}>{[['off','不思考'],['minimal','最少'],['low','低'],['medium','中'],['high','高'],['xhigh','最高']].filter(([value])=>(state.current?.thinkingLevels||['off']).includes(value)).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></div>
+          <ModelPicker key={sessionId} models={state.models.filter(model=>state.providers.some(provider=>provider.id===model.provider&&provider.configured))} modelId={state.current?.modelId} thinkingLevel={state.current?.thinkingLevel} thinkingLevels={state.current?.thinkingLevels||['off']}
+            disabled={!state.current||running||sending||!!activeSession?.archived} onChange={input=>invoke('session.configure',{sessionId,...input})} onConfigure={()=>setSettingsOpen(true)}/>
           {running?<button type="button" className="stop-button" aria-label="停止当前任务" onClick={()=>{void invoke('session.stop',{sessionId}).then(()=>{setLocalRunning(false);setSwarmRunning(false);setDialogs([]);}).catch(()=>{});}}><span/>停止</button>:<button type="button" className="send-button" aria-label="发送消息" title="⌘ / Ctrl + Enter 发送" disabled={!state.current||activeSession?.archived||!draft.trim()||sending} onClick={()=>void send()}><Icon name="send" size={19}/></button>}
         </div>
       </div></div>

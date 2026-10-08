@@ -1,17 +1,17 @@
 export interface Project { id: string; path: string; name: string }
 export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string;status?:string;modelId?:string;archived?:boolean }
 export interface Message { role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string }
-export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[] }
-export interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
+export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[];baseUrl?:string;api?:string }
+export interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
 export interface AppState {
   projects: Project[];
   sessions: SessionSummary[];
-  current: { sessionId: string; projectId: string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;executionMode?:'single'|'swarm' } | null;
+  current: { sessionId: string; projectId: string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;executionMode?:'single'|'team'|'swarm' } | null;
   models: Model[];
-  providers: { id: string; name: string; configured: boolean }[];
+  providers: { id: string; name: string; configured: boolean;supportsApiKey?:boolean }[];
   preferences?:Preferences;
 }
-export interface BridgeEvent { type: 'state' | 'pi' | 'plugin' | 'dialog' | 'notice'; sessionId?: string; data: unknown }
+export interface BridgeEvent { type: 'state' | 'runtime' | 'pi' | 'plugin' | 'dialog' | 'notice'; sessionId?: string; data: unknown }
 export interface FriendBridge { request<T = unknown>(method: string, input?: Record<string, unknown>): Promise<T>; onEvent(callback: (event: BridgeEvent) => void): () => void }
 declare global { interface Window { friendPi: FriendBridge } }
 export type PluginName = 'swarm' | 'expert' | 'memory' | 'topic-rebuild';

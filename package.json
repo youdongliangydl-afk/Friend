@@ -14,7 +14,7 @@
     "bootstrap": "node scripts/bootstrap-pi.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts packages/*/test/*.test.ts",
+    "test": "node scripts/test.mjs",
     "start": "node scripts/launch.mjs",
     "package:plugins": "node scripts/package-plugins.mjs",
     "package:mac": "node scripts/package-desktop.mjs"

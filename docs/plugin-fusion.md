@@ -1,0 +1,37 @@
+# Pi plugin fusion
+
+The product remains four independent native Pi packages: Swarm, Expert, Memory and Topic/Rebuild. Model execution and JSONL belong to the pinned public Pi SDK. Goal, task and process services live in the host and communicate through versioned Pi events.
+
+## Execution modes
+
+- Single uses one foreground Agent, self review and actual objective checks. It rejects delegation and separate goal auditors. Independent Memory learning follows existing configuration.
+- Team reuses the Swarm member executor. Children communicate only with their parent and cannot recursively delegate. Reads return directly. Writes require a Git worktree, checks and independent read-only review; the parent explicitly integrates a ready result. Default child model/thinking inherit; explicitly configured alternatives may be selected.
+- Swarm uses its existing graph scheduler and adds structured dynamic workflows. Serial dependencies, parallel nodes, typed conditions, bounded retries and dynamic append are supported. Defaults: 4 workers, maximum 16; at most 64 logical nodes. Templates have immutable versions. There is no arbitrary JavaScript workflow execution.
+
+## Continuation and evidence
+
+One durable coordinator admits goal, Team and finite-job wakes. Generations fence explicit stops, durable event IDs deduplicate notices and completions, and saved owner identities reject foreign or stale results. Automatic prompts pass through Pi's public prompt API and native hooks. Receipts mark automatic messages in derived UI/history projections without changing or duplicating native JSONL.
+
+Goals use safe checkpoints for automatic cold restoration; unknown side effects, explicit pause/stop, fatal model errors and unavailable token accounting do not automatically retry. Optional token budgets include foreground/member usage. Single completion uses self review and actual checks; Team/Swarm completion adds an independent native read-only reviewer. A reviewer role switch in the same Agent is not independent review. Evidence binds source contents, write generations and task/result versions; changed results require fresh checks.
+
+Logical steps persist acceptance conditions, actual check output and repair usage. Two directed repair rounds are allowed, including across restores or replacement execution IDs. Agent methods do not force a refine/research/grill pipeline or upstream pi-task Git side effects. Cross-session or cross-mode goal migration is rejected; reopen the owning session in its original mode, or create a newly authorized goal. Valid independent audit evidence can be reused only when its source history and objective/task/code binding still match.
+
+## Background processes
+
+The retained ISC pi-background-tasks 2.6.9 process backend is internal; see third-party/pi-background-tasks/ADAPTATIONS.md. No background Agent dispatch is enabled. Window hiding or session switching keeps processes running. Explicit app quit closes owned groups and keeps logs; cold startup never replays a shell command. Agent finite jobs may resume their owning foreground task; manual commands default to notification only. Chat stop cancels its finite jobs and preserves designated services; services do not block run completion.
+
+This is a high-trust cooperation boundary, not an OS shell sandbox. Recognizable Agent command routes and inline credential assignments are rejected; arbitrary shell behavior is not statically provable. Process ownership reaches the parent supervisor before asynchronous admission finishes. Unknown old PIDs are never adopted or killed from persisted PID values.
+
+## Roles and UI
+
+Expert roles separately freeze responsibilities, tool and write scopes, delivery schemas and optional model mappings. A safe stage receipt authorizes switching; the host applies explicit model mappings before the next model request. Scope remains the intersection with original task permission. Independent reviewers are hard read-only. Existing versioned method validation/evolution remains separate from user-managed contracts. Automatic continuations preserve the frozen role/method catalog for the same authorized run; selecting a role for the next run does not rewrite the active role.
+
+The client has Single/Team/Swarm controls, a task workbench for goals/steps/Team results/workflows/jobs, and an Expert contract editor. GUI and model tools route to the same controllers. Recovering an unknown scene requires an explicit user inspection receipt before new attempts; it does not replay old commands.
+
+Model/thinking selection uses a compact trigger and a native top-layer popover. Opening it leaves composer geometry unchanged. Proposed plans appear at the conversation tail with a three-line preview and no visible revision number; clicking opens full Markdown in the right workbench. Internal plan approval still binds the full revision/hash/model/mode snapshot. Popular provider setup pre-fills public defaults and keeps advanced parameters collapsed; see [provider sources and boundaries](model-provider-presets.md).
+
+## Verification and integration
+
+Default tests use the fake provider and isolated project/data directories. Native SDK lifecycle tests, controller regressions, type checking, build and package checks are self tests. Final product acceptance requires actual Computer Use evidence bound to the exact candidate commit, Pi SHA and artifact hash; unrun real-model or integrated acceptance must be reported as unrun.
+
+Implementation is isolated in `codex/friend-pi-plugin-fusion`. The receiving chat owns merging with the concurrent client UX branch and subsequent integration acceptance. Do not apply the candidate directly to the primary Friend checkout.

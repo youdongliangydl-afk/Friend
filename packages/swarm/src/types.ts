@@ -1,9 +1,10 @@
-export type GraphStatus = 'created'|'running'|'stopping'|'paused'|'awaiting_review'|'ready'|'integrated'|'failed'|'stopped';
-export type TaskStatus = 'pending'|'running'|'completed'|'unknown'|'blocked'|'cancelled';
+export type GraphStatus = 'created'|'running'|'stopping'|'paused'|'completed'|'awaiting_review'|'ready'|'integrated'|'failed'|'stopped';
+export type TaskStatus = 'pending'|'running'|'completed'|'skipped'|'unknown'|'blocked'|'cancelled';
 export interface Check { command: string; args: string[] }
 export interface Task {
   id: string; title: string; prompt: string; dependencies: string[]; mode: 'read'|'write';
   expertId?: string; writeScopes: string[]; status: TaskStatus; currentAttempt?: string;
+  modelId?:string;thinkingLevel?:string;roleId?:string;logicalStepId?:string;workflowHeld?:boolean;
   rework: number; resultRevision: number;
   originalPrompt?:string; requirementVersions?:{version:number;prompt:string;reason?:string;at:string}[];
 }
@@ -27,6 +28,7 @@ export interface Graph {
   integration?: {cwd: string; head?: string; checks: CheckResult[]; review?: Review}; error?: string;
   stopReceipt?:StopReceipt;expertCatalog?:unknown;expertUnavailable?:boolean;runId?:string;
   executionOwner?:{pid:number;runtime:string};
+  executionStyle?:'team'|'swarm';workflowId?:string;deferPreparation?:boolean;integratedTaskIds?:string[];parentTools?:string[];goalId?:string;audit?:boolean;auditEvidence?:unknown;
   reviews?:Review[];reviewAttempts?:ReviewAttempt[];
 }
 export interface MemberMessage {id: string; graphId: string; from: string; to: string; body: string; createdAt: string; deliveredAt?: string; processedAt?: string; attemptId?: string}
@@ -36,6 +38,7 @@ export interface MemberStart {
   v: 1; type: 'start'; graphId: string; taskId: string; attemptId: string; cwd: string; dataDir: string;
   agentDir: string; sessionDir: string; modelId?: string; thinkingLevel?: string; prompt: string;
   expert?: unknown; mode: 'read'|'write'; writeScopes: string[]; reviewResult?: boolean;
+  executionStyle?:'team'|'swarm';roleId?:string;parentTools?:string[];
   resultVersions?:Record<string,number>;
 }
 export type MemberInput = MemberStart | {v:1;type:'steer';messageId:string;text:string} | {v:1;type:'stop'} | {v:1;type:'confirm.response';requestId:string;accepted:boolean} | {v:1;type:'request.response';requestId:string;result?:unknown;error?:string};

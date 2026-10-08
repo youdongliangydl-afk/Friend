@@ -3,12 +3,14 @@ import { isDeepStrictEqual } from 'node:util';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { RecordStore, registerPlugin, digest, text, object, makeContext, type PluginContext, type JsonObject, type SourceRef } from '@friend-pi/core';
+import { RecordStore, registerPlugin, digest, text, object, makeContext, parseModelJson, type PluginContext, type JsonObject, type SourceRef } from '@friend-pi/core';
+import { builtinRoles, roleDefinition, freezeRole, blockedByFrozenRole, assertRoleModel, assertRoleDelivery, intersectWriteScopes, normalizeWriteScopes, type RoleDefinition, type FrozenRole, type RoleCapability } from './roles.js';
+export { freezeRole, blockedByFrozenRole, assertRoleModel, assertRoleDelivery, intersectWriteScopes, type RoleDefinition, type FrozenRole, type RoleCapability, type RoleDeliveryContract } from './roles.js';
 
 export interface ExpertDefinition { id:string; version:number; title:string; scope:string; prompt:string; tools:string[]; skills:string[]; enabled:boolean; hash:string; createdAt:string; candidateId?:string }
 export interface FrozenSkill {path:string;content:string;hash:string}
 export interface FrozenExpert extends ExpertDefinition {skillContents:FrozenSkill[]}
-export interface FrozenRun {id:string;version:number;prompt:string;toolScope?:string[];skillPaths:string[];experts:FrozenExpert[];hash:string;runId?:string;modelId?:string;thinkingLevel?:string;selectionMode:'auto'|'explicit';selectedIds:string[];adoptedIds?:string[];adoptions?:unknown[]}
+export interface FrozenRun {id:string;version:number;prompt:string;toolScope?:string[];skillPaths:string[];experts:FrozenExpert[];methods?:FrozenExpert[];roles?:RoleDefinition[];role?:FrozenRole;hash:string;runId?:string;modelId?:string;thinkingLevel?:string;selectionMode:'auto'|'explicit';selectedIds:string[];adoptedIds?:string[];adoptions?:unknown[]}
 export interface ValidationCase {id:string;kind:'positive'|'negative';input:string;expected:unknown;scope:string}
 export interface MethodCandidate {
   id:string;title:string;method:string;scope:string;sourceMemoryIds:string[];sources:SourceRef[];
@@ -39,7 +41,8 @@ function frozenSkill(path:string,ctx:PluginContext):FrozenSkill {
   const content=readFileSync(file,'utf8');return {path:file,content,hash:digest(content)};
 }
 function frozenBody(expert:FrozenExpert):string {return `${expert.title} v${expert.version}\n${expert.prompt}${expert.skillContents.map(skill=>`\n\nSkill ${skill.path} (${skill.hash})\n${skill.content}`).join('')}`;}
-export function blockedByFrozenScope(frozen:FrozenRun|undefined,toolName:string):boolean {return !!frozen?.toolScope && toolName!=='friend_expert' && !frozen.toolScope.includes(toolName);}
+function rolePrompt(role:FrozenRole):string {return `角色 ${role.id} v${role.version}（${role.title}）\n${role.responsibility}\n有效工具：${role.effectiveTools.join(', ')||'无'}\n有效写入范围：${role.effectiveWriteScopes.join(', ')||'无'}\n交付合同：${JSON.stringify(role.delivery)}\n这是角色快照；仅在宿主核验安全阶段后成功的 friend_expert role.switch 才能以返回的新合同替代当前职责与角色范围，已采用方法的范围限制继续有效。角色不增加父任务权限；同一 Agent 切换角色不构成独立审核。方法不得更改模型或角色合同。`;}
+export function blockedByFrozenScope(frozen:FrozenRun|undefined,toolName:string,args?:unknown,projectDir?:string):boolean {return blockedByFrozenRole(frozen?.role,toolName,args,projectDir)||!!frozen?.toolScope && toolName!=='friend_expert' && !frozen.toolScope.includes(toolName);}
 /** An empty expert tools list means no additional restriction, never a grant. */
 export function adoptedToolScope(experts:readonly FrozenExpert[],ids:readonly string[],previous?:readonly string[]):string[]|undefined {
   const scopes=experts.filter(expert=>ids.includes(expert.id)).map(expert=>expert.tools).filter(tools=>tools.length);
@@ -59,6 +62,7 @@ export class ExpertController {
   constructor(dataDir?:string) {
     this.store=new RecordStore('expert',dataDir);
     this.store.transaction(()=>{for(const [id,title,prompt] of builtins){const key=`expert:${id}`;const saved=this.store.get<ExpertDefinition>(key);if(saved&&saved.value.scope!=='builtin'){this.store.put(expertKey(saved.value.scope,id),saved.value);this.store.remove(key);}if(!this.store.get(key))this.store.put(key,{id,version:1,title,scope:'builtin',prompt,tools:[],skills:[],enabled:true,hash:digest({prompt,tools:[],skills:[]}),createdAt:now()} satisfies ExpertDefinition,null);}});
+    this.store.transaction(()=>{for(const role of builtinRoles){const key=`role:builtin:${role.id}`;if(!this.store.get(key))this.store.put(key,roleDefinition({...role},{id:role.id,version:1,scope:'builtin'}),null);}});
     for(const row of this.store.list<MethodCandidate>('candidate:'))if(row.value.status==='validating'&&(!row.value.validation||!alive(row.value.validation.ownerPid)))this.store.put(row.key,{...row.value,status:'candidate',error:'验证进程已结束；未发布，待重新验证',validation:undefined},row.revision);
     const lease=this.store.get<{pid:number}>('validation:lease');if(lease&&!alive(lease.value.pid))this.store.remove(lease.key);
   }
@@ -68,26 +72,104 @@ export class ExpertController {
     const visible=new Map(rows.filter(item=>item.scope==='builtin').map(item=>[item.id,item]));
     for(const item of rows)if(item.scope===ctx.projectId)visible.set(item.id,item);return [...visible.values()];
   }
+  roleDefinitions(ctx:PluginContext) {
+    const rows=this.store.list<RoleDefinition>('role:').map(row=>({...row.value,revision:row.revision}));
+    const visible=new Map(rows.filter(role=>role.scope==='builtin').map(role=>[role.id,role]));
+    for(const role of rows)if(role.scope===ctx.projectId)visible.set(role.id,role);return [...visible.values()];
+  }
+  private roleSelection(ctx:PluginContext) {return this.store.get<{id:string;methodIds?:string[]}>(`role-selection:${ctx.projectId}:${ctx.sessionId}`)?.value;}
+  private policy(ctx:PluginContext):RoleCapability|undefined {return (ctx as PluginContext&{policy?:RoleCapability}).policy;}
+  private freezeDefinition(definition:RoleDefinition,ctx:PluginContext):FrozenRole {
+    const modelId=definition.modelId||ctx.modelId,thinkingLevel=definition.thinkingLevel||ctx.thinkingLevel;
+    const available=(ctx as PluginContext&{availableModels?:{id:string;thinkingLevels?:string[]}[]}).availableModels;
+    if(definition.modelId){const model=available?.find(model=>model.id===definition.modelId);if(!model)throw new Error('角色指定模型不在宿主公布的可用模型中');if(thinkingLevel&&model.thinkingLevels&&!model.thinkingLevels.includes(thinkingLevel))throw new Error('角色指定思考等级不适用于该模型');}
+    return freezeRole(definition,{...this.policy(ctx),modelId,thinkingLevel});
+  }
+  private safeRolePhase(input:JsonObject,ctx:PluginContext,run?:FrozenRun):RoleCapability {
+    const policy=this.policy(ctx);
+    if(!policy||policy.v!==1||!Number.isSafeInteger(policy.revision)||!policy.stage||policy.canSwitchRole!==true||policy.unsettledTools!==0)throw new Error('宿主尚未确认角色切换的安全阶段，未收敛工具必须先结束');
+    if(input.stage!==policy.stage||input.policyRevision!==policy.revision)throw new Error('角色切换阶段或宿主策略版本已变化');
+    if(run&&(!run.runId||input.runId!==run.runId||ctx.runId&&ctx.runId!==run.runId||policy.runId&&policy.runId!==run.runId))throw new Error('角色切换执行身份已变化');
+    return policy;
+  }
+  private dispatchRole(action:string,input:JsonObject,ctx:PluginContext):unknown {
+    if(action==='role.snapshot'){const run=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value,policy=this.policy(ctx);return {roles:this.roleDefinitions(ctx),selection:this.roleSelection(ctx),current:run?.role,phase:policy?{v:policy.v,policyRevision:policy.revision,stage:policy.stage,runId:run?.runId,canSwitchRole:policy.canSwitchRole,unsettledTools:policy.unsettledTools}:undefined};}
+    if(action==='role.read'){
+      const run=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;
+      if(input.id===undefined)return {role:run?.role,roles:run?.roles||this.roleDefinitions(ctx)};
+      const role=(run?.roles||this.roleDefinitions(ctx)).find(role=>role.id===text(input.id,'角色标识'));if(!role)throw new Error('角色不存在');return role;
+    }
+    if(action==='role.versions')return this.store.list<RoleDefinition>(`role-version:${ctx.projectId}:${text(input.id)}:`).map(row=>row.value);
+    if(action==='role.create'||action==='role.update'){
+      user(ctx);
+      const definition=this.store.transaction(()=>{
+        const id=action==='role.create'?randomUUID():text(input.id,'角色标识');
+        const previous=action==='role.update'?this.store.get<RoleDefinition>(`role:${ctx.projectId}:${id}`)||this.store.get<RoleDefinition>(`role:builtin:${id}`):undefined;
+        if(action==='role.update'&&(!previous||!Number.isSafeInteger(input.revision)||previous.revision!==input.revision))throw new Error('角色版本已变化，请刷新后重试');
+        const definition=roleDefinition(input,{id,version:(previous?.value.version||0)+1,scope:ctx.projectId});
+        if(id==='reviewer'&&(definition.writeScopes.length||definition.tools.some(tool=>!builtinRoles.find(role=>role.id==='reviewer')!.tools.includes(tool))))throw new Error('内建 reviewer 必须保持硬只读合同');
+        if(definition.modelId)this.freezeDefinition(definition,ctx);
+        if(previous){const key=`role-version:${ctx.projectId}:${id}:${previous.value.version}`;if(!this.store.get(key))this.store.put(key,previous.value,null);}
+        const key=`role:${ctx.projectId}:${id}`,local=this.store.get<RoleDefinition>(key);let saved=this.store.put(key,definition,local?.revision??null);
+        while(previous&&saved.revision<=previous.revision)saved=this.store.put(key,definition,saved.revision);
+        return {...definition,revision:saved.revision};
+      });
+      this.changed(ctx);return definition;
+    }
+    if(action==='role.assign'){
+      const run=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;
+      if(ctx.origin!=='user'||!ctx.isIdle())this.safeRolePhase(input,ctx,run);
+      const id=text(input.id,'角色标识'),definition=this.roleDefinitions(ctx).find(role=>role.id===id&&role.enabled);if(!definition)throw new Error('角色已停用或范围不匹配');
+      const role=this.freezeDefinition(definition,ctx);
+      const methodIds=input.methodIds===undefined?undefined:cleanStrings(input.methodIds,'方法标识');
+      if(methodIds)for(const methodId of methodIds)if(!this.definitions(ctx).some(method=>method.id===methodId&&method.enabled))throw new Error('方法已停用或范围不匹配');
+      this.store.put(`role-selection:${ctx.projectId}:${ctx.sessionId}`,{id,...(methodIds?{methodIds}:{})});
+      this.changed(ctx);return {role,methodIds,nextRun:true};
+    }
+    if(action==='role.switch'){
+      const row=this.store.get<FrozenRun>(`run:${ctx.sessionId}`);if(!row?.value.runId)throw new Error('尚无本轮执行，先分配下一轮角色');
+      this.safeRolePhase(input,ctx,row.value);
+      const id=text(input.id,'角色标识'),definition=row.value.roles?.find(role=>role.id===id&&role.enabled);if(!definition)throw new Error('角色不在本轮冻结目录中');
+      const role=this.freezeDefinition(definition,ctx);
+      const receipt={v:1,runId:row.value.runId,sessionId:ctx.sessionId,kind:'switch',from:row.value.role?.id,role,actualModelId:ctx.modelId,actualThinkingLevel:ctx.thinkingLevel,modelChangeRequired:role.modelId!==ctx.modelId||role.thinkingLevel!==ctx.thinkingLevel,independent:false,at:now()};
+      // Journal before granting a potentially wider role; failure leaves the prior guard intact.
+      ctx.appendEntry('friend-pi.expert.role',{...receipt,status:'requested'});
+      this.store.put(row.key,{...row.value,role,prompt:`${rolePrompt(role)}\n\n${row.value.experts.filter(method=>(row.value.adoptedIds||row.value.selectedIds).includes(method.id)).map(frozenBody).join('\n\n')}`},row.revision);
+      ctx.emit('expert.role.changed',receipt);this.changed(ctx);
+      return {...receipt,prompt:rolePrompt(role),methodToolScope:row.value.toolScope};
+    }
+    throw new Error(`未知 Expert 角色操作：${action}`);
+  }
   private settings(ctx:PluginContext):{paused:boolean} {return this.store.get<{paused:boolean}>(`settings:${ctx.projectId}`)?.value||{paused:false};}
-  snapshot(ctx:PluginContext) {return {experts:this.definitions(ctx),selection:this.store.get<{ids:string[]}>(`selection:${ctx.projectId}`)?.value.ids||[],candidates:this.store.list<MethodCandidate>(`candidate:${ctx.projectId}:`).map(row=>({...row.value,revision:row.revision})),suites:this.store.list<ValidationCase[]>(`suite:${ctx.projectId}:`).map(row=>({id:row.key.split(':').at(-1),cases:row.value,revision:row.revision})),adoptions:this.store.get(`run:${ctx.sessionId}`)?.value,validation:{...this.settings(ctx),running:!!this.active,queued:this.queue.filter(key=>key.startsWith(`candidate:${ctx.projectId}:`)).length}};}
+  snapshot(ctx:PluginContext) {return {experts:this.definitions(ctx),roles:this.roleDefinitions(ctx),roleSelection:this.roleSelection(ctx),selection:this.store.get<{ids:string[]}>(`selection:${ctx.projectId}`)?.value.ids||[],candidates:this.store.list<MethodCandidate>(`candidate:${ctx.projectId}:`).map(row=>({...row.value,revision:row.revision})),suites:this.store.list<ValidationCase[]>(`suite:${ctx.projectId}:`).map(row=>({id:row.key.split(':').at(-1),cases:row.value,revision:row.revision})),adoptions:this.store.get(`run:${ctx.sessionId}`)?.value,validation:{...this.settings(ctx),running:!!this.active,queued:this.queue.filter(key=>key.startsWith(`candidate:${ctx.projectId}:`)).length}};}
   private changed(ctx:PluginContext):void {if(!this.closed)try{ctx.emit('expert.changed',this.snapshot(ctx));}catch{/* A refresh notification cannot invalidate a persisted method or adoption. */}}
   freeze(input:JsonObject,ctx:PluginContext):FrozenRun {
     if(this.closed)throw new Error('Expert 已关闭');
     const all=this.definitions(ctx);const selected=this.store.get<{ids:string[]}>(`selection:${ctx.projectId}`)?.value.ids||[];
-    const chosen=input.expertId?[text(input.expertId)]:selected.filter(id=>all.some(expert=>expert.id===id&&expert.enabled));
+    const roleSelection=this.roleSelection(ctx);
+    const chosen=input.methodIds!==undefined?cleanStrings(input.methodIds,'方法标识'):input.expertId?[text(input.expertId)]:roleSelection?.methodIds??selected.filter(id=>all.some(expert=>expert.id===id&&expert.enabled));
     const enabled=all.filter(expert=>expert.enabled);const picked=chosen.map(id=>{const expert=enabled.find(item=>item.id===id);if(!expert)throw new Error('专家已停用或范围不匹配');return expert;});const list=input.catalog===true?enabled:chosen.length?picked:enabled;
     const experts:FrozenExpert[]=list.map(({revision:_revision,...expert})=>({...expert,tools:[...expert.tools],skills:[...expert.skills],skillContents:expert.skills.map(path=>frozenSkill(path,ctx))}));
     const restrictions=chosen.length?experts.filter(expert=>chosen.includes(expert.id)).map(expert=>expert.tools).filter(tools=>tools.length):[];
     const toolScope=restrictions.length?restrictions[0].filter(tool=>restrictions.every(scope=>scope.includes(tool))):undefined;
-    const prompt=chosen.length?experts.filter(expert=>chosen.includes(expert.id)).map(frozenBody).join('\n\n'):`可用专家方法（按需使用 friend_expert use，不是强制流程）：\n${experts.map(expert=>`${expert.id}: ${expert.title} — ${expert.prompt}`).join('\n')}`;
-    return {id:chosen.join('+')||'auto',version:Math.max(1,...experts.map(expert=>expert.version)),prompt,toolScope,skillPaths:[],experts,hash:digest(experts),selectionMode:chosen.length?'explicit':'auto',selectedIds:[...chosen],adoptedIds:[...chosen]};
+    let prompt=chosen.length?experts.filter(expert=>chosen.includes(expert.id)).map(frozenBody).join('\n\n'):`可用专家方法（按需使用 friend_expert use，不是强制流程）：\n${experts.map(expert=>`${expert.id}: ${expert.title} — ${expert.prompt}`).join('\n')}`;
+    const roles=this.roleDefinitions(ctx).filter(role=>role.enabled).map(({revision:_revision,...role})=>role);
+    const roleId=input.roleId!==undefined?text(input.roleId,'角色标识'):roleSelection?.id;
+    const definition=roleId?roles.find(role=>role.id===roleId):undefined;
+    if(roleId&&!definition)throw new Error('角色已停用或范围不匹配');
+    const role=definition?this.freezeDefinition(definition,ctx):undefined;
+    if(role)prompt=`${rolePrompt(role)}\n\n${prompt}`;
+    return {id:chosen.join('+')||'auto',version:Math.max(1,...experts.map(expert=>expert.version)),prompt,toolScope,skillPaths:[],experts,methods:structuredClone(experts),roles:structuredClone(roles),...(role?{role}:{}),hash:digest({experts,roles,role}),selectionMode:chosen.length?'explicit':'auto',selectedIds:[...chosen],adoptedIds:[...chosen]};
   }
+  validateDelivery(ctx:PluginContext){const run=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;if(!run?.role)return;const source=ctx.history().filter(item=>item.role==='assistant').at(-1);let approved=false,error:string|undefined;try{assertRoleDelivery(run.role,parseModelJson(source?.text||''));approved=true;}catch(cause){error=errorText(cause);}const receipt={v:1,runId:run.runId,roleId:run.role.id,roleVersion:run.role.version,approved,error,source:source?{sessionId:ctx.sessionId,entryId:source.id,hash:digest(source.text)}:undefined};ctx.appendEntry('friend-pi.expert.delivery',receipt);ctx.emit('expert.role.delivery',receipt);if(error)ctx.notify(`角色交付未通过：${error}`,'error');return receipt;}
   beginRun(ctx:PluginContext):FrozenRun&{runId:string} {
+    const prior=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;if(ctx.runId&&ctx.policy?.runId===ctx.runId&&prior?.runId===ctx.runId){const role=prior.role?{...prior.role,...(prior.role.modelSource==='inherited'?{modelId:ctx.modelId}:{}),...(prior.role.thinkingSource==='inherited'?{thinkingLevel:ctx.thinkingLevel}:{})}:undefined;const snapshot={...prior,role,runId:ctx.runId,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel};this.store.put(`run:${ctx.sessionId}`,snapshot);ctx.appendEntry('friend-pi.expert.continuation',{v:1,runId:ctx.runId,hash:prior.hash,roleId:role?.id,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel});return snapshot;}
     const snapshot={...this.freeze({},ctx),runId:ctx.runId||randomUUID(),modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,adoptions:[] as unknown[]};
     // Native Pi history preserves each actual execution snapshot. The mutable SQLite pointer
     // is only the current tool-scope/adoption lookup; it never replaces earlier evidence.
     ctx.appendEntry('friend-pi.expert.run',{v:1,runId:snapshot.runId,sessionId:ctx.sessionId,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,frozen:snapshot,at:now()});
     if(snapshot.selectionMode==='explicit')for(const expert of snapshot.experts){const receipt=this.adoption(expert,snapshot,ctx,'selected');snapshot.adoptions.push(receipt);ctx.appendEntry('friend-pi.expert.adoption',receipt);}
+    if(snapshot.role)ctx.appendEntry('friend-pi.expert.role',{v:1,runId:snapshot.runId,sessionId:ctx.sessionId,kind:'assigned',role:snapshot.role,actualModelId:ctx.modelId,actualThinkingLevel:ctx.thinkingLevel,at:now()});
     this.store.put(`run:${ctx.sessionId}`,snapshot);return snapshot;
   }
   private adoption(expert:FrozenExpert,run:FrozenRun&{runId:string},ctx:PluginContext,mode:'selected'|'use') {
@@ -106,8 +188,21 @@ export class ExpertController {
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
     if(this.closed)throw new Error('Expert 已关闭');
+    if(action.startsWith('role.'))return this.dispatchRole(action,input,ctx);
     if(action==='list'||action==='snapshot')return this.snapshot(ctx);
     if(action==='freeze'){const frozen=this.freeze(input,ctx);if(input.catalog===true)this.store.put(`catalog:${ctx.projectId}:${frozen.hash}`,frozen);return frozen;}
+    if(action==='freeze.role'){
+      const hash=text(input.catalogHash),catalog=this.store.get<FrozenRun>(`catalog:${ctx.projectId}:${hash}`)?.value;
+      if(!catalog||catalog.hash!==hash)throw new Error('角色冻结目录不存在或不属于当前项目');
+      const definition=catalog.roles?.find(role=>role.id===text(input.roleId)&&role.enabled);if(!definition)throw new Error('角色不在本次冻结目录中');
+      const raw=input.capability===undefined?{}:object(input.capability),parent=this.policy(ctx);
+      const requestedTools=raw.tools===undefined?undefined:cleanStrings(raw.tools,'成员工具范围');
+      const tools=requestedTools?.filter(tool=>!parent?.tools||parent.tools.includes(tool))??parent?.tools;
+      const writeScopes=raw.writeScopes===undefined?parent?.writeScopes:intersectWriteScopes(normalizeWriteScopes(raw.writeScopes),parent?.writeScopes??['.']);
+      const context={...ctx,modelId:raw.modelId===undefined?ctx.modelId:text(raw.modelId,'成员模型'),thinkingLevel:raw.thinkingLevel===undefined?ctx.thinkingLevel:text(raw.thinkingLevel,'成员思考等级')};
+      const frozen=this.freezeDefinition(definition,context);
+      return freezeRole(frozen,{...parent,tools,writeScopes,modelId:frozen.modelId,thinkingLevel:frozen.thinkingLevel});
+    }
     if(action==='adopt.frozen'){
       const hash=text(input.catalogHash);const catalog=this.store.get<FrozenRun>(`catalog:${ctx.projectId}:${hash}`)?.value;
       if(!catalog||catalog.hash!==hash)throw new Error('成员冻结目录不存在或不属于当前项目');
@@ -247,8 +342,11 @@ export class ExpertController {
 const extension:ExtensionFactory=(pi:ExtensionAPI)=>{
   const controller=new ExpertController();registerPlugin(pi,'expert',controller,'Expert：专业方法、版本、选择、验证和限域发布');
   pi.on('session_start',(_event,ctx)=>controller.resume(makeContext(pi,ctx)));
-  pi.on('before_agent_start',(event,ctx)=>{controller.interrupt();const frozen=controller.beginRun(makeContext(pi,ctx));return {systemPrompt:`${event.systemPrompt}\n\n${frozen.prompt}\n专家身份不增加权限。新版本仅用于后续执行。`};});
-  pi.on('tool_call',(event,ctx)=>{const frozen=controller.store.get<FrozenRun>(`run:${ctx.sessionManager.getSessionId()}`)?.value;if(blockedByFrozenScope(frozen,event.toolName))return {block:true,reason:'当前专家冻结范围不包含该工具'};});
+  pi.on('before_agent_start',(event,ctx)=>{controller.interrupt();const context=makeContext(pi,ctx),frozen=controller.beginRun(context);try{assertRoleModel(frozen.role,context);}catch(error){ctx.abort();ctx.ui.notify(errorText(error),'error');}return {systemPrompt:`${event.systemPrompt}\n\n${frozen.prompt}\n专家身份不增加权限。新版本仅用于后续执行。`};});
+  pi.on('tool_call',(event,ctx)=>{const frozen=controller.store.get<FrozenRun>(`run:${ctx.sessionManager.getSessionId()}`)?.value;try{assertRoleModel(frozen?.role,makeContext(pi,ctx));}catch(error){return {block:true,reason:errorText(error)};}if(blockedByFrozenScope(frozen,event.toolName,event.input,ctx.cwd))return {block:true,reason:'当前角色合同或方法冻结范围不包含该工具及路径'};});
+  // Pi reports hook exceptions and continues; explicit public abort is required here.
+  pi.on('before_provider_request',(_event,ctx)=>{const frozen=controller.store.get<FrozenRun>(`run:${ctx.sessionManager.getSessionId()}`)?.value;try{assertRoleModel(frozen?.role,makeContext(pi,ctx));}catch(error){ctx.abort();ctx.ui.notify(errorText(error),'error');}});
+  pi.on('agent_settled',(_event,ctx)=>{controller.validateDelivery(makeContext(pi,ctx,'plugin'));});
   const off=pi.events.on('friend-pi:v1:event',raw=>{if(!raw||typeof raw!=='object')return;const event=object(raw);if(event.pluginEvent==='memory.invalidated'&&event.data&&typeof event.data==='object'){const data=object(event.data);if(Array.isArray(data.ids))controller.invalidate(data.ids.map(String));}});
   pi.on('session_shutdown',()=>off());
 };

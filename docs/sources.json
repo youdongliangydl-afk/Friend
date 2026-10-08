@@ -1,22 +1,186 @@
 {
   "schemaVersion": 1,
-  "checkedOn": "2026-10-07",
-  "policy": "Four-plugin business code and desktop application are original Friend-Pi implementation. Pi is an unmodified runtime dependency; other agent products are architecture references, not copied or required services. npm transitive sources are pinned by package-lock.json and their licenses are retained in the application.",
+  "checkedOn": "2026-10-08",
+  "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. Other plugins are references only.",
   "sources": [
-    {"name":"Pi","repository":"https://github.com/earendil-works/pi","commit":"eb326d265ae0b88489a6d10319307780df827cdf","license":"MIT","licensePath":"LICENSE","mode":"runtime-dependency","version":"1.0.4","modified":false,"use":"Public SDK, native Agent execution and JSONL sessions, extension/event/compaction APIs; built as a coherent official offline tarball set."},
-    {"name":"Friend","repository":"https://github.com/youdongliangydl-afk/Wind","commit":"d0e22965aad8dcda51aaf2b1ba8980a308d212c9","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"User-owned prior product; project/session sidebar, conversation and on-demand workstation layout. No source copied."},
-    {"name":"DeepSeekHarness","repository":"https://github.com/deepseek-ai/deepseek-harness","commit":"5badb15009ae1756c3afe0ae0cef1faafc290ccc","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Task graph, claims, durable mailbox and source-event design. Friend-Pi controllers are original SQLite/worktree implementations."},
-    {"name":"MiniMax Code","repository":"https://github.com/MiniMax-AI/minimax-code","commit":"56221c121c6e63d0e50b68f57d4abf083afed119","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Agent runtime and scheduling research; no implementation files incorporated."},
-    {"name":"ZCode","repository":"https://github.com/zai-org/ZCode","commit":"29628c9acdb81b703bbd4080c207a0e7ce5e276e","license":"Apache-2.0","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Client/runtime separation and cancellation/recovery research; no implementation files incorporated."},
-    {"name":"Codex","repository":"https://github.com/openai/codex","commit":"afb436df8b70bb5bc57b86d9a3e829968988cd21","license":"Apache-2.0","licensePath":"LICENSE","noticePath":"NOTICE","mode":"reference","modified":false,"use":"Cancellation, tool authority and memory/context research; no implementation files incorporated."},
-    {"name":"MiMo-Code","repository":"https://github.com/XiaomiMiMo/MiMo-Code","commit":"6babeb0b98f9b4818bddf04a4331edfee04dbf85","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Context rebuilding and coverage/watermark research; no implementation files incorporated."},
-    {"name":"pi-gui","repository":"https://github.com/minghinmatthewlam/pi-gui","commit":"572c0c6de8ffd3a245c224b912bb8752ca200780","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Public README/license and SDK-first Electron-client comparison; no client source copied."},
-    {"name":"pi-subagents","repository":"https://github.com/tintinweb/pi-subagents","commit":"e955e29c51b7a6cce37e1108cd2d6c57a77e151c","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Public README/license, independent sessions and member lifecycle comparison; no framework installed or copied."},
-    {"name":"pi-agent-orchestrator","repository":"https://github.com/GroepOnline/pi-agent-orchestrator","commit":"7208bdb089f15c7d371407531d53394fb2a61f6a","license":"MIT","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Public README/license, worktree collaboration and progress comparison; no framework installed or copied."},
-    {"name":"Mem0","repository":"https://github.com/mem0ai/mem0","commit":"c93420c49a6b14c3d446bdb156d96811908fd90a","license":"Apache-2.0","licensePath":"LICENSE","mode":"reference","modified":false,"use":"Public README/license and separating retrieval, update and deletion; no library/service required or incorporated."},
-    {"name":"Electron","repository":"https://github.com/electron/electron","commit":"87cd122b5de69555831cd752578b810dd6e504d8","license":"MIT","licensePath":"LICENSE","mode":"runtime-dependency","version":"43.5.0","implementationModified":false,"packagingModified":true,"use":"Official macOS arm64 distribution. Packaging changes application identity and adds a local ad-hoc outer signature for ARM64 execution; upstream nested framework signatures and Chromium notices are retained. No Developer ID, --deep signing or notarization."},
-    {"name":"Node.js","repository":"https://github.com/nodejs/node","commit":"848430679556aed0bd073f2bc263331ad84fa119","license":"MIT AND bundled-third-party-licenses","licensePath":"LICENSE","mode":"runtime-dependency","version":"24.15.0","modified":false,"use":"Unmodified official arm64 Node executable and original full LICENSE, including bundled components."},
-    {"name":"npm CLI","repository":"https://github.com/npm/cli","commit":"a62dc76bfd7cb797c6f3fb7c0dd11b8610034956","license":"Artistic-2.0","licensePath":"LICENSE","mode":"runtime-dependency","version":"11.12.1","modified":false,"use":"Pinned runtime npm/npx and complete npm dependencies, for local project validation. Original notices remain in the runtime tree."},
-    {"name":"React/React DOM","repository":"https://github.com/facebook/react","commit":"1dd4ecbdabf826f527fc9a58c05ea70375b7d170","license":"MIT","licensePath":"LICENSE","mode":"bundled-dependency","version":"19.2.8","modified":false,"use":"Browser renderer includes React/React DOM and scheduler from the lockfile; original licenses are copied to third-party-licenses."}
-  ]
+    {
+      "name": "Pi",
+      "repository": "https://github.com/earendil-works/pi",
+      "commit": "eb326d265ae0b88489a6d10319307780df827cdf",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "runtime-dependency",
+      "version": "1.0.4",
+      "modified": false,
+      "use": "Public SDK, native Agent execution and JSONL sessions, extension/event/compaction APIs; built as a coherent official offline tarball set."
+    },
+    {
+      "name": "Friend",
+      "repository": "https://github.com/youdongliangydl-afk/Wind",
+      "commit": "d0e22965aad8dcda51aaf2b1ba8980a308d212c9",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "User-owned prior product; project/session sidebar, conversation and on-demand workstation layout. No source copied."
+    },
+    {
+      "name": "DeepSeekHarness",
+      "repository": "https://github.com/deepseek-ai/deepseek-harness",
+      "commit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Task graph, claims, durable mailbox and source-event design. Friend-Pi controllers are original SQLite/worktree implementations."
+    },
+    {
+      "name": "MiniMax Code",
+      "repository": "https://github.com/MiniMax-AI/minimax-code",
+      "commit": "56221c121c6e63d0e50b68f57d4abf083afed119",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Agent runtime and scheduling research; no implementation files incorporated."
+    },
+    {
+      "name": "ZCode",
+      "repository": "https://github.com/zai-org/ZCode",
+      "commit": "29628c9acdb81b703bbd4080c207a0e7ce5e276e",
+      "license": "Apache-2.0",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Client/runtime separation and cancellation/recovery research; no implementation files incorporated."
+    },
+    {
+      "name": "Codex",
+      "repository": "https://github.com/openai/codex",
+      "commit": "afb436df8b70bb5bc57b86d9a3e829968988cd21",
+      "license": "Apache-2.0",
+      "licensePath": "LICENSE",
+      "noticePath": "NOTICE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Cancellation, tool authority and memory/context research; no implementation files incorporated."
+    },
+    {
+      "name": "MiMo-Code",
+      "repository": "https://github.com/XiaomiMiMo/MiMo-Code",
+      "commit": "6babeb0b98f9b4818bddf04a4331edfee04dbf85",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Context rebuilding and coverage/watermark research; no implementation files incorporated."
+    },
+    {
+      "name": "pi-gui",
+      "repository": "https://github.com/minghinmatthewlam/pi-gui",
+      "commit": "572c0c6de8ffd3a245c224b912bb8752ca200780",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Public README/license and SDK-first Electron-client comparison; no client source copied."
+    },
+    {
+      "name": "pi-subagents",
+      "repository": "https://github.com/tintinweb/pi-subagents",
+      "commit": "e955e29c51b7a6cce37e1108cd2d6c57a77e151c",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Public README/license, independent sessions and member lifecycle comparison; no framework installed or copied."
+    },
+    {
+      "name": "pi-agent-orchestrator",
+      "repository": "https://github.com/GroepOnline/pi-agent-orchestrator",
+      "commit": "7208bdb089f15c7d371407531d53394fb2a61f6a",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Public README/license, worktree collaboration and progress comparison; no framework installed or copied."
+    },
+    {
+      "name": "Mem0",
+      "repository": "https://github.com/mem0ai/mem0",
+      "commit": "c93420c49a6b14c3d446bdb156d96811908fd90a",
+      "license": "Apache-2.0",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Public README/license and separating retrieval, update and deletion; no library/service required or incorporated."
+    },
+    {
+      "name": "Electron",
+      "repository": "https://github.com/electron/electron",
+      "commit": "87cd122b5de69555831cd752578b810dd6e504d8",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "runtime-dependency",
+      "version": "43.5.0",
+      "implementationModified": false,
+      "packagingModified": true,
+      "use": "Official macOS arm64 distribution. Packaging changes application identity and adds a local ad-hoc outer signature for ARM64 execution; upstream nested framework signatures and Chromium notices are retained. No Developer ID, --deep signing or notarization."
+    },
+    {
+      "name": "Node.js",
+      "repository": "https://github.com/nodejs/node",
+      "commit": "848430679556aed0bd073f2bc263331ad84fa119",
+      "license": "MIT AND bundled-third-party-licenses",
+      "licensePath": "LICENSE",
+      "mode": "runtime-dependency",
+      "version": "24.15.0",
+      "modified": false,
+      "use": "Unmodified official arm64 Node executable and original full LICENSE, including bundled components."
+    },
+    {
+      "name": "npm CLI",
+      "repository": "https://github.com/npm/cli",
+      "commit": "a62dc76bfd7cb797c6f3fb7c0dd11b8610034956",
+      "license": "Artistic-2.0",
+      "licensePath": "LICENSE",
+      "mode": "runtime-dependency",
+      "version": "11.12.1",
+      "modified": false,
+      "use": "Pinned runtime npm/npx and complete npm dependencies, for local project validation. Original notices remain in the runtime tree."
+    },
+    {
+      "name": "React/React DOM",
+      "repository": "https://github.com/facebook/react",
+      "commit": "1dd4ecbdabf826f527fc9a58c05ea70375b7d170",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "bundled-dependency",
+      "version": "19.2.8",
+      "modified": false,
+      "use": "Browser renderer includes React/React DOM and scheduler from the lockfile; original licenses are copied to third-party-licenses."
+    },
+    {
+      "name": "pi-background-tasks",
+      "repository": "https://github.com/ismailsaleekh/pi-background-tasks",
+      "version": "2.6.9",
+      "license": "ISC",
+      "licensePath": "third-party/pi-background-tasks/LICENSE",
+      "mode": "bundled-process-backend",
+      "modified": true,
+      "sourceRecord": "third-party/pi-background-tasks/SOURCE.json",
+      "adaptations": "third-party/pi-background-tasks/ADAPTATIONS.md",
+      "use": "Original process registry/event factory internally adapted for early process ownership and pinned package identity; only process features activated. Other extension factories/tools are hidden."
+    }
+  ],
+  "providerConfigurationSources": {
+    "checkedOn": "2026-10-08",
+    "details": "docs/model-provider-presets.md",
+    "originalFriendReference": {
+      "commit": "c9fc2754a9321d035875f472ceded9566364b81b",
+      "tree": "f0d4f67950eb4eed190745bafdb44f44d685f3d0",
+      "mode": "interaction-reference-only; no code copied"
+    },
+    "mode": "public documentation and pinned native Pi catalog; no credentials or account endpoint IDs"
+  }
 }

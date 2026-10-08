@@ -1,0 +1,1011 @@
+{
+  "schemaVersion": 1,
+  "assessedOn": "2026-10-08 Asia/Shanghai",
+  "scope": "源码对照与隔离加载可行性研究；不是产品实施或客户端验收",
+  "identity": {
+    "candidateCommit": "75c3e5ec31ae1505084ac34d9f8bbd4e0dbad03d",
+    "piCommit": "eb326d265ae0b88489a6d10319307780df827cdf",
+    "nodeVersion": "24.15.0",
+    "sourceFiles": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "92f5690c31a0983e779513899f32d7fb62fedfd21dfae0ff84d2a26f81b8544d"
+      },
+      {
+        "path": "pi-source.lock.json",
+        "sha256": "73ee52cb1f14557dbb96804c7a7d6bf256a4e12ec65839c389ace3aa19d0827e"
+      },
+      {
+        "path": "package-lock.json",
+        "sha256": "4f8de8d73f5f4f7f197b6e642fdafe425782dc94d67b90fe953eec4ba9ba124d"
+      },
+      {
+        "path": "apps/desktop/src/sdk-worker.ts",
+        "sha256": "4bf0c1718be93b2e6001b33b364f14a471ab39f72fd4eade56969e8fced8573d"
+      },
+      {
+        "path": "apps/desktop/src/main.ts",
+        "sha256": "1902d2ec892cabf4a14af1d1fbc5fbc6fad500a8245775b4e8bdd0957441f3af"
+      },
+      {
+        "path": "packages/swarm/src/index.ts",
+        "sha256": "7c835a47a3f4354fe70695ad294c7d3e94f374924356c2aa15b09805e76a369d"
+      },
+      {
+        "path": "packages/swarm/src/types.ts",
+        "sha256": "34afcfa2d42a43343b061f6b1205269a97f9660fbff31de44e428bdb9272e60e"
+      },
+      {
+        "path": "packages/swarm/src/member.ts",
+        "sha256": "e0e7cda3873efb759bebecc0dc030b4435592eb170ff47f7d9124889ad1e0997"
+      },
+      {
+        "path": "packages/expert/src/index.ts",
+        "sha256": "caea5de59ae706007d4aeb0d1741825b42195214d009a7612ec31afc190168fd"
+      }
+    ],
+    "piArtifactManifestSha256": "8597dd7f9539141b503672a1070fb2f175cf8b1feaa52b8d7b50bfdcd3dc0775"
+  },
+  "sourceIdentification": "截图缺作者与版本，按描述和目录匹配候选；不证明截图当时的精确版本",
+  "recommendation": "保留现有四插件控制器，通过版本事件总线复用新能力；先后台命令，再长期目标，再Swarm多模型与模板",
+  "packages": [
+    {
+      "name": "pi-subagents",
+      "version": "0.76.1",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/nicobailon/pi-subagents.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "typebox": "*",
+        "@earendil-works/pi-ai": ">=0.86.1",
+        "@earendil-works/pi-tui": "*",
+        "@earendil-works/pi-agent-core": "*",
+        "@earendil-works/pi-coding-agent": "*"
+      },
+      "pi": {
+        "skills": [
+          "./skills"
+        ],
+        "prompts": [
+          "./prompts"
+        ],
+        "extensions": [
+          "./index.js"
+        ]
+      },
+      "archiveSha256": "369266f8204aa08e31a995817be007062cdc792113e26d24f9f04021753dc080",
+      "tarball": "https://registry.npmjs.org/pi-subagents/-/pi-subagents-0.76.1.tgz",
+      "integrity": "sha512-DTHVUUyLx5KfwikpSQF4sWIKaazbxanAoKd8v4ZGt9OqLM2xNQ79BrPHjaqOARipoUb0kZIKyEYwTPItPqYq1g=="
+    },
+    {
+      "name": "@tintinweb/pi-subagents",
+      "version": "0.19.0",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/tintinweb/pi-subagents.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-ai": ">=0.84.0",
+        "@earendil-works/pi-tui": ">=0.84.0",
+        "@earendil-works/pi-coding-agent": ">=0.84.0"
+      },
+      "pi": {
+        "image": "https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png",
+        "video": "https://github.com/tintinweb/pi-subagents/raw/master/media/demo.mp4",
+        "extensions": [
+          "./src/index.ts"
+        ]
+      },
+      "archiveSha256": "0c4c9416750027f5e18aef663975827ecc63bd4969a207c3dd0abde7e6bd61de",
+      "tarball": "https://registry.npmjs.org/@tintinweb/pi-subagents/-/pi-subagents-0.19.0.tgz",
+      "integrity": "sha512-DZsU33Urfb9dhEsJmsmpx0dayIHMYUbxng6AA7B6+bIgspNcTckcSnQRsbrv+QCS7jVKYJTzHIT/j1SU2B/nVQ=="
+    },
+    {
+      "name": "@quintinshaw/pi-dynamic-workflows",
+      "version": "3.14.0",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/QuintinShaw/pi-dynamic-workflows.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "typebox": "*",
+        "@earendil-works/pi-tui": ">=0.80.6",
+        "@earendil-works/pi-coding-agent": ">=0.80.8"
+      },
+      "pi": {
+        "image": "https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/assets/readme/package-cover.png",
+        "skills": [
+          "skills/workflow-authoring",
+          "skills/workflow-patterns"
+        ],
+        "extensions": [
+          "extensions/workflow.ts"
+        ]
+      },
+      "archiveSha256": "380e2b645c91f04814f47797ea29a5827c6258e0b4b279f03ac8afda8318db7a",
+      "tarball": "https://registry.npmjs.org/@quintinshaw/pi-dynamic-workflows/-/pi-dynamic-workflows-3.14.0.tgz",
+      "integrity": "sha512-ZZtTD0r+60cfzjLk3Xq3OOz7x8RL9Mer2t2l0zY5CX0l93q74TTlj2GULFKp/z14lY0nXLAL0kco5KwMqLdnGg=="
+    },
+    {
+      "name": "pi-goal-x",
+      "version": "0.32.3",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/tmonk/pi-goal-x.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "typebox": "^1.3.11",
+        "@earendil-works/pi-ai": ">=0.83.0 <2.0.0",
+        "@earendil-works/pi-tui": ">=0.83.0 <2.0.0",
+        "@earendil-works/pi-coding-agent": ">=0.83.0 <2.0.0"
+      },
+      "pi": {
+        "image": "https://github.com/tmonk/pi-goal-x/raw/main/pi-goal-x.png",
+        "extensions": [
+          "extensions/goal.ts"
+        ]
+      },
+      "archiveSha256": "87b3ff215bf01001dc378ff6d517326995b42310698d4121e0bbd7e73ba1fed7",
+      "tarball": "https://registry.npmjs.org/pi-goal-x/-/pi-goal-x-0.32.3.tgz",
+      "integrity": "sha512-Jip/7p+yuOx/+ckV6IQDr+WhlVvXVw16aR9HMWadc5itciABHdt4HU0Gi3pJU7gJdnB1W3yjdcq6hMwVo/6YIw=="
+    },
+    {
+      "name": "@mjasnikovs/pi-task",
+      "version": "0.42.48",
+      "license": "AGPL-3.0-only",
+      "repository": {
+        "url": "git+https://github.com/mjasnikovs/pi-task.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "typebox": "*",
+        "@earendil-works/pi-tui": ">=0.87.0",
+        "@earendil-works/pi-agent-core": ">=0.87.0",
+        "@earendil-works/pi-coding-agent": ">=0.87.0"
+      },
+      "pi": {
+        "image": "https://raw.githubusercontent.com/mjasnikovs/pi-task/main/assets/card.png",
+        "extensions": [
+          "dist/index.js"
+        ]
+      },
+      "archiveSha256": "17075555129e07448e093c1085f7a54d0dd365ec763f15668fd7579963e216e5",
+      "tarball": "https://registry.npmjs.org/@mjasnikovs/pi-task/-/pi-task-0.42.48.tgz",
+      "integrity": "sha512-AIsx0l7i4ufy0se5NbbAaNxMjGzfkd2t71DLuYPx7Y+2KG+iepBdHz2Gv7gTcfqQkGjxLfdcgJnTnwe4PSvKSQ=="
+    },
+    {
+      "name": "@akagilnc/pi-workflow-roles",
+      "version": "0.1.5698",
+      "license": "Apache-2.0",
+      "repository": {
+        "url": "git+https://github.com/Akagilnc/ak-pi-workflow-roles.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-coding-agent": "*"
+      },
+      "pi": {
+        "extensions": []
+      },
+      "archiveSha256": "34c35d3783e3dff2438dd923e6bbbe0ecdf2cac88975b048f224583c02ae9606",
+      "tarball": "https://registry.npmjs.org/@akagilnc/pi-workflow-roles/-/pi-workflow-roles-0.1.5698.tgz",
+      "integrity": "sha512-XvUPY3bta8VN9SoVZyXSvcLDH8xr9yUeAAPjrtibDHz9tDS+w0VDqOb3+LD7Ctb67o/fNhoA2BynAJHPkEMsAg=="
+    },
+    {
+      "name": "pi-background-tasks",
+      "version": "2.6.9",
+      "license": "ISC",
+      "repository": {
+        "url": "git+https://github.com/ismailsaleekh/pi-background-tasks.git",
+        "type": "git"
+      },
+      "peerDependencies": {
+        "typebox": "*",
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-tui": "^0.81.1 || ^0.82.1 || ^0.83.0 || ^0.84.0",
+        "@earendil-works/pi-coding-agent": "^0.81.1 || ^0.82.1 || ^0.83.0 || ^0.84.0"
+      },
+      "pi": {
+        "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
+        "extensions": [
+          "./dist/extensions/anthropic-attribution.js",
+          "./dist/extensions/background-tasks.js"
+        ]
+      },
+      "archiveSha256": "84cb5dd2b159c77fae02647ebb60f74d184a1f012f30463cb24c8ceff5fd2fee",
+      "tarball": "https://registry.npmjs.org/pi-background-tasks/-/pi-background-tasks-2.6.9.tgz",
+      "integrity": "sha512-5dma6xvO7jeAimRaCNCzfe5y+b4bVBYPxnJ/0RnGS+mj6B6SzgA4FcORKuAtZaoGvC29dlyof3NtX7/QD4Ywew=="
+    }
+  ],
+  "assessments": [
+    {
+      "screenshotName": "pi-subagents",
+      "candidate": "pi-subagents@0.76.1",
+      "source": "https://github.com/nicobailon/pi-subagents",
+      "decision": "融合进Swarm；不默认并行启用第二调度器",
+      "existing": [
+        "任务图与依赖",
+        "独立成员执行",
+        "并发、消息、共享材料",
+        "独立复核"
+      ],
+      "absorb": [
+        "轻量单成员委派入口",
+        "串行/并行/链式模板",
+        "聚合等待"
+      ],
+      "barriers": [
+        "子进程需进入统一停止/退出管理",
+        "传递Friend真实认证目录",
+        "终端Fleet需要桌面状态投影"
+      ],
+      "evidence": "extension registration passed; child execution not run"
+    },
+    {
+      "screenshotName": "pi-dynamic-workflows",
+      "candidate": "@quintinshaw/pi-dynamic-workflows@3.14.0",
+      "source": "https://github.com/QuintinShaw/pi-dynamic-workflows",
+      "decision": "模板和多模型路由融合进Swarm",
+      "existing": [
+        "工作树隔离",
+        "DAG执行",
+        "暂停、返工和整合"
+      ],
+      "absorb": [
+        "逐成员/阶段模型",
+        "实际token/cost记录",
+        "可复用研究与审查工作流",
+        "动态任务扩展"
+      ],
+      "barriers": [
+        "现有Graph只冻结单模型",
+        "上游读取私有runtime并patch宿主原型",
+        "上游默认子会话内存态，需登记原生Pi记录",
+        "TUI组件不会自动显示为React"
+      ],
+      "evidence": "extension registration passed; workflow execution not run"
+    },
+    {
+      "screenshotName": "pi-background-tasks",
+      "candidate": "pi-background-tasks@2.6.9",
+      "source": "https://github.com/ismailsaleekh/pi-background-tasks",
+      "decision": "优先复用process-only后端，经版本总线适配到统一任务管理",
+      "existing": [
+        "Memory独立后台学习队列",
+        "多个会话worker可同时存在"
+      ],
+      "absorb": [
+        "任意长命令",
+        "状态与有界日志",
+        "取消与完成事件"
+      ],
+      "barriers": [
+        "peer声明0.x不含Pi1.0.4，需固定并验证兼容适配",
+        "客户端停止目前未向bg任务传播",
+        "UI与宿主崩溃管理仍需接线",
+        "不启用额外delegate/fusion/attribution来绕开现有控制器"
+      ],
+      "evidence": "Node24/Pi1.0.4 isolated SDK process-only: load, bind, EventBus capabilities/run/status/logs/kill and quit cleanup passed; no model calls; GUI not run"
+    },
+    {
+      "screenshotName": "pi-goal-x",
+      "candidate": "pi-goal-x@0.32.3",
+      "source": "https://github.com/tmonk/pi-goal-x",
+      "decision": "补长期目标管理；接续和验收复用PlanStore与Swarm",
+      "existing": [
+        "单轮目标拆解和复核返工",
+        "精确版本计划批准"
+      ],
+      "absorb": [
+        "跨会话目标",
+        "任务树/阶段合同",
+        "预算和续跑控制",
+        "目标完成审核"
+      ],
+      "barriers": [
+        "避免两个计划真源和重复自动续跑",
+        "明确自主执行额度",
+        "审计会话须真实只读工具、持久Pi记录和明确agentDir",
+        "终端dashboard需要状态投影"
+      ],
+      "evidence": "extension registration passed; goal execution/auditor/continuation not run"
+    },
+    {
+      "screenshotName": "pi-task",
+      "candidate": "@mjasnikovs/pi-task@0.42.48",
+      "source": "https://github.com/mjasnikovs/pi-task",
+      "decision": "不原样启用；独立实现任务步骤与验证约束",
+      "existing": [
+        "任务持久状态",
+        "客观检查和独立审查",
+        "计划批准、恢复收据"
+      ],
+      "absorb": [
+        "逐步骤verify/enforce",
+        "失败定位与恢复阶段",
+        "步骤级完成证据"
+      ],
+      "barriers": [
+        "默认autoCommit且实现存在git add -A、reset --hard、stash drop，与AGENTS规则冲突",
+        "TUI custom不可显示",
+        "AGPL-3.0-only，直接复制/分发须保留相应许可边界"
+      ],
+      "evidence": "extension registration passed only; all execution/Git operations deliberately not invoked"
+    },
+    {
+      "screenshotName": "pi-workflow-roles",
+      "candidate": "@akagilnc/pi-workflow-roles@0.1.5698",
+      "source": "https://github.com/Akagilnc/ak-pi-workflow-roles",
+      "decision": "角色方法导入Expert；审核合同融合到Swarm",
+      "existing": [
+        "五类专家角色",
+        "版本冻结",
+        "工具范围交集",
+        "独立复核回执"
+      ],
+      "absorb": [
+        "细化职责",
+        "结构化提交",
+        "审核维度"
+      ],
+      "barriers": [
+        "当前manifest pi.extensions为空，安装不会注册Pi扩展",
+        "公开入口为ak-role CLI",
+        "完整引入新增角色账本/调度需另作适配"
+      ],
+      "evidence": "manifest inspected and loader registers zero extensions"
+    }
+  ],
+  "verification": {
+    "modelCalls": 0,
+    "realModels": "NOT_RUN",
+    "actualComputerUse": "NOT_RUN",
+    "builtClientArtifact": "NOT_CREATED",
+    "extensionRegistration": [
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "pi-subagents",
+        "version": "0.76.1",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [
+          "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/subagents/package/index.js"
+        ],
+        "errors": [],
+        "registered": [
+          {
+            "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/subagents/package/index.js",
+            "tools": [
+              "subagent",
+              "bg_wait",
+              "subagents_enable"
+            ],
+            "commands": [
+              "subagents-watchdog",
+              "subagents",
+              "run",
+              "subagent-cost",
+              "subagents-doctor",
+              "subagents-inspect-rpc",
+              "subagents-guide",
+              "subagents-refine",
+              "subagents-fleet",
+              "subagents-detach",
+              "subagents-stop",
+              "subagents-steer",
+              "prompt-workflow",
+              "subagents-models",
+              "subagents-profiles",
+              "subagents-load-profile",
+              "subagents-refresh-provider-models",
+              "subagents-generate-profiles",
+              "subagents-check-profile"
+            ],
+            "eventHooks": [
+              "session_start",
+              "before_agent_start",
+              "turn_end",
+              "input",
+              "model_select",
+              "tool_result",
+              "agent_end",
+              "session_before_switch",
+              "session_before_fork",
+              "session_compact",
+              "session_shutdown",
+              "agent_start",
+              "message_start",
+              "agent_settled",
+              "session_before_compact",
+              "session_tree"
+            ]
+          }
+        ]
+      },
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "@tintinweb/pi-subagents",
+        "version": "0.19.0",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [
+          "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/tintin-subagents/package/src/index.ts"
+        ],
+        "errors": [],
+        "registered": [
+          {
+            "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/tintin-subagents/package/src/index.ts",
+            "tools": [
+              "Agent",
+              "SubagentWorkflow",
+              "get_subagent_result",
+              "steer_subagent"
+            ],
+            "commands": [
+              "agents"
+            ],
+            "eventHooks": [
+              "session_start",
+              "input",
+              "session_before_switch",
+              "session_shutdown",
+              "tool_execution_start"
+            ]
+          }
+        ]
+      },
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "@quintinshaw/pi-dynamic-workflows",
+        "version": "3.14.0",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [
+          "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/workflows/package/extensions/workflow.ts"
+        ],
+        "errors": [],
+        "registered": [
+          {
+            "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/workflows/package/extensions/workflow.ts",
+            "tools": [
+              "workflow",
+              "workflow_control"
+            ],
+            "commands": [
+              "workflows",
+              "workflows-models",
+              "deep-research",
+              "adversarial-review",
+              "code-review",
+              "multi-perspective",
+              "codebase-audit",
+              "effort",
+              "ultracode"
+            ],
+            "eventHooks": [
+              "turn_end",
+              "session_shutdown",
+              "session_start",
+              "model_select"
+            ]
+          }
+        ]
+      },
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "pi-goal-x",
+        "version": "0.32.3",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [
+          "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/goal/package/extensions/goal.ts"
+        ],
+        "errors": [],
+        "registered": [
+          {
+            "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/goal/package/extensions/goal.ts",
+            "tools": [
+              "get_goal",
+              "create_goal",
+              "update_goal",
+              "set_goal_tasks",
+              "update_goal_task",
+              "goal_question",
+              "goal_questionnaire",
+              "propose_goal_draft"
+            ],
+            "commands": [
+              "goal",
+              "sisyphus",
+              "goal-cancel",
+              "goal-direct",
+              "sisyphus-direct",
+              "goal-list",
+              "goal-status",
+              "goal-refresh",
+              "goal-recovery",
+              "goal-focus",
+              "goal-unfocus",
+              "goal-settings",
+              "goal-tweak",
+              "goal-clear",
+              "goal-pause",
+              "goal-resume"
+            ],
+            "eventHooks": [
+              "before_provider_request",
+              "context",
+              "agent_start",
+              "message_start",
+              "turn_start",
+              "tool_call",
+              "tool_execution_end",
+              "turn_end",
+              "message_end",
+              "session_start",
+              "session_before_compact",
+              "session_compact",
+              "session_compact_failed",
+              "session_tree",
+              "before_agent_start",
+              "agent_end",
+              "agent_settled",
+              "session_shutdown"
+            ]
+          }
+        ]
+      },
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "@mjasnikovs/pi-task",
+        "version": "0.42.48",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [
+          "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/task/package/dist/index.js"
+        ],
+        "errors": [],
+        "registered": [
+          {
+            "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/task/package/dist/index.js",
+            "tools": [
+              "pi-worker",
+              "pi-worker-search",
+              "pi-worker-fetch",
+              "pi-worker-docs"
+            ],
+            "commands": [
+              "task-config",
+              "task",
+              "task-list",
+              "task-resume",
+              "task-cancel",
+              "task-auto",
+              "task-auto-resume",
+              "task-auto-cancel",
+              "task-plan",
+              "remote"
+            ],
+            "eventHooks": [
+              "agent_start",
+              "tool_execution_start",
+              "agent_end",
+              "session_start",
+              "session_shutdown",
+              "tool_execution_end",
+              "turn_end",
+              "before_provider_request",
+              "after_provider_response",
+              "turn_start",
+              "message_start",
+              "message_update",
+              "message_end",
+              "tool_execution_update",
+              "agent_before_settle",
+              "agent_settled",
+              "input",
+              "tool_call"
+            ]
+          }
+        ]
+      },
+      {
+        "node": "v24.15.0",
+        "pi": "1.0.4",
+        "name": "@akagilnc/pi-workflow-roles",
+        "version": "0.1.5698",
+        "phase": "extension registration only",
+        "modelCalls": 0,
+        "guiAcceptance": "NOT_RUN",
+        "declaredEntryPoints": [],
+        "errors": [],
+        "registered": []
+      }
+    ],
+    "backgroundProcessSmoke": {
+      "node": "v24.15.0",
+      "pi": "1.0.4",
+      "extension": "pi-background-tasks@2.6.9",
+      "features": "process",
+      "modelCalls": 0,
+      "guiAcceptance": "NOT_RUN",
+      "loadErrors": [],
+      "extensions": [
+        {
+          "path": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background/package/dist/extensions/background-tasks.js",
+          "tools": [
+            "bg_run",
+            "bg_status",
+            "bg_logs",
+            "bg_kill"
+          ],
+          "commands": [
+            "bg",
+            "tasks",
+            "bg-tasks",
+            "bg-clear",
+            "bg-update",
+            "jobs",
+            "logs",
+            "kill"
+          ]
+        }
+      ],
+      "bindErrors": [],
+      "capabilities": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "24fb9273-ee2f-4e43-baf2-ca3ca5dc75f0",
+        "operation": "capabilities",
+        "ok": true,
+        "result": {
+          "api_version": 1,
+          "run": true,
+          "run_is_agent": true,
+          "run_completion_trigger": true,
+          "status": true,
+          "logs": true,
+          "logs_bounded": true,
+          "kill": true
+        }
+      },
+      "run": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "be056381-a590-4a6a-906d-d88e4b9e5384",
+        "operation": "run",
+        "ok": true,
+        "result": {
+          "id": "bf70234b6",
+          "name": "Offline smoke fixture",
+          "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"FRIEND_BG_FIXTURE_OK\"),180)'",
+          "status": "running",
+          "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output",
+          "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+          "startTime": 1791428126332,
+          "pid": 32428,
+          "bytesWritten": 0,
+          "isAgent": false,
+          "surviveReload": false,
+          "notified": false,
+          "notifyOnCompletion": false,
+          "triggerOnCompletion": false,
+          "timeoutSeconds": 5,
+          "shellPolicy": {
+            "policy": "inherit",
+            "executable": "/bin/zsh",
+            "argvPrefix": [
+              "-c"
+            ],
+            "dialect": "posix"
+          }
+        }
+      },
+      "taskId": "bf70234b6",
+      "terminal": [
+        {
+          "schema_version": "pi-background-tasks.extension-terminal.v1",
+          "task": {
+            "id": "bf70234b6",
+            "name": "Offline smoke fixture",
+            "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"FRIEND_BG_FIXTURE_OK\"),180)'",
+            "status": "completed",
+            "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output",
+            "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+            "startTime": 1791428126332,
+            "endTime": 1791428126551,
+            "exitCode": 0,
+            "signal": null,
+            "pid": 32428,
+            "bytesWritten": 21,
+            "isAgent": false,
+            "surviveReload": false,
+            "notified": false,
+            "notifyOnCompletion": false,
+            "triggerOnCompletion": false,
+            "timeoutSeconds": 5,
+            "shellPolicy": {
+              "policy": "inherit",
+              "executable": "/bin/zsh",
+              "argvPrefix": [
+                "-c"
+              ],
+              "dialect": "posix"
+            }
+          }
+        },
+        {
+          "schema_version": "pi-background-tasks.extension-terminal.v1",
+          "task": {
+            "id": "b51371e62",
+            "name": "Cancel fixture",
+            "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"LATE_OUTPUT\"),15000)'",
+            "status": "killed",
+            "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b51371e62.output",
+            "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+            "startTime": 1791428126604,
+            "endTime": 1791428126611,
+            "exitCode": null,
+            "signal": "SIGTERM",
+            "pid": 32429,
+            "bytesWritten": 0,
+            "isAgent": false,
+            "surviveReload": false,
+            "notified": false,
+            "notifyOnCompletion": false,
+            "triggerOnCompletion": false,
+            "timeoutSeconds": 20,
+            "shellPolicy": {
+              "policy": "inherit",
+              "executable": "/bin/zsh",
+              "argvPrefix": [
+                "-c"
+              ],
+              "dialect": "posix"
+            }
+          }
+        }
+      ],
+      "status": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "62169e27-b39e-4d15-a0dd-3dda72b0830e",
+        "operation": "status",
+        "ok": true,
+        "result": {
+          "tasks": [
+            {
+              "id": "bf70234b6",
+              "name": "Offline smoke fixture",
+              "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"FRIEND_BG_FIXTURE_OK\"),180)'",
+              "status": "completed",
+              "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output",
+              "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+              "startTime": 1791428126332,
+              "endTime": 1791428126551,
+              "exitCode": 0,
+              "signal": null,
+              "pid": 32428,
+              "bytesWritten": 21,
+              "isAgent": false,
+              "surviveReload": false,
+              "notified": false,
+              "notifyOnCompletion": false,
+              "triggerOnCompletion": false,
+              "timeoutSeconds": 5,
+              "shellPolicy": {
+                "policy": "inherit",
+                "executable": "/bin/zsh",
+                "argvPrefix": [
+                  "-c"
+                ],
+                "dialect": "posix"
+              }
+            }
+          ]
+        }
+      },
+      "logs": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "edd43f92-c371-4bd1-9600-9148e8fcf106",
+        "operation": "logs",
+        "ok": true,
+        "result": {
+          "task": {
+            "id": "bf70234b6",
+            "name": "Offline smoke fixture",
+            "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"FRIEND_BG_FIXTURE_OK\"),180)'",
+            "status": "completed",
+            "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output",
+            "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+            "startTime": 1791428126332,
+            "endTime": 1791428126551,
+            "exitCode": 0,
+            "signal": null,
+            "pid": 32428,
+            "bytesWritten": 21,
+            "isAgent": false,
+            "surviveReload": false,
+            "notified": false,
+            "notifyOnCompletion": false,
+            "triggerOnCompletion": false,
+            "timeoutSeconds": 5,
+            "shellPolicy": {
+              "policy": "inherit",
+              "executable": "/bin/zsh",
+              "argvPrefix": [
+                "-c"
+              ],
+              "dialect": "posix"
+            }
+          },
+          "path": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output",
+          "bytesRead": 21,
+          "truncated": false,
+          "tail": true,
+          "text": "FRIEND_BG_FIXTURE_OK\n\n\n[Full output: .pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/bf70234b6.output]"
+        }
+      },
+      "killRun": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "826587ef-cdb9-4022-a0f6-7065c5ac1949",
+        "operation": "run",
+        "ok": true,
+        "result": {
+          "id": "b51371e62",
+          "name": "Cancel fixture",
+          "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"LATE_OUTPUT\"),15000)'",
+          "status": "running",
+          "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b51371e62.output",
+          "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+          "startTime": 1791428126604,
+          "pid": 32429,
+          "bytesWritten": 0,
+          "isAgent": false,
+          "surviveReload": false,
+          "notified": false,
+          "notifyOnCompletion": false,
+          "triggerOnCompletion": false,
+          "timeoutSeconds": 20,
+          "shellPolicy": {
+            "policy": "inherit",
+            "executable": "/bin/zsh",
+            "argvPrefix": [
+              "-c"
+            ],
+            "dialect": "posix"
+          }
+        }
+      },
+      "kill": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "6cef1ee1-1157-4a81-84be-c986242ff759",
+        "operation": "kill",
+        "ok": true,
+        "result": {
+          "task": {
+            "id": "b51371e62",
+            "name": "Cancel fixture",
+            "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"LATE_OUTPUT\"),15000)'",
+            "status": "killed",
+            "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b51371e62.output",
+            "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+            "startTime": 1791428126604,
+            "endTime": 1791428126611,
+            "exitCode": null,
+            "signal": "SIGTERM",
+            "pid": 32429,
+            "bytesWritten": 0,
+            "isAgent": false,
+            "surviveReload": false,
+            "notified": false,
+            "notifyOnCompletion": false,
+            "triggerOnCompletion": false,
+            "timeoutSeconds": 20,
+            "shellPolicy": {
+              "policy": "inherit",
+              "executable": "/bin/zsh",
+              "argvPrefix": [
+                "-c"
+              ],
+              "dialect": "posix"
+            }
+          },
+          "message": "Killed background task Cancel fixture (b51371e62). Output: .pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b51371e62.output"
+        }
+      },
+      "afterKill": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "ff5051a3-6c55-443c-98d6-33b2b635565b",
+        "operation": "status",
+        "ok": true,
+        "result": {
+          "tasks": [
+            {
+              "id": "b51371e62",
+              "name": "Cancel fixture",
+              "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"LATE_OUTPUT\"),15000)'",
+              "status": "killed",
+              "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b51371e62.output",
+              "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+              "startTime": 1791428126604,
+              "endTime": 1791428126611,
+              "exitCode": null,
+              "signal": "SIGTERM",
+              "pid": 32429,
+              "bytesWritten": 0,
+              "isAgent": false,
+              "surviveReload": false,
+              "notified": false,
+              "notifyOnCompletion": false,
+              "triggerOnCompletion": false,
+              "timeoutSeconds": 20,
+              "shellPolicy": {
+                "policy": "inherit",
+                "executable": "/bin/zsh",
+                "argvPrefix": [
+                  "-c"
+                ],
+                "dialect": "posix"
+              }
+            }
+          ]
+        }
+      },
+      "quitRun": {
+        "schema_version": "pi-background-tasks.extension-response.v1",
+        "request_id": "e004879b-3fdf-4c88-9099-03afa3d4ba3d",
+        "operation": "run",
+        "ok": true,
+        "result": {
+          "id": "b90334617",
+          "name": "Quit fixture",
+          "command": "/Users/bytedance/Desktop/Friend/.cache/toolchain/node-v24.15.0-darwin-arm64/bin/node -e 'setTimeout(()=>console.log(\"LATE_OUTPUT\"),15000)'",
+          "status": "running",
+          "outputPath": ".pi/tasks/01a1196f-e670-76e4-a874-13655010af34-32409/b90334617.output",
+          "cwd": "/Users/bytedance/Desktop/Friend/.cache/research/pi-plugin-integration/2026-10-08/background-fixture-project",
+          "startTime": 1791428126619,
+          "pid": 32430,
+          "bytesWritten": 0,
+          "isAgent": false,
+          "surviveReload": false,
+          "notified": false,
+          "notifyOnCompletion": false,
+          "triggerOnCompletion": false,
+          "timeoutSeconds": 20,
+          "shellPolicy": {
+            "policy": "inherit",
+            "executable": "/bin/zsh",
+            "argvPrefix": [
+              "-c"
+            ],
+            "dialect": "posix"
+          }
+        }
+      },
+      "lifecycleErrors": [],
+      "shutdownErrors": [],
+      "quitChildStillAlive": false
+    }
+  },
+  "limitations": [
+    "注册成功不等于实际Agent任务成功",
+    "原生CLI安装路径未验证",
+    "未在当前桌面客户端加载外部插件",
+    "未知副作用不自动重放",
+    "产品仍保持原生Pi模型循环和JSONL历史权威"
+  ]
+}
