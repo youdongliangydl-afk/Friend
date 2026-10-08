@@ -11,6 +11,7 @@ await build({...base,entryPoints:['apps/desktop/src/sdk-worker.ts'],outfile:'app
 await build({...base,entryPoints:['apps/desktop/src/terminal-host.ts'],outfile:'apps/desktop/dist/terminal-host.mjs'});
 await build({...base,entryPoints:['apps/desktop/src/learning-worker.ts'],outfile:'apps/desktop/dist/learning-worker.mjs'});
 await build({...base,entryPoints:['apps/desktop/src/main.ts'],outfile:'apps/desktop/dist/main.mjs',format:'esm',external:['electron']});
+await build({...base,entryPoints:['apps/desktop/src/composer-preload.ts'],outfile:'apps/desktop/dist/composer-preload.cjs',format:'cjs',external:['electron']});
 await build({...base,entryPoints:['apps/desktop/src/preload.ts'],outfile:'apps/desktop/dist/preload.cjs',format:'cjs',external:['electron']});
 await build({entryPoints:['apps/desktop/src/renderer/main.tsx'],outfile:'apps/desktop/dist/renderer/app.js',bundle:true,platform:'browser',target:'chrome140',jsx:'automatic',sourcemap:true,define:{'process.env.NODE_ENV':'"production"'}});
 cpSync('apps/desktop/src/renderer/index.html','apps/desktop/dist/renderer/index.html');

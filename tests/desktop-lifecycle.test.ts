@@ -1,3 +1,4 @@
+import * as sessionView from '../apps/desktop/src/session-view.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -42,6 +43,8 @@ function fixture(){
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
       if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode};
+      if(specifier==='./session-view.js')return sessionView;
+      if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
@@ -54,7 +57,7 @@ function fixture(){
     },
   };
   context.globalThis=context;
-  vm.runInNewContext(compiled+'\nglobalThis.audit={startWorker,workers,store,handle,finishDeletion,retireWorker,terminateWorker,captureOwned,ownedChildren,liveWorkers,isClosed:()=>storeClosed,stopAudit:()=>{shuttingDown=true;storeClosed=true;}};',context);
+  vm.runInNewContext(compiled+'\nglobalThis.audit={setBrowserHost:value=>{browserHost=value;},startWorker,workers,store,handle,finishDeletion,retireWorker,terminateWorker,captureOwned,ownedChildren,liveWorkers,isClosed:()=>storeClosed,stopAudit:()=>{shuttingDown=true;storeClosed=true;}};',context);
   const api=context.audit;assert.equal(typeof api.handle,'function');assert.equal(typeof api.finishDeletion,'function');
   api.store.put('preferences',{defaultWorkspaceDir:path.join(dataDir,'workspaces')});
   api.store.put('project:fixture',{id:'fixture',path:project,name:'Fixture'});
@@ -176,5 +179,17 @@ test('new temporary allocation rejects a pre-existing symlink and restored scope
 
 test('temporary terminal startup rechecks the directory after a delayed host becomes ready',async()=>{
  const f=fixture();try{const a=await temporary(f);let release!:()=>void;const gate=new Promise<void>(done=>release=done);f.control.terminalGate=()=>gate;a.child.state.permissionEpoch=1;a.child.emit('message',{type:'terminal.request',id:'root-drift',method:'create',input:{command:'fixture service'}});await f.flush();fs.renameSync(a.record.workspaceDir,a.record.workspaceDir+'-old');fs.symlinkSync(f.project,a.record.workspaceDir);release();await f.flush();await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);assert.match(a.child.commands.find((m:any)=>m.type==='terminal.response'&&m.id==='root-drift').error,/目录已变化/);
+ }finally{f.cleanup();}
+});
+ test('session view state is isolated from Pi history and defaults only initialize new sessions',async()=>{const f=fixture();try{const a=f.record('ui-a'),b=f.record('ui-b'),before=fs.readFileSync(a.path,'utf8');const legacy=await f.api.handle('session.ui.get',{sessionId:a.id});assert.equal(legacy.mode,'standard');const next={...legacy,mode:'fullscreen',browserScope:'session',tabs:[{id:'diff-ui',kind:'tool',page:'diff'}],active:'diff-ui'};await f.api.handle('session.ui.update',{sessionId:a.id,ui:next});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');assert.equal(fs.readFileSync(a.path,'utf8'),before);assert.equal(f.api.store.get('session-ui:'+a.id).value.browserScope,'session');await f.api.handle('settings.update',{defaultLayoutMode:'fullscreen',defaultBrowserScope:'project'});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');await assert.rejects(f.api.handle('session.ui.update',{sessionId:a.id,ui:{...next,tabs:[{id:'web-ui',kind:'browser',url:'https://example.com'}],active:'missing'}}),/不存在/);}finally{f.cleanup();}});
+
+
+test('failed host cleanup retains the browser controller; successful retry destroys it once',async()=>{
+ const f=fixture();try{
+  let hidden=0,destroyed=0;f.api.setBrowserHost({hide(){hidden++;},destroy(){destroyed++;}});
+  f.control.terminalFailures=1;f.app.emit('before-quit',{preventDefault(){}});await f.flush();
+  assert.equal(f.quitCalls,0);assert.equal(hidden,1);assert.equal(destroyed,0);
+  f.app.emit('before-quit',{preventDefault(){}});await f.flush();
+  assert.equal(f.quitCalls,1);assert.equal(hidden,2);assert.equal(destroyed,1);
  }finally{f.cleanup();}
 });

@@ -1,3 +1,4 @@
+import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
@@ -38,3 +39,5 @@ test('material links preserve absolute paths and resolve Unicode relative links 
 });
 
 test('terminal protocol replies remain responses after copy/modifier intent; actual data uses user input',async()=>{const {terminalDataAction}=await import('../apps/desktop/src/renderer/terminal-input.js');for(const reply of ['\x1b[1;2R','\x1b[0n','\x1b[I','\x1b[O'])for(const intent of [false,true])assert.equal(terminalDataAction(reply,intent),'response');assert.equal(terminalDataAction('text',true),'input');assert.equal(terminalDataAction('text',false),'ignore');assert.deepEqual(materialPath('README.md:20'),{path:'README.md',line:20});});
+
+test('floating composer exposes only attachment and send controls, retaining full controls in conversation',()=>{const snapshot:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'hello',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:true,collapsed:false,status:'准备就绪'};const floating=renderToStaticMarkup(React.createElement(SessionComposer,{value:snapshot,action:async()=>{}}));assert.match(floating,/添加附件/);assert.match(floating,/发送消息/);assert.doesNotMatch(floating,/计划模式|Agent 协作方式|配置模型|关键操作确认|权限策略/);const full=renderToStaticMarkup(React.createElement(SessionComposer,{value:{...snapshot,floating:false},action:async()=>{}}));assert.match(full,/权限策略：安全自动/);assert.match(full,/计划模式/);assert.match(full,/Agent 协作方式/);});

@@ -10,6 +10,12 @@ import { parseArgs } from 'node:util';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const pluginNames = ['swarm', 'expert', 'memory', 'topic-rebuild'];
+export const desktopBuildFiles = ['main.mjs', 'main.mjs.map', 'preload.cjs', 'preload.cjs.map', 'composer-preload.cjs', 'composer-preload.cjs.map', 'sdk-worker.mjs', 'sdk-worker.mjs.map', 'learning-worker.mjs', 'learning-worker.mjs.map', 'terminal-host.mjs', 'terminal-host.mjs.map'];
+export function copyDesktopBuild(source, destination) {
+  mkdirSync(destination, { recursive: true });
+  for (const file of desktopBuildFiles) copyFileSync(join(source, file), join(destination, file));
+  cpSync(join(source, 'renderer'), join(destination, 'renderer'), { recursive: true });
+}
 export function fileHash(path, algorithm = 'sha256', encoding = 'hex') { return createHash(algorithm).update(readFileSync(path)).digest(encoding); }
 export function json(path) { return JSON.parse(readFileSync(path, 'utf8')); }
 export function command(program, args, cwd = root, capture = false, extraEnv = {}) {
@@ -153,9 +159,8 @@ async function main() {
   cpSync(join(root, 'node_modules/electron/dist/Electron.app'), stagedApp, { recursive: true, dereference: false, verbatimSymlinks: true });
   const resources = join(stagedApp, 'Contents', 'Resources'); const appRoot = join(resources, 'app'); const runtime = join(resources, 'runtime'); mkdirSync(appRoot, { recursive: true }); mkdirSync(runtime, { recursive: true });
   if (existsSync(join(resources, 'default_app.asar'))) rmSync(join(resources, 'default_app.asar'));
-  const targetDesktop = join(appRoot, 'apps/desktop/dist'); mkdirSync(targetDesktop, { recursive: true });
-  for (const file of ['main.mjs', 'main.mjs.map', 'preload.cjs', 'preload.cjs.map', 'sdk-worker.mjs', 'sdk-worker.mjs.map','learning-worker.mjs','learning-worker.mjs.map','terminal-host.mjs','terminal-host.mjs.map']) copyFileSync(join(root, 'apps/desktop/dist', file), join(targetDesktop, file));
-  cpSync(join(root, 'apps/desktop/dist/renderer'), join(targetDesktop, 'renderer'), { recursive: true });
+  const targetDesktop = join(appRoot, 'apps/desktop/dist');
+  copyDesktopBuild(join(root, 'apps/desktop/dist'), targetDesktop);
   for (const name of ['core', ...pluginNames]) copyOwnPackage(name, join(appRoot, 'packages', name));
   const closure = copyProductionDependencies(appRoot);
   copyOwnPackage('core', join(appRoot, 'node_modules/@friend-pi/core'));
