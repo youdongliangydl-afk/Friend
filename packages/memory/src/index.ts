@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { ExtensionAPI, ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import {
-  ConflictError, RecordStore, atomicWrite, digest, makeContext, object,
+  assertTemporaryArtifactPath,ConflictError, RecordStore, atomicWrite, digest, makeContext, object,
   parseModelJson, registerPlugin, text,
   readSourceSpan, sourceFactRefs, isSessionDeleted, learningHostAvailable,
   type HistoryItem, type JsonObject, type PluginContext, type PluginController, type SourceRef,
@@ -717,8 +717,8 @@ ${redactMemorySecrets(JSON.stringify(experiences.map(record=>({id:record.id,titl
       case 'export': {
         const records = input.id ? [this.get(input.id,ctx)] : this.records(ctx).filter(record => record.enabled && record.status === 'active');
         const markdown = records.map(record => `## ${record.title.replace(/\n/g,' ')}\n\n${record.content}\n\n- ID: ${record.id}\n- Version: ${record.revision}\n- Scope: ${record.scope}\n- Status: ${record.status}\n- Sources: ${record.sources.map(source => `${source.sessionId}/${source.entryId}`).join(', ') || 'User explicit entry'}\n`).join('\n');
-        const path = join(ctx.dataDir,'memory-exports',`${ctx.projectId}-${input.id ? text(input.id,'记忆编号') : 'active'}.md`);
-        atomicWrite(path,`# Project memories\n\n${markdown}`); return {path,count:records.length};
+        const path = join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'memory-exports',`${ctx.projectId}-${input.id ? text(input.id,'记忆编号') : 'active'}.md`);
+        assertTemporaryArtifactPath(path,ctx.policy?.temporaryWriteRoot);atomicWrite(path,`# Project memories\n\n${markdown}`); return {path,count:records.length};
       }
       case 'learning.pause': case 'learning.resume': case 'learning.settings': {
         if(ctx.origin!=='user') throw new Error('后台学习设置必须由用户操作');

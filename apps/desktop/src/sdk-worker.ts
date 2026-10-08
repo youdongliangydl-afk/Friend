@@ -3,7 +3,7 @@ import { mkdirSync,existsSync,readFileSync,realpathSync,openSync,closeSync } fro
 import { join,resolve,relative,extname } from 'node:path';
 import { createAgentSession,DefaultResourceLoader,SessionManager,SettingsManager,ModelRuntime,createEventBus,initTheme,type AgentSession,type ExtensionUIContext,type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,type PermissionMode,type PermissionRequest } from '@friend-pi/core';
+import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest } from '@friend-pi/core';
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
@@ -14,6 +14,8 @@ import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 
 const dataDir=dataDirectory();const root=resolve(process.env.FRIEND_PI_ROOT || process.cwd());const cwd=resolve(process.env.FRIEND_PI_PROJECT || process.cwd());
+const temporaryWriteRoot=process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT?realpathSync(process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT):undefined;
+if(temporaryWriteRoot)process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT=temporaryWriteRoot;
 const agentDir=join(dataDir,'pi');mkdirSync(agentDir,{recursive:true,mode:0o700});
 // Advertise the actual SDK directory before loading native plugins. Their public
 // ExtensionContext has no SDK agentDir field, and inherited shell Pi paths may differ.
@@ -70,7 +72,7 @@ const terminalRequests=new Map<string,{resolve(value:unknown):void;reject(error:
 function terminalRequest(method:string,input:Record<string,unknown>){const id=randomUUID();return new Promise<unknown>((resolve,reject)=>{const timer=setTimeout(()=>{terminalRequests.delete(id);reject(new Error('终端操作超时，未自动重放'));},20000);terminalRequests.set(id,{resolve,reject,timer});output({type:'terminal.request',id,method,input,planMode});});}
 function guard():ExtensionFactory{return pi=>{
   pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-  const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,permissionMode,executionStopped:stopping||cancelRequested,modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};(request.reply as (value:HostPolicy)=>void)(policy);});
+  const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,permissionMode,temporaryWriteRoot,executionStopped:stopping||cancelRequested,modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};(request.reply as (value:HostPolicy)=>void)(policy);});
   pi.on('session_shutdown',()=>offPolicy());
   pi.registerTool({name:'friend_plan',label:'提交计划',description:'只读规划完成后提交可供用户批准的计划；模型不能批准或启动。',parameters:Type.Object({action:Type.Union([Type.Literal('submit'),Type.Literal('read')]),body:Type.Optional(Type.String())}),async execute(_id,input){const result=input.action==='read'?plans.current():plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode,permissionMode});publish('state',current());return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.on('before_agent_start',event=>{
@@ -79,7 +81,8 @@ function guard():ExtensionFactory{return pi=>{
     // history entry or another input with the same empty text.
     startedInputId=pendingInputs.find(input=>input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(event.prompt)&&input.imageHash===imageIdentity(event.images||[]))?.id;
     const instructions=planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
-    return instructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}`}:undefined;
+    const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
+    return instructions||workspaceInstructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}`}:undefined;
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
@@ -87,14 +90,15 @@ function guard():ExtensionFactory{return pi=>{
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
       if(!['read','ls','find','grep'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
-    const request=toolPermissionRequest(event.toolName,input);
+    const request=toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
     if(request&&!await approvePermission(request))return {block:true,reason:'用户未批准该操作'};
   });
 };}
 async function approvePermission(request:PermissionRequest){
+  request=temporaryPermission(request,temporaryWriteRoot,cwd);
   if(stopping||disposed)return false;const epoch=permissionEpoch,mode=permissionMode,decision=permissionDecision(mode,request);
   const approved=decision==='allow'||Boolean(await dialog('confirm','确认'+request.operation,{message:request.message}));
-  if(stopping||disposed||epoch!==permissionEpoch)return false;
+  if(stopping||disposed||epoch!==permissionEpoch||!temporaryPermissionMatches(request,temporaryWriteRoot,cwd))return false;
   session.sessionManager.appendCustomEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision});return approved;
 }
 async function bind(){
@@ -270,7 +274,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id))||graph.audit===true||graph.runId===runId)&&(busyGraphStatuses.has(String(graph.status))||[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].some(raw=>['running','unknown'].includes(String(object(raw).status)))))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},20000,'user');}}
     statusBeforeCompaction=undefined;session.abortCompaction();await foregroundStop;const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';}catch(error){lifecycleStatus='interrupted';throw error;}finally{pendingInputs.length=0;stopping=false;publish('state',current());}return current();
   }
-  if(method==='permission.confirm')return approvePermission({operation:text(input.operation),message:text(input.message),autoEligible:input.autoEligible===true});
+  if(method==='permission.confirm')return approvePermission({operation:text(input.operation),message:text(input.message),autoEligible:input.autoEligible===true,requireExplicit:input.requireExplicit===true,writePath:typeof input.writePath==='string'?input.writePath:undefined});
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
     const nextPermission=input.permissionMode===undefined?permissionMode:parsePermissionMode(input.permissionMode);

@@ -1,6 +1,6 @@
 import {spawn,type ChildProcess} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import type {PluginContext} from '@friend-pi/core';
+import {temporaryPermission,temporaryPermissionMatches,type PluginContext} from '@friend-pi/core';
 import type {StopObject} from './types.js';
 
 export class CancelledError extends Error {constructor(){super('执行已取消；现场保留，未自动重放');this.name='CancelledError';}}
@@ -27,8 +27,15 @@ export function ownChild(child:ChildProcess,id:string,kind:StopObject['kind'],gr
     });return stopping;
   }};
 }
-export function managedCommand(command:string,args:string[],cwd:string,signal:AbortSignal|undefined,ctx:PluginContext,graphId:string,kind:'check'|'git',onStarted:(operation:{id:string;stop:()=>Promise<StopObject>;ended:Promise<StopObject>})=>void,maxBuffer=4*1024*1024,timeout=120000):Promise<ManagedResult>{
-  checkCancelled(signal);const id=randomUUID();const groupOwned=process.platform!=='win32';
+export async function managedCommand(command:string,args:string[],cwd:string,signal:AbortSignal|undefined,ctx:PluginContext,graphId:string,kind:'check'|'git',onStarted:(operation:{id:string;stop:()=>Promise<StopObject>;ended:Promise<StopObject>})=>void,maxBuffer=4*1024*1024,timeout=120000):Promise<ManagedResult>{
+  checkCancelled(signal);
+  const commandText=[command,...args].join(' ');
+  if(ctx.policy?.temporaryWriteRoot){
+    const request=temporaryPermission({operation:'执行协作命令',message:commandText,autoEligible:false},ctx.policy.temporaryWriteRoot,cwd);
+    if(!ctx.approvePermission||!await ctx.approvePermission(request))throw new Error('用户未批准协作命令');
+    checkCancelled(signal);if(!temporaryPermissionMatches(request,ctx.policy.temporaryWriteRoot,cwd))throw new Error('协作目录已变化，未执行');
+  }
+  const id=randomUUID();const groupOwned=process.platform!=='win32';
   const child=spawn(command,args,{cwd,detached:groupOwned,stdio:['ignore','pipe','pipe'],env:process.env});
   const owned=ownChild(child,id,kind,groupOwned,(action,pid)=>ctx.emit('swarm.process',{v:1,graphId,operationId:id,kind,action,pid,groupOwned}));
   onStarted({id,stop:()=>owned.stop(),ended:owned.ended});

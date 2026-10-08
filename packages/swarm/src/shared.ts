@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
-import {atomicWrite,ConflictError,digest,object,parseModelJson,text,type JsonObject,type PluginContext,type RecordStore} from '@friend-pi/core';
+import {assertTemporaryArtifactPath,atomicWrite,ConflictError,digest,object,parseModelJson,text,type JsonObject,type PluginContext,type RecordStore} from '@friend-pi/core';
 import {checkCancelled} from './managed.js';
 import type {SharedConflict,SharedDocument} from './types.js';
 
@@ -58,9 +58,9 @@ export class SharedMaterials {
       checkCancelled(ctx.signal);const key=this.key(graphId,name),previous=this.store.get<SharedDocument>(key);
       if((previous?.revision||0)!==expected)throw new ConflictError();
       if(previous)this.store.put(`shared-version:${graphId}:${digest(name)}:${previous.revision}`,previous.value);
-      const version=expected+1,file=join(ctx.dataDir,'swarm-shared',graphId,`${digest(name).slice(0,24)}.v${version}.md`);
+      const version=expected+1,file=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-shared',graphId,`${digest(name).slice(0,24)}.v${version}.md`);
       const document:SharedDocument={graphId,name,content,file,version,digest:digest(content),updatedAt:new Date().toISOString(),origin,...(mergeSources?{merged:true,mergeSources}: {})};
-      atomicWrite(file,content);this.store.put(key,document,previous?.revision??null);this.store.put(`shared-version:${graphId}:${digest(name)}:${version}`,document,null);
+      assertTemporaryArtifactPath(file,ctx.policy?.temporaryWriteRoot);atomicWrite(file,content);this.store.put(key,document,previous?.revision??null);this.store.put(`shared-version:${graphId}:${digest(name)}:${version}`,document,null);
       this.store.afterCommit(()=>ctx.emit('swarm.shared.changed',{v:1,graphId,name,revision:version,digest:document.digest}));this.store.afterCommit(this.changed);return document;
     });
   }

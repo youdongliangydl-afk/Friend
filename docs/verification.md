@@ -39,3 +39,12 @@ Native UI acceptance additionally caught a grid-slot expansion bug and a native 
 The Settings/Model follow-up retains a fixed sidebar footer, adds original-Friend category navigation and a compact effort/model card, and requires saving plus an exact connection test. New tests cover exact model visibility, restore, credential/config invalidation, late network and final-auth CAS races, timeout and secret error sanitization, main no-dispatch/no-workspace guards, managed native input/approval guards, plugin inference and missing-model history. Existing independent SDK tests remain unchanged in policy. All final GUI and real-model evidence must be tied to the resulting packaged candidate, not the earlier development screenshot.
 
 Managed hosts additionally guard Pi public stream/complete request boundaries (including native compaction); automatic cache warming is disabled in managed sessions to avoid inference on history viewing. Independent Pi behavior is unchanged.
+
+
+## 临时会话子目录与审批
+
+- 新会话使用全局 `defaultWorkspaceDir`（默认 `~/Documents/Friend`）下的独立 UUID 子目录；更改设置后已有会话目录仍可恢复。
+- 已移除 `session.promote` 与 GUI 登记入口；原转换回归改为不支持转换和目录设置持久化验证。
+- 三种权限策略均验证目录外写入必须显式批准；覆盖 `..`、Pi `@` 前缀、家目录、同前缀兄弟目录、缺失父目录和符号链接（含悬空链接）。
+- 临时会话的 shell、后台命令和 Agent 服务输入申请明确批准；等待批准时停止后不启动、不重放。协作宿主检查同样覆盖取消栅栏。权限批准不扩大计划只读或成员角色范围。
+- JSONL、数据库和受管执行状态仍使用应用数据目录；记忆导出、共享文件和协作工作树使用会话子目录。审批是工具执行前的用户授权，不是操作系统文件沙箱。

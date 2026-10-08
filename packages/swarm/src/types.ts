@@ -29,7 +29,7 @@ export interface Graph {
   integration?: {cwd: string; head?: string; checks: CheckResult[]; review?: Review}; error?: string;
   stopReceipt?:StopReceipt;expertCatalog?:unknown;expertUnavailable?:boolean;runId?:string;
   executionOwner?:{pid:number;runtime:string};
-  executionStyle?:'team'|'swarm';workflowId?:string;deferPreparation?:boolean;integratedTaskIds?:string[];parentTools?:string[];permissionMode?:PermissionMode;goalId?:string;audit?:boolean;auditEvidence?:unknown;
+  executionStyle?:'team'|'swarm';workflowId?:string;deferPreparation?:boolean;integratedTaskIds?:string[];parentTools?:string[];permissionMode?:PermissionMode;temporaryWriteRoot?:string;goalId?:string;audit?:boolean;auditEvidence?:unknown;
   reviews?:Review[];reviewAttempts?:ReviewAttempt[];
 }
 export interface MemberMessage {id: string; graphId: string; from: string; to: string; body: string; createdAt: string; deliveredAt?: string; processedAt?: string; attemptId?: string}
@@ -39,7 +39,7 @@ export interface MemberStart {
   v: 1; type: 'start'; graphId: string; taskId: string; attemptId: string; cwd: string; dataDir: string;
   agentDir: string; sessionDir: string; modelId?: string; thinkingLevel?: string; prompt: string;
   expert?: unknown; mode: 'read'|'write'; writeScopes: string[]; reviewResult?: boolean;
-  executionStyle?:'team'|'swarm';roleId?:string;parentTools?:string[];permissionMode?:PermissionMode;
+  executionStyle?:'team'|'swarm';roleId?:string;parentTools?:string[];permissionMode?:PermissionMode;temporaryWriteRoot?:string;
   resultVersions?:Record<string,number>;
 }
 export type MemberInput = MemberStart | {v:1;type:'steer';messageId:string;text:string} | {v:1;type:'stop'} | {v:1;type:'confirm.response';requestId:string;accepted:boolean} | {v:1;type:'request.response';requestId:string;result?:unknown;error?:string};

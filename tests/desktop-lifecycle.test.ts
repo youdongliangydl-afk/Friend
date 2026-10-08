@@ -56,6 +56,7 @@ function fixture(){
   context.globalThis=context;
   vm.runInNewContext(compiled+'\nglobalThis.audit={startWorker,workers,store,handle,finishDeletion,retireWorker,terminateWorker,captureOwned,ownedChildren,liveWorkers,isClosed:()=>storeClosed,stopAudit:()=>{shuttingDown=true;storeClosed=true;}};',context);
   const api=context.audit;assert.equal(typeof api.handle,'function');assert.equal(typeof api.finishDeletion,'function');
+  api.store.put('preferences',{defaultWorkspaceDir:path.join(dataDir,'workspaces')});
   api.store.put('project:fixture',{id:'fixture',path:project,name:'Fixture'});
   function history(content:string){const manager=SessionManager.create(project,path.join(dataDir,'sessions'));manager.appendMessage({role:'user',content,timestamp:Date.now()});return {id:manager.getSessionId(),file:manager.getSessionFile()!};}
   function record(id:string,native=history('owned source fixture')){const value={id,projectId:'fixture',name:id,path:native.file,piSessionId:native.id,updatedAt:'2026-01-01T00:00:00Z',archived:false,status:'idle'};api.store.put(`session:${id}`,value);return value;}
@@ -138,10 +139,10 @@ test('temporary workspaces are isolated, recoverable and compatible with file AP
  const cold=new RecordStore('desktop',f.dataDir);try{assert.equal(cold.get<{workspaceDir:string}>('session:'+a.record.id)!.value.workspaceDir,a.record.workspaceDir);}finally{cold.close();}
  }finally{f.cleanup();}
 });
-test('promotion retains directory, original Pi identity and worker; running promotion is rejected',async()=>{
- const f=fixture();try{const a=await temporary(f),worker=f.api.workers.get(a.record.id);worker.state.isRunning=true;await assert.rejects(f.api.handle('session.promote',{id:a.record.id,name:'登记项目'}),/停止/);worker.state.isRunning=false;
- const before={cwd:worker.child.options.cwd,file:a.record.path,native:a.record.piSessionId,count:f.children.length};await f.api.handle('session.promote',{id:a.record.id,name:'登记项目'});const record=f.api.store.get('session:'+a.record.id).value;assert.equal(f.api.workers.get(a.record.id),worker);assert.equal(f.children.length,before.count);assert.equal(record.path,before.file);assert.equal(record.piSessionId,before.native);assert.equal(record.workspace.kind,'project');assert.equal(f.api.store.get('project:'+record.projectId).value.path,before.cwd);
- a.child.emit('message',{type:'event',event:{type:'state',data:a.child.state}});await f.flush();assert.equal(f.api.store.get('session:'+a.record.id).value.projectId,record.projectId);await assert.rejects(f.api.handle('session.promote',{id:a.record.id,name:'again'}),/已归属/);
+test('temporary sessions cannot be promoted and changing the default directory preserves old sessions',async()=>{
+ const f=fixture();try{const a=await temporary(f),saved={...a.record};await assert.rejects(f.api.handle('session.promote',{id:a.record.id,name:'登记项目'}));assert.equal(f.api.store.list('project:').length,1);assert.equal(f.api.store.get('session:'+a.record.id).value.workspace.kind,'temporary');
+ const newRoot=path.join(f.dataDir,'new-location');await f.api.handle('settings.update',{defaultWorkspaceDir:newRoot});const b=await temporary(f);assert.equal(path.dirname(b.record.workspaceDir),fs.realpathSync(newRoot));assert.equal(a.child.options.env.FRIEND_PI_TEMPORARY_WRITE_ROOT,saved.workspaceDir);assert.equal(b.child.options.env.FRIEND_PI_TEMPORARY_WRITE_ROOT,b.record.workspaceDir);assert.equal(f.api.store.get('session:'+a.record.id).value.workspaceDir,saved.workspaceDir);assert.equal(f.api.store.get('session:'+a.record.id).value.piSessionId,saved.piSessionId);
+ const tree=await f.api.handle('file.tree',{workspace:b.record.workspace});assert.ok(tree);await assert.rejects(f.api.handle('settings.update',{defaultWorkspaceDir:'relative'}),/绝对/);
  }finally{f.cleanup();}
 });
 test('project order persists exact permutations without altering active execution target',async()=>{
@@ -162,3 +163,18 @@ test('unavailable ownership inspection fails before creating an SDK child',async
 test('terminal cleanup failure keeps the application and permits a later verified quit',async()=>{const f=fixture();try{f.control.terminalFailures=1;const event={preventDefault(){}};f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,0);assert.equal(f.api.isClosed(),false);f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,1);assert.equal(f.api.isClosed(),true);}finally{f.cleanup();}});
 
 test('a late ownership handshake cannot initialize SDK while quit waits for terminal cleanup',async()=>{const f=fixture();try{let release!:()=>void;f.control.terminalGate=()=>new Promise<void>(yes=>{release=yes;});const starting=f.api.startWorker(f.record('late-handshake')),stopped=assert.rejects(starting,/启动授权已失效/);const child=f.children[0];f.app.emit('before-quit',{preventDefault(){}});await f.flush();child.emit('message',{type:'supervisor.await'});await stopped;assert.equal(child.commands.some((message:any)=>message.type==='supervisor.ready'),false);release();await f.flush();assert.equal(f.quitCalls,1);}finally{f.cleanup();}});
+
+test('temporary Agent terminal approval carries the explicit boundary under all permissions',async()=>{
+ const f=fixture();try{const a=await temporary(f);const worker=f.api.workers.get(a.record.id);worker.state.permissionMode='allPermissions';worker.state.permissionEpoch=0;f.control.permissionGate=Promise.resolve(false);a.child.emit('message',{type:'terminal.request',id:'temporary-create',method:'create',input:{command:'node server.js'}});await f.flush();await f.flush();const approval=a.child.commands.find((m:any)=>m.method==='permission.confirm');assert.equal(approval.input.requireExplicit,true);assert.equal(f.control.terminalRequests.length,0);assert.ok(a.child.commands.some((m:any)=>m.type==='terminal.response'&&m.error?.includes('未批准')));
+ }finally{f.cleanup();}
+});
+
+test('new temporary allocation rejects a pre-existing symlink and restored scopes reject directory drift',async()=>{
+ const f=fixture();try{const parent=path.join(f.dataDir,'allocation');fs.mkdirSync(parent);fs.symlinkSync(f.project,path.join(parent,'existing'));assert.throws(()=>workspaceRefs.temporaryWorkspace(parent,'existing'),/已存在/);assert.equal(fs.readdirSync(f.project).length,0);const ordinaryFile=path.join(f.dataDir,'ordinary-file');fs.writeFileSync(ordinaryFile,'x');assert.throws(()=>workspaceRefs.temporaryDirectory(path.join(f.dataDir,'missing','..','ordinary-file')),/不是文件夹/);const a=await temporary(f),saved=a.record.workspaceDir;fs.renameSync(saved,saved+'-old');fs.symlinkSync(f.project,saved);await assert.rejects(f.api.handle('file.tree',{workspace:a.record.workspace}),/目录已变化/);assert.throws(()=>workspaceRefs.sessionWorkspace(f.api.store,a.record),/目录已变化/);
+ }finally{f.cleanup();}
+});
+
+test('temporary terminal startup rechecks the directory after a delayed host becomes ready',async()=>{
+ const f=fixture();try{const a=await temporary(f);let release!:()=>void;const gate=new Promise<void>(done=>release=done);f.control.terminalGate=()=>gate;a.child.state.permissionEpoch=1;a.child.emit('message',{type:'terminal.request',id:'root-drift',method:'create',input:{command:'fixture service'}});await f.flush();fs.renameSync(a.record.workspaceDir,a.record.workspaceDir+'-old');fs.symlinkSync(f.project,a.record.workspaceDir);release();await f.flush();await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);assert.match(a.child.commands.find((m:any)=>m.type==='terminal.response'&&m.id==='root-drift').error,/目录已变化/);
+ }finally{f.cleanup();}
+});

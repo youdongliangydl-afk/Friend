@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {readFileSync,existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createEventBus,type ExtensionAPI,type ExtensionFactory,type ExtensionContext} from '@earendil-works/pi-coding-agent';
-import {RecordStore,object,text,digest,type JsonObject,type PluginContext,type AcceptanceCheck,type CheckEvidence,permissionDecision,readOnlyCommand,type PermissionMode} from '@friend-pi/core';
+import {RecordStore,object,text,digest,type JsonObject,type PluginContext,type AcceptanceCheck,type CheckEvidence,permissionDecision,readOnlyCommand,temporaryPermission,assertTemporaryArtifactPath,type PermissionMode} from '@friend-pi/core';
 // The retained upstream package is consumed through its factory/event contract.
 // @ts-expect-error Upstream distributes compiled JavaScript without declarations.
 import originalBackend from '../../../third-party/pi-background-tasks/dist/src/extension.js';
@@ -39,7 +39,7 @@ export class ProcessJobs {
    // Own the presentation and wake path; the backend never starts model turns.
    sendMessage:()=>{},
    on:(event:string,handler:(event:unknown,ctx:ExtensionContext)=>unknown)=>{
-    if(event==='session_start')pi.on('session_start',async(e,ctx)=>{await handler(e,{...ctx,ui:{...ctx.ui,setStatus:()=>{},notify:()=>{},setWidget:()=>{},setWorkingMessage:()=>{}}});this.ready=true;});
+    if(event==='session_start')pi.on('session_start',async(e,ctx)=>{if(process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT)try{assertTemporaryArtifactPath(resolve(ctx.cwd,'.pi/tasks'),process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT);}catch(error){this.ready=false;ctx.ui?.notify(String(error),'error');return;}await handler(e,{...ctx,ui:{...ctx.ui,setStatus:()=>{},notify:()=>{},setWidget:()=>{},setWorkingMessage:()=>{}}});this.ready=true;});
     else if(event==='session_shutdown')pi.on('session_shutdown',async(e,ctx)=>{this.ready=false;await handler(e,ctx);});
    },
   } as unknown as ExtensionAPI;
@@ -64,12 +64,13 @@ export class ProcessJobs {
  }
  private async admit(input:JsonObject,ctx:PluginContext,generation:number){
   const command=text(input.command,'后台命令',16000);assertProcessCommand(command,ctx.policy?.planMode===true,ctx.policy?.permissionMode);
-  if(ctx.policy?.permissionMode!==undefined&&(input.kind==='service'||!readOnlyCommand(command))){
-    const approval={operation:'执行后台命令',message:command,autoEligible:false};
-    const decision=permissionDecision(ctx.policy.permissionMode,approval);const approved=ctx.approvePermission?await ctx.approvePermission(approval):decision==='allow';if(!approved)throw new Error('用户未批准后台命令');if(!ctx.approvePermission)ctx.appendEntry('friend-pi.permission.decision',{v:1,mode:ctx.policy.permissionMode,operation:approval.operation,messageHash:digest(command),approved,source:'automatic'});
+  if((ctx.policy?.permissionMode!==undefined||ctx.policy?.temporaryWriteRoot)&&(ctx.policy?.temporaryWriteRoot||input.kind==='service'||!readOnlyCommand(command))){
+    const approval=temporaryPermission({operation:'执行后台命令',message:command,autoEligible:false},ctx.policy?.temporaryWriteRoot,ctx.projectDir);
+    const decision=permissionDecision(ctx.policy?.permissionMode||'auto',approval);const approved=ctx.approvePermission?await ctx.approvePermission(approval):decision==='allow';if(!approved)throw new Error('用户未批准后台命令');if(!ctx.approvePermission)ctx.appendEntry('friend-pi.permission.decision',{v:1,mode:ctx.policy.permissionMode,operation:approval.operation,messageHash:digest(command),approved,source:'automatic'});
   }
   if(this.disposed||ctx.signal?.aborted||generation<=(this.cancelledRuns.get(this.runKey(ctx))??-1))throw new Error('后台命令已取消，未开始执行');
 
+  assertTemporaryArtifactPath(resolve(ctx.projectDir,'.pi/tasks'),ctx.policy?.temporaryWriteRoot);
   const kind=input.kind==='service'?'service':'task';const origin=ctx.origin||'agent';const raw=await this.request('run',{name:text(input.name||command.slice(0,80),'任务名称',200),command,isAgent:false,timeoutSeconds:Math.max(1,Math.min(86400,Number(input.timeoutSeconds)|| (kind==='service'?86400:3600))),notifyOnCompletion:false,triggerOnCompletion:false});
   const job:ProcessJob={id:text(raw.id),projectId:ctx.projectId,sessionId:ctx.sessionId,runId:ctx.runId,goalId:ctx.policy?.goalId,generation,name:String(raw.name),command,kind,origin,notify:input.notify!==false,autoContinue:kind==='task'&&(typeof input.autoContinue==='boolean'?input.autoContinue:origin==='agent'),status:'running',pid:typeof raw.pid==='number'?raw.pid:undefined,outputPath:typeof raw.outputPath==='string'?resolve(ctx.projectDir,raw.outputPath):undefined,startedAt:new Date(Number(raw.startTime)||Date.now()).toISOString()};
   this.store.put(this.key(ctx,job.id),job,null);ctx.appendEntry('friend-pi.job.started',{jobId:job.id,kind,runId:job.runId});ctx.emit('jobs.changed',this.list(ctx));

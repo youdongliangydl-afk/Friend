@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { spawn, type IPty } from 'node-pty';
 import { RecordStore, text } from '@friend-pi/core';
 import { processSnapshot, ownedDescendants, terminateOwned, type ProcessIdentity } from './terminal-processes.js';
-export interface TerminalContext { sessionId: string; workspaceId: string; cwd: string; actor: 'user' | 'agent'; planMode?: boolean; runId?: string }
+export interface TerminalContext { sessionId: string; workspaceId: string; cwd: string; actor: 'user' | 'agent'; planMode?: boolean; runId?: string;temporaryWriteRoot?:string }
 export interface TerminalRecord {
   id: string; sessionId: string; workspaceId: string; cwd: string; name: string; service: boolean; owner: 'user' | 'agent'; authorityEpoch: number;
   state: 'running' | 'stopping' | 'exited' | 'interrupted' | 'cleanup_failed'; output: string; seq: number; cols: number; rows: number; pid?: number; exitCode?: number; runId?: string;
@@ -51,7 +51,7 @@ export class TerminalController {
     if(method==='create') {
       if(this.live.size>=24)throw new Error('运行中的终端已达上限，请先关闭不用的终端');
       if(ctx.actor==='agent'&&typeof input.command==='string'&&input.command.length>16384)throw new Error('服务命令过长');
-      const cwd=realpathSync(ctx.cwd),shell=process.env.SHELL||'/bin/zsh';
+      const cwd=realpathSync(ctx.cwd);if(ctx.temporaryWriteRoot&&cwd!==ctx.temporaryWriteRoot)throw new Error('临时会话目录已变化，终端未启动');const shell=process.env.SHELL||'/bin/zsh';
       const cols=this.dimension(input.cols,100,20,400),rows=this.dimension(input.rows,24,5,200);
       const name=typeof input.name==='string'?text(input.name,'终端名称',100):ctx.actor==='agent'?'Agent 服务':'终端';
       processSnapshot(); // Fail before spawning when process inspection is unavailable.

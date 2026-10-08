@@ -11,7 +11,7 @@ import { RecordStore,object,text,projectIdentity,digest,installFixtureProvider,p
 import {fileTree,previewFile,workspaceDiff,captureRunBaseline,projectFile,type DiffScope} from './workspace-files.js';
 import { TerminalBroker } from './terminal-broker.js';
 import type { TerminalContext } from './terminal-controller.js';
-import { sessionWorkspace, temporaryWorkspace, orderedProjects, validateProjectOrder, type Project, type WorkspaceRef } from './workspaces.js';
+import { sessionWorkspace, temporaryWorkspace, temporaryDirectory, orderedProjects, validateProjectOrder, type Project, type WorkspaceRef } from './workspaces.js';
 import { listDirectory, readEditorFile, writeEditorFile } from './file-editor.js';
 import { grantHtmlPreview, revokeHtmlPreview, htmlPreviewResponse } from './html-preview.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration,type ProviderRuntime } from './provider-settings.js';
@@ -27,8 +27,8 @@ const store=new RecordStore('desktop',dataDir);
 interface SessionRecord {id:string;projectId:string;workspace?:WorkspaceRef;workspaceDir?:string;name:string;path?:string;piSessionId?:string;archived?:boolean;updatedAt:string;modelId?:string;thinkingLevel?:string;plugins?:string[];status?:string;executionMode?:string;planMode?:boolean;permissionMode?:PermissionMode}
 const pluginNames=['swarm','expert','memory','topic-rebuild'];
 const thinkingLevels=['off','minimal','low','medium','high','xhigh','max'];
-interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;contextMode:'native'|'infinite';backgroundModelId:string}
-const preferenceDefaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',contextMode:'native',backgroundModelId:''};
+interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;defaultWorkspaceDir?:string;contextMode:'native'|'infinite';backgroundModelId:string}
+const preferenceDefaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',defaultWorkspaceDir:'~/Documents/Friend',contextMode:'native',backgroundModelId:''};
 function preferences(projectId?:string):Preferences{return {...preferenceDefaults,...store.get<Partial<Preferences>>('preferences')?.value,...(projectId?store.get<Partial<Preferences>>(`preferences:${projectId}`)?.value:{})};}
 let providerRuntime:Promise<ProviderRuntime>|undefined;
 const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await createProviderRuntime(dataDir);if(process.env.FRIEND_PI_TEST_PROVIDER==='1'){await installFixtureProvider(runtime);registerSavedModel(dataDir,'friend-fixture/offline');}return runtime;})();
@@ -44,10 +44,10 @@ function startLearning(){if(shuttingDown||learning)return;processSnapshot();lear
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('link.open');allowed.add('model.test');
-for(const method of ['session.promote','project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
+for(const method of ['project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
 for(const method of ['create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
-function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boolean):TerminalContext {const workspace=sessionWorkspace(store,record);return {sessionId:record.id,workspaceId:workspace.id,cwd:workspace.path,actor,planMode,runId:typeof workers.get(record.id)?.state.runId==='string'?String(workers.get(record.id)?.state.runId):undefined};}
+function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boolean):TerminalContext {const workspace=sessionWorkspace(store,record);return {sessionId:record.id,workspaceId:workspace.id,cwd:workspace.path,temporaryWriteRoot:record.workspace?.kind==='temporary'?workspace.path:undefined,actor,planMode,runId:typeof workers.get(record.id)?.state.runId==='string'?String(workers.get(record.id)?.state.runId):undefined};}
 const deletionPreviews=new Map<string,{token:string;updatedAt:string}>();
 const pendingConfigurations=new Map<string,{plugins:string[];contextMode:string}>();
 function idleRecord(input:Record<string,unknown>){const id=text(input.id),record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record||store.get(`deleting:${id}`))throw new Error('会话不存在或已删除');const active=workers.get(id);if(active&&(active.phase==='starting'||active.state.isRunning||active.state.lifecycleStatus==='stopping'))throw new Error('请先停止前台和 Swarm 执行');return {record,active};}
@@ -104,7 +104,7 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   const initialThinking=record.thinkingLevel;
   const groupOwned=process.platform!=='win32';
   processSnapshot(); // Fail before spawning when ownership inspection is unavailable.
-  const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_SUPERVISED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_PERMISSION_MODE:record.permissionMode||'auto',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
+  const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_TEMPORARY_WRITE_ROOT:record.workspace?.kind==='temporary'?project.path:undefined,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_SUPERVISED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_PERMISSION_MODE:record.permissionMode||'auto',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
   // The renderer initializes its draft and execution controls from this first snapshot.
   // Keep the persisted configuration visible while native Pi history is loading.
   const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,permissionMode:record.permissionMode||'auto',executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);let supervisedReady=false;
@@ -130,10 +130,10 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
         if(readonly&&!['list','read'].includes(method))throw new Error('计划模式只允许读取已有服务终端');
         if(['input','stop'].includes(method))await terminalBroker.request('read',args,terminalContext(worker.record,'agent',readonly));
         if(['create','input','stop'].includes(method)){
-          const approval={operation:method==='create'?'启动服务终端':method==='input'?'输入终端命令':'停止服务终端',message:String(args.command||args.data||args.id||'服务终端'),autoEligible:method==='stop'};
+          const approval={operation:method==='create'?'启动服务终端':method==='input'?'输入终端命令':'停止服务终端',message:String(args.command||args.data||args.id||'服务终端'),autoEligible:method==='stop',requireExplicit:worker.record.workspace?.kind==='temporary'&&method!=='stop'};
           if(!await request(worker,'permission.confirm',approval))throw new Error('用户未批准终端操作');
         }
-        const validate=()=>{if(['create','input','stop'].includes(method)&&((worker.terminalEpoch||0)!==epoch||worker.state.permissionEpoch!==scopeEpoch||worker.state.runId!==scopeRun||worker.state.permissionMode!==scopePermission||worker.phase!=='ready'||workers.get(record.id)!==worker||worker.record.archived||worker.state.planMode===true||worker.state.lifecycleStatus==='stopping'))throw new Error('终端操作已取消');};
+        const validate=()=>{if(worker.record.workspace?.kind==='temporary')sessionWorkspace(store,worker.record);if(['create','input','stop'].includes(method)&&((worker.terminalEpoch||0)!==epoch||worker.state.permissionEpoch!==scopeEpoch||worker.state.runId!==scopeRun||worker.state.permissionMode!==scopePermission||worker.phase!=='ready'||workers.get(record.id)!==worker||worker.record.archived||worker.state.planMode===true||worker.state.lifecycleStatus==='stopping'))throw new Error('终端操作已取消');};
         validate();const result=await terminalBroker.request(method,args,terminalContext(worker.record,'agent',readonly),validate);if(child.connected)child.send({type:'terminal.response',id:message.id,result});
       })().catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});});
     }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
@@ -198,6 +198,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const projectId=typeof input.projectId==='string'?input.projectId:undefined;if(projectId&&!store.get(`project:${projectId}`))throw new Error('项目不存在');const key=projectId?`preferences:${projectId}`:'preferences';
     if(input.reset===true&&projectId){store.remove(key);await applyPreferenceSnapshots(projectId);await learningRequest('refresh').catch(()=>{});publishState();return await settings(projectId);}
     const next={...preferences(projectId)};
+    if(!projectId&&input.defaultWorkspaceDir!==undefined)next.defaultWorkspaceDir=temporaryDirectory(input.defaultWorkspaceDir);
     if(input.defaultModelId!==undefined){const id=String(input.defaultModelId);if(id&&!(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.some(model=>model.id===id&&model.ready))throw new Error('默认型号不可用');next.defaultModelId=id;}
     if(input.defaultThinkingLevel!==undefined){if(!thinkingLevels.includes(String(input.defaultThinkingLevel)))throw new Error('思考等级无效');next.defaultThinkingLevel=String(input.defaultThinkingLevel);}
     if(input.defaultPlugins!==undefined){if(!Array.isArray(input.defaultPlugins)||input.defaultPlugins.some(name=>!pluginNames.includes(String(name))))throw new Error('插件无效');next.defaultPlugins=[...new Set(input.defaultPlugins.map(String))];}
@@ -225,13 +226,6 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='project.reorder'){
     store.put('project-order',validateProjectOrder(projects(),input.ids));publishState();return state();
   }
-  if(method==='session.promote'){
-    const {record,active}=idleRecord(input);if(record.archived)throw new Error('请先恢复归档会话');
-    if(record.workspace?.kind!=='temporary')throw new Error('此会话已归属项目');
-    const workspace=sessionWorkspace(store,record),project:Project={id:workspace.id,path:workspace.path,name:typeof input.name==='string'?text(input.name,'项目名称',100):record.name==='新会话'?'新项目':record.name.slice(0,60)};
-    store.transaction(()=>{store.put('project:'+project.id,project);record.projectId=project.id;record.workspace={kind:'project',projectId:project.id};persist(record);});
-    if(active)active.record=record;publishState();return state();
-  }
   if(method==='session.new'){
     const projectId=typeof input.projectId==='string'?input.projectId:'',defaults=preferences(projectId||undefined);
     if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
@@ -239,7 +233,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(defaults.defaultMode!=='single'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');
     const selectedId=typeof input.modelId==='string'&&input.modelId?input.modelId:defaults.defaultModelId||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.ready)?.id;
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
-    const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(dataDir,id);
+    const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id);
     const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels.find(level=>level===defaults.defaultThinkingLevel)||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels[0]||'off',plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode,permissionMode:chosenPermission};
     persist(record);currentId=record.id;store.put('current',currentId);await startWorker(record);publishState();return state();
   }

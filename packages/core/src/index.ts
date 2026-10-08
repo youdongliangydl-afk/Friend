@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SessionManager, getAgentDir, ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -14,13 +15,13 @@ const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
 export type JsonObject = Record<string, unknown>;
 export type ExecutionMode = 'single' | 'team' | 'swarm';
-export {parsePermissionMode,permissionDecision,destructiveCommand,readOnlyCommand,toolPermissionRequest} from './permissions.js';
-import {permissionDecision,type PermissionMode,type PermissionRequest} from './permissions.js';
+export {parsePermissionMode,permissionDecision,destructiveCommand,readOnlyCommand,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,assertTemporaryArtifactPath,permissionPath} from './permissions.js';
+import {permissionDecision,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest} from './permissions.js';
 export type {PermissionMode,PermissionRequest} from './permissions.js';
 export interface HostPolicy {
   v:1; revision:number; runId?:string; stage:string; canSwitchRole:boolean; unsettledTools:number;
   tools:string[]; writeScopes:string[]; executionMode:ExecutionMode; planMode:boolean;
-  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;permissionMode?:PermissionMode;
+  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;permissionMode?:PermissionMode;temporaryWriteRoot?:string;
 }
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
@@ -194,9 +195,10 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
     },
     approvePermission:async request=>{
       if(ctx.signal?.aborted)return false;
+      request=temporaryPermission(request,policy?.temporaryWriteRoot,ctx.cwd);
       const mode=policy?.permissionMode||'auto',decision=permissionDecision(mode,request);
       const approved=decision==='allow'||await ctx.ui.confirm('确认'+request.operation,request.message);
-      if(ctx.signal?.aborted)return false;
+      if(ctx.signal?.aborted||!temporaryPermissionMatches(request,policy?.temporaryWriteRoot,ctx.cwd))return false;
       pi.appendEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision:policy?.revision});return approved;
     },
     request:(plugin,action,input,timeout) => requestPlugin(pi.events,plugin,action,input,timeout),
@@ -282,6 +284,8 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(content.includes('QA_TIMELINE'))return fauxAssistantMessage('只读检查完成。\n\n'+Array.from({length:20},(_,i)=>'第 '+(i+1)+' 项：工具记录应随会话正文一起滚动。').join('\n\n'));
     if(content.includes('QA_GOAL')&&content.includes('当前长期目标')){const goals=messages.filter(message=>message.role==='toolResult'&&message.toolName==='friend_goal');let prior;try{prior=JSON.parse(visibleText(goals.at(-1)?.content));}catch{}if(['completed','blocked','stopped','paused'].includes(prior?.status))return fauxAssistantMessage('目标完成，已保留实际检查说明。');return fauxAssistantMessage(fauxToolCall('friend_goal',{action:prior?.progress?'complete':'update',input:prior?.progress?{}:{progress:'实际只读分析已完成，无项目写入。'}}),{stopReason:'toolUse'});}
     if(content.includes('QA_PLAN_SUBMIT')){if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='friend_plan'))return fauxAssistantMessage(fauxToolCall('friend_plan',{action:'submit',body:'Read README.md and verify the documented UTF-8 constraint. Change no files.'}),{stopReason:'toolUse'});return fauxAssistantMessage('The complete plan was submitted. Please approve it.');}
+    if(content.includes('QA_OUTSIDE_FILE_URL')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'@'+pathToFileURL(resolve(process.env.FRIEND_PI_PROJECT||process.cwd(),'../outside url.txt')).href,content:'URL scope fixture.\n'}),{stopReason:'toolUse'});
+    if(content.includes('QA_OUTSIDE_WRITE')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'../outside-result.txt',content:'Explicitly approved fixture output.\n'}),{stopReason:'toolUse'});
     if(content.includes('QA_WRITE')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'fixture-result.txt',content:'Friend-Pi SDK tool execution verified.\n'}),{stopReason:'toolUse'});
     if(/APPROVE|approved|独立复核|独立审查/.test(content))return fauxAssistantMessage('{"approved":true,"findings":"离线测试复核，不代表真实模型质量"}');
     if(/仅输出JSON|仅输出 JSON/.test(content))return fauxAssistantMessage('{"result":true,"memories":[],"items":[],"summary":"离线验证工作现场，保留来源与当前目标","goals":[],"constraints":[],"decisions":[],"unfinished":[]}');

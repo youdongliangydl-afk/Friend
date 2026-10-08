@@ -1,4 +1,4 @@
-import {digest,permissionDecision,toolPermissionRequest,destructiveCommand as sharedDestructiveCommand} from '@friend-pi/core';
+import {digest,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,permissionPath,destructiveCommand as sharedDestructiveCommand} from '@friend-pi/core';
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
@@ -24,7 +24,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       const role=expert?.role&&typeof expert.role==='object'?expert.role as Record<string,unknown>:undefined;
       if(role&&!['swarm_message','team_message'].includes(event.toolName)){
         if(!Array.isArray(role.effectiveTools)||!role.effectiveTools.includes(event.toolName))return {block:true,reason:'工具不在已冻结的角色合同'};
-        if(['write','edit'].includes(event.toolName)&&(!Array.isArray(role.effectiveWriteScopes)||!role.effectiveWriteScopes.some(scope=>typeof scope==='string'&&contains(resolve(start.cwd,scope),resolve(start.cwd,String(input.path||'.'))))))return {block:true,reason:'写入超出角色与父任务范围'};
+        if(['write','edit'].includes(event.toolName)&&(!Array.isArray(role.effectiveWriteScopes)||!role.effectiveWriteScopes.some(scope=>typeof scope==='string'&&contains(resolve(start.cwd,scope),permissionPath(String(input.path||'.'),start.cwd)))))return {block:true,reason:'写入超出角色与父任务范围'};
         if(event.toolName==='bash'&&(!Array.isArray(role.effectiveWriteScopes)||!role.effectiveWriteScopes.includes('.')))return {block:true,reason:'窄角色写入范围不能开放 Bash'};
       }
       if(start.parentTools&&!['swarm_message','team_message','friend_expert'].includes(event.toolName)&&!start.parentTools.includes(event.toolName))return {block:true,reason:'工具超出父任务权限'};
@@ -32,7 +32,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       if (Array.isArray(expert?.toolScope) && !['swarm_message','team_message','swarm_shared','friend_expert'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
       if (/friend_swarm|friend_team|subagent|spawn_agent/i.test(event.toolName)) return {block:true,reason:'协作成员不能递归派生'};
       if (['read','write','edit','find','grep','ls'].includes(event.toolName)) {
-        const target = resolve(start.cwd,String(input.path || input.cwd || '.'));
+        const target = permissionPath(String(input.path || input.cwd || '.'),start.cwd);
         if (!contains(start.cwd,target)) return {block:true,reason:'路径超出成员工作区'};
         if (['write','edit'].includes(event.toolName)) {
           if (start.mode !== 'write') return {block:true,reason:'只读成员不能修改文件'};
@@ -48,7 +48,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
         if (/\bcd\s+(?:\/|\.\.)|\bgit\s+(?:-C\s+|worktree\b)|\b(?:write|edit)\s+\//.test(command)) return {block:true,reason:'命令试图切换到成员工作区外或改动隔离管理'};
         if (start.permissionMode===undefined&&destructiveCommand(command) && !await confirm('确认 Swarm 成员的破坏性操作',command)) return {block:true,reason:'破坏性操作未获确认'};
       }
-      if(start.permissionMode!==undefined){const request=toolPermissionRequest(event.toolName,input);if(request){const decision=permissionDecision(start.permissionMode,request);const accepted=decision==='allow'||await confirm('确认成员'+request.operation,request.message);pi.appendEntry('friend-pi.permission.decision',{v:1,mode:start.permissionMode,operation:request.operation,messageHash:digest(request.message),approved:accepted,source:decision==='allow'?'automatic':'user'});if(!accepted)return {block:true,reason:'成员操作未获确认'};}}
+      if(start.permissionMode!==undefined||start.temporaryWriteRoot){const raw=toolPermissionRequest(event.toolName,input,Boolean(start.temporaryWriteRoot))||(start.temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);if(raw){const request=temporaryPermission(raw,start.temporaryWriteRoot,start.cwd);const decision=permissionDecision(start.permissionMode||'auto',request);const accepted=decision==='allow'||await confirm('确认成员'+request.operation,request.message);pi.appendEntry('friend-pi.permission.decision',{v:1,mode:start.permissionMode,operation:request.operation,messageHash:digest(request.message),approved:accepted,source:decision==='allow'?'automatic':'user'});if(!accepted||!temporaryPermissionMatches(request,start.temporaryWriteRoot,start.cwd))return {block:true,reason:'成员操作未获确认或目录已变化'};}}
     });
     pi.on('before_agent_start',event => ({systemPrompt: `${event.systemPrompt}\n你是 Swarm 成员。只处理本次任务，不派生子 Agent。工作区：${start.cwd}。写入范围：${start.writeScopes.join(', ')}。完成后报告事实、检查结果与剩余风险。Shell 为高信任工具，禁止越出工作区。`}));
   };

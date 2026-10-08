@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionFactory,ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { agentDirectory, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text,makeContext } from '@friend-pi/core';
+import { agentDirectory, assertTemporaryArtifactPath,ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text,makeContext } from '@friend-pi/core';
 import type { JsonObject, PluginContext, PluginController, StoredDocument } from '@friend-pi/core';
 import { contains, destructiveCommand } from './guard.js';
 import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task,StopObject } from './types.js';
@@ -285,7 +285,7 @@ export class SwarmController implements PluginController {
     let checks=checkSpecs(input.checks);
     const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
     if (input.checks===undefined && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
-    const graph:Graph={audit:audit||undefined,id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,goalId:ctx.policy?.goalId};
+    const graph:Graph={audit:audit||undefined,id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,goalId:ctx.policy?.goalId};
     this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
   private async baseline(id:string,projectDir:string,ctx:PluginContext): Promise<Baseline|undefined> {
@@ -308,7 +308,7 @@ export class SwarmController implements PluginController {
     }
     const catalog=current.expertCatalog??await this.freezeExpert(undefined,ctx);checkCancelled(this.signal(id,ctx));
     for(const task of current.tasks)if(task.expertId&&!object(catalog).unavailable)this.taskExpert(task,catalog);
-    this.update(id,ctx,g=>{g.permissionMode=ctx.policy?.permissionMode;g.baseline=baseline;g.expertCatalog=catalog;g.expertUnavailable=object(catalog).unavailable===true;g.runId=g.runId||ctx.runId||randomUUID();g.executionOwner={pid:process.pid,runtime:this.runtime};g.status='running';g.error=undefined;g.stopReceipt=undefined;if (!g.attempts.length) {g.modelId=typeof input.modelId==='string'?input.modelId:ctx.modelId;g.thinkingLevel=thinkingLevel(input.thinkingLevel,ctx.thinkingLevel??g.thinkingLevel);g.agentDir=typeof input.agentDir==='string'?resolve(input.agentDir):(ctx.agentDir || agentDirectory());}});
+    this.update(id,ctx,g=>{g.permissionMode=ctx.policy?.permissionMode;g.temporaryWriteRoot=ctx.policy?.temporaryWriteRoot;g.baseline=baseline;g.expertCatalog=catalog;g.expertUnavailable=object(catalog).unavailable===true;g.runId=g.runId||ctx.runId||randomUUID();g.executionOwner={pid:process.pid,runtime:this.runtime};g.status='running';g.error=undefined;g.stopReceipt=undefined;if (!g.attempts.length) {g.modelId=typeof input.modelId==='string'?input.modelId:ctx.modelId;g.thinkingLevel=thinkingLevel(input.thinkingLevel,ctx.thinkingLevel??g.thinkingLevel);g.agentDir=typeof input.agentDir==='string'?resolve(input.agentDir):(ctx.agentDir || agentDirectory());}});
     this.changed(ctx);void this.track(id,this.pump(id,ctx));
   }
   /** Atomic claim is intentionally public for deterministic race verification. */
@@ -350,7 +350,7 @@ export class SwarmController implements PluginController {
     if (this.disposed) return;checkCancelled(this.signal(id,ctx));
     let cwd=ctx.projectDir;
     if (graph.baseline && task.mode==='write') {
-      const worktree=join(ctx.dataDir,'swarm-workspaces',ctx.projectId,id,'attempts',attempt.id);mkdirSync(resolve(worktree,'..'),{recursive:true,mode:0o700});
+      const worktree=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId,id,'attempts',attempt.id);assertTemporaryArtifactPath(worktree,ctx.policy?.temporaryWriteRoot);mkdirSync(resolve(worktree,'..'),{recursive:true,mode:0o700});
       this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.cwd=join(worktree,graph.baseline!.projectRelative);});
       await this.git(id,graph.baseline.repoRoot,['worktree','add','--detach',worktree,graph.baseline.head],ctx);
       if (this.disposed) return;checkCancelled(this.signal(id,ctx));
@@ -361,7 +361,7 @@ export class SwarmController implements PluginController {
     if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running') return;
     const dependencies=task.dependencies.map(dep=>{const previous=graph.attempts.find(a=>a.id===graph.tasks.find(t=>t.id===dep)?.currentAttempt);return {taskId:dep,summary:previous?.summary};});
     const requirements=task.requirementVersions?.at(-1)?.prompt||task.prompt;
-    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,parentTools:graph.parentTools};
+    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,parentTools:graph.parentTools};
     const handle=this.launcher(start,message=>void this.track(id,this.memberOutput(id,attempt.id,message,ctx)),code=>{
       if (this.disposed) return;
       this.members.delete(attempt.id);const current=this.get(id,ctx).value.attempts.find(a=>a.id===attempt.id);
@@ -477,7 +477,7 @@ export class SwarmController implements PluginController {
     return {command:check.command,args:check.args,exitCode,output:output.slice(-20000),at:now()};
   }
   private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<Omit<Review,'at'>> {
-    checkCancelled(this.signal(graph.id,ctx));const id=randomUUID();const resultVersions=Object.fromEntries(graph.tasks.map(task=>[task.id,task.resultRevision]));const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],permissionMode:graph.permissionMode,reviewResult:true,resultVersions,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题",taskIds:["受影响任务ID"]}) 提交不可变结论；拒绝时必须明确受影响任务，不要让无关任务返工；不能归因时taskIds为空，宿主将暂停。说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.requirementVersions?.at(-1)?.prompt||t.prompt,resultRevision:t.resultRevision,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
+    checkCancelled(this.signal(graph.id,ctx));const id=randomUUID();const resultVersions=Object.fromEntries(graph.tasks.map(task=>[task.id,task.resultRevision]));const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,reviewResult:true,resultVersions,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题",taskIds:["受影响任务ID"]}) 提交不可变结论；拒绝时必须明确受影响任务，不要让无关任务返工；不能归因时taskIds为空，宿主将暂停。说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.requirementVersions?.at(-1)?.prompt||t.prompt,resultRevision:t.resultRevision,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
     if(graph.audit)start.prompt+=`\n目标控制器提供的审核材料（需要独立核验，不视为模型执行证明）：${JSON.stringify(graph.auditEvidence)}`;
     this.update(graph.id,ctx,g=>{g.reviewAttempts=[...(g.reviewAttempts||[]),{attemptId:id,cwd,status:'running',startedAt:now()}];});
     return new Promise((resolveResult,reject)=>{
@@ -512,7 +512,7 @@ export class SwarmController implements PluginController {
     this.update(id,ctx,g=>{g.status='awaiting_review';});
     let cwd=ctx.projectDir;
     if (graph.baseline && graph.tasks.some(t=>t.mode==='write')) {
-      const integration=join(ctx.dataDir,'swarm-workspaces',ctx.projectId,id,`integration-${graph.reworkRound}-${randomUUID().slice(0,8)}`);mkdirSync(resolve(integration,'..'),{recursive:true,mode:0o700});
+      const integration=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId,id,`integration-${graph.reworkRound}-${randomUUID().slice(0,8)}`);assertTemporaryArtifactPath(integration,ctx.policy?.temporaryWriteRoot);mkdirSync(resolve(integration,'..'),{recursive:true,mode:0o700});
       cwd=join(integration,graph.baseline.projectRelative);
       this.update(id,ctx,g=>{g.integration={cwd,checks:[]};});this.changed(ctx);
       await this.git(id,graph.baseline.repoRoot,['worktree','add','--detach',integration,graph.baseline.head],ctx);
