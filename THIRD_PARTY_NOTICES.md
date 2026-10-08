@@ -1,10 +1,12 @@
 # Third-party notices
 
-Friend-Pi's four capability controllers and desktop interface are newly authored. No Agent loop or implementation files from the architecture references below are copied. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
+Friend-Pi's four capability controllers and desktop interface are newly authored. Pi owns the Agent loop. Architecture references remain references; the ISC process backend identified below is retained separately. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
 
 The machine-readable revision, license and use ledger is [docs/sources.json](docs/sources.json). npm package versions, download integrity and dependency relationships are fixed in `package-lock.json`; Pi tarballs and their source commit are fixed in `pi-source.lock.json`.
 
 ## Distributed dependencies
+
+- [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks), version 2.6.9, ISC. The original compiled process backend is retained under `third-party/pi-background-tasks`; its LICENSE, upstream notices, source integrity and documented host adaptations are copied into `third-party-licenses/pi-background-tasks` in the app. Only ordinary process execution is enabled; no delegate, Fusion or attribution extension is activated.
 
 - [Pi](https://github.com/earendil-works/pi/blob/eb326d265ae0b88489a6d10319307780df827cdf/LICENSE), MIT, copyright 2025 Mario Zechner. The complete original MIT text is copied to `third-party-licenses/pi/LICENSE` in the application and `PI-LICENSE` in plugin tarballs. Official Pi tarballs do not themselves contain this root license.
 - [Electron](https://github.com/electron/electron/blob/87cd122b5de69555831cd752578b810dd6e504d8/LICENSE), MIT. Electron's `LICENSE` and `LICENSES.chromium.html` are retained in `third-party-licenses/electron`. Packaging replaces only the outer application seal with a local ad-hoc signature required for ARM64 execution, preserving upstream nested framework signatures. No Developer ID certificate, distribution signing or notarization is used.

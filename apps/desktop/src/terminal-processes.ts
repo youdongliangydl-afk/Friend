@@ -27,8 +27,8 @@ export function ownedDescendants(root: ProcessIdentity, snapshot: Map<number, Pr
 export function identityAlive(identity: ProcessIdentity, snapshot: Map<number, ProcessIdentity>) {
   const current = snapshot.get(identity.pid); return current?.born === identity.born && !current.state.startsWith('Z');
 }
-export async function terminateOwned(identities: Iterable<ProcessIdentity>) {
-  const captured=new Map([...identities].map(p=>[p.pid,p]));
+export async function terminateOwned(identities: Iterable<ProcessIdentity>,retained?:Map<number,ProcessIdentity>) {
+  const captured=retained||new Map([...identities].map(p=>[p.pid,p]));
   const refresh=()=>{const snapshot=processSnapshot();for(const root of [...captured.values()])ownedDescendants(root,snapshot,captured);return snapshot;};
   const signal = (name: NodeJS.Signals) => {
     const snapshot = refresh(),owned=[...captured.values()];

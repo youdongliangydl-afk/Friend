@@ -8,6 +8,7 @@ import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { installFixtureProvider,object,digest,requireReadyModel,dataDirectory,guardDesktopModelRequests } from '@friend-pi/core';
 import { guardMember } from './guard.js';
+import {memberRole,roleInstructions,validateMemberDelivery} from './member-role.js';
 import type { MemberInput, MemberOutput, MemberStart } from './types.js';
 
 let session: AgentSession | undefined;
@@ -26,9 +27,12 @@ function request(action:'send'|'shared.read'|'shared.write'|'expert.adopt',input
   });
 }
 function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined):ExtensionFactory{return pi=>{
+  if(start.executionStyle==='team')pi.registerTool({name:'team_message',label:'向主 Agent 发消息',description:'仅向本次委派的主 Agent 报告或澄清；不能联系同级成员或派生。',parameters:Type.Object({body:Type.String()}),async execute(_id,params){const result=await request('send',{to:'parent',body:params.body});return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+  else {
   pi.registerTool({name:'swarm_message',label:'Swarm 成员消息',description:'向同一任务图中的另一个任务发消息。仅协作，不派生任务。',parameters:Type.Object({to:Type.String(),body:Type.String()}),async execute(_id,params) {const result=await request('send',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   const bases=new Map<string,{revision:number;digest:string}>();
   pi.registerTool({name:'swarm_shared',label:'Swarm 共享材料',description:'读取或使用版本 CAS 更新同一任务图的共享材料。更新须提供读取到的 revision，新建为 0。工具保留已读版本和摘要，竞争时自动三方合并；不能判断的约束冲突会保留材料。',parameters:Type.Object({action:Type.Union([Type.Literal('read'),Type.Literal('write')]),name:Type.String(),content:Type.Optional(Type.String()),expectedRevision:Type.Optional(Type.Number()),operationId:Type.Optional(Type.String())}),async execute(id,params) {const base=bases.get(params.name);const input=params.action==='write'?{...params,operationId:params.operationId||`${start.attemptId}:${id}`,...(base&&params.expectedRevision===base.revision?{baseRevision:base.revision,baseDigest:base.digest}: {})}:params;const result=await request(params.action==='read'?'shared.read':'shared.write',input);if(result&&typeof result==='object'){const row=object(result);const revision=Number(row.revision??row.version);if(Number.isInteger(revision)&&typeof row.digest==='string')bases.set(params.name,{revision,digest:row.digest});}return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+  }
   if(expert&&!expert.unavailable){
     const catalog=(Array.isArray(expert.experts)?expert.experts:[]).map(object);const adopted=new Set(Array.isArray(expert.adoptedIds)?expert.adoptedIds.map(String):[]),useReceipts=new Map<string,Record<string,unknown>>();
     pi.registerTool({name:'friend_expert',label:'采用冻结专家方法',description:'仅可使用当前成员已冻结的专家。采用后工具范围立即按交集收紧，新版本不影响本次执行。',parameters:Type.Object({action:Type.Literal('use'),input:Type.Object({id:Type.String()},{additionalProperties:false})},{additionalProperties:false}),async execute(_id,params){
@@ -64,10 +68,12 @@ async function run(start:MemberStart): Promise<void> {
   let model = runtime.getModel(start.modelId!.slice(0,slash),start.modelId!.slice(slash+1));
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')model=await requireReadyModel(runtime,dataDirectory(),start.modelId!);
   if (!model) throw new Error(`成员模型不可用：${start.modelId}`);
+  if(process.env.FRIEND_PI_TEST_PROVIDER!=='1'&&!(await runtime.getAvailable()).some(available=>available.provider===model.provider&&available.id===model.id))throw new Error('成员冻结的模型没有可用的已配置凭据');
   const expert = start.expert && typeof start.expert === 'object' ? start.expert as Record<string,unknown> : undefined;
+  const role=memberRole(expert);
   const allowed=start.mode === 'read' ? ['read','grep','find','ls'] : ['read','write','edit','bash'];
   const scope=Array.isArray(expert?.toolScope) ? expert.toolScope as unknown[] : undefined;
-  const tools=scope ? allowed.filter(tool=>scope.includes(tool)) : allowed;
+  const scoped=scope ? allowed.filter(tool=>scope.includes(tool)) : allowed;const parent=start.parentTools?scoped.filter(tool=>start.parentTools!.includes(tool)):scoped;const roleTools=role&&Array.isArray(role.effectiveTools)?role.effectiveTools:undefined;const tools=roleTools?parent.filter(tool=>roleTools.includes(tool)):parent;
   let reviewSubmission:Readonly<{approved:boolean;findings:string;taskIds?:string[];resultVersions?:Record<string,number>}>|undefined;
   let reviewConflict=false;
   const rawReviewArguments=new Map<string,unknown>();
@@ -87,7 +93,7 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.reviewResult?['swarm_review_result']:['swarm_message','swarm_shared',...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
@@ -96,6 +102,7 @@ async function run(start:MemberStart): Promise<void> {
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
   session = created.session;
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDirectory(),`${model.provider}/${model.id}`),context,options);}
+  if(start.thinkingLevel&&!session.getAvailableThinkingLevels().includes(start.thinkingLevel as 'medium'))throw new Error('成员冻结的思考等级不受当前模型支持');
   if(expert&&!start.reviewResult){
     session.sessionManager.appendCustomEntry('friend-pi.expert.run',{v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,frozen:expert});
     for(const raw of Array.isArray(expert.experts)?expert.experts:[]){const item=object(raw);if(!Array.isArray(expert.adoptedIds)||!expert.adoptedIds.includes(item.id))continue;const adoption={v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,mode:'selected',id:item.id,version:item.version,hash:item.hash,snapshotHash:expert.hash,skills:(Array.isArray(item.skillContents)?item.skillContents:[]).map(raw=>{const skill=object(raw);return {path:skill.path,hash:skill.hash};}),toolScope:expert.toolScope};session.sessionManager.appendCustomEntry('friend-pi.expert.adoption',adoption);output({v:1,type:'expert.adopted',adoption,toolScope:Array.isArray(expert.toolScope)?expert.toolScope.map(String):undefined});}
@@ -113,7 +120,7 @@ async function run(start:MemberStart): Promise<void> {
   await session.bindExtensions({mode:'rpc',abortHandler:()=>void session?.abort(),onError:error=>output({v:1,type:'failed',error:error.error})});
   output({v:1,type:'ready',sessionId:session.sessionId,sessionFile:session.sessionFile});
   if (stopped) {await session.abort();throw new Error('成员启动期间已停止');}
-  const prompt = `${expert?.prompt || ''}\n${start.prompt}`;
+  const prompt = `${roleInstructions(role)}\n${expert?.prompt || ''}\n${start.prompt}`;
   await session.prompt(prompt,{expandPromptTemplates:false});
   // prompt resolves when Pi is idle; session's agent_settled event is emitted before completion.
   if (stopped) throw new Error('成员已停止，现场保留，需要显式接续');
@@ -121,7 +128,8 @@ async function run(start:MemberStart): Promise<void> {
   if (last && 'stopReason' in last && (last.stopReason === 'error' || last.stopReason === 'aborted')) throw new Error('errorMessage' in last ? String(last.errorMessage) : '成员未正常结束');
   if (!settled || !session.isIdle) throw new Error('Pi 成员尚未达到真正结束边界');
   if(start.reviewResult && (reviewConflict || !reviewSubmission))throw new Error(reviewConflict?'独立复核提交冲突，成果已保留':'独立复核未通过 swarm_review_result 提交结论，成果已保留');
-  output({v:1,type:'settled',summary:start.reviewResult?JSON.stringify(reviewSubmission):session.getLastAssistantText() || '',sessionId:session.sessionId,sessionFile:session.sessionFile});
+  const summary=start.reviewResult?JSON.stringify(reviewSubmission):session.getLastAssistantText() || '';if(!start.reviewResult)validateMemberDelivery(role,summary);
+  output({v:1,type:'settled',summary,sessionId:session.sessionId,sessionFile:session.sessionFile});
   await disposeSession();process.disconnect?.();
 }
 process.on('message',(raw:MemberInput) => {

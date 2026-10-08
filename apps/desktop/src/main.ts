@@ -1,3 +1,4 @@
+import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} from './terminal-processes.js';
 import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
 import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync } from 'node:fs';
@@ -25,8 +26,8 @@ const node=process.env.FRIEND_PI_NODE||(app.isPackaged?join(process.resourcesPat
 const store=new RecordStore('desktop',dataDir);
 interface SessionRecord {id:string;projectId:string;workspace?:WorkspaceRef;workspaceDir?:string;name:string;path?:string;piSessionId?:string;archived?:boolean;updatedAt:string;modelId?:string;thinkingLevel?:string;plugins?:string[];status?:string;executionMode?:string;planMode?:boolean}
 const pluginNames=['swarm','expert','memory','topic-rebuild'];
-const thinkingLevels=['off','minimal','low','medium','high','xhigh'];
-interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
+const thinkingLevels=['off','minimal','low','medium','high','xhigh','max'];
+interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
 const preferenceDefaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,contextMode:'native',backgroundModelId:''};
 function preferences(projectId?:string):Preferences{return {...preferenceDefaults,...store.get<Partial<Preferences>>('preferences')?.value,...(projectId?store.get<Partial<Preferences>>(`preferences:${projectId}`)?.value:{})};}
 let providerRuntime:Promise<ProviderRuntime>|undefined;
@@ -38,10 +39,10 @@ interface Worker {child:ChildProcess;record:SessionRecord;state:Record<string,un
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
 let models:unknown[]=[];let providers:unknown[]=[];
 let learningReady=false;let learning:ChildProcess|undefined;let learningRestarts=0;const learningPending=new Map<string,{resolve:(v:unknown)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-const ownedChildren=new Map<Worker,Set<number>>();
+const ownedChildren=new Map<Worker,Map<number,ProcessIdentity>>();
 function startLearning(){if(shuttingDown||learning)return;learning=fork(join(root,'apps/desktop/dist/learning-worker.mjs'),[],{execPath:node,cwd:root,detached:process.platform!=='win32',stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_LEARNING_ROLE:'host',FRIEND_PI_DESKTOP_MANAGED:'1'}});const child=learning;learningReady=false;child.on('message',raw=>{if(!raw||typeof raw!=='object')return;const message=object(raw);if(message.type==='ready'){learningReady=true;child.emit('friend-ready');}else if(message.type==='response'){const pending=learningPending.get(String(message.id));if(pending){clearTimeout(pending.timer);learningPending.delete(String(message.id));message.error?pending.reject(new Error(String(message.error))):pending.resolve(message.result);}}else if(message.type==='event')publish('plugin',message.data);else if(message.type==='notice')publish('notice',message.data);else if(message.type==='state')publish('learning',message.data);});child.stderr?.on('data',bytes=>{const value=String(bytes);if(!value.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:value.replace(/sk-[A-Za-z0-9_-]{8,}/g,'[隐藏]').slice(0,1000)});});child.on('exit',()=>{if(learning===child){learning=undefined;learningReady=false;}for(const pending of learningPending.values()){clearTimeout(pending.timer);pending.reject(new Error('后台学习进程已退出，进度保留'));}learningPending.clear();if(!shuttingDown&&learningRestarts++<3)setTimeout(startLearning,1000*learningRestarts);});child.on('error',()=>publish('notice',{level:'warning',message:'后台学习未启动，队列已保留'}));}
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
-const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
+const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('link.open');allowed.add('model.test');
 for(const method of ['session.promote','project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
@@ -70,26 +71,16 @@ function retireWorker(worker:Worker,error:Error,interrupted=false):void {
     for(const [id,owner] of dialogOwners)if(owner===worker.record.id){dialogOwners.delete(id);publish('dialog.closed',{id},worker.record.id);}
   }
 }
-function signalWorker(worker:Worker,signal:NodeJS.Signals):boolean {
-  for(const pid of ownedChildren.get(worker)||[]){try{process.kill(-pid,signal);}catch {}}
-  if(!worker.child.pid)return false;
-  try {
-    // Each POSIX SDK process owns a fresh group, inherited by its Swarm members.
-    // Pi handles its separate tool groups during normal abort; this fallback targets
-    // only the group this application created, not arbitrary OS processes.
-    if(worker.groupOwned)process.kill(-worker.child.pid,signal);
-    else if(!worker.exited)worker.child.kill(signal);
-    else return false;
-    return true;
-  }catch{return false;}
+function captureOwned(worker:Worker,pid?:number){
+  const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>();const snapshot=processSnapshot();
+  if(pid&&pid>1){const identity=snapshot.get(pid);if(identity&&!known.has(pid))known.set(pid,identity);}
+  for(const identity of [...known.values()])ownedDescendants(identity,snapshot,known);ownedChildren.set(worker,known);
 }
-function terminateWorker(worker:Worker):Promise<void> {
-  if(worker.termination)return worker.termination;
-  worker.termination=new Promise<void>(resolveResult=>{
-    if(!signalWorker(worker,'SIGTERM')){resolveResult();return;}
-    setTimeout(()=>{signalWorker(worker,'SIGKILL');resolveResult();},1000);
-  }).finally(()=>{worker.phase='exited';liveWorkers.delete(worker);});
-  return worker.termination;
+function trackOwned(worker:Worker){if(!liveWorkers.has(worker))return;try{captureOwned(worker);}catch{}const timer=setTimeout(()=>trackOwned(worker),150);timer.unref?.();}
+function terminateWorker(worker:Worker):Promise<void>{
+ if(worker.termination)return worker.termination;
+ worker.termination=(async()=>{try{captureOwned(worker);for(let round=0;round<8;round++){const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>(),count=known.size;if(!await terminateOwned(known.values(),known))throw new Error('所属进程清理未能核实');if(known.size===count){worker.phase='exited';liveWorkers.delete(worker);ownedChildren.delete(worker);return;}}throw new Error('清理期间仍出现新的所属进程');}catch(error){worker.termination=undefined;if(!storeClosed)publish('notice',{level:'error',message:String(error)},worker.record.id);throw error;}})();
+ return worker.termination;
 }
 function request(worker:Worker,method:string,input:Record<string,unknown>={},timeoutMs=125000):Promise<unknown>{
   if(worker.phase!=='ready'||!worker.child.connected)return Promise.reject(new Error('运行时未就绪或已退出，请重新打开会话'));
@@ -114,14 +105,15 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
   // The renderer initializes its draft and execution controls from this first snapshot.
   // Keep the persisted configuration visible while native Pi history is loading.
-  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,executionMode:record.executionMode==='swarm'?'swarm':'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);
+  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);captureOwned(worker,child.pid);trackOwned(worker);
   worker.startupTimer=setTimeout(()=>{
     const error=new Error('Pi 初始化超时；请检查系统文件访问授权，重新打开会话后显式继续');
-    retireWorker(worker,error,true);void terminateWorker(worker);if(!shuttingDown)publishState();
+    retireWorker(worker,error,true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown)publishState();
   },45000);
   child.on('message',raw=>{
-    if(worker.phase==='stopping'||worker.phase==='exited'||workers.get(record.id)!==worker||store.get(`deleting:${record.id}`))return;
     if(!raw||typeof raw!=='object')return;const message=object(raw);
+    if(message.type==='event'){const event=object(message.event),plugin=object(event.data);if(event.type==='plugin'&&['swarm.process','runtime.process'].includes(String(plugin.pluginEvent))){const data=object(plugin.data);if(data.action==='started'&&data.groupOwned===true)try{captureOwned(worker,Number(data.pid));}catch{} }}
+    if(worker.phase==='stopping'||worker.phase==='exited'||workers.get(record.id)!==worker||store.get(`deleting:${record.id}`))return;
     if(message.type==='ready'){
       if(worker.phase!=='starting'||shuttingDown)return;
       clearTimeout(worker.startupTimer);worker.phase='ready';worker.state=object(message.state);persistWorker(worker);resolveReady();publishState();
@@ -131,18 +123,18 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
       const method=String(message.method);
       if(!['create','list','read','input','stop'].includes(method)||worker.record.archived){child.send({type:'terminal.response',id:message.id,error:'终端请求不允许'});return;}
       void terminalBroker.request(method,object(message.input||{}),terminalContext(worker.record,'agent',worker.state.planMode===true||message.planMode===true)).then(result=>{if(child.connected)child.send({type:'terminal.response',id:message.id,result});}).catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});});
-    }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker);if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
+    }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
     else if(message.type==='event'){
       const event=object(message.event);if(event.type==='state'){worker.state=object(event.data);persistWorker(worker);const next=pendingConfigurations.get(worker.record.id);if(next&&!worker.state.isRunning){pendingConfigurations.delete(worker.record.id);void request(worker,'configure',next).then(raw=>{worker.state=object(raw);worker.record.plugins=next.plugins;persistWorker(worker);publishState();}).catch(error=>publish('notice',{level:'error',message:String(error)},worker.record.id));}publishState();}
-      else {if(event.type==='plugin'){const plugin=object(event.data);if(plugin.pluginEvent==='swarm.process'){const data=object(plugin.data),pid=Number(data.pid);if(Number.isInteger(pid)&&pid>1){const owned=ownedChildren.get(worker)||new Set<number>();if(data.action==='started'&&data.groupOwned===true)owned.add(pid);else if(data.action==='closed')owned.delete(pid);ownedChildren.set(worker,owned);}}}if(event.type==='dialog'){const data=object(event.data);dialogOwners.set(String(data.id),record.id);}if(event.type==='dialog.closed')dialogOwners.delete(String(object(event.data).id));publish(String(event.type),event.data,record.id);}
+      else {if(event.type==='dialog'){const data=object(event.data);dialogOwners.set(String(data.id),record.id);}if(event.type==='dialog.closed')dialogOwners.delete(String(object(event.data).id));publish(String(event.type),event.data,record.id);}
     }
   });
   child.stderr?.on('data',bytes=>{if(worker.phase==='stopping'||worker.phase==='exited')return;const message=String(bytes);if(!message.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:message.slice(0,1000)},record.id);});
-  child.on('error',error=>{retireWorker(worker,error,true);void terminateWorker(worker);if(!shuttingDown){publish('notice',{level:'error',message:'运行时未能启动；历史已保留，请重新打开会话。'},record.id);publishState();}});
+  child.on('error',error=>{retireWorker(worker,error,true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown){publish('notice',{level:'error',message:'运行时未能启动；历史已保留，请重新打开会话。'},record.id);publishState();}});
   child.on('exit',(code)=>{
     worker.exited=true;const wasActive=worker.phase==='starting'||worker.phase==='ready';
     retireWorker(worker,new Error(`Pi 进程退出 (${code})，未自动重放请求`),worker.phase==='starting'||['running','awaiting_review','rebuilding'].includes(record.status||''));
-    void terminateWorker(worker);
+    void terminateWorker(worker).catch(()=>{});
     if(wasActive&&!shuttingDown){publish('notice',{level:'error',message:'运行时已退出。历史已保留，重新打开会话后显式继续。'},record.id);publishState();}
   });
   await ready;if(initialThinking){const levels=Array.isArray(worker.state.thinkingLevels)?worker.state.thinkingLevels:['off'];if(levels.includes(initialThinking))worker.state=object(await request(worker,'configure',{thinkingLevel:initialThinking}));else publish('notice',{level:'warning',message:'旧思考设置不受当前模型支持，已采用 Pi 的有效等级；请在设置中重新选择。'},record.id);}if(worker.phase!=='ready'||workers.get(record.id)!==worker)throw new Error('运行时已退出，请重新打开会话');persistWorker(worker);return worker;
@@ -166,7 +158,8 @@ async function finishDeletion(mark:Deletion){
  if(active){try{await request(active,'shutdown',{},3000);}catch{}retireWorker(active,new Error('会话已删除'));await terminateWorker(active);}
  for(const file of mark.files||[]){if(file&&existsSync(file)){const rel=relative(realpathSync(dataDir),realpathSync(file));if(!rel.startsWith('..')&&!isAbsolute(rel))unlinkSync(file);}}
  for(const graphId of mark.graphIds||[]){if(!/^[A-Za-z0-9_-]+$/.test(graphId))continue;const dir=join(dataDir,'swarm-shared',graphId);if(existsSync(dir))for(const entry of readdirSync(dir,{withFileTypes:true})){const file=join(dir,entry.name);if(entry.isFile()&&realpathSync(file).startsWith(realpathSync(dir)+'/'))unlinkSync(file);}}
- store.transaction(()=>{for(const namespace of ['sessions','topic-rebuild','plans','diff','swarm','memory']){const rows=store.db.prepare('SELECT key,json FROM documents WHERE namespace=?').all(namespace);for(const row of rows){if(namespace==='sessions'&&String(row.key).startsWith('tombstone:'))continue;const value=JSON.parse(String(row.json));if((mark.nativeIds||[]).some(id=>value.sessionId===id||value.field?.sessionId===id||row.key===id||String(row.key).endsWith(':'+id)||String(row.key).includes(':'+id+':'))||(mark.graphIds||[]).includes(value.graphId))store.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(namespace,String(row.key));}}for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(nativeId||'');for(const sourceId of (mark.nativeIds||[]).filter(id=>id!==nativeId))for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(sourceId);store.remove(`session:${mark.id}`);store.put(`deleting:${mark.id}`,{...mark,state:'complete'});});
+ const goalIds=store.db.prepare("SELECT json FROM documents WHERE namespace='goal-journal'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value&&typeof value==='object'&&(mark.nativeIds||[]).includes(value.sessionId)).map(value=>String(value.id));const taskIds=store.db.prepare("SELECT json FROM documents WHERE namespace='task-journal'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value&&typeof value==='object'&&(mark.nativeIds||[]).includes(value.sessionId)).map(value=>String(value.id));
+ store.transaction(()=>{for(const namespace of ['sessions','topic-rebuild','plans','diff','swarm','memory','goal-journal','task-journal','runtime-wake','runtime-activity','process-jobs','swarm-workflow','expert']){const rows=store.db.prepare('SELECT key,json FROM documents WHERE namespace=?').all(namespace);for(const row of rows){if(namespace==='sessions'&&String(row.key).startsWith('tombstone:'))continue;const value=JSON.parse(String(row.json));if((mark.nativeIds||[]).some(id=>value.sessionId===id||value.field?.sessionId===id||row.key===id||String(row.key).endsWith(':'+id)||String(row.key).includes(':'+id+':'))||(mark.graphIds||[]).includes(value.graphId)||namespace==='goal-journal'&&goalIds.some(id=>String(row.key).startsWith(`write:${id}:`))||namespace==='task-journal'&&(goalIds.some(id=>String(row.key).includes(':'+id+':'))||taskIds.some(id=>row.key===`execution-evidence:${id}`)))store.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(namespace,String(row.key));}}for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(nativeId||'');for(const sourceId of (mark.nativeIds||[]).filter(id=>id!==nativeId))for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(sourceId);store.remove(`session:${mark.id}`);store.put(`deleting:${mark.id}`,{...mark,state:'complete'});});
  if(currentId===mark.id)await chooseAfterArchive(mark.listProjectId??mark.projectId);return {deleted:true,id:mark.id,piSessionId:nativeId};
 }
 async function applyPreferenceSnapshots(projectId?:string){for(const active of workers.values())if(!active.record.archived&&(!projectId||active.record.projectId===projectId)){const effective=preferences(active.record.projectId),next={plugins:effective.defaultPlugins,contextMode:effective.contextMode};if(active.state.isRunning||active.state.lifecycleStatus==='stopping')pendingConfigurations.set(active.record.id,next);else {active.state=object(await request(active,'configure',next));active.record.plugins=effective.defaultPlugins;persistWorker(active);}}}
@@ -178,7 +171,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='model.test'){const result=await testConfiguredModel(await getProviderRuntime(),dataDir,text(input.modelId));await loadProviderMetadata();await learningRequest('refresh').catch(()=>{});publishState();return result;}
   if(method==='learning.pause'||method==='learning.resume'){store.put('learning-paused',method==='learning.pause');return await learningRequest(method==='learning.pause'?'pause':'resume');}
   if(method==='learning.state'){const jobs=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_jobs'").get()?store.db.prepare('SELECT state,count(*) AS count FROM memory_jobs GROUP BY state').all():[];return {alive:learningReady&&!!learning?.connected,paused:store.get<boolean>('learning-paused')?.value||false,jobs};}
-  if(method==='session.archive'){const {record}=idleRecord(input);if(await terminalBroker.hasRunning(terminalContext(record,'user')))throw new Error('请先关闭此会话的运行终端，再归档');if(typeof input.archived!=='boolean')throw new Error('归档状态无效');record.archived=input.archived;const cached=workers.get(record.id);if(cached)cached.record.archived=record.archived;persist(record);if(currentId===record.id&&record.archived)await chooseAfterArchive(record.projectId);publishState();return state();}
+  if(method==='session.archive'){const {record}=idleRecord(input);if(await terminalBroker.hasRunning(terminalContext(record,'user')))throw new Error('请先关闭此会话的运行终端，再归档');if(typeof input.archived!=='boolean')throw new Error('归档状态无效');record.archived=input.archived;const cached=workers.get(record.id);if(cached){if(record.archived)await request(cached,'stop',{});cached.record.archived=record.archived;}persist(record);if(currentId===record.id&&record.archived)await chooseAfterArchive(record.projectId);publishState();return state();}
   if(method==='session.delete.preview'){const {record}=idleRecord(input);if(await terminalBroker.hasRunning(terminalContext(record,'user')))throw new Error('请先关闭此会话的运行终端，再删除');const token=digest([record.id,record.updatedAt,record.path,randomUUID()]);deletionPreviews.set(record.id,{token,updatedAt:record.updatedAt});return {id:record.id,name:record.name,token,piSessionId:record.piSessionId,path:record.path,scope:'会话历史和独占插件记录；项目文件、原附件与Git成果保留'};}
   if(method==='session.delete'){
     const id=text(input.id),existing=store.get<Deletion>(`deleting:${id}`)?.value;if(existing){if(existing.token!==input.token)throw new Error('删除确认已失效');if(existing.state==='complete')return {deleted:true,id};const result=await finishDeletion(existing);publishState();return result;}
@@ -194,7 +187,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(input.defaultModelId!==undefined){const id=String(input.defaultModelId);if(id&&!(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.some(model=>model.id===id&&model.ready))throw new Error('默认型号不可用');next.defaultModelId=id;}
     if(input.defaultThinkingLevel!==undefined){if(!thinkingLevels.includes(String(input.defaultThinkingLevel)))throw new Error('思考等级无效');next.defaultThinkingLevel=String(input.defaultThinkingLevel);}
     if(input.defaultPlugins!==undefined){if(!Array.isArray(input.defaultPlugins)||input.defaultPlugins.some(name=>!pluginNames.includes(String(name))))throw new Error('插件无效');next.defaultPlugins=[...new Set(input.defaultPlugins.map(String))];}
-    if(input.defaultMode!==undefined){if(!['single','swarm'].includes(String(input.defaultMode)))throw new Error('协作方式无效');next.defaultMode=input.defaultMode as 'single'|'swarm';}
+    if(input.defaultMode!==undefined){if(!['single','team','swarm'].includes(String(input.defaultMode)))throw new Error('协作方式无效');next.defaultMode=input.defaultMode as 'single'|'team'|'swarm';}
     if(input.defaultPlanMode!==undefined){if(typeof input.defaultPlanMode!=='boolean')throw new Error('计划模式无效');next.defaultPlanMode=input.defaultPlanMode;}
     if(input.contextMode!==undefined){if(!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');next.contextMode=input.contextMode as Preferences['contextMode'];}
     if(input.backgroundModelId!==undefined)next.backgroundModelId=String(input.backgroundModelId);
@@ -227,11 +220,11 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.new'){
     const projectId=typeof input.projectId==='string'?input.projectId:'',defaults=preferences(projectId||undefined);
     if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
-    if(defaults.defaultMode==='swarm'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');
+    if(defaults.defaultMode!=='single'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');
     const selectedId=typeof input.modelId==='string'&&input.modelId?input.modelId:defaults.defaultModelId||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.ready)?.id;
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
     const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(dataDir,id);
-    const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:defaults.defaultThinkingLevel,plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode};
+    const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels.find(level=>level===defaults.defaultThinkingLevel)||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels[0]||'off',plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode};
     persist(record);currentId=record.id;store.put('current',currentId);await startWorker(record);publishState();return state();
   }
   if(method==='project.select'){
@@ -268,6 +261,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.configure'){
     if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');if(input.modelId)await requireReadyModel(await getProviderRuntime(),dataDir,text(input.modelId));worker.state=object(await request(worker,'configure',input));worker.record.modelId=typeof worker.state.modelId==='string'?worker.state.modelId:undefined;worker.record.thinkingLevel=typeof worker.state.thinkingLevel==='string'?worker.state.thinkingLevel:undefined;worker.record.plugins=Array.isArray(worker.state.plugins)?worker.state.plugins.map(String):undefined;persist(worker.record);publishState();return state();
   }
+  if(method==='runtime.call'||method==='workflow.generate'){if(worker.record.archived&&!(method==='runtime.call'&&['snapshot','goal.read','goal.list','task.read','task.list','jobs.list','jobs.logs','jobs.status'].includes(String(input.action))))throw new Error('归档会话只读');return request(worker,method==='runtime.call'?'runtime':method,input);}
   if(method==='plugin.call'){if(worker.record.archived&&!['snapshot','read','search','versions','usage','plan','shared.readVersion','shared.conflicts','invalidation.snapshot'].includes(String(input.action)))throw new Error('归档会话为只读，请先恢复');return await request(worker,'plugin',input);}
   throw new Error('未知客户端操作');
 }
@@ -307,11 +301,12 @@ else {
         if(learning?.pid){try{process.kill(process.platform!=='win32'?-learning.pid:learning.pid,'SIGTERM');}catch {}}
         // Never wait on startup or on a cached rejected ready promise. Ready workers
         // have three seconds to persist shutdown state before their own process groups stop.
-        for(const worker of children)if(worker.phase!=='ready'){retireWorker(worker,closing,true);void terminateWorker(worker);}
+        for(const worker of children)if(worker.phase!=='ready'){retireWorker(worker,closing,true);void terminateWorker(worker).catch(()=>{});}
         await Promise.allSettled(children.filter(worker=>worker.phase==='ready').map(worker=>request(worker,'shutdown',{},3000)));
       }finally {
         for(const worker of children)retireWorker(worker,closing,worker.phase==='starting'||['running','awaiting_review','rebuilding'].includes(worker.record.status||''));
-        await Promise.allSettled(children.map(terminateWorker));
+        const cleanup=await Promise.allSettled(children.map(terminateWorker));
+        if(cleanup.some(result=>result.status==='rejected')){shuttingDown=false;return;}
         try{store.close();}finally{storeClosed=true;quitComplete=true;app.quit();}
       }
     })();

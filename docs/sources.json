@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "checkedOn": "2026-10-08",
-  "policy": "Four-plugin business code and desktop application are original Friend-Pi implementation. Pi is an unmodified runtime dependency; other agent products are architecture references, not copied or required services. npm transitive sources are pinned by package-lock.json and their licenses are retained in the application.",
+  "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. Other plugins are references only.",
   "sources": [
     {
       "name": "Pi",
@@ -258,6 +258,28 @@
       "modified": false,
       "integrity": "sha512-20JqtutY6JPXTUnL0ij1uad7Qe1baT46lyolh2sSENDd4sTzKZ4nmAFkeAARDKwmlLjPx6XKRlwRUxwjOy+lUg==",
       "use": "Client editor/terminal dependency; exact lock and original licenses retained."
+    },
+    {
+      "name": "pi-background-tasks",
+      "repository": "https://github.com/ismailsaleekh/pi-background-tasks",
+      "version": "2.6.9",
+      "license": "ISC",
+      "licensePath": "third-party/pi-background-tasks/LICENSE",
+      "mode": "bundled-process-backend",
+      "modified": true,
+      "sourceRecord": "third-party/pi-background-tasks/SOURCE.json",
+      "adaptations": "third-party/pi-background-tasks/ADAPTATIONS.md",
+      "use": "Original process registry/event factory internally adapted for early process ownership and pinned package identity; only process features activated. Other extension factories/tools are hidden."
     }
-  ]
+  ],
+  "providerConfigurationSources": {
+    "checkedOn": "2026-10-08",
+    "details": "docs/model-provider-presets.md",
+    "originalFriendReference": {
+      "commit": "c9fc2754a9321d035875f472ceded9566364b81b",
+      "tree": "f0d4f67950eb4eed190745bafdb44f44d685f3d0",
+      "mode": "interaction-reference-only; no code copied"
+    },
+    "mode": "public documentation and pinned native Pi catalog; no credentials or account endpoint IDs"
+  }
 }

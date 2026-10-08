@@ -47,6 +47,7 @@ function fixture(){
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
       if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){}async request(){return {terminals:[]};}}};
+      if(specifier==='./terminal-processes.js')return {processSnapshot:()=>new Map(children.map(child=>[child.pid,{pid:child.pid,ppid:1,pgid:child.pid,tty:'??',born:'fixture',state:'S'}])),ownedDescendants:()=>{},terminateOwned:async(owned:Iterable<any>)=>{for(const identity of owned)signals.push({pid:identity.pid,signal:'SIGKILL'});return true;}};
       if(specifier==='./model-readiness.js')return modelReadiness;
       if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>modelRuntime,providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
       throw new Error(`Unrecognized production dependency: ${specifier}`);

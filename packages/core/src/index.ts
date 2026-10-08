@@ -6,12 +6,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SessionManager, getAgentDir, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import {requireReadyModel} from './model-readiness.js';
+import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
 const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
 export type JsonObject = Record<string, unknown>;
+export type ExecutionMode = 'single' | 'team' | 'swarm';
+export interface HostPolicy {
+  v:1; revision:number; runId?:string; stage:string; canSwitchRole:boolean; unsettledTools:number;
+  tools:string[]; writeScopes:string[]; executionMode:ExecutionMode; planMode:boolean;
+  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;
+}
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
 export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
@@ -19,8 +26,10 @@ export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
   dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
   signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string; isIdle(): boolean;
+  executionMode?:ExecutionMode; policy?:HostPolicy; availableModels?:{id:string;thinkingLevels:string[]}[];
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
   complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
+  applyModel?(modelId:string,thinkingLevel?:string):Promise<void>;
   request(plugin: string, action: string, input?: JsonObject, timeoutMs?: number): Promise<unknown>;
   emit(event: string, data: unknown): void; notify(message: string, level?: 'info'|'warning'|'error'): void;
   appendEntry(type: string, data: unknown): void;
@@ -99,11 +108,12 @@ export function visibleText(value: unknown): string {
   return '';
 }
 export function historyItems(entries: readonly unknown[]): HistoryItem[] {
+  const automatic=new Map<string,string>();for(const raw of entries){const entry=object(raw);if(entry.type==='custom'&&entry.customType==='friend-pi.runtime-wake.input'&&entry.data){const data=object(entry.data);automatic.set(String(data.entryId),String(data.hash));}}
   const boundaries=new Map<string,{textEnd:number;hash:string}>();for(const raw of entries){const entry=object(raw);if(entry.type==='custom'&&entry.customType==='friend-pi.input.v1'&&entry.data){const data=object(entry.data);boundaries.set(String(data.entryId),data as unknown as {textEnd:number;hash:string});}}
   return entries.map(raw => {
     const entry = object(raw); const message = entry.message && typeof entry.message === 'object' ? object(entry.message) : undefined;
     const value=message?visibleText(message.content):entry.type==='compaction'||entry.type==='branch_summary'?String(entry.summary||''):entry.type==='custom_message'?visibleText(entry.content):'';const boundary=boundaries.get(String(entry.id));const userText=boundary&&digest(value.slice(0,boundary.textEnd))===boundary.hash?value.slice(0,boundary.textEnd):undefined;
-    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: message?.role ? String(message.role) : undefined, text:value,userText };
+    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: automatic.get(String(entry.id))===digest(value)?'custom':message?.role ? String(message.role) : undefined, text:value,userText };
   });
 }
 /** Source offsets use UTF-16, matching Pi's JavaScript text. Old whole-entry refs remain readable. */
@@ -142,12 +152,26 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   const thinkingLevel = pi.getThinkingLevel();
   const agentDir = agentDirectory();
   const dataDir = dataDirectory(); const sessionId = ctx.sessionManager.getSessionId(); const sessionFile = ctx.sessionManager.getSessionFile();
+  let policy:HostPolicy|undefined;
+  // A host answers through its own Pi bus. Native packages remain independent
+  // when no desktop host is present; no module singleton carries authority.
+  pi.events?.emit('friend-pi:v1:policy',{v:1,sessionId,reply:(value:HostPolicy)=>{policy=value;}});
+  const availableModels=(ctx.modelRegistry?.getAvailable?.()||[]).filter(item=>process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'||savedModelIds(dataDir).includes(`${item.provider}/${item.id}`)).map(item=>({id:`${item.provider}/${item.id}`,thinkingLevels:getSupportedThinkingLevels(item)}));
   if (sessionFile) {
     const registry = new RecordStore('sessions',dataDir); registry.put(sessionId,{path: sessionFile,projectDir:ctx.cwd}); registry.close();
   }
   return {
     origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
     modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,runId:process.env.FRIEND_PI_RUN_ID,
+    policy,executionMode:policy?.executionMode,availableModels,
+    applyModel:async(modelId,level)=>{
+      if(!policy?.canSwitchRole||policy.unsettledTools)throw new Error('型号切换未到宿主安全阶段');
+      const slash=modelId.indexOf('/'),target=ctx.modelRegistry.find(modelId.slice(0,slash),modelId.slice(slash+1));
+      if(!target||!availableModels.some(item=>item.id===modelId))throw new Error('角色型号不可用');
+      if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){let verifying=desktopVerificationRuntimes.get(ctx.modelRegistry);if(!verifying){verifying=ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false}).then(async runtime=>{if(process.env.FRIEND_PI_TEST_PROVIDER==='1')await installFixtureProvider(runtime);return runtime;});desktopVerificationRuntimes.set(ctx.modelRegistry,verifying);}await requireReadyModel(await verifying,dataDir,modelId);}
+      if(level&&!getSupportedThinkingLevels(target).includes(level as never))throw new Error('角色思考等级不可用');
+      if(!await pi.setModel(target))throw new Error('角色型号切换失败');if(level)pi.setThinkingLevel(level as never);
+    },
     isIdle:() => ctx.isIdle(), history:() => historyItems(ctx.sessionManager.getBranch()),
     readSource: source => {
       if(isSessionDeleted(dataDir,source.sessionId))throw new Error('来源会话已删除');
@@ -183,7 +207,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent') => {
     const context = makeContext(pi,ctx,origin); const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
-    context.emit(`${name}.changed`,controller.snapshot(context)); return result;
+    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
   pi.on('before_agent_start',(_event,ctx) => { current = ctx; });
@@ -222,7 +246,7 @@ export function parseModelJson(value: string): JsonObject {
 
 /** Explicit test-only provider. Never registered for an ordinary launch. */
 export async function installFixtureProvider(runtime:ModelRuntime) {
-  const fixture=fauxProvider({api:'friend-fixture-api',provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
+  const fixture=fauxProvider({api:'friend-fixture-api',provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096},{id:'alternate',name:'离线替代模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
   const respond: Parameters<typeof fixture.setResponses>[0][number] = (context) => {
     fixture.appendResponses([respond]);
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
@@ -236,6 +260,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(content.includes('FRIEND_PI_REBUILD_JSON')){
       try{const entries=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const user=[...entries].reverse().find(item=>item.role==='user')||entries.at(-1);if(user)return fauxAssistantMessage(JSON.stringify({goal:{text:user.text.slice(0,400),sourceEntryIds:[user.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}catch{}
     }
+    if(content.includes('只返回JSON，结构为'))return fauxAssistantMessage(JSON.stringify({v:1,title:'离线工作流',goal:'只读检查项目',maxWorkers:4,nodes:[{id:'inspect',title:'读取',prompt:'只读说明当前项目',dependencies:[],mode:'read'},{id:'summarize',title:'汇总',prompt:'汇总读取成果',dependencies:['inspect'],mode:'read'}]}));
     if(content.includes('你是项目经验提取器'))return fauxAssistantMessage('{"memories":[]}');
     if(content.includes('提炼一个文本方法候选'))return fauxAssistantMessage('{"method":null}');
     if(content.includes('仅输出JSON。任务'))return fauxAssistantMessage('{"result":true}');
@@ -249,11 +274,15 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(content.includes('QA_TERMINAL')&&!hasResult)return fauxAssistantMessage(fauxToolCall('friend_terminal',{action:'create',name:'QA Agent service',command:"printf '%s%s\\n' 'AGENT_' 'SERVICE_OK'"}),{stopReason:'toolUse'});
     if(content.includes('QA_TIMELINE')&&!hasResult)return fauxAssistantMessage([{type:'text',text:'先读取 README，再列目录。'},{type:'thinking',thinking:'只读检查当前工作目录。'},{type:'toolCall',id:'qa-read',name:'read',arguments:{path:'README.md'}},{type:'text',text:'然后列出目录。'},{type:'toolCall',id:'qa-ls',name:'ls',arguments:{path:'.'}}],{stopReason:'toolUse'});
     if(content.includes('QA_TIMELINE'))return fauxAssistantMessage('只读检查完成。\n\n'+Array.from({length:20},(_,i)=>'第 '+(i+1)+' 项：工具记录应随会话正文一起滚动。').join('\n\n'));
+    if(content.includes('QA_GOAL')&&content.includes('当前长期目标')){const goals=messages.filter(message=>message.role==='toolResult'&&message.toolName==='friend_goal');let prior;try{prior=JSON.parse(visibleText(goals.at(-1)?.content));}catch{}if(['completed','blocked','stopped','paused'].includes(prior?.status))return fauxAssistantMessage('目标完成，已保留实际检查说明。');return fauxAssistantMessage(fauxToolCall('friend_goal',{action:prior?.progress?'complete':'update',input:prior?.progress?{}:{progress:'实际只读分析已完成，无项目写入。'}}),{stopReason:'toolUse'});}
     if(content.includes('QA_PLAN_SUBMIT')){if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='friend_plan'))return fauxAssistantMessage(fauxToolCall('friend_plan',{action:'submit',body:'Read README.md and verify the documented UTF-8 constraint. Change no files.'}),{stopReason:'toolUse'});return fauxAssistantMessage('The complete plan was submitted. Please approve it.');}
     if(content.includes('QA_WRITE')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'fixture-result.txt',content:'Friend-Pi SDK tool execution verified.\n'}),{stopReason:'toolUse'});
     if(/APPROVE|approved|独立复核|独立审查/.test(content))return fauxAssistantMessage('{"approved":true,"findings":"离线测试复核，不代表真实模型质量"}');
     if(/仅输出JSON|仅输出 JSON/.test(content))return fauxAssistantMessage('{"result":true,"memories":[],"items":[],"summary":"离线验证工作现场，保留来源与当前目标","goals":[],"constraints":[],"decisions":[],"unfinished":[]}');
     return fauxAssistantMessage('离线验证已完成。此回答来自明确启用的测试 Provider，不是来自真实模型。');
   };
-  fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('friend-fixture','fixture');return fixture.getModel();
+  fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('friend-fixture','fixture');return fixture.getModel('offline');
 }
+
+export {ContinuationCoordinator,TaskLedger,GoalLedger} from './runtime.js';
+export type {TaskRecord,GoalRecord,AcceptanceCheck,CheckEvidence,WakeFrame} from './runtime.js';

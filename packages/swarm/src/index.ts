@@ -3,13 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { agentDirectory, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text } from '@friend-pi/core';
+import type { ExtensionFactory,ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { agentDirectory, ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text,makeContext } from '@friend-pi/core';
 import type { JsonObject, PluginContext, PluginController, StoredDocument } from '@friend-pi/core';
 import { contains, destructiveCommand } from './guard.js';
 import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task,StopObject } from './types.js';
 import {managedCommand,ownChild,checkCancelled,CancelledError} from './managed.js';
 import {SharedMaterials} from './shared.js';
+import {DynamicWorkflowController} from './workflow.js';
+export {DynamicWorkflowController} from './workflow.js';
 export type * from './types.js';
 
 const now = () => new Date().toISOString();
@@ -26,13 +28,36 @@ function thinkingLevel(value:unknown,fallback?:string):string|undefined {
   return value;
 }
 function strings(value:unknown): string[] {if (!Array.isArray(value) || value.some(x=>typeof x !== 'string')) throw new Error('必须提供字符串数组'); return value as string[];}
+type ExecutionContext=PluginContext&{planMode?:boolean};
+function assertExecution(ctx:PluginContext,style:'team'|'swarm'):void {
+  const host=ctx as ExecutionContext,mode=host.policy?.executionMode??host.executionMode;
+  if(host.policy?.executionStopped)throw new Error('宿主已停止本轮执行');
+  if(host.planMode||host.policy?.planMode)throw new Error('计划模式不能启动协作成员');
+  if(mode==='single'||mode&&mode!==style)throw new Error(`${mode} 模式不能启动 ${style} 成员`);
+}
+function validateTaskModel(task:Task,ctx:PluginContext,defaultModel?:string,defaultThinking?:string):void {
+  const modelId=task.modelId??defaultModel,level=task.thinkingLevel??defaultThinking;
+  const models=(ctx as ExecutionContext).availableModels;
+  if(task.modelId&&(!models||!models.some(model=>model.id===modelId)))throw new Error('委派模型必须是已配置且可用的型号');
+  const model=models?.find(item=>item.id===modelId);if(level&&model?.thinkingLevels&&!model.thinkingLevels.includes(level))throw new Error('委派模型不支持此思考等级');
+}
+function boundTaskPolicy(task:Task,ctx:PluginContext):void {
+  const policy=(ctx as ExecutionContext).policy;if(!policy)return;
+  if(task.mode==='write'){
+    if(!policy.tools.some(tool=>['write','edit','bash'].includes(tool)))throw new Error('父任务权限不允许写入委派');
+    const scopes=task.writeScopes.flatMap(scope=>policy.writeScopes.flatMap(parent=>contains(resolve(ctx.projectDir,parent),resolve(ctx.projectDir,scope))?[scope]:contains(resolve(ctx.projectDir,scope),resolve(ctx.projectDir,parent))?[parent]:[]));
+    if(!scopes.length)throw new Error('委派写入范围超出父任务权限');task.writeScopes=[...new Set(scopes)];
+  }
+}
+const taskSettled=(task:Task)=>task.status==='completed'||task.status==='skipped';
+const currentUnknown=(graph:Graph)=>graph.tasks.some(task=>task.status==='unknown'||graph.attempts.some(attempt=>attempt.id===task.currentAttempt&&attempt.status==='unknown'));
 function graphKey(projectId:string,id:string): string {return `graph:${projectId}:${id}`;}
 function taskSpec(raw:unknown,index:number): Task {
   const item=object(raw); const mode=item.mode === 'read' ? 'read' : 'write';
   if(item.mode!==undefined&&item.mode!=='read'&&item.mode!=='write')throw new Error('任务 mode 必须是 read 或 write');
   const scopes=item.writeScopes === undefined ? ['.'] : strings(item.writeScopes);
   if (!scopes.length || scopes.some(path=>isAbsolute(path) || !contains('/scope',resolve('/scope',path)))) throw new Error('写入范围必须相对于成员工作区，不能越出工作区');
-  const prompt=text(item.prompt || item.title,'任务要求');return {id:item.id ? text(item.id,'任务标识',100) : `task-${index+1}`,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
+  const prompt=text(item.prompt || item.title,'任务要求');return {id:item.id ? text(item.id,'任务标识',100) : `task-${index+1}`,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
 }
 export function validateDAG(tasks:Task[]): void {
   const map=new Map(tasks.map(task=>[task.id,task]));if (map.size!==tasks.length) throw new Error('任务标识重复');
@@ -144,17 +169,27 @@ export class SwarmController implements PluginController {
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
     if(this.disposed)throw new Error('Swarm 已关闭');
+    if(action.startsWith('team.'))return this.team(action.slice(5),input,ctx);
+    if(action==='audit')return this.audit(input,ctx);
     if (action==='snapshot') return this.snapshot(ctx);
     if (action==='history') return {graphs:this.store(ctx).list<Graph>(`graph:${ctx.projectId}:`).map(doc=>({...doc.value,revision:doc.revision})),readOnly:true};
     if (action==='create') return this.create(input,ctx);
     if (action==='confirm') {if (ctx.origin && ctx.origin!=='user') throw new Error('关键确认必须来自用户');const resolver=this.confirmations.get(text(input.id));if (!resolver) throw new Error('确认请求已结束');resolver(input.accepted===true);return {accepted:input.accepted===true};}
     const id=text(input.graphId,'任务图标识',100);
+    if(['start','resume','prepare','review','integrate','rework','append','update_task','workflow_skip'].includes(action))assertExecution(ctx,this.get(id,ctx).value.executionStyle||'swarm');
+    if(action==='append')return this.appendTasks(id,input,ctx);
+    if(action==='update_task')return this.reviseTask(id,input,ctx);
+    if(action==='workflow_skip'){
+      const graph=this.get(id,ctx).value,taskId=text(input.taskId),task=graph.tasks.find(item=>item.id===taskId);if(!graph.workflowId||!task||!['pending','skipped'].includes(task.status)||task.rework>=2)throw new Error('只有安全等待中的工作流节点可按条件跳过');
+      const skipped=this.update(id,ctx,g=>{g.tasks.find(item=>item.id===taskId)!.status='skipped';});this.changed(ctx);if(skipped.status==='running')void this.track(id,this.pump(id,ctx));return skipped;
+    }
     if (action==='start') {await this.track(id,this.start(id,input,ctx));return this.get(id,ctx).value;}
     if (action==='pause' || action==='stop')return this.stop(id,ctx,action==='pause');
     if (action==='resume') {
       const graph=this.get(id,ctx).value;
       if(graph.status==='stopping'||this.execution(id).activities.size||this.execution(id).operations.size)throw new Error('停止尚未到安全边界，请等待退出收据');
       if (graph.status==='integrated') throw new Error('已整合任务不能重新执行');
+      if(graph.tasks.some(task=>task.status==='blocked'&&task.rework>=2))throw new Error('任务已达 2 轮修复上限；不能用接续绕过额度');
       if (graph.tasks.some(t=>t.status==='unknown') && (input.confirmUnknown!==true || (ctx.origin && ctx.origin!=='user'))) throw new Error('存在副作用未知的任务；请检查保留的会话和工作区，并由用户以 confirmUnknown:true 明确启动新尝试');
       this.update(id,ctx,g=>{for (const task of g.tasks) if (['unknown','blocked','cancelled'].includes(task.status)) {task.status='pending';task.currentAttempt=undefined;}g.error=undefined;});
       this.executions.delete(id);await this.track(id,this.start(id,input,ctx));return this.get(id,ctx).value;
@@ -171,25 +206,86 @@ export class SwarmController implements PluginController {
     if(action==='rework')return this.rework(id,input,ctx);
     if (action==='prepare' || action==='review') {
       const graph=this.get(id,ctx).value;
-      if(!graph.tasks.every(task=>task.status==='completed'))throw new Error('所有成果完成后才能整合复核');
+      if(!graph.tasks.every(taskSettled))throw new Error('所有成果完成后才能整合复核');
       if(graph.status==='integrated'||graph.status==='ready'||this.preparing.has(id))return graph;
       // The native review may exceed the request bridge timeout. Return its retained state
       // immediately and keep completion/failure authority in the actual member lifecycle.
       void this.track(id,this.prepare(id,ctx)).catch(()=>{});this.changed(ctx);return this.get(id,ctx).value;
     }
-    if (action==='integrate') {await this.track(id,this.integrate(id,ctx));return this.get(id,ctx).value;}
+    if (action==='integrate') {if(this.get(id,ctx).value.executionStyle==='team'&&ctx.origin==='plugin')throw new Error('Team 整合必须由主 Agent 或用户决定');await this.track(id,this.integrate(id,ctx));return this.get(id,ctx).value;}
     throw new Error(`未知 Swarm 操作：${action}`);
   }
-  private async create(input:JsonObject,ctx:PluginContext): Promise<Graph> {
+  private teamGraph(input:JsonObject,ctx:PluginContext):Graph|undefined {
+    if(input.graphId){const graph=this.get(text(input.graphId),ctx).value;if(graph.executionStyle!=='team')throw new Error('此任务图不是 Team');return graph;}
+    return this.store(ctx).list<Graph>(`graph:${ctx.projectId}:`).map(row=>row.value).find(graph=>graph.sessionId===ctx.sessionId&&graph.executionStyle==='team'&&!graph.audit&&graph.runId===ctx.runId);
+  }
+  private async team(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
+    if(action==='list')return {graphs:(this.snapshot(ctx) as {graphs:Graph[]}).graphs.filter(graph=>graph.executionStyle==='team'&&!graph.audit&&(!ctx.runId||graph.runId===ctx.runId))};
+    const graph=this.teamGraph(input,ctx);
+    if(action==='result'){
+      if(!graph)throw new Error('本轮没有 Team 委派');
+      const tasks=input.taskId?graph.tasks.filter(task=>task.id===text(input.taskId)):graph.tasks;if(!tasks.length)throw new Error('任务不存在');
+      return {graphId:graph.id,status:graph.status,tasks:tasks.map(task=>({task,attempt:graph.attempts.find(attempt=>attempt.id===task.currentAttempt)})),messages:this.store(ctx).list<MemberMessage>(`message:${graph.id}:`).map(row=>row.value).filter(message=>message.to==='parent')};
+    }
+    assertExecution(ctx,'team');if(ctx.origin==='plugin')throw new Error('Team 委派与整合必须来自主 Agent 或用户');
+    if(action==='delegate'){
+      if(graph&&graph.runId!==ctx.runId)throw new Error('不能向另一轮 Team 委派追加任务');
+      const raw=Array.isArray(input.tasks)?input.tasks.map(item=>{const task=object(item);return {...task,mode:task.mode??'read'};}):input.tasks??[{...input,id:input.taskId??input.id??randomUUID(),title:input.title??String(input.prompt||'委派任务').slice(0,80),mode:input.mode??'read'}];
+      if(graph){if(['paused','stopped','stopping'].includes(graph.status)||graph.tasks.some(task=>task.status==='unknown'))throw new Error('Team 已暂停或副作用未知，检查后显式接续');await this.appendTasks(graph.id,{...input,tasks:raw},ctx);return this.get(graph.id,ctx).value;}
+      const created=await this.create({...input,goal:input.goal??input.prompt??'本轮 Team 委派',tasks:raw,executionStyle:'team'},ctx);await this.track(created.id,this.start(created.id,{},ctx));return this.get(created.id,ctx).value;
+    }
+    if(!graph)throw new Error('本轮没有 Team 委派');
+    if(!['send','stop','prepare','integrate'].includes(action))throw new Error('未知 Team 操作');
+    return this.dispatch(action,{...input,graphId:graph.id},ctx);
+  }
+  private async appendTasks(id:string,input:JsonObject,ctx:PluginContext):Promise<Graph> {
+    const current=this.get(id,ctx).value;if(!Array.isArray(input.tasks)||!input.tasks.length)throw new Error('必须提供新增任务');
+    if(current.executionOwner&&current.executionOwner.runtime!==this.runtime&&alive(current.executionOwner.pid)&&['running','awaiting_review','stopping'].includes(current.status))throw new Error('任务仍由另一个运行时持有，不能追加执行');
+    if(['stopping','paused','stopped','awaiting_review'].includes(current.status)||this.preparing.has(id))throw new Error('任务图未到可追加的安全边界');
+    const tasks=input.tasks.map((raw,index)=>taskSpec(raw,current.tasks.length+index));for(const task of tasks){if(current.executionStyle==='team'&&!task.roleId){task.modelId??=ctx.modelId;task.thinkingLevel??=ctx.thinkingLevel;}boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,current.modelId,current.thinkingLevel);}
+    if(current.tasks.length+tasks.length>64)throw new Error('任务图累计任务上限为 64');validateDAG([...current.tasks,...tasks]);
+    if(tasks.some(task=>task.mode==='write')){
+      const baseline=current.baseline??await this.baseline(id,ctx.projectDir,ctx);
+      if(current.executionStyle==='team'&&!baseline){this.update(id,ctx,g=>{g.tasks.push(...tasks);g.status='paused';g.error='Team 写入委派需要 Git 隔离工作树；新增任务保留，未启动成员';});this.changed(ctx);throw new Error('Team 写入委派需要 Git 隔离工作树');}
+      if(baseline&&(await this.git(id,baseline.repoRoot,['status','--porcelain'],ctx)||await this.git(id,baseline.repoRoot,['rev-parse','HEAD'],ctx)!==baseline.head)){this.update(id,ctx,g=>{g.tasks.push(...tasks);g.baseline=baseline;g.status='paused';g.error='原项目基线或工作区已变化；新增写入任务保留，未启动成员';});this.changed(ctx);throw new Error('原项目基线或工作区已变化；任务保留并暂停');}
+      if(baseline&&!current.baseline)this.update(id,ctx,g=>{g.baseline=baseline;});
+    }
+    const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();g.tasks.push(...tasks);g.integration=undefined;g.error=undefined;if(g.status!=='created')g.status='running';});
+    this.changed(ctx);if(graph.status==='running')void this.track(id,this.pump(id,ctx));return graph;
+  }
+  private async reviseTask(id:string,input:JsonObject,ctx:PluginContext):Promise<Graph> {
+    const current=this.get(id,ctx).value,taskId=text(input.taskId,'任务标识',100),previous=current.tasks.find(task=>task.id===taskId);if(!previous)throw new Error('任务不存在');
+    if(input.gateOnly===true){if(!current.workflowId||!['pending','skipped'].includes(previous.status)||typeof input.workflowHeld!=='boolean'||Object.keys(input).some(key=>!['graphId','taskId','workflowHeld','gateOnly','revision'].includes(key)))throw new Error('工作流门闸只可切换等待节点，不能修改要求');const gated=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();const task=g.tasks.find(item=>item.id===taskId)!;task.workflowHeld=input.workflowHeld===true;if(!task.workflowHeld)task.status='pending';});this.changed(ctx);if(gated.status==='running')void this.track(id,this.pump(id,ctx));return gated;}
+    if(current.status==='running'||current.status==='stopping'||current.status==='awaiting_review'||this.execution(id).operations.size||this.execution(id).activities.size)throw new Error('先停止成员并等待安全边界，才能修改任务要求');
+    if(currentUnknown(current)&&(input.confirmUnknown!==true||ctx.origin!=='user'))throw new Error('存在未知副作用，需用户检查并确认 confirmUnknown:true');
+    const changed=taskSpec({...previous,...input,id:taskId},0);boundTaskPolicy(changed,ctx);validateTaskModel(changed,ctx,current.modelId,current.thinkingLevel);validateDAG(current.tasks.map(task=>task.id===taskId?changed:task));
+    const reason=text(input.reason,'修改依据');if(input.repair===true||previous.status==='blocked')await this.claimRepair(current,[taskId],reason,ctx);
+    const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();const target=g.tasks.find(task=>task.id===taskId)!;const versions=target.requirementVersions||[{version:1,prompt:target.prompt,at:g.createdAt}];const repair=target.rework;Object.assign(target,changed,{originalPrompt:target.originalPrompt||target.prompt,requirementVersions:[...versions,{version:versions.at(-1)!.version+1,prompt:changed.prompt,reason,at:now()}],rework:repair,resultRevision:target.resultRevision});const affected=new Set([taskId]);let grew=true;while(grew){grew=false;for(const task of g.tasks)if(!affected.has(task.id)&&task.dependencies.some(dep=>affected.has(dep))){affected.add(task.id);grew=true;}}for(const task of g.tasks)if(affected.has(task.id)){task.status='pending';task.currentAttempt=undefined;if(g.workflowId)task.workflowHeld=true;}g.integratedTaskIds=g.integratedTaskIds?.filter(task=>!affected.has(task));g.integration=undefined;g.status='paused';g.error=undefined;});
+    this.executions.delete(id);this.changed(ctx);return graph;
+  }
+  private async audit(input:JsonObject,ctx:PluginContext):Promise<unknown> {
+    const style=ctx.executionMode||ctx.policy?.executionMode||'swarm';if(style==='single')throw new Error('Single 使用主 Agent 自检，不启动独立审核成员');assertExecution(ctx,style);
+    const goalId=text(input.goalId??ctx.policy?.goalId,'目标标识',200),objective=text(input.objective,'审核目标');
+    const requestedModel=typeof input.modelId==='string'?input.modelId:undefined,requestedThinking=thinkingLevel(input.thinkingLevel,ctx.thinkingLevel);
+    validateTaskModel({...taskSpec({id:'audit-evidence',title:'目标交付证据',prompt:objective,mode:'read'},0),modelId:requestedModel,thinkingLevel:requestedThinking},ctx,ctx.modelId,ctx.thinkingLevel);
+    const context={...ctx,modelId:requestedModel??ctx.modelId,thinkingLevel:requestedThinking};
+    const created=await this.create({goal:objective,tasks:[{id:'audit-evidence',title:'目标交付证据',prompt:objective,mode:'read'}],checks:[],executionStyle:style,deferPreparation:true},context,true);
+    this.update(created.id,ctx,g=>{g.goalId=goalId;g.audit=true;g.executionOwner={pid:process.pid,runtime:this.runtime};g.status='awaiting_review';g.tasks[0].status='completed';g.tasks[0].resultRevision=1;const evidence=JSON.stringify(input.evidence??{});if(evidence.length>100000)throw new Error('目标审核证据过大');g.auditEvidence=JSON.parse(evidence);g.integration={cwd:ctx.projectDir,checks:[]};});this.changed(ctx);
+    try {const review=await this.track(created.id,this.reviewer(this.get(created.id,ctx).value,ctx.projectDir,context));const receipt={...review,at:now()};this.update(created.id,ctx,g=>{g.reviews=[...(g.reviews||[]),receipt];g.integration!.review=receipt;g.status=review.approved?'completed':'paused';g.error=review.approved?undefined:review.findings;});this.changed(ctx);return {...review,goalId,independent:true,source:{graphId:created.id,attemptId:review.attemptId,sessionId:review.sessionId,sessionFile:review.sessionFile}};}
+    catch(error){this.update(created.id,ctx,g=>{g.status='paused';g.error=errorText(error);});this.changed(ctx);throw error;}
+  }
+  private async create(input:JsonObject,ctx:PluginContext,audit=false): Promise<Graph> {
     const goal=text(input.goal || input.text,'目标');let raw=input.tasks;
     if (raw===undefined) {
       const plan=parseModelJson(await ctx.complete(`把目标拆为可交付成果任务，输出纯 JSON {"tasks":[{"id":"task-1","title":"...","prompt":"...","dependencies":[],"mode":"read|write","writeScopes":["."]}]}。任务依赖必须是 DAG，避免多成员重复修改相同文件。可用单任务，禁止编造已完成工作。目标：${goal}`,{maxTokens:3000}));raw=plan.tasks;
     }
     if (!Array.isArray(raw) || raw.length<1 || raw.length>64) throw new Error('任务数必须在 1–64 之间');
     const tasks=raw.map(taskSpec);validateDAG(tasks);
+    for(const task of tasks){boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,ctx.modelId,ctx.thinkingLevel);}
     let checks=checkSpecs(input.checks);
-    if (input.checks===undefined && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
-    const graph:Graph={id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks};
+    const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
+    if (input.checks===undefined && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
+    const graph:Graph={audit:audit||undefined,id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,goalId:ctx.policy?.goalId};
     this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
   private async baseline(id:string,projectDir:string,ctx:PluginContext): Promise<Baseline|undefined> {
@@ -199,12 +295,14 @@ export class SwarmController implements PluginController {
   }
   private async start(id:string,input:JsonObject,ctx:PluginContext): Promise<void> {
     const current=this.get(id,ctx).value;if (current.status==='running') return;
+    assertExecution(ctx,current.executionStyle||'swarm');
     if(current.executionOwner&&current.executionOwner.runtime!==this.runtime&&alive(current.executionOwner.pid)&&(!['paused','stopped'].includes(current.status)||!current.stopReceipt?.objects.every(receipt=>receipt.status==='terminated')))throw new Error('前一运行时仍存活，不能并行接续其未知副作用');
     if(current.status==='stopping')throw new Error('正在停止，尚不能启动新尝试');checkCancelled(this.signal(id,ctx));
     if (current.status==='integrated') throw new Error('任务已整合');
     if (current.tasks.some(task=>task.status==='unknown')) throw new Error('请通过 resume 明确接续中断任务');
     const baseline=current.baseline || await this.baseline(id,ctx.projectDir,ctx);
-    if (baseline && current.tasks.some(task=>task.mode==='write')) {
+    if(current.executionStyle==='team'&&!baseline&&current.tasks.some(task=>task.mode==='write'&&!current.integratedTaskIds?.includes(task.id))){this.update(id,ctx,g=>{g.status='paused';g.error='Team 写入委派需要 Git 隔离工作树，未启动成员';});this.changed(ctx);throw new Error('Team 写入委派需要 Git 隔离工作树');}
+    if (baseline && current.tasks.some(task=>task.mode==='write'&&!current.integratedTaskIds?.includes(task.id))) {
       if (await this.git(id,baseline.repoRoot,['status','--porcelain'],ctx)) throw new Error('项目有未提交改动，暂不能启动隔离写入；保留这些改动后仍可使用 Single 或只读 Swarm');
       if (await this.git(id,baseline.repoRoot,['rev-parse','HEAD'],ctx)!==baseline.head) throw new Error('项目基线已变化，请创建新任务图；旧成果保留');
     }
@@ -217,12 +315,17 @@ export class SwarmController implements PluginController {
   claim(id:string,taskId:string,ctx:PluginContext): Attempt {
     let claimed:Attempt|undefined;
     this.update(id,ctx,graph=>{
+      assertExecution(ctx,graph.executionStyle||'swarm');
       if (graph.status!=='running') throw new ConflictError('任务图未运行');
       const task=graph.tasks.find(t=>t.id===taskId);if (!task || task.status!=='pending') throw new ConflictError('任务已被领取或不可领取');
-      if (task.dependencies.some(dep=>graph.tasks.find(t=>t.id===dep)?.status!=='completed')) throw new ConflictError('依赖尚未完成');
+      if(task.workflowHeld)throw new ConflictError('工作流门闸尚未放行');
+      if (task.dependencies.some(dep=>!taskSettled(graph.tasks.find(t=>t.id===dep)!))) throw new ConflictError('依赖尚未完成');
       if (graph.attempts.filter(a=>a.status==='running').length>=graph.maxWorkers) throw new ConflictError('成员并发已满');
       if (!graph.baseline && task.mode==='write' && graph.attempts.some(a=>a.status==='running' && a.mode==='write')) throw new ConflictError('非 Git 项目写入串行');
-      claimed={id:randomUUID(),taskId:task.id,number:graph.attempts.filter(a=>a.taskId===task.id).length+1,resultRevision:task.resultRevision+1,requirementVersion:task.requirementVersions?.at(-1)?.version||1,status:'running',cwd:ctx.projectDir,mode:task.mode,ownerPid:process.pid,ownerRuntime:this.runtime,startedAt:now(),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,writeScopes:task.writeScopes};
+      const catalog=graph.expertCatalog&&typeof graph.expertCatalog==='object'?graph.expertCatalog as Record<string,unknown>:undefined;const role=task.roleId&&Array.isArray(catalog?.roles)?catalog.roles.map(object).find(item=>item.id===task.roleId):undefined;
+      const selected={...task,modelId:task.modelId??(typeof role?.modelId==='string'?role.modelId:undefined),thinkingLevel:task.thinkingLevel??(typeof role?.thinkingLevel==='string'?thinkingLevel(role.thinkingLevel):undefined)};
+      validateTaskModel(selected,ctx,graph.modelId,graph.thinkingLevel);
+      claimed={id:randomUUID(),taskId:task.id,number:graph.attempts.filter(a=>a.taskId===task.id).length+1,resultRevision:task.resultRevision+1,requirementVersion:task.requirementVersions?.at(-1)?.version||1,status:'running',cwd:ctx.projectDir,mode:task.mode,ownerPid:process.pid,ownerRuntime:this.runtime,startedAt:now(),modelId:selected.modelId??graph.modelId,thinkingLevel:selected.thinkingLevel??graph.thinkingLevel,writeScopes:task.writeScopes};
       task.status='running';task.currentAttempt=claimed.id;graph.attempts.push(claimed);
     });return claimed!;
   }
@@ -237,12 +340,13 @@ export class SwarmController implements PluginController {
   }
   private dependencyCommits(graph:Graph,task:Task): string[] {
     const visited=new Set<string>();const commits:string[]=[];
-    const visit=(id:string)=>{if (visited.has(id)) return;visited.add(id);const dep=graph.tasks.find(t=>t.id===id)!;dep.dependencies.forEach(visit);const attempt=graph.attempts.find(a=>a.id===dep.currentAttempt);if (attempt?.commit) commits.push(attempt.commit);};
+    const visit=(id:string)=>{if (visited.has(id)) return;visited.add(id);const dep=graph.tasks.find(t=>t.id===id)!;dep.dependencies.forEach(visit);const attempt=graph.attempts.find(a=>a.id===dep.currentAttempt);if (attempt?.commit&&!graph.integratedTaskIds?.includes(id)) commits.push(attempt.commit);};
     task.dependencies.forEach(visit);return [...new Set(commits)];
   }
   private async launch(id:string,attempt:Attempt,ctx:PluginContext): Promise<void> {
     let graph=this.get(id,ctx).value;const task=graph.tasks.find(t=>t.id===attempt.taskId)!;
-    const expert=this.taskExpert(task,graph.expertCatalog||await this.freezeExpert(task,ctx));
+    const expert=object(this.taskExpert(task,graph.expertCatalog||await this.freezeExpert(task,ctx)));
+    if(task.roleId){if(expert.unavailable)throw new Error('明确角色需要启用 Expert 插件');const role=await ctx.request('expert','freeze.role',{catalogHash:expert.hash,roleId:task.roleId,capability:{tools:graph.parentTools??(task.mode==='read'?['read','grep','find','ls','friend_expert']:['read','write','edit','bash','friend_expert']),writeScopes:task.mode==='read'?[]:task.writeScopes,modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel}},1500);expert.role=role;const frozen=object(role);if(frozen.modelId&&frozen.modelId!==attempt.modelId||frozen.thinkingLevel&&frozen.thinkingLevel!==attempt.thinkingLevel)throw new Error('角色模型映射与已冻结任务配置不一致，请明确该任务型号后重试');const adopted=Array.isArray(expert.adoptedIds)?expert.adoptedIds:expert.selectedIds;expert.prompt=(Array.isArray(expert.experts)?expert.experts:[]).map(object).filter(method=>Array.isArray(adopted)&&adopted.includes(method.id)).map(method=>`${method.title} v${method.version}\n${method.prompt}`).join('\n\n');}
     if (this.disposed) return;checkCancelled(this.signal(id,ctx));
     let cwd=ctx.projectDir;
     if (graph.baseline && task.mode==='write') {
@@ -257,7 +361,7 @@ export class SwarmController implements PluginController {
     if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running') return;
     const dependencies=task.dependencies.map(dep=>{const previous=graph.attempts.find(a=>a.id===graph.tasks.find(t=>t.id===dep)?.currentAttempt);return {taskId:dep,summary:previous?.summary};});
     const requirements=task.requirementVersions?.at(-1)?.prompt||task.prompt;
-    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n共享资料通过协调者提供，不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes};
+    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,parentTools:graph.parentTools};
     const handle=this.launcher(start,message=>void this.track(id,this.memberOutput(id,attempt.id,message,ctx)),code=>{
       if (this.disposed) return;
       this.members.delete(attempt.id);const current=this.get(id,ctx).value.attempts.find(a=>a.id===attempt.id);
@@ -271,14 +375,17 @@ export class SwarmController implements PluginController {
       while (!this.disposed && this.get(id,ctx).value.status==='running') {
         const graph=this.get(id,ctx).value;
         const running=graph.attempts.filter(a=>a.status==='running');
-        const task=graph.tasks.find(t=>t.status==='pending' && t.dependencies.every(dep=>graph.tasks.find(d=>d.id===dep)?.status==='completed') && (graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
+        const task=graph.tasks.find(t=>t.status==='pending'&&!t.workflowHeld && t.dependencies.every(dep=>taskSettled(graph.tasks.find(d=>d.id===dep)!)) && (graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
         if (!task || running.length>=graph.maxWorkers) break;
         const attempt=this.claim(id,task.id,ctx);
         try {await this.launch(id,attempt,ctx);}catch (error) {if (!this.disposed&&!this.signal(id,ctx).aborted) await this.fail(id,attempt.id,errorText(error),ctx);break;}
       }
       if (this.disposed) return;
       const graph=this.get(id,ctx).value;
-      if (graph.status==='running' && graph.tasks.every(t=>t.status==='completed')) {this.update(id,ctx,g=>{g.status='awaiting_review';});this.changed(ctx);void this.track(id,this.prepare(id,ctx)).catch(error=>{if (!this.disposed && this.get(id,ctx).value.status==='awaiting_review') {this.update(id,ctx,g=>{g.status='paused';g.error=errorText(error);});this.changed(ctx);}});}
+      if (graph.status==='running' && graph.tasks.every(taskSettled)) {
+        if(graph.deferPreparation||graph.executionStyle==='team'&&!graph.tasks.some(task=>task.mode==='write'&&!graph.integratedTaskIds?.includes(task.id))){this.update(id,ctx,g=>{g.status='completed';});this.changed(ctx);}
+        else {this.update(id,ctx,g=>{g.status='awaiting_review';});this.changed(ctx);void this.track(id,this.prepare(id,ctx)).catch(error=>{if (!this.disposed && this.get(id,ctx).value.status==='awaiting_review') {this.update(id,ctx,g=>{g.status='paused';g.error=errorText(error);});this.changed(ctx);}});}
+      }
     }finally {this.pumping.delete(id);}
   }
   private async memberOutput(id:string,attemptId:string,message:MemberOutput,ctx:PluginContext): Promise<void> {
@@ -296,6 +403,7 @@ export class SwarmController implements PluginController {
       try {
         if (!['send','shared.read','shared.write','expert.adopt'].includes(message.action)) throw new Error('成员协作操作未获允许');
         const attempt=this.get(id,ctx).value.attempts.find(a=>a.id===attemptId)!;
+        const graph=this.get(id,ctx).value;if(graph.executionStyle==='team'&&(message.action==='shared.read'||message.action==='shared.write'||message.action==='send'&&message.input.to!=='parent'))throw new Error('Team 成员只能与主 Agent 通信');
         let result:unknown;
         if(message.action==='expert.adopt'){
           const frozen=object(attempt.expert);if(frozen.unavailable)throw new Error('Expert 插件当前不可用');
@@ -337,6 +445,7 @@ export class SwarmController implements PluginController {
       }
       if (this.disposed) return;checkCancelled(this.signal(id,ctx));
       this.update(id,ctx,g=>{const a=g.attempts.find(x=>x.id===attemptId)!;const t=g.tasks.find(x=>x.currentAttempt===attemptId);if (!t || a.status!=='running') throw new ConflictError('执行尝试已被中断');a.status='completed';a.finishedAt=now();a.summary=result.summary.slice(0,100000);a.sessionId=result.sessionId||a.sessionId;a.sessionFile=result.sessionFile||a.sessionFile;a.commit=commit;t.status='completed';t.resultRevision=a.resultRevision;});
+      if(original.executionStyle==='team')ctx.emit('team.result',{v:1,graphId:id,taskId:task.id,attemptId,runId:original.runId,mode:task.mode,sessionId:result.sessionId||attempt.sessionId,sessionFile:result.sessionFile||attempt.sessionFile});
       this.members.delete(attemptId);this.changed(ctx);void this.track(id,this.pump(id,ctx));
     }catch (error) {if(!this.signal(id,ctx).aborted)await this.fail(id,attemptId,errorText(error),ctx);}finally {this.finishing.delete(attemptId);}
   }
@@ -346,10 +455,10 @@ export class SwarmController implements PluginController {
     this.members.get(attemptId)?.handle.stop();this.members.delete(attemptId);this.changed(ctx);
   }
   private sendMessage(id:string,input:JsonObject,ctx:PluginContext): MemberMessage {
-    const graph=this.get(id,ctx).value;const to=text(input.to,'收件人',100);if (!graph.tasks.some(t=>t.id===to)) throw new Error('收件任务不存在');
+    const graph=this.get(id,ctx).value;const to=text(input.to,'收件人',100);if (!graph.tasks.some(t=>t.id===to)&&!(graph.executionStyle==='team'&&to==='parent')) throw new Error('收件任务不存在');
     const message:MemberMessage={id:randomUUID(),graphId:id,from:typeof input.from==='string'?input.from:'coordinator',to,body:text(input.body || input.text,'消息'),createdAt:now()};
     this.store(ctx).put(`message:${id}:${message.id}`,message,null);
-    const attempt=graph.tasks.find(t=>t.id===to)?.currentAttempt;if (attempt) this.deliverPending(id,attempt,ctx);this.changed(ctx);return message;
+    const attempt=graph.tasks.find(t=>t.id===to)?.currentAttempt;if (attempt) this.deliverPending(id,attempt,ctx);if(to==='parent')ctx.emit('team.message',{v:1,runId:graph.runId,message});this.changed(ctx);return message;
   }
   private deliverPending(id:string,attemptId:string,ctx:PluginContext): void {
     const attempt=this.get(id,ctx).value.attempts.find(a=>a.id===attemptId);const member=this.members.get(attemptId);if (!attempt || !member || !attempt.sessionId) return;
@@ -369,6 +478,7 @@ export class SwarmController implements PluginController {
   }
   private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<Omit<Review,'at'>> {
     checkCancelled(this.signal(graph.id,ctx));const id=randomUUID();const resultVersions=Object.fromEntries(graph.tasks.map(task=>[task.id,task.resultRevision]));const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],reviewResult:true,resultVersions,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题",taskIds:["受影响任务ID"]}) 提交不可变结论；拒绝时必须明确受影响任务，不要让无关任务返工；不能归因时taskIds为空，宿主将暂停。说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.requirementVersions?.at(-1)?.prompt||t.prompt,resultRevision:t.resultRevision,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
+    if(graph.audit)start.prompt+=`\n目标控制器提供的审核材料（需要独立核验，不视为模型执行证明）：${JSON.stringify(graph.auditEvidence)}`;
     this.update(graph.id,ctx,g=>{g.reviewAttempts=[...(g.reviewAttempts||[]),{attemptId:id,cwd,status:'running',startedAt:now()}];});
     return new Promise((resolveResult,reject)=>{
       let done=false;let handle:MemberHandle;
@@ -396,8 +506,9 @@ export class SwarmController implements PluginController {
   private async prepareCandidate(id:string,ctx:PluginContext): Promise<void> {
     if (this.disposed) return;checkCancelled(this.signal(id,ctx));
     let graph=this.get(id,ctx).value;
-    if (!graph.tasks.every(t=>t.status==='completed')) throw new Error('所有成果完成后才能整合复核');
+    if (!graph.tasks.every(taskSettled)) throw new Error('所有成果完成后才能整合复核');
     if (graph.status==='integrated' || graph.status==='ready') return;
+    if(graph.executionStyle==='team'&&!graph.tasks.some(task=>task.mode==='write'&&!graph.integratedTaskIds?.includes(task.id))){this.update(id,ctx,g=>{g.status='completed';});this.changed(ctx);return;}
     this.update(id,ctx,g=>{g.status='awaiting_review';});
     let cwd=ctx.projectDir;
     if (graph.baseline && graph.tasks.some(t=>t.mode==='write')) {
@@ -409,7 +520,7 @@ export class SwarmController implements PluginController {
       const visited=new Set<string>();const ordered:Task[]=[];const visit=(t:Task)=>{if (visited.has(t.id)) return;t.dependencies.forEach(dep=>visit(graph.tasks.find(item=>item.id===dep)!));visited.add(t.id);ordered.push(t);};graph.tasks.forEach(visit);
       // Publish integration cwd before merging, so conflicts have a visible retained location.
       this.update(id,ctx,g=>{g.integration={cwd,checks:[]};});this.changed(ctx);
-      for (const task of ordered) {const commit=graph.attempts.find(a=>a.id===task.currentAttempt)?.commit;if (commit) await this.git(id,integration,['-c','user.name=Friend-Pi','-c','user.email=friend-pi@localhost','cherry-pick',commit],ctx);}
+      for (const task of ordered) {const commit=graph.attempts.find(a=>a.id===task.currentAttempt)?.commit;if (commit&&!graph.integratedTaskIds?.includes(task.id)) await this.git(id,integration,['-c','user.name=Friend-Pi','-c','user.email=friend-pi@localhost','cherry-pick',commit],ctx);}
     }
     const checks=graph.baseline && graph.tasks.some(t=>t.mode==='write') ? [{command:'git',args:['diff','--check',graph.baseline.head]},...graph.checks] : graph.checks;
     if (!checks.length && graph.tasks.some(t=>t.mode==='write')) throw new Error('非 Git 写入需要提供客观 checks，成果已保留');
@@ -426,13 +537,24 @@ export class SwarmController implements PluginController {
     if (this.get(id,ctx).value.status!=='awaiting_review') return;
     this.update(id,ctx,g=>{const receipt={...review,at:now()};g.integration!.review=receipt;g.reviews=[...(g.reviews||[]),receipt];g.status=review.approved?'ready':'paused';if (!review.approved) g.error=review.findings;});this.changed(ctx);
     if (!review.approved) {
-      graph=this.get(id,ctx).value;if (graph.reworkRound>=2) {this.update(id,ctx,g=>{g.error=`已达 2 轮自动返工上限：${review.findings}`;});return;}
+      graph=this.get(id,ctx).value;
       if(!review.taskIds?.length){this.update(id,ctx,g=>{g.error=`复核未明确受影响任务；成果保留，等待调整方法：${review.findings}`;});this.changed(ctx);return;}
-      this.applyRework(id,review.taskIds,review.findings,ctx);void this.track(id,this.pump(id,ctx));return;
+      await this.applyRework(id,review.taskIds,review.findings,ctx);void this.track(id,this.pump(id,ctx));return;
     }
-    await this.integrate(id,ctx);
+    if(graph.executionStyle!=='team')await this.integrate(id,ctx);
   }
-  private applyRework(id:string,taskIds:string[],reason:string,ctx:PluginContext,changes?:JsonObject):Graph {
+  private async claimRepair(graph:Graph,taskIds:string[],reason:string,ctx:PluginContext):Promise<void> {
+    const affected=new Set(taskIds);let grew=true;while(grew){grew=false;for(const task of graph.tasks)if(!affected.has(task.id)&&task.dependencies.some(dep=>affected.has(dep))){affected.add(task.id);grew=true;}}
+    const counts=new Map<string,number>();for(const task of graph.tasks)if(affected.has(task.id)){
+      const block=(message:string):never=>{this.update(graph.id,ctx,g=>{for(const item of g.tasks)if(affected.has(item.id))item.status='blocked';g.status='paused';g.error=message;});this.changed(ctx);throw new Error(message);};
+      if(task.rework>=2)block('受影响任务已达 2 轮修复上限，需用户改变目标后再继续');
+      if(ctx.policy){const receipt=object(await ctx.request('runtime','task.repair.claim',{goalId:graph.goalId??ctx.policy.goalId,logicalStepId:task.logicalStepId??`${graph.workflowId||'team'}:${task.id}`,reason},5000));if(receipt.allowed!==true||!Number.isInteger(receipt.count)||Number(receipt.count)>2)block('宿主修复额度已用尽或未授权');counts.set(task.id,Number(receipt.count));}
+      else counts.set(task.id,task.rework+1);
+    }
+    this.update(graph.id,ctx,g=>{for(const task of g.tasks)if(counts.has(task.id))task.rework=Math.max(task.rework,counts.get(task.id)!);});
+  }
+  private async applyRework(id:string,taskIds:string[],reason:string,ctx:PluginContext,changes?:JsonObject,allowUnknown=false):Promise<Graph> {
+    const original=this.get(id,ctx).value;if(currentUnknown(original)&&!allowUnknown)throw new Error('未知副作用不能自动修复');await this.claimRepair(original,taskIds,reason,ctx);
     return this.update(id,ctx,g=>{
       if(taskIds.some(taskId=>!g.tasks.some(task=>task.id===taskId)))throw new Error('返工任务不存在');
       const affected=new Set(taskIds);let grew=true;while(grew){grew=false;for(const task of g.tasks)if(!affected.has(task.id)&&task.dependencies.some(dep=>affected.has(dep))){affected.add(task.id);grew=true;}}
@@ -440,7 +562,7 @@ export class SwarmController implements PluginController {
         task.originalPrompt??=task.prompt;task.requirementVersions??=[{version:1,prompt:task.prompt,at:g.createdAt}];
         const last=task.requirementVersions.at(-1)!;const adjustment=changes?.[task.id];
         task.requirementVersions.push({version:last.version+1,prompt:typeof adjustment==='string'?text(adjustment,'返工要求'):`${last.prompt}\n第 ${g.reworkRound} 轮定向返工：${reason}`,reason,at:now()});
-        task.status='pending';task.currentAttempt=undefined;task.rework++;
+        task.status='pending';task.currentAttempt=undefined;if(g.workflowId)task.workflowHeld=true;
       }g.status='running';g.error=undefined;g.integration=undefined;
     });
   }
@@ -450,8 +572,8 @@ export class SwarmController implements PluginController {
     if(this.execution(id).operations.size||this.execution(id).activities.size)throw new Error('后台尚未到安全边界');
     const taskIds=strings(input.taskIds);if(!taskIds.length)throw new Error('明确选择受影响任务');
     if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();
-    if(graph.attempts.some(attempt=>attempt.status==='unknown')&&input.confirmUnknown!==true)throw new Error('检查未知副作用后需 confirmUnknown:true');
-    this.executions.delete(id);this.applyRework(id,taskIds,text(input.reason,'调整依据'),ctx,input.prompts?object(input.prompts):undefined);this.changed(ctx);void this.track(id,this.pump(id,ctx));return this.get(id,ctx).value;
+    if(currentUnknown(graph)&&input.confirmUnknown!==true)throw new Error('检查未知副作用后需 confirmUnknown:true');
+    this.executions.delete(id);await this.applyRework(id,taskIds,text(input.reason,'调整依据'),ctx,input.prompts?object(input.prompts):undefined,input.confirmUnknown===true);this.changed(ctx);void this.track(id,this.pump(id,ctx));return this.get(id,ctx).value;
   }
   private async integrate(id:string,ctx:PluginContext): Promise<void> {
     const graph=this.get(id,ctx).value;if (graph.status==='integrated') return;
@@ -464,7 +586,7 @@ export class SwarmController implements PluginController {
       if (await this.git(id,graph.integration.cwd,['status','--porcelain'],ctx)) throw new Error('整合工作区在验证后发生未提交变化');
       await this.git(id,graph.baseline.repoRoot,['merge','--ff-only',integrationHead],ctx);this.update(id,ctx,g=>{g.integration!.head=integrationHead;});
     }
-    checkCancelled(this.signal(id,ctx));this.update(id,ctx,g=>{if(g.status!=='ready')throw new CancelledError();g.status='integrated';g.error=undefined;});ctx.appendEntry('friend-pi:swarm-integrated',{graphId:id,integration:graph.integration?.cwd});this.changed(ctx);
+    checkCancelled(this.signal(id,ctx));this.update(id,ctx,g=>{if(g.status!=='ready')throw new CancelledError();g.status='integrated';g.error=undefined;g.integratedTaskIds=g.tasks.filter(task=>task.status==='completed').map(task=>task.id);if(g.baseline&&g.integration?.head)g.baseline={...g.baseline,head:g.integration.head};});ctx.appendEntry('friend-pi:swarm-integrated',{graphId:id,integration:graph.integration?.cwd});this.changed(ctx);
   }
   async dispose(): Promise<void> {
     if(this.disposed)return;
@@ -482,15 +604,39 @@ export class SwarmController implements PluginController {
 
 const extension:ExtensionFactory=pi=>{
   const controller=new SwarmController();
-  pi.on('session_start',(_event,ctx)=>{controller.setConfirmationHandler((title,message)=>ctx.ui.confirm(title,message));});
-  registerPlugin(pi,'swarm',controller,'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
-    actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','send','shared.read','shared.write','shared.readVersion','shared.conflicts'],
-    toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status、update_task 或自行声称成员执行。
+  const workflow=new DynamicWorkflowController(controller);
+  let currentContext:ExtensionContext|undefined,closed=false,pendingAdvance=false,draining:Promise<void>|undefined;
+  const fresh=():PluginContext|undefined=>{if(closed||!currentContext)return;const ctx=makeContext(pi,currentContext,'plugin');return ctx.executionMode||ctx.policy?ctx:{...ctx,executionMode:'swarm'};};
+  const scheduleAdvance=()=>{
+    if(closed||!currentContext)return;pendingAdvance=true;if(draining)return;
+    draining=Promise.resolve().then(async()=>{while(pendingAdvance&&!closed){pendingAdvance=false;const ctx=fresh();if(!ctx||ctx.executionMode!=='swarm'||ctx.policy?.planMode)continue;try{await workflow.advance(ctx);}catch(error){if(!closed)ctx.notify(`流程推进暂停：${errorText(error)}`,'warning');}}}).finally(()=>{draining=undefined;if(pendingAdvance&&!closed)scheduleAdvance();});
+  };
+  pi.on('session_start',(_event,ctx)=>{currentContext=ctx;controller.setConfirmationHandler((title,message)=>ctx.ui.confirm(title,message));});
+  pi.on('before_agent_start',(_event,ctx)=>{currentContext=ctx;});
+  const offWorkflowEvents=pi.events.on('friend-pi:v1:event',raw=>{if(closed||!raw||typeof raw!=='object')return;const event=object(raw);if(!currentContext||event.sessionId!==currentContext.sessionManager.getSessionId())return;const data=event.data&&typeof event.data==='object'?object(event.data):{};if(event.pluginEvent==='swarm.changed'||event.pluginEvent==='swarm.process'&&data.action==='closed')scheduleAdvance();});
+  pi.on('session_shutdown',()=>{closed=true;pendingAdvance=false;currentContext=undefined;offWorkflowEvents();});
+  registerPlugin(pi,'swarm',{snapshot:ctx=>controller.snapshot(ctx),dispatch:(action,input,ctx)=>controller.dispatch(action,input,ctx),dispose:async()=>{await draining;await workflow.dispose();await controller.dispose();}},'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
+    actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts'],
+    toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status 或自行声称成员执行。
 1. create 的 input={goal,tasks:[{id,title,prompt,dependencies:[],mode:"read"|"write",writeScopes:["."]}],maxWorkers?,checks?:[{command,args:[]}]}。必须明确每个任务的 mode；只读分析任务用 mode:"read"，不能省略后变成写入。需要自动规划且不提供 tasks 时明确传 automatic:true。返回 Graph.id 是完整 UUID，created 只代表计划保存，不代表成员已执行。
 2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
 3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图启动异步复核，立即返回保留的状态，再用 snapshot 查询；重复 prepare 不会同时开启复核。integrate 仅对已通过检查/复核的 ready 图整合。
 4. configure input={graphId,maxWorkers:1..16}，只在空闲修改并发。send input={graphId,to:"任务 id",body:"消息"}。shared.read input={graphId,name}；shared.write input={graphId,name,content,expectedRevision}，新材料 expectedRevision:0，更新使用读取到的 revision。
 5. 只有 snapshot 返回的目标 graphs[].status === "integrated" 才可报告 Swarm 完成；pending/running/awaiting_review/created/paused/stopped 均不是完成。遇到错误报告真实状态，不编造两名成员、自检或验收。原项目有未提交改动时，不 stash/reset/clean；写入阻塞应保留改动，只读任务仍可用。`,
+  });
+  registerPlugin(pi,'team',{
+    snapshot:ctx=>{const snapshot=controller.snapshot(ctx) as {graphs:Graph[]};return {...snapshot,graphs:snapshot.graphs.filter(graph=>graph.executionStyle==='team')};},
+    dispatch:(action,input,ctx)=>controller.dispatch(`team.${action}`,input,ctx),
+  },'Team：主代理委派与成果判断',{
+    actionEnum:['delegate','list','result','send','stop','prepare','integrate'],
+    toolDescription:'Team 主代理委派工具，格式 {action,input}。delegate input={prompt,title?,mode:"read"|"write",taskId?,dependencies?:[],writeScopes?:[],modelId?,thinkingLevel?,checks?}，或 tasks:[完整任务]；默认只读、模型继承。每轮共用一个可追加的任务组。list/result 查询实际结果；send input={to:任务ID,body}；stop 停止本轮成员。只读成果返回主代理判断；写入必须通过检查与独立复核达到 ready，再由主代理明确 integrate。Single/计划模式不可启动；子代理只能与主代理通信，不递归派生。',
+  });
+  registerPlugin(pi,'workflow',{
+    snapshot:ctx=>workflow.snapshot(ctx),
+    dispatch:async(action,input,ctx)=>{const native=ctx.executionMode||ctx.policy?ctx:{...ctx,executionMode:'swarm' as const};const result=await workflow.dispatch(action,input,native);if(['create','start','resume','revise'].includes(action))scheduleAdvance();return result;},
+  },'Workflow：Swarm 结构化动态流程',{
+    actionEnum:['create','start','snapshot','list','status','pause','stop','resume','append','revise','template.save','template.list','template.read'],
+    toolDescription:'仅 Swarm 执行的有界结构化流程，格式 {action,input}。create input={definition:{v:1,title,goal,nodes:[{id,title,prompt,mode:"read"|"write",dependencies:[],writeScopes:[],modelId?,thinkingLevel?,when?,retryWhen?,maxRetries?:0|1|2,codePaths?:[]}],maxWorkers?:1..16,parameters?}}，或 {templateId}；自然语言生成计划再存此结构，不执行任意脚本。start/status/resume/pause/stop/revise使用完整workflowId；append input={workflowId,nodes:[新增节点]}。串并行、条件和有限修复由同一Swarm任务图自动推进；节点累计最多64，恢复只复用仍有效成果；未知副作用不得自动重放。写入通过客观检查和独立复核后整合。template.save input={templateId,definition} 保存不可变模板版本。',
   });
 };
 export default extension;

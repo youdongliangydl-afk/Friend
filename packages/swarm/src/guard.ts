@@ -19,10 +19,19 @@ export function destructiveCommand(command: string): boolean {
 export function guardMember(start: MemberStart, confirm: (title:string,message:string)=>Promise<boolean>): ExtensionFactory {
   return pi => {
     pi.on('tool_call',async event => {
+      if(event.toolName==='swarm_review_result'&&start.reviewResult)return;
       const input = event.input as Record<string,unknown>;
       const expert=start.expert && typeof start.expert==='object' ? start.expert as Record<string,unknown> : undefined;
-      if (Array.isArray(expert?.toolScope) && !['swarm_message','swarm_shared','friend_expert'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
-      if (/friend_swarm|subagent|spawn_agent/i.test(event.toolName)) return {block:true,reason:'Swarm 成员不能递归派生'};
+      const role=expert?.role&&typeof expert.role==='object'?expert.role as Record<string,unknown>:undefined;
+      if(role&&!['swarm_message','team_message'].includes(event.toolName)){
+        if(!Array.isArray(role.effectiveTools)||!role.effectiveTools.includes(event.toolName))return {block:true,reason:'工具不在已冻结的角色合同'};
+        if(['write','edit'].includes(event.toolName)&&(!Array.isArray(role.effectiveWriteScopes)||!role.effectiveWriteScopes.some(scope=>typeof scope==='string'&&contains(resolve(start.cwd,scope),resolve(start.cwd,String(input.path||'.'))))))return {block:true,reason:'写入超出角色与父任务范围'};
+        if(event.toolName==='bash'&&(!Array.isArray(role.effectiveWriteScopes)||!role.effectiveWriteScopes.includes('.')))return {block:true,reason:'窄角色写入范围不能开放 Bash'};
+      }
+      if(start.parentTools&&!['swarm_message','team_message','friend_expert'].includes(event.toolName)&&!start.parentTools.includes(event.toolName))return {block:true,reason:'工具超出父任务权限'};
+      if(start.executionStyle==='team'&&(event.toolName==='swarm_shared'||event.toolName==='swarm_message'&&input.to!=='parent'))return {block:true,reason:'Team 成员只能与主 Agent 通信'};
+      if (Array.isArray(expert?.toolScope) && !['swarm_message','team_message','swarm_shared','friend_expert'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
+      if (/friend_swarm|friend_team|subagent|spawn_agent/i.test(event.toolName)) return {block:true,reason:'协作成员不能递归派生'};
       if (['read','write','edit','find','grep','ls'].includes(event.toolName)) {
         const target = resolve(start.cwd,String(input.path || input.cwd || '.'));
         if (!contains(start.cwd,target)) return {block:true,reason:'路径超出成员工作区'};
@@ -34,6 +43,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       if (event.toolName === 'bash') {
         const command = String(input.command || '');
         if (start.mode === 'read') return {block:true,reason:'只读成员使用 read/grep/find/ls；Bash 可以产生未知写入，因此未开放'};
+        if(start.parentTools&&!start.writeScopes.includes('.'))return {block:true,reason:'窄父任务写入范围不能开放 Bash'};
         // Shell commands are not statically sandboxable. Protect obvious escapes and destructive actions;
         // worktree + this guard are cooperation boundaries, never an OS security claim.
         if (/\bcd\s+(?:\/|\.\.)|\bgit\s+(?:-C\s+|worktree\b)|\b(?:write|edit)\s+\//.test(command)) return {block:true,reason:'命令试图切换到成员工作区外或改动隔离管理'};

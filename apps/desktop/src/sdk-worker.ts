@@ -3,8 +3,9 @@ import { mkdirSync,existsSync,readFileSync,realpathSync,openSync,closeSync } fro
 import { join,resolve,relative,extname } from 'node:path';
 import { createAgentSession,DefaultResourceLoader,SessionManager,SettingsManager,ModelRuntime,createEventBus,initTheme,type AgentSession,type ExtensionUIContext,type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted } from '@friend-pi/core';
+import { dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy } from '@friend-pi/core';
 import {Type} from 'typebox';
+import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
 import {projectMessages} from './message-projection.js';
 import type { ImageContent } from '@earendil-works/pi-ai';
@@ -19,10 +20,14 @@ const agentDir=join(dataDir,'pi');mkdirSync(agentDir,{recursive:true,mode:0o700}
 process.env.FRIEND_PI_AGENT_DIR=agentDir;
 const plugins=['swarm','expert','memory','topic-rebuild'];
 let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGINS) as string[]:plugins;
-let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode:'single'|'swarm'=process.env.FRIEND_PI_MODE==='swarm'?'swarm':'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
+let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let executionMode:ExecutionMode=['team','swarm'].includes(process.env.FRIEND_PI_MODE||'')?process.env.FRIEND_PI_MODE as ExecutionMode:'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>}>();
-const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;
-interface PendingInput {id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;nativeMessage?:unknown;runId?:string}
+const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
+const services=new RuntimeController(dataDir,{publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed)publish('state',current());},busy:()=>swarmBusy(),mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:async frame=>{await new Promise<void>(done=>setImmediate(done));if(stopping||disposed||frame.generation!==services.generation()||frame.goalId&&services.currentGoal()?.status!=='active'&&services.currentGoal()?.status!=='waiting')return;await ensureModelReady();const input:PendingInput={id:randomUUID(),text:frame.message,combinedLength:frame.message.length,combinedHash:digest(frame.message),imageHash:imageIdentity([]),expectsStart:true,automatic:true,runId};pendingInputs.push(input);session.sessionManager.appendCustomEntry('friend-pi.runtime-wake',{v:1,eventId:frame.id,generation:frame.generation,goalId:frame.goalId});try{await session.prompt(frame.message,{expandPromptTemplates:false});}finally{const position=pendingInputs.indexOf(input);if(position>=0)pendingInputs.splice(position,1);}},prepareWake:async frame=>{if(disposed||stopping)throw new Error('执行已停止');if(!runId){runId=frame.runId||randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();}foregroundOpen=true;cancelRequested=false;lifecycleStatus='running';policyRevision++;await applyAssignedRole();await ensureModelReady();}});
+function runtimeState(){try{return services.snapshot();}catch{return undefined;}}
+function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runId);}catch{return false;}}
+async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
+interface PendingInput {id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;automatic?:boolean;nativeMessage?:unknown;runId?:string}
 const pendingInputs:PendingInput[]=[];let startedInputId:string|undefined;let stopping=false;
 function imageIdentity(images:readonly unknown[]){return digest(JSON.stringify(images.map(raw=>{const image=object(raw);return [image.mimeType,image.data];})));}
 function output(message:unknown){if(process.connected)process.send?.(message);}
@@ -32,9 +37,9 @@ function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout
 }
 const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']);
 const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
-function swarmBusy(){return swarmRunning||pendingSwarmGraphIds.size>0;}
+function swarmBusy(){return swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0;}
 let missingModelId:string|undefined;
-function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||stopping,planMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
+function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,planMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=executionMode==='swarm'&&!planMode&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
@@ -45,7 +50,7 @@ function swarmAuthority():{status:string;message?:string}|undefined {
   if(graphs.some(graph=>graph!.status==='failed'))return {status:'failed',message:'Swarm 本轮存在失败任务图；成果尚未全部整合，请查看任务图。'};
   if(graphs.some(graph=>graph!.status==='paused'))return {status:graphs.some(graph=>Array.isArray(graph!.tasks)&&graph!.tasks.some(task=>object(task).status==='unknown'))?'interrupted':'paused',message:'Swarm 本轮任务图已暂停；请检查保留成果和工具副作用后显式接续。'};
   if(graphs.some(graph=>graph!.status==='stopped'))return {status:'stopped'};
-  if(graphs.every(graph=>graph!.status==='integrated'))return {status:'completed'};
+  if(graphs.every(graph=>graph!.status==='integrated'||graph!.executionStyle==='team'&&graph!.status==='completed'))return {status:'completed'};
   return {status:'failed',message:'Swarm 本轮任务图尚未启动或完成整合，不能认定协作已完成。请查看任务图并显式启动或接续。'};
 }
 function publishAuthorityNotice(authority=swarmAuthority()){
@@ -56,25 +61,28 @@ function publishAuthorityNotice(authority=swarmAuthority()){
 }
 function settledStatus(){
   const last=[...session.messages].reverse().find(message=>message.role==='assistant');
-  const authority=swarmAuthority();if(cancelRequested)return authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return authority?.status|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
+  const authority=swarmAuthority();if(!cancelRequested&&runId&&roleDeliveryErrors.has(runId))return 'failed';if(finiteJobs()&&!cancelRequested)return 'running';if(cancelRequested)return authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return authority?.status|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
 }
+async function ensureModelReady(){if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');}
 async function modelState(){return process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?await configuredModelMetadata(runtime,dataDir):providerMetadata(runtime);}
 function selectedModel(id:string){const slash=id.indexOf('/');const model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(slash<1||!model)throw new Error('型号不可用，请重新选择');return model;}
 const terminalRequests=new Map<string,{resolve(value:unknown):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}>();
 function terminalRequest(method:string,input:Record<string,unknown>){const id=randomUUID();return new Promise<unknown>((resolve,reject)=>{const timer=setTimeout(()=>{terminalRequests.delete(id);reject(new Error('终端操作超时，未自动重放'));},20000);terminalRequests.set(id,{resolve,reject,timer});output({type:'terminal.request',id,method,input,planMode});});}
 function guard():ExtensionFactory{return pi=>{
   pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+  const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,executionStopped:stopping||cancelRequested,modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};(request.reply as (value:HostPolicy)=>void)(policy);});
+  pi.on('session_shutdown',()=>offPolicy());
   pi.registerTool({name:'friend_plan',label:'提交计划',description:'只读规划完成后提交可供用户批准的计划；模型不能批准或启动。',parameters:Type.Object({action:Type.Union([Type.Literal('submit'),Type.Literal('read')]),body:Type.Optional(Type.String())}),async execute(_id,input){const result=input.action==='read'?plans.current():plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});publish('state',current());return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.on('before_agent_start',event=>{
     // Public Pi input hooks identify the submitted prompt before Pi appends image
     // normalization hints. Bind its next new native user object, never an old
     // history entry or another input with the same empty text.
     startedInputId=pendingInputs.find(input=>input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(event.prompt)&&input.imageHash===imageIdentity(event.images||[]))?.id;
-    const instructions=planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
+    const instructions=planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
     return instructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}`}:undefined;
   });
   pi.on('tool_call',async(event,ctx)=>{
-    const input=object(event.input);
+    const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
     if(planMode){
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
       if(!['read','ls','find','grep'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
@@ -106,7 +114,7 @@ async function initialize(){
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
   guardDesktopModelRequests(runtime,dataDir);
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard()]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard(),services.extension(),services.jobs.extension()]});
   await loader.reload({resolveProjectTrust:async()=>true});
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
   if(priorFile){if(!existsSync(priorFile))throw new Error('原始会话历史缺失，未创建替代历史');const raw=readFileSync(priorFile,'utf8');if(!raw.trim())throw new Error('原始历史为空，不能恢复');const entries=raw.trim().split('\n').map(line=>JSON.parse(line));if(entries[0]?.type!=='session'||typeof entries[0].id!=='string')throw new Error('原始历史头部无效，未创建替代历史');const known=new Set<string>();for(const entry of entries.slice(1)){if(!entry||typeof entry.type!=='string'||typeof entry.id!=='string'||!entry.id||known.has(entry.id)||typeof entry.timestamp!=='string'||!Number.isFinite(Date.parse(entry.timestamp))||entry.parentId!==null&&(typeof entry.parentId!=='string'||!known.has(entry.parentId))||entry.type==='message'&&(!entry.message||typeof entry.message.role!=='string'))throw new Error('原始历史条目损坏，索引保留，未创建替代历史');known.add(entry.id);}}
@@ -125,7 +133,11 @@ async function initialize(){
   session.subscribe(event=>{
     if(event.type==='message_start'&&event.message.role==='assistant')liveStreamId="stream-"+session.sessionId+"-"+(++liveSequence);
     if(['message_start','message_update','message_end'].includes(event.type))publish('stream',{streamId:liveStreamId,event});
+    if(event.type==='message_start'&&event.message.role==='assistant')modelInFlight=true;if(event.type==='message_end'&&event.message.role==='assistant'||event.type==='agent_settled')modelInFlight=false;
     publish('pi',event);
+    if(event.type==='tool_execution_start'){if(event.toolName==='friend_expert'&&/^role\.(snapshot|read|versions|assign|switch)$/.test(String(object(event.args).action)))neutralToolIds.add(event.toolCallId);else policyRevision++;services.beginTool(event.toolCallId,event.toolName,event.args);}
+    if(event.type==='tool_execution_end'){if(!neutralToolIds.delete(event.toolCallId))policyRevision++;services.endTool(event.toolCallId);}
+    if(event.type==='message_end'&&event.message.role==='assistant'){const usage=event.message.usage;services.account(usage?usage.totalTokens:undefined,`main:${event.message.timestamp}:${digest(event.message.content)}`);if(services.currentGoal()?.status==='paused'&&services.currentGoal()?.error?.includes('令牌'))void session.abort();}
     if(event.type==='message_start'&&event.message.role==='user'){
       const nativeMessage=event.message;const nativeText=visibleText(nativeMessage.content);
       const started=pendingInputs.find(input=>input.id===startedInputId);startedInputId=undefined;
@@ -134,15 +146,16 @@ async function initialize(){
       const input=started||pendingInputs.find(input=>!input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(nativeText)&&input.imageHash===imageIdentity(typeof nativeMessage.content==='string'?[]:nativeMessage.content.filter(part=>part.type==='image')));
       if(input&&digest(nativeText.slice(0,input.combinedLength))===input.combinedHash)input.nativeMessage=nativeMessage;
     }
-    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry('friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});pendingInputs.splice(position,1);publish('state',current());});}
+    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry(input.automatic?'friend-pi.runtime-wake.input':'friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId});pendingInputs.splice(position,1);publish('state',current());});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=swarmBusy();
       if(planMode){const last=[...session.messages].reverse().find(m=>m.role==='assistant');const body=last?visibleText(last.content):'';if(body&&(!plans.current()||Date.parse(plans.current()!.createdAt)<runStartedAt))plans.submit(body,{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});}
+      services.settled(lifecycleStatus);
       if(swarmAuthority()?.message)publishAuthorityNotice();
       else if(lifecycleStatus==='failed'){
         const last=[...session.messages].reverse().find(message=>message.role==='assistant');
-        publish('notice',{level:'error',message:publicError(last?.errorMessage||'模型执行未完成')});
+        publish('notice',{level:'error',message:publicError(roleDeliveryErrors.get(runId||'')||last?.errorMessage||'模型执行未完成')});
       }
     }
     if(event.type==='compaction_start'&&event.reason==='manual'){
@@ -160,17 +173,22 @@ async function initialize(){
     publish('plugin',raw);
     if(!raw||typeof raw!=='object')return;
     const event=object(raw);
+    if(event.pluginEvent==='expert.role.delivery'){const data=object(event.data);if(data.approved===false&&typeof data.runId==='string'){roleDeliveryErrors.set(data.runId,String(data.error||'角色交付合同未通过'));services.goals.deliveryFailure(services.context(),data,services.generation());}else if(typeof data.runId==='string')roleDeliveryErrors.delete(data.runId);return;}
+    if(event.pluginEvent==='swarm.member-event'){const data=object(event.data),native=object(data.event);if(native.type==='message_end'){const message=object(native.message),graph=swarmGraphs.get(String(data.graphId)),goal=services.currentGoal();if(message.role==='assistant'&&goal&&(graph?.goalId===goal.id||graph?.runId===goal.sourceRunId)){const usage=message.usage?object(message.usage):undefined;services.account(typeof usage?.totalTokens==='number'?usage.totalTokens:undefined,`member:${data.attemptId}:${message.timestamp}:${digest(message.content)}`);}}return;}
+    if(event.pluginEvent==='team.result'){services.teamResult(object(event.data));return;}
+    if(event.pluginEvent==='workflow.changed'){const data=object(event.data);workflowStatuses.set(String(data.workflowId),String(data.status));workflowRunning=[...workflowStatuses.values()].some(status=>['running','waiting_review'].includes(status));publish('state',current());return;}
+    if(event.pluginEvent==='swarm.process'&&object(event.data).action==='closed'){void services.drain();return;}
     if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
-    const snapshot=object(event.data);
+    const snapshot=object(event.data);services.observeSwarm(snapshot);
     const graphs=Array.isArray(snapshot.graphs)?snapshot.graphs.map(object):[];
     for(const graph of graphs){
-      const id=String(graph.id);swarmGraphs.set(id,graph);
+      const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit===true)continue;
       // A snapshot is not evidence of execution. Relate new graphs to the open
       // foreground run, and old graphs only to an actual execution transition.
       if(foregroundOpen&&!baselineGraphIds.has(id)&&Date.parse(String(graph.createdAt))>=runStartedAt)runGraphIds.add(id);
       if(busyGraphStatuses.has(String(graph.status))&&(activeGraphIds.has(id)||pendingSwarmGraphIds.has(id)||foregroundOpen&&Date.parse(String(graph.updatedAt))>=runStartedAt))activeGraphIds.add(id);
     }
-    swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));
+    auditRunning=graphs.some(graph=>graph.audit===true&&busyGraphStatuses.has(String(graph.status)));swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));
     if(!disposed){
       const authority=swarmAuthority();
       if(swarmBusy())lifecycleStatus=authority?.status||'running';
@@ -178,7 +196,8 @@ async function initialize(){
     }
     publish('state',current());
   });
-  await bind();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
+  await bind();const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}if(restoredGoal&&runId){for(const [id,graph] of swarmGraphs)if(graph.audit!==true&&graph.runId===runId&&(graph.goalId===undefined||graph.goalId===restoredGoal.id))runGraphIds.add(id);}
+  await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 function readAttachment(path:string):{text?:string;image?:ImageContent}{
   const absolute=realpathSync(path);const bytes=readFileSync(absolute);if(bytes.length>10*1024*1024)throw new Error('附件超过 10 MiB，请缩小后再发送');
@@ -196,9 +215,10 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');
     if(method==='plan.approve'&&missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
     if(method==='plan.approve'&&process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');
+    if(method==='plan.approve'){await applyAssignedRole(true);await ensureModelReady();}
     const plan=plans.decide(method==='plan.approve'?'approve':'reject',input,{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});session.sessionManager.appendCustomEntry('friend-pi.plan.decision',{plan,origin:'user'});
     if(method==='plan.reject'){planMode=false;publish('state',current());return current();}
-    return await handle('send',{text:`执行用户已批准的计划 ${plan.id} v${plan.revision}，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
+    return await handle('send',{text:`执行用户已批准的计划，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
   }
   if(method==='send'){
     if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
@@ -207,31 +227,38 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const prompt=typeof input.text==='string'?input.text:'';const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];if(prompt.trim()||!attachments.length)text(input.text,'消息');else if(input.text!==undefined&&typeof input.text!=='string')throw new Error('消息需要文本');
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
-    const mode=input.mode==='swarm'?'swarm':'single';if(mode==='swarm'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
+    const mode:ExecutionMode=['team','swarm'].includes(String(input.mode))?input.mode as ExecutionMode:'single';if(mode!=='single'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
+    const goal=services.currentGoal();if(goal&&['active','waiting','verifying'].includes(goal.status)&&mode!==goal.mode)throw new Error('先暂停目标，再切换执行模式');
     const nextPlan=input.planMode===true;
     if((!session.isIdle||swarmBusy())&&(nextPlan!==planMode||mode!==executionMode))throw new Error('请先停止当前执行，再切换计划或协作方式');
-    if(session.isIdle&&!swarmBusy()){
+    if(session.isIdle&&!swarmBusy()){await applyAssignedRole(true);await ensureModelReady();
       // Capture IDs before opening the run, so historical/manual unstarted graphs
       // cannot satisfy (or invalidate) this run's completion authority.
       const snapshot=enabled.includes('swarm')?object(await requestPlugin(bus,'swarm','snapshot',{},1000)):{};
       baselineGraphIds.clear();for(const graph of Array.isArray(snapshot.graphs)?snapshot.graphs:[])baselineGraphIds.add(String(object(graph).id));
-      planMode=nextPlan;executionMode=mode;runId=typeof input.runId==='string'?input.runId:randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;
+      planMode=nextPlan;executionMode=mode;policyRevision++;runId=typeof input.runId==='string'?input.runId:randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;
       activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;authorityNotice='';
     }
-    lifecycleStatus='running';
+    await applyAssignedRole();await ensureModelReady();lifecycleStatus='running';
     const images=attachments.flatMap(item=>item.image?[item.image]:[]);
     const inputRecord:PendingInput={id:randomUUID(),text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
     void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);foregroundOpen=swarmBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
+  if(method==='runtime'){const action=text(input.action);if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;policyRevision++;}const result=await services.dispatch(action,object(input.input||{}),services.context('user'));if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
+  if(method==='workflow.generate'){if(executionMode!=='swarm'||planMode||!session.isIdle)throw new Error('请在闲置 Swarm 执行模式生成工作流');await ensureModelReady();const result=await services.context('user').complete('只返回JSON，结构为 {v:1,title,goal,maxWorkers:4,nodes:[{id,title,prompt,dependencies:[],mode:"read"或"write",writeScopes:[最窄实际目录]}]}; 写入节点writeScopes非空，读取节点可省略。至多64节点，无脚本，条件用结构化谓词。目标：'+text(input.prompt),{maxTokens:6000});const body=result.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');return requestPlugin(bus,'workflow','create',{definition:object(JSON.parse(body))},1000,'user');}
   if(method==='stop'){
+    cancelRequested=true;stopping=true;lifecycleStatus='stopping';publish('state',current());try{const foregroundStop=session.abort();const runtimeStop=input.keepGoalState===true?Promise.resolve():services.stop();
+    if(enabled.includes('swarm')){const workflows=object(await requestPlugin(bus,'workflow','snapshot',{},1000,'user'));for(const flow of Array.isArray(workflows.workflows)?workflows.workflows.map(object):[])if(['running','waiting_review'].includes(String(flow.status)))await requestPlugin(bus,'workflow','stop',{workflowId:flow.id},20000,'user');}
     if(!session.isIdle||swarmBusy()){cancelRequested=true;stopping=true;lifecycleStatus='stopping';publish('state',current());}
+    await runtimeStop;
     for(const [id,pending] of dialogs){clearTimeout(pending.timer);pending.resolve(undefined);publish('dialog.closed',{id});}dialogs.clear();
-    try{if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id)))&&busyGraphStatuses.has(String(graph.status)))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},20000,'user');}}
-    statusBeforeCompaction=undefined;session.abortCompaction();await session.abort();const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';}finally{pendingInputs.length=0;stopping=false;publish('state',current());}return current();
+    if(enabled.includes('swarm')){const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if((activeGraphIds.has(String(graph.id))||pendingSwarmGraphIds.has(String(graph.id))||graph.audit===true||graph.runId===runId)&&(busyGraphStatuses.has(String(graph.status))||[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].some(raw=>['running','unknown'].includes(String(object(raw).status)))))await requestPlugin(bus,'swarm','stop',{graphId:graph.id},20000,'user');}}
+    statusBeforeCompaction=undefined;session.abortCompaction();await foregroundStop;const authority=swarmAuthority();lifecycleStatus=authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';}catch(error){lifecycleStatus='interrupted';throw error;}finally{pendingInputs.length=0;stopping=false;publish('state',current());}return current();
   }
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
+    if(input.executionMode!==undefined){const goal=services.currentGoal();if(goal&&['active','waiting','verifying'].includes(goal.status)&&input.executionMode!==goal.mode)throw new Error('先暂停目标，再切换执行模式');if(!['single','team','swarm'].includes(String(input.executionMode)))throw new Error('协作方式无效');if(input.executionMode!=='single'&&!enabled.includes('swarm'))throw new Error('协作需要启用Swarm插件');executionMode=input.executionMode as ExecutionMode;policyRevision++;}
     const nextModel=typeof input.modelId==='string'&&input.modelId?selectedModel(input.modelId):session.model;const supported=providerMetadata(runtime).models.find(model=>model.id===(nextModel?`${nextModel.provider}/${nextModel.id}`:''))?.thinkingLevels||['off'];if(input.thinkingLevel&&!supported.includes(String(input.thinkingLevel)))throw new Error('当前模型不支持此思考等级');if(input.plugins!==undefined&&(!Array.isArray(input.plugins)||input.plugins.some(name=>!plugins.includes(String(name)))))throw new Error('插件无效');const nextPlugins=Array.isArray(input.plugins)?input.plugins.map(String):enabled;if(input.contextMode&&!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(input.contextMode==='infinite'&&!nextPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
     if(input.modelId){await session.setModel(selectedModel(text(input.modelId)));missingModelId=undefined;delete process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE;}
     if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!session.getAvailableThinkingLevels().includes(level as ThinkingLevel))throw new Error('当前模型不支持此思考等级');session.setThinkingLevel(level as ThinkingLevel);}
@@ -243,10 +270,11 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     return current();
   }
   if(method==='plugin'){
-    const plugin=text(input.plugin);if(!enabled.includes(plugin))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','review','integrate','rework','validate','validation.run','generate','reflect','learn'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});
-    const graphId=plugin==='swarm'&&swarmExecutionActions.has(action)&&typeof args.graphId==='string'?args.graphId:undefined;
+    const plugin=text(input.plugin);if(!enabled.includes(plugin)&&!(['team','workflow'].includes(plugin)&&enabled.includes('swarm')))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','delegate','review','integrate','rework','validate','validation.run','generate','reflect','learn'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});
+    if(!runId&&['team','workflow','swarm'].includes(plugin)&&['delegate','start','resume'].includes(action)){await applyAssignedRole(true);await ensureModelReady();runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;cancelRequested=false;policyRevision++;}
+    const graphId=['swarm','team'].includes(plugin)&&swarmExecutionActions.has(action)&&typeof args.graphId==='string'?args.graphId:undefined;
     if(graphId)pendingSwarmGraphIds.add(graphId);
-    try{return await requestPlugin(bus,plugin,action,args,120000,'user');}
+    try{if(stopping&&!['stop','snapshot','list','read','status','result','logs'].includes(action))throw new Error('正在停止，不能开始新操作');const result=await requestPlugin(bus,plugin,action,args,120000,'user');if(result&&typeof result==='object'&&'id' in result&&['team','workflow','swarm'].includes(plugin)&&['start','resume','delegate'].includes(action)){const id=String((result as {id:unknown}).id);if(plugin!=='workflow')activeGraphIds.add(id);swarmRunning=[...activeGraphIds].some(key=>busyGraphStatuses.has(String(swarmGraphs.get(key)?.status)));publish('state',current());}return result;}
     finally{if(graphId){pendingSwarmGraphIds.delete(graphId);swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));if(!session.isStreaming&&activeGraphIds.has(graphId)){lifecycleStatus=settledStatus();publishAuthorityNotice();}publish('state',current());}}
   }
   if(method==='dialog.respond'){
@@ -255,7 +283,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='provider.save'||method==='provider.refresh'){
     if(!session.isIdle||swarmBusy())throw new Error('请先停止当前执行，再修改供应商配置');
     const provider=method==='provider.save'?await saveProviderConfiguration(runtime,dataDir,input):typeof input.provider==='string'?input.provider:undefined;await runtime.refresh({allowNetwork:false});
-    if(method==='provider.save'&&provider){const available=await runtime.getAvailable(provider);if(available[0])await session.setModel(available[0]);}else if(session.model){const latest=runtime.getModel(session.model.provider,session.model.id);if(latest)await session.setModel(latest);}
+    if(method==='provider.save'&&process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'){await session.setModel(selectedModel(String(provider)+'/'+text(input.modelId)));}else if(session.model){const latest=runtime.getModel(session.model.provider,session.model.id);if(latest)await session.setModel(latest);}
     return {...current(),...await modelState()};
   }
   if(method==='rename'){session.setSessionName(text(input.name,'名称',200));return current();}
@@ -263,7 +291,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   throw new Error(`未知操作：${method}`);
 }
 function publicError(error:unknown):string{return (error instanceof Error?error.message:String(error)).replace(/sk-[A-Za-z0-9_-]{8,}/g,'[密钥已隐藏]');}
-async function shutdown(){if(disposed)return;for(const pending of terminalRequests.values()){clearTimeout(pending.timer);pending.reject(new Error('终端请求已中断，未自动重放'));}terminalRequests.clear();if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();bus.clear();}
+async function shutdown(){if(disposed)return;if(session)services.beforeQuit();for(const pending of terminalRequests.values()){clearTimeout(pending.timer);pending.reject(new Error('终端请求已中断，未自动重放'));}terminalRequests.clear();if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();services.dispose();businessStore.close();bus.clear();}
 process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type==='terminal.response'){const pending=terminalRequests.get(String(request.id));if(pending){clearTimeout(pending.timer);terminalRequests.delete(String(request.id));request.error?pending.reject(new Error(String(request.error))):pending.resolve(request.result);}return;}if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result});if(request.method==='shutdown')setImmediate(()=>process.disconnect?.());}).catch(error=>output({type:'response',id:request.id,error:publicError(error)}));});
 process.on('disconnect',()=>{void shutdown();});
 void initialize().catch(error=>{output({type:'fatal',error:publicError(error)});process.exitCode=1;setImmediate(()=>process.disconnect?.());});

@@ -1,0 +1,46 @@
+{
+  "name": "pi-background-tasks",
+  "version": "2.6.9",
+  "license": "ISC",
+  "repository": {
+    "url": "git+https://github.com/ismailsaleekh/pi-background-tasks.git",
+    "type": "git"
+  },
+  "peerDependencies": {
+    "typebox": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "^0.81.1 || ^0.82.1 || ^0.83.0 || ^0.84.0",
+    "@earendil-works/pi-coding-agent": "^0.81.1 || ^0.82.1 || ^0.83.0 || ^0.84.0"
+  },
+  "dependencies": {
+    "turndown": "7.2.4"
+  },
+  "pi": {
+    "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
+    "extensions": [
+      "./dist/extensions/anthropic-attribution.js",
+      "./dist/extensions/background-tasks.js"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dist": {
+    "shasum": "4b6f9ad6cd5fb03cc16460b465f73ad60d72975e",
+    "tarball": "https://registry.npmjs.org/pi-background-tasks/-/pi-background-tasks-2.6.9.tgz",
+    "fileCount": 236,
+    "integrity": "sha512-5dma6xvO7jeAimRaCNCzfe5y+b4bVBYPxnJ/0RnGS+mj6B6SzgA4FcORKuAtZaoGvC29dlyof3NtX7/QD4Ywew==",
+    "signatures": [
+      {
+        "sig": "MEUCIQDbDhJjIgUDKoE2TqDKbwfwvWB/Fa5XUsimr8q+hxGargIgdngc96RjP+n9eGKdabZoiDUJDqM6ZTeD9wZsQlUQY8I=",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEUCIQCBd/HEC1d6oMUGPfRKvlnY6imsLYkwWIRJZVzx59lJxgIgLmIub0TWVkGeeHoLeKzj0NXBVW1MTrayWB4sQ9HYwMw=",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "unpackedSize": 5887410
+  },
+  "archiveSha256": "84cb5dd2b159c77fae02647ebb60f74d184a1f012f30463cb24c8ceff5fd2fee"
+}
