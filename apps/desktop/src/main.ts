@@ -114,7 +114,7 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   },45000);
   child.on('message',raw=>{
     if(!raw||typeof raw!=='object')return;const message=object(raw);
-    if(message.type==='supervisor.await'){if(supervisedReady&&child.connected)child.send({type:'supervisor.ready'});return;}
+    if(message.type==='supervisor.await'){if(supervisedReady&&child.connected&&!shuttingDown&&!storeClosed&&worker.phase==='starting'&&workers.get(record.id)===worker&&!store.get(`deleting:${record.id}`))child.send({type:'supervisor.ready'});else{retireWorker(worker,new Error('启动授权已失效，未恢复会话'),true);void terminateWorker(worker).catch(()=>{});}return;}
     if(message.type==='event'){const event=object(message.event),plugin=object(event.data);if(event.type==='plugin'&&['swarm.process','runtime.process'].includes(String(plugin.pluginEvent))){const data=object(plugin.data);if(data.action==='started'&&data.groupOwned===true)try{captureOwned(worker,Number(data.pid));}catch{} }}
     if(worker.phase==='stopping'||worker.phase==='exited'||workers.get(record.id)!==worker||store.get(`deleting:${record.id}`))return;
     if(message.type==='ready'){
