@@ -76,7 +76,8 @@ function captureOwned(worker:Worker,pid?:number){
   if(pid&&pid>1){const identity=snapshot.get(pid);if(identity&&!known.has(pid))known.set(pid,identity);}
   for(const identity of [...known.values()])ownedDescendants(identity,snapshot,known);ownedChildren.set(worker,known);
 }
-function trackOwned(worker:Worker){if(!liveWorkers.has(worker))return;try{captureOwned(worker);}catch{}const timer=setTimeout(()=>trackOwned(worker),150);timer.unref?.();}
+let ownershipTracker:ReturnType<typeof setTimeout>|undefined;
+function trackOwned(_worker:Worker){if(ownershipTracker)return;const track=()=>{ownershipTracker=undefined;if(!liveWorkers.size)return;try{const snapshot=processSnapshot();for(const known of ownedChildren.values())for(const identity of [...known.values()])ownedDescendants(identity,snapshot,known);}catch{}ownershipTracker=setTimeout(track,200);ownershipTracker.unref?.();};ownershipTracker=setTimeout(track,200);ownershipTracker.unref?.();}
 function terminateWorker(worker:Worker):Promise<void>{
  if(worker.termination)return worker.termination;
  worker.termination=(async()=>{try{captureOwned(worker);for(let round=0;round<8;round++){const known=ownedChildren.get(worker)||new Map<number,ProcessIdentity>(),count=known.size;if(!await terminateOwned(known.values(),known))throw new Error('所属进程清理未能核实');if(known.size===count){worker.phase='exited';liveWorkers.delete(worker);ownedChildren.delete(worker);return;}}throw new Error('清理期间仍出现新的所属进程');}catch(error){worker.termination=undefined;if(!storeClosed)publish('notice',{level:'error',message:String(error)},worker.record.id);throw error;}})();
