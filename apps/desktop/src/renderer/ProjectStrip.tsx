@@ -10,11 +10,21 @@ export function reorderIds(ids: string[], source: string, target: string, after 
 export function ProjectStrip({ projects, selected, disabled, onSelect, onOpen, onReorder }: {
   projects: Project[]; selected?: string; disabled: boolean; onSelect(id: string): void; onOpen(): void; onReorder(ids: string[]): Promise<unknown>;
 }) {
-  const strip = useRef<HTMLDivElement>(null),edge=useRef(0),frame=useRef(0);
-  const cancelScroll=()=>{edge.current=0;cancelAnimationFrame(frame.current);frame.current=0;};
-  const autoScroll=()=>{const el=strip.current;if(el&&edge.current)el.scrollLeft+=edge.current;frame.current=requestAnimationFrame(autoScroll);};
-  useEffect(()=>cancelScroll,[]);
+  const strip = useRef<HTMLDivElement>(null),edge=useRef(0),frame=useRef(0),latestProjects=useRef(projects);latestProjects.current=projects;
+  const pointer=useRef<{source:string;x:number;y:number;startX:number;startY:number;active:boolean;id:number;element:HTMLButtonElement}|null>(null),drop=useRef<{source:string;target:string;after:boolean}|null>(null),suppressClick=useRef(false);
   const [drag, setDrag] = useState<{ source: string; target: string; after: boolean } | null>(null);
+  const cancelScroll=()=>{edge.current=0;cancelAnimationFrame(frame.current);frame.current=0;};
+  const cancel=()=>{cancelScroll();const p=pointer.current;pointer.current=null;drop.current=null;setDrag(null);if(p?.active)suppressClick.current=true;if(p?.element.hasPointerCapture(p.id))p.element.releasePointerCapture(p.id);};
+  const updateDrop=(x:number,y:number)=>{
+    const el=strip.current,p=pointer.current;if(!el||!p?.active)return;
+    const bounds=el.getBoundingClientRect();if(y<bounds.top||y>bounds.bottom||x<bounds.left||x>bounds.right){drop.current=null;setDrag(null);edge.current=0;return;}
+    edge.current=x<bounds.left+44?-12:x>bounds.right-44?12:0;
+    const buttons=[...el.querySelectorAll<HTMLButtonElement>('[data-project-id]')];const target=buttons.find(b=>{const box=b.getBoundingClientRect();return x<box.left+box.width/2;})||buttons.at(-1);
+    if(!target)return;const box=target.getBoundingClientRect();const next={source:p.source,target:target.dataset.projectId!,after:x>=box.left+box.width/2};drop.current=next;setDrag(old=>old?.source===next.source&&old.target===next.target&&old.after===next.after?old:next);
+  };
+  const autoScroll=()=>{const el=strip.current,p=pointer.current;if(el&&p?.active){if(edge.current)el.scrollLeft+=edge.current;updateDrop(p.x,p.y);frame.current=requestAnimationFrame(autoScroll);}else frame.current=0;};
+  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&pointer.current)cancel();};window.addEventListener('keydown',escape);return()=>{cancelScroll();window.removeEventListener('keydown',escape);};},[]);
+  useEffect(()=>{if(pointer.current&&!projects.some(p=>p.id===pointer.current?.source))cancel();},[projects.map(p=>p.id).join(',')]);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [overflow, setOverflow] = useState(false);
   useEffect(() => {
@@ -39,18 +49,14 @@ export function ProjectStrip({ projects, selected, disabled, onSelect, onOpen, o
   };
   return <div className="project-strip-shell">
     {overflow && <button aria-label="项目栏向左滚动" className="project-scroll" onClick={() => strip.current?.scrollBy({ left: -240, behavior: 'smooth' })}>‹</button>}
-    <div role="tablist" aria-label="项目" className="project-tab-group"><button type="button" role="tab" data-project-id="temporary" aria-selected={!selected} className={'project-tab temporary-tab ' + (!selected ? 'active' : '')} disabled={disabled && !!selected} onClick={() => onSelect('')}>临时会话</button><div ref={strip} className="project-tabs" onDragOver={event=>{event.preventDefault();const bounds=event.currentTarget.getBoundingClientRect();edge.current=event.clientX<bounds.left+44?-12:event.clientX>bounds.right-44?12:0;if(!frame.current)frame.current=requestAnimationFrame(autoScroll);}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node))cancelScroll();}}>
+    <div role="tablist" aria-label="项目" className="project-tab-group"><button type="button" role="tab" data-project-id="temporary" aria-selected={!selected} className={'project-tab temporary-tab ' + (!selected ? 'active' : '')} disabled={disabled && !!selected} onClick={() => onSelect('')}>临时会话</button><div ref={strip} className="project-tabs">
       {projects.map((p, i) => <button key={p.id} type="button" role="tab" data-project-id={p.id} aria-selected={selected === p.id}
-        draggable className={'project-tab ' + (selected === p.id ? 'active ' : '') + (drag?.target === p.id ? drag.after ? 'drop-after' : 'drop-before' : '')}
-        title={p.path} onClick={() => { if (!disabled) onSelect(p.id); }}
-        onDragStart={event => { event.dataTransfer.setData('text/plain', p.id); event.dataTransfer.effectAllowed = 'move'; setDrag({ source: p.id, target: p.id, after: false }); }}
-        onDragOver={event => {
-          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect();
-          const source = drag?.source; if (source) setDrag({ source, target: p.id, after: event.clientX > box.left + box.width / 2 });
-          
-        }}
-        onDrop={event => { event.preventDefault(); if (drag) void commit(reorderIds(projects.map(x => x.id), drag.source, p.id, drag.after)); }}
-        onDragEnd={() => {cancelScroll();setDrag(null);}} onContextMenu={event => { event.preventDefault(); setMenu({ id: p.id, x: event.clientX, y: event.clientY }); }}
+        draggable={false} className={'project-tab ' + (selected === p.id ? 'active ' : '') + (drag?.target === p.id ? drag.after ? 'drop-after' : 'drop-before' : '')}
+        title={p.path} onClick={() => {if(suppressClick.current){suppressClick.current=false;return;}if (!disabled) onSelect(p.id); }}
+        onPointerDown={event=>{if(event.button!==0)return;pointer.current={source:p.id,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,active:false,id:event.pointerId,element:event.currentTarget};event.currentTarget.setPointerCapture(event.pointerId);}}
+        onPointerMove={event=>{const point=pointer.current;if(!point||point.source!==p.id)return;point.x=event.clientX;point.y=event.clientY;if(!point.active&&Math.hypot(point.x-point.startX,point.y-point.startY)>6){point.active=true;event.currentTarget.setPointerCapture(event.pointerId);}if(point.active){event.preventDefault();updateDrop(point.x,point.y);if(!frame.current)frame.current=requestAnimationFrame(autoScroll);}}}
+        onPointerUp={event=>{const point=pointer.current;if(!point)return;if(point.active){updateDrop(event.clientX,event.clientY);const target=drop.current;if(target)void commit(reorderIds(latestProjects.current.map(p=>p.id),target.source,target.target,target.after));suppressClick.current=true;}cancel();}}
+        onPointerCancel={cancel} onLostPointerCapture={()=>{if(pointer.current)cancel();}} onContextMenu={event => { event.preventDefault(); setMenu({ id: p.id, x: event.clientX, y: event.clientY }); }}
         onKeyDown={event => { if (event.altKey && event.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); move(p.id, event.key === 'ArrowLeft' ? -1 : 1); } else if(['Home','End'].includes(event.key)){event.preventDefault();const next=event.key==='Home'?projects[0]:projects.at(-1);if(next&&!disabled)onSelect(next.id);}else if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = projects[i + (event.key === 'ArrowLeft' ? -1 : 1)]; if (next && !disabled) onSelect(next.id); } }}>
         <Icon name="folder" size={16}/><span>{p.name}</span>
       </button>)}
