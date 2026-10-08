@@ -100,7 +100,7 @@ export default function App() {
   const pendingView=useRef<{id:string;ui:SessionViewState}|null>(null);
   const [browserSnapshot,setBrowserSnapshot]=useState<BrowserSnapshot>({tabs:[],downloads:[]}),[browserBlocked,setBrowserBlocked]=useState(false);
   const nativeComposer=useRef<HTMLDivElement>(null);
-  const fileCache=useRef<FileWorkspaceCache>(new Map()),sendLock=useRef(false),migratingDraft=useRef(false),composing=useRef(false),navigationEpoch=useRef(0),liveCounter=useRef(0);
+  const fileCache=useRef<FileWorkspaceCache>(new Map()),sendLock=useRef(false),allocationLock=useRef(false),migratingDraft=useRef(false),composing=useRef(false),navigationEpoch=useRef(0),liveCounter=useRef(0);
   const [layout,setLayout]=useState(()=>{try{const v=JSON.parse(localStorage.getItem('friend-pi.layout.v1')||'{}');return {sidebarWidth:Number(v.sidebarWidth)||244,workspaceWidth:Number(v.workspaceWidth)||Math.max(400,(window.innerWidth-270)/2)};}catch{return {sidebarWidth:244,workspaceWidth:500};}});
   const [viewportWidth,setViewportWidth]=useState(window.innerWidth),scroll=useRef<HTMLDivElement>(null),composer=useRef<HTMLTextAreaElement>(null),followScroll=useRef(true),searchInput=useRef<HTMLInputElement>(null);
   const sessionId=state.current?.sessionId,projectId=state.current?state.current.projectId:selectedProject;
@@ -155,17 +155,17 @@ export default function App() {
   useEffect(()=>{try{localStorage.setItem('friend-pi.layout.v1',JSON.stringify(layout));}catch{}},[layout]);
   useEffect(()=>{const onResize=()=>setViewportWidth(window.innerWidth);window.addEventListener('resize',onResize);return()=>window.removeEventListener('resize',onResize);},[]);
   const newSession=async()=>{
-    if(running||navigating||migratingDraft.current||sendLock.current)return;
-    setNavigating(true);navigationEpoch.current++;
+    if(running||navigating||allocationLock.current||migratingDraft.current||sendLock.current)return;
+    allocationLock.current=true;setNavigating(true);navigationEpoch.current++;
     try{const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});setState({...EMPTY,...next});setDraftOwner(next.current?.sessionId||ownerKey);return next.current?.sessionId;}
-    catch(error){report(errorText(error),true);}finally{setNavigating(false);}
+    catch(error){report(errorText(error),true);}finally{allocationLock.current=false;setNavigating(false);}
   };
   const selectedModelId=state.current?.modelId||pendingModel||state.preferences?.defaultModelId||state.models.find(model=>model.ready)?.id||'';
   const selectedModel=state.models.find(model=>model.id===selectedModelId);
   useEffect(()=>{if(!sessionId&&selectedModel&&!selectedModel.thinkingLevels?.includes(pendingThinking))setPendingThinking(selectedModel.thinkingLevels?.[0]||'off');},[sessionId,selectedModelId,selectedModel?.thinkingLevels?.join('|'),pendingThinking]);
   const openModelSettings=()=>{setSettingsPage('models');setSettingsOpen(true);};
   const send=async()=>{
-    if(sendLock.current||navigating||migratingDraft.current||running||!draftRef.current.trim()||activeSession?.archived||!selectedModel?.ready)return;
+    if(sendLock.current||allocationLock.current||navigating||migratingDraft.current||running||!draftRef.current.trim()||activeSession?.archived||!selectedModel?.ready)return;
     sendLock.current=true;setSending(true);setNotice(null);
     const submitted={sessionId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
     const epoch=navigationEpoch.current;
@@ -180,14 +180,14 @@ export default function App() {
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
     finally{sendLock.current=false;setSending(false);}
   };
-  const selectProject=async(id:string)=>{if(running||sending||navigating||migratingDraft.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
-  const openProject=async()=>{if(running||navigating||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke('project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};
-  const openSession=async(id:string)=>{if(running||navigating||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const selectProject=async(id:string)=>{if(running||sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const openProject=async()=>{if(running||navigating||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke('project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};
+  const openSession=async(id:string)=>{if(running||navigating||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   useEffect(()=>{const keys=(event:KeyboardEvent)=>{if(document.querySelector(':popover-open')||[...document.querySelectorAll<HTMLElement>('[role="dialog"]')].some(node=>node.getClientRects().length>0))return;if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='n'){event.preventDefault();void newSession();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setSidebar(true);searchInput.current?.focus();}if(event.key==='Escape'){setProjectDrawer(false);if(!fullscreen)setTab(null);}if(fullscreen&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='t'){event.preventDefault();void openNewView();}if(fullscreen&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='w'){event.preventDefault();void closeView(sessionView.active);}if(event.ctrlKey&&event.key===String.fromCharCode(96)){event.preventDefault();void showTerminal();}};window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);});
   const ensureUiSession=async()=>{
-    if(sessionId)return sessionId;if(running||sendLock.current||navigating||migratingDraft.current)return;
-    setNavigating(true);migratingDraft.current=true;
-    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));setDraftOwner(id);setState({...EMPTY,...next});viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{migratingDraft.current=false;setNavigating(false);}
+    if(sessionId)return sessionId;if(running||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;
+    allocationLock.current=true;setNavigating(true);migratingDraft.current=true;
+    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));setDraftOwner(id);setState({...EMPTY,...next});viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{allocationLock.current=false;migratingDraft.current=false;setNavigating(false);}
   };
   const writeView=async(next:SessionViewState,confirmReload=false)=>{
     const hadSession=!!sessionId;let base=viewRef.current;const id=await ensureUiSession();if(!id)return;if(!hadSession){base=viewRef.current;next={...next,browserScope:base.browserScope};}const version=++uiVersion.current;viewOwner.current=id;viewRef.current=next;setView(next);setSidebar(next.sidebar);if(!uiPending.current)pendingView.current=null;uiPending.current++;
