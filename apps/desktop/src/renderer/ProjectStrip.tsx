@@ -49,7 +49,7 @@ export function ProjectStrip({ projects, selected, disabled, onSelect, onOpen, o
   };
   return <div className="project-strip-shell">
     {overflow && <button aria-label="项目栏向左滚动" className="project-scroll" onClick={() => strip.current?.scrollBy({ left: -240, behavior: 'smooth' })}>‹</button>}
-    <div role="tablist" aria-label="项目" className="project-tab-group"><button type="button" role="tab" data-project-id="temporary" aria-selected={!selected} className={'project-tab temporary-tab ' + (!selected ? 'active' : '')} disabled={disabled && !!selected} onClick={() => onSelect('')}>临时会话</button><div ref={strip} className="project-tabs">
+    <div role="tablist" aria-label="项目" className="project-tab-group"><button type="button" role="tab" data-project-id="temporary" aria-selected={!selected} className={'project-tab temporary-tab ' + (!selected ? 'active' : '')} disabled={disabled && !!selected} onClick={() => onSelect('')}><Icon name="chat" size={16}/><span>临时会话</span></button><div ref={strip} className="project-tabs">
       {projects.map((p, i) => <button key={p.id} type="button" role="tab" data-project-id={p.id} aria-selected={selected === p.id}
         draggable={false} className={'project-tab ' + (selected === p.id ? 'active ' : '') + (drag?.target === p.id ? drag.after ? 'drop-after' : 'drop-before' : '')}
         title={p.path} onClick={event => {if(suppressClick.current){suppressClick.current=false;if(event.detail!==0)return;}if (!disabled) onSelect(p.id); }}

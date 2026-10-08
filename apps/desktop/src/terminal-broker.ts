@@ -41,11 +41,11 @@ export class TerminalBroker {
     const id=randomUUID();
     return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error('终端操作超时，未自动重放'));},20000);this.pending.set(id,{resolve,reject,timer});child.send({type:'request',id,method,input,context},error=>{if(error){clearTimeout(timer);this.pending.delete(id);reject(error);}});});
   }
-  async request(method:string,input:Record<string,unknown>,context:TerminalContext):Promise<unknown>{
+  async request(method:string,input:Record<string,unknown>,context:TerminalContext,validate?:()=>void):Promise<unknown>{
     if(this.closing)throw new Error('终端正在退出');
     await this.start();const child=this.child;
     if(this.closing||!child?.connected)throw new Error('终端连接已中断');
-    return this.send(child,method,input,context);
+    validate?.();return this.send(child,method,input,context);
   }
   async hasRunning(context:TerminalContext){if(!await this.cleanup)throw new Error('终端清理未完成');if(!this.child){if(!await terminateOwned(this.owned.values(),this.owned))throw new Error('终端清理未完成');return false;}const result=await this.request('list',{},context) as {terminals:{state:string}[]};return result.terminals.some(t=>['running','stopping','cleanup_failed'].includes(t.state));}
   async stopAgentServices(context:TerminalContext){if(this.child)await this.request('stopAgentServices',{},context);}

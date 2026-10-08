@@ -1,3 +1,4 @@
+import {digest,permissionDecision,toolPermissionRequest,destructiveCommand as sharedDestructiveCommand} from '@friend-pi/core';
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
@@ -12,9 +13,7 @@ export function contains(root: string, path: string): boolean {
   const rel = relative(canonical(resolve(root)),canonical(resolve(path)));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
-export function destructiveCommand(command: string): boolean {
-  return /(?:^|[;&|\s])(?:sudo|rm|rmdir|dd|mkfs|shutdown|reboot)(?:\s|$)|\bgit\s+(?:reset\s+--hard|clean\b|push\b.*--force|branch\s+-[dD])|\b(?:npm|pnpm|yarn)\s+publish\b/i.test(command);
-}
+export const destructiveCommand=sharedDestructiveCommand;
 /** This is a high-trust tool policy, not a shell or OS sandbox. Nested Pi tool calls use the same hook. */
 export function guardMember(start: MemberStart, confirm: (title:string,message:string)=>Promise<boolean>): ExtensionFactory {
   return pi => {
@@ -47,8 +46,9 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
         // Shell commands are not statically sandboxable. Protect obvious escapes and destructive actions;
         // worktree + this guard are cooperation boundaries, never an OS security claim.
         if (/\bcd\s+(?:\/|\.\.)|\bgit\s+(?:-C\s+|worktree\b)|\b(?:write|edit)\s+\//.test(command)) return {block:true,reason:'命令试图切换到成员工作区外或改动隔离管理'};
-        if (destructiveCommand(command) && !await confirm('确认 Swarm 成员的破坏性操作',command)) return {block:true,reason:'破坏性操作未获确认'};
+        if (start.permissionMode===undefined&&destructiveCommand(command) && !await confirm('确认 Swarm 成员的破坏性操作',command)) return {block:true,reason:'破坏性操作未获确认'};
       }
+      if(start.permissionMode!==undefined){const request=toolPermissionRequest(event.toolName,input);if(request){const decision=permissionDecision(start.permissionMode,request);const accepted=decision==='allow'||await confirm('确认成员'+request.operation,request.message);pi.appendEntry('friend-pi.permission.decision',{v:1,mode:start.permissionMode,operation:request.operation,messageHash:digest(request.message),approved:accepted,source:decision==='allow'?'automatic':'user'});if(!accepted)return {block:true,reason:'成员操作未获确认'};}}
     });
     pi.on('before_agent_start',event => ({systemPrompt: `${event.systemPrompt}\n你是 Swarm 成员。只处理本次任务，不派生子 Agent。工作区：${start.cwd}。写入范围：${start.writeScopes.join(', ')}。完成后报告事实、检查结果与剩余风险。Shell 为高信任工具，禁止越出工作区。`}));
   };

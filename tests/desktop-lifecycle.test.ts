@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {RecordStore,object,text,digest,projectIdentity,isSessionDeleted} from '../packages/core/src/index.js';
+import {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode} from '../packages/core/src/index.js';
 import * as modelReadiness from '../apps/desktop/src/model-readiness.js';
 import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
@@ -24,11 +24,11 @@ const compiled=transformSync(mainSource,{loader:'ts',format:'cjs',target:'node24
 function fixture(){
   const directory=fs.mkdtempSync(path.join(tmpdir(),'friend-pi-desktop-lifecycle-'));
   const project=path.join(directory,'project'),dataDir=path.join(directory,'data');fs.mkdirSync(project);fs.mkdirSync(dataDir);
-  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;const control={psFailures:0,terminalFailures:0,born:'fixture',terminalGate:undefined as (()=>Promise<void>)|undefined};let quitCalls=0;
+  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;const control={psFailures:0,terminalFailures:0,born:'fixture',terminalGate:undefined as (()=>Promise<void>)|undefined,permissionGate:undefined as Promise<boolean>|undefined,terminalRequests:[] as string[]};let quitCalls=0;
   const app:any=new EventEmitter();app.isPackaged=true;app.getAppPath=()=>root;app.getPath=()=>dataDir;app.setName=()=>{};app.setPath=()=>{};app.requestSingleInstanceLock=()=>true;app.whenReady=()=>new Promise(()=>{});app.quit=()=>{quitCalls++;};
   const fork=(_file:string,_args:unknown,options:unknown)=>{
     const child:any=new EventEmitter();child.pid=40000+children.length;child.connected=true;child.stderr=new EventEmitter();child.commands=[];child.options=options;
-    child.send=(message:any,callback?:(error?:Error)=>void)=>{child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:message.method==='state'||message.method==='configure'?child.state:message.method==='send'?{accepted:true}:message.method==='plugin'?{observed:true}:{ok:true}}));return true;};
+    child.send=(message:any,callback?:(error?:Error)=>void)=>{child.commands.push(message);callback?.();if(message.method==='permission.confirm'&&control.permissionGate)void control.permissionGate.then(result=>child.emit('message',{type:'response',id:message.id,result}));else queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:message.method==='state'||message.method==='configure'?child.state:message.method==='permission.confirm'?true:message.method==='send'?{accepted:true}:message.method==='plugin'?{observed:true}:{ok:true}}));return true;};
     child.kill=(signal:string)=>{signals.push({pid:child.pid,signal});return true;};children.push(child);return child;
   };
   const model={id:'unit',provider:'main-fixture',name:'Main fixture',api:'openai-completions',baseUrl:'http://127.0.0.1',reasoning:false,input:['text'],contextWindow:4096,maxTokens:32,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
@@ -41,12 +41,12 @@ function fixture(){
       if(specifier==='node:child_process')return {fork,execFile(){}};
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
-      if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted};
+      if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
-      if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){if(control.terminalGate)await control.terminalGate();if(control.terminalFailures-->0)throw Error('fixture terminal cleanup failed');}async request(){return {terminals:[]};}}};
+      if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){if(control.terminalGate)await control.terminalGate();if(control.terminalFailures-->0)throw Error('fixture terminal cleanup failed');}async request(method:string,_input:unknown,_context:unknown,validate?:()=>void){if(control.terminalGate)await control.terminalGate();validate?.();control.terminalRequests.push(method);return {terminals:[]};}}};
       if(specifier==='./terminal-processes.js')return {processSnapshot:()=>{if(control.psFailures-->0)throw Error('fixture ps failed');return new Map(children.map(child=>[child.pid,{pid:child.pid,ppid:1,pgid:child.pid,tty:'??',born:control.born,state:'S'}]));},ownedDescendants:()=>{},terminateOwned:async(owned:Iterable<any>)=>{for(const identity of owned)signals.push({pid:identity.pid,signal:'SIGKILL'});return true;}};
       if(specifier==='./model-readiness.js')return modelReadiness;
       if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>modelRuntime,providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
@@ -83,6 +83,9 @@ function assertDeleted(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType
 test('registered missing original history rejects before forking and preserves its index',async()=>{
   const f=fixture();try{const value={...f.record('missing'),path:path.join(f.dataDir,'missing.jsonl')};f.api.store.put('session:missing',value);await assert.rejects(f.api.handle('session.open',{id:'missing'}),/原始会话历史缺失/);assert.equal(f.children.length,0);assert.equal(f.api.store.get('session:missing').value.path,value.path);}finally{f.cleanup();}
 });
+test('permission configuration persists immediately and pending project uses its effective defaults',async()=>{const f=fixture();try{f.api.store.put('preferences',{defaultPermissionMode:'auto'});f.api.store.put('preferences:fixture',{defaultPermissionMode:'ask'});const pending=await f.api.handle('project.select',{projectId:'fixture'});assert.equal(pending.preferences.defaultPermissionMode,'ask');const record=f.record('permission-cold'),child=await f.ready(record);child.state.permissionMode='ask';child.state.executionMode='team';await f.api.handle('session.configure',{sessionId:record.id,permissionMode:'ask'});const saved=f.api.store.get('session:'+record.id).value;assert.equal(saved.permissionMode,'ask');assert.equal(saved.executionMode,'team');f.api.retireWorker(f.api.workers.get(record.id),Error('cold fixture'));const reopened=await f.ready(saved);assert.equal(reopened.options.env.FRIEND_PI_PERMISSION_MODE,'ask');assert.equal(reopened.options.env.FRIEND_PI_MODE,'team');}finally{f.cleanup();}});
+test('a delayed terminal approval after stop cannot reach terminal admission',async()=>{const f=fixture();try{const record=f.record('late-terminal'),child=await f.ready(record);let approve!:(value:boolean)=>void;f.control.permissionGate=new Promise(done=>approve=done);child.emit('message',{type:'terminal.request',id:'late-create',method:'create',input:{command:'fixture service'}});await f.flush();assert.ok(child.commands.some((command:any)=>command.method==='permission.confirm'));await f.api.handle('session.stop',{sessionId:record.id});approve(true);await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);const response=child.commands.find((command:any)=>command.type==='terminal.response'&&command.id==='late-create');assert.match(response.error,/取消/);}finally{f.cleanup();}});
+test('SDK-internal cancellation and terminal host initialization both invalidate delayed admission',async()=>{for(const during of ['approval','host'] as const){const f=fixture();try{const record=f.record('terminal-epoch-'+during),child=await f.ready(record);let release!:()=>void;const gate=new Promise<void>(done=>release=done);if(during==='approval')f.control.permissionGate=gate.then(()=>true);else f.control.terminalGate=()=>gate;child.state.permissionEpoch=1;child.emit('message',{type:'terminal.request',id:'cancelled',method:'create',input:{command:'fixture service'}});await f.flush();child.state={...child.state,permissionEpoch:2,lifecycleStatus:'stopped'};child.emit('message',{type:'event',event:{type:'state',data:child.state}});release();await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);assert.match(child.commands.find((command:any)=>command.type==='terminal.response'&&command.id==='cancelled').error,/取消/);}finally{f.cleanup();}}});
 
 test('production blank-session bootstrap writes a real Pi header and custom chain before restart',()=>{
   const f=fixture();try{

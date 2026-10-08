@@ -14,10 +14,13 @@ const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
 export type JsonObject = Record<string, unknown>;
 export type ExecutionMode = 'single' | 'team' | 'swarm';
+export {parsePermissionMode,permissionDecision,destructiveCommand,readOnlyCommand,toolPermissionRequest} from './permissions.js';
+import {permissionDecision,type PermissionMode,type PermissionRequest} from './permissions.js';
+export type {PermissionMode,PermissionRequest} from './permissions.js';
 export interface HostPolicy {
   v:1; revision:number; runId?:string; stage:string; canSwitchRole:boolean; unsettledTools:number;
   tools:string[]; writeScopes:string[]; executionMode:ExecutionMode; planMode:boolean;
-  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;
+  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;permissionMode?:PermissionMode;
 }
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
@@ -27,6 +30,7 @@ export interface PluginContext {
   dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
   signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string; isIdle(): boolean;
   executionMode?:ExecutionMode; policy?:HostPolicy; availableModels?:{id:string;thinkingLevels:string[]}[];
+  approvePermission?(request:PermissionRequest):Promise<boolean>;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
   complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
   applyModel?(modelId:string,thinkingLevel?:string):Promise<void>;
@@ -187,6 +191,13 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       const result = await ctx.modelRegistry.complete(executionModel, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
       if (result.stopReason === 'error' || result.stopReason === 'aborted') throw new Error(result.errorMessage || '模型调用未完成');
       return visibleText(result.content);
+    },
+    approvePermission:async request=>{
+      if(ctx.signal?.aborted)return false;
+      const mode=policy?.permissionMode||'auto',decision=permissionDecision(mode,request);
+      const approved=decision==='allow'||await ctx.ui.confirm('确认'+request.operation,request.message);
+      if(ctx.signal?.aborted)return false;
+      pi.appendEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision:policy?.revision});return approved;
     },
     request:(plugin,action,input,timeout) => requestPlugin(pi.events,plugin,action,input,timeout),
     emit:(event,data) => pi.events.emit('friend-pi:v1:event',{pluginEvent:event,sessionId,data}),

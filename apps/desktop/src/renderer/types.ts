@@ -1,14 +1,16 @@
+import type {PermissionMode} from '@friend-pi/core';
+export type {PermissionMode};
 import type { WorkspaceRef } from '../workspaces.js';
 export type { WorkspaceRef };
 export interface Project { id: string; path: string; name: string }
 export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string;status?:string;modelId?:string;archived?:boolean }
 export interface Message { role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;timestamp?:number }
 export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[];ready?:boolean;connectionStatus?:string;testedAt?:string;baseUrl?:string;api?:string }
-export interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
+export interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;contextMode:'native'|'infinite';backgroundModelId:string}
 export interface AppState {
   projects: Project[];
   sessions: SessionSummary[];
-  current: { sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;executionMode?:'single'|'team'|'swarm' } | null;
+  current: { sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
   models: Model[];
   providers: { id: string; name: string; configured: boolean;supportsApiKey?:boolean }[];
   preferences?:Preferences;

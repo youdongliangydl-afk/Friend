@@ -53,3 +53,16 @@ WorkspaceRef is `{kind:'project',projectId}` or `{kind:'temporary',sessionId}`. 
 `provider.save` requires a concrete `provider/modelId` definition. The Desktop catalog contains only explicit saved definitions, including migrated Pi custom models; provider credentials alone do not add catalog entries. Saving invalidates every receipt sharing the provider. `model.test {modelId}` performs a bounded real completion through Pi and persists only the exact unchanged definition/authentication digest. Failed, empty, aborted, timed-out or stale results never grant readiness. Metadata exposes `ready`, `connectionStatus`, and `testedAt`, never authentication or digests.
 
 Desktop `session.new {forSend:true}` verifies before allocating a workspace. `session.send` and `plan.approve` verify before baseline, input and approval mutations; the managed SDK rechecks. Native stream boundaries, plugin completions, Swarm members and the learning host use the current verified definition. Blank session/terminal creation and history reading require no model. The managed-host environment flag is injected by Desktop; standalone SDK/plugin consumers retain native Pi configuration behavior.
+
+## Desktop permission strategies
+
+`session.new/configure {permissionMode}` accepts `ask`, `auto` (default), or `allPermissions`. `settings.update {defaultPermissionMode,projectId?}` applies effective global/project defaults to new sessions. Existing session choices persist immediately; drafts preserve explicit pending choices. Strategies cannot change during execution or unanswered approval. Plan approvals bind the strategy along with model/thinking/mode.
+
+| Operation | ask | auto | allPermissions |
+| --- | --- | --- | --- |
+| Native read/list/search, plain recognized read-only shell | Allow | Allow | Allow |
+| In-scope primitive file and shared material write | Confirm | Allow | Allow |
+| Other shell/background command, Agent service creation/input | Confirm | Confirm | Allow |
+| Agent service stop | Confirm | Allow | Allow |
+
+Strategies resolve Friend permission requests, not business approvals or an OS sandbox. Plan read-only policy, frozen member role/tool/write scope, recursive dispatch restrictions, exact model readiness and terminal ownership/authority epoch remain enforced. Opaque shell expansion/options require confirmation in auto. GUI terminal typing represents direct user action; it takes ownership without an Agent approval dialog. SDK, members and shared process controller record native `friend-pi.permission.decision` receipts with operation, strategy and a message digest. Stop invalidates unanswered requests before waiting for admission cleanup; delayed terminal approvals are fenced by worker identity, execution run, permission strategy and cancellation epoch.
