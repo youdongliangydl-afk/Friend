@@ -8,6 +8,8 @@ import {Type} from 'typebox';
 import {PlanStore} from './plan-store.js';
 import {projectMessages} from './message-projection.js';
 import type { ImageContent } from '@earendil-works/pi-ai';
+import {guardDesktopModelRequests} from '@friend-pi/core';
+import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 
 const dataDir=dataDirectory();const root=resolve(process.env.FRIEND_PI_ROOT || process.cwd());const cwd=resolve(process.env.FRIEND_PI_PROJECT || process.cwd());
@@ -31,7 +33,8 @@ function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout
 const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']);
 const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
 function swarmBusy(){return swarmRunning||pendingSwarmGraphIds.size>0;}
-function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||stopping,planMode,executionMode,modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
+let missingModelId:string|undefined;
+function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||stopping,planMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=executionMode==='swarm'&&!planMode&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
@@ -55,7 +58,7 @@ function settledStatus(){
   const last=[...session.messages].reverse().find(message=>message.role==='assistant');
   const authority=swarmAuthority();if(cancelRequested)return authority?.status==='interrupted'||authority?.status==='paused'?authority.status:'stopped';return authority?.status|| (last?.stopReason==='error'?'failed':last?.stopReason==='aborted'?'stopped':'completed');
 }
-function modelState(){return providerMetadata(runtime);}
+async function modelState(){return process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?await configuredModelMetadata(runtime,dataDir):providerMetadata(runtime);}
 function selectedModel(id:string){const slash=id.indexOf('/');const model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(slash<1||!model)throw new Error('型号不可用，请重新选择');return model;}
 const terminalRequests=new Map<string,{resolve(value:unknown):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}>();
 function terminalRequest(method:string,input:Record<string,unknown>){const id=randomUUID();return new Promise<unknown>((resolve,reject)=>{const timer=setTimeout(()=>{terminalRequests.delete(id);reject(new Error('终端操作超时，未自动重放'));},20000);terminalRequests.set(id,{resolve,reject,timer});output({type:'terminal.request',id,method,input,planMode});});}
@@ -99,9 +102,10 @@ async function initialize(){
   initTheme('light',false);
   runtime=await createProviderRuntime(dataDir);
   let model=process.env.FRIEND_PI_TEST_PROVIDER==='1'?await installFixtureProvider(runtime):undefined;
-  if(process.env.FRIEND_PI_MODEL)model=selectedModel(process.env.FRIEND_PI_MODEL);
+  if(process.env.FRIEND_PI_MODEL){const slash=process.env.FRIEND_PI_MODEL.indexOf('/');const requested=runtime.getModel(process.env.FRIEND_PI_MODEL.slice(0,slash),process.env.FRIEND_PI_MODEL.slice(slash+1));if(requested)model=requested;else if(process.env.FRIEND_PI_DESKTOP_MANAGED!=='1')model=selectedModel(process.env.FRIEND_PI_MODEL);else {missingModelId=process.env.FRIEND_PI_MODEL;process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE='1';}}
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
-  const settings=SettingsManager.inMemory({extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
+  guardDesktopModelRequests(runtime,dataDir);
+  const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
   const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard()]});
   await loader.reload({resolveProjectTrust:async()=>true});
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
@@ -115,6 +119,7 @@ async function initialize(){
   if(priorFile){const branch=manager.getBranch();const latestUser=projectMessages(branch).findLast(message=>message.role==='user');runId=latestUser?.runId;if(!runId&&latestUser){const userIndex=branch.findIndex(entry=>entry.id===latestUser.id);const receipt=branch.slice(userIndex+1).findLast(entry=>entry.type==='custom'&&/friend-pi\.(memory\.usage|expert\.(run|adoption))/.test(entry.customType)&&typeof object(entry.data).runId==='string');if(receipt?.type==='custom')runId=String(object(receipt.data).runId);}if(runId){process.env.FRIEND_PI_RUN_ID=runId;settledRunId=runId;}}
   plans=new PlanStore(businessStore,projectIdentity(cwd),manager.getSessionId());
   const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager});session=created.session;
+  if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDir,`${model.provider}/${model.id}`),context,options);}
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
   let liveSequence=0;let liveStreamId="";
   session.subscribe(event=>{
@@ -173,7 +178,7 @@ async function initialize(){
     }
     publish('state',current());
   });
-  await bind();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
+  await bind();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 function readAttachment(path:string):{text?:string;image?:ImageContent}{
   const absolute=realpathSync(path);const bytes=readFileSync(absolute);if(bytes.length>10*1024*1024)throw new Error('附件超过 10 MiB，请缩小后再发送');
@@ -184,17 +189,21 @@ function readAttachment(path:string):{text?:string;image?:ImageContent}{
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
   if(disposed&&method!=='shutdown')throw new Error('会话已结束');
   if(session&&isSessionDeleted(dataDir,session.sessionId)&&method!=='shutdown')throw new Error('会话已删除');
-  if(method==='state')return {...current(),...modelState()};
+  if(method==='state')return {...current(),...await modelState()};
   if(method==='plan.read')return plans.current();
   if(method==='plan.revise'){if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');return plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});}
   if(method==='plan.approve'||method==='plan.reject'){
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');
+    if(method==='plan.approve'&&missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
+    if(method==='plan.approve'&&process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');
     const plan=plans.decide(method==='plan.approve'?'approve':'reject',input,{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});session.sessionManager.appendCustomEntry('friend-pi.plan.decision',{plan,origin:'user'});
     if(method==='plan.reject'){planMode=false;publish('state',current());return current();}
     return await handle('send',{text:`执行用户已批准的计划 ${plan.id} v${plan.revision}，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
   }
   if(method==='send'){
+    if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
     if(stopping)throw new Error('正在停止，请等待终止回执');
+    if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');
     const prompt=typeof input.text==='string'?input.text:'';const attachments=Array.isArray(input.attachments)?input.attachments.map(raw=>readAttachment(text(object(raw).path))):[];if(prompt.trim()||!attachments.length)text(input.text,'消息');else if(input.text!==undefined&&typeof input.text!=='string')throw new Error('消息需要文本');
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
@@ -224,7 +233,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
     const nextModel=typeof input.modelId==='string'&&input.modelId?selectedModel(input.modelId):session.model;const supported=providerMetadata(runtime).models.find(model=>model.id===(nextModel?`${nextModel.provider}/${nextModel.id}`:''))?.thinkingLevels||['off'];if(input.thinkingLevel&&!supported.includes(String(input.thinkingLevel)))throw new Error('当前模型不支持此思考等级');if(input.plugins!==undefined&&(!Array.isArray(input.plugins)||input.plugins.some(name=>!plugins.includes(String(name)))))throw new Error('插件无效');const nextPlugins=Array.isArray(input.plugins)?input.plugins.map(String):enabled;if(input.contextMode&&!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(input.contextMode==='infinite'&&!nextPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
-    if(input.modelId)await session.setModel(selectedModel(text(input.modelId)));
+    if(input.modelId){await session.setModel(selectedModel(text(input.modelId)));missingModelId=undefined;delete process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE;}
     if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!session.getAvailableThinkingLevels().includes(level as ThinkingLevel))throw new Error('当前模型不支持此思考等级');session.setThinkingLevel(level as ThinkingLevel);}
     if(Array.isArray(input.plugins)){
       const next=input.plugins.map(String);if(next.some(name=>!plugins.includes(name)))throw new Error('插件无效');
@@ -234,7 +243,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     return current();
   }
   if(method==='plugin'){
-    const plugin=text(input.plugin);if(!enabled.includes(plugin))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);const args=object(input.input||{});
+    const plugin=text(input.plugin);if(!enabled.includes(plugin))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','review','integrate','rework','validate','validation.run','generate','reflect','learn'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});
     const graphId=plugin==='swarm'&&swarmExecutionActions.has(action)&&typeof args.graphId==='string'?args.graphId:undefined;
     if(graphId)pendingSwarmGraphIds.add(graphId);
     try{return await requestPlugin(bus,plugin,action,args,120000,'user');}
@@ -247,7 +256,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(!session.isIdle||swarmBusy())throw new Error('请先停止当前执行，再修改供应商配置');
     const provider=method==='provider.save'?await saveProviderConfiguration(runtime,dataDir,input):typeof input.provider==='string'?input.provider:undefined;await runtime.refresh({allowNetwork:false});
     if(method==='provider.save'&&provider){const available=await runtime.getAvailable(provider);if(available[0])await session.setModel(available[0]);}else if(session.model){const latest=runtime.getModel(session.model.provider,session.model.id);if(latest)await session.setModel(latest);}
-    return {...current(),...modelState()};
+    return {...current(),...await modelState()};
   }
   if(method==='rename'){session.setSessionName(text(input.name,'名称',200));return current();}
   if(method==='shutdown'){await shutdown();return {ok:true};}

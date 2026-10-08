@@ -10,6 +10,7 @@ import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {RecordStore,object,text,digest,projectIdentity,isSessionDeleted} from '../packages/core/src/index.js';
+import * as modelReadiness from '../apps/desktop/src/model-readiness.js';
 import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
 import * as htmlPreview from '../apps/desktop/src/html-preview.js';
@@ -30,6 +31,8 @@ function fixture(){
     child.send=(message:any,callback?:(error?:Error)=>void)=>{child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:message.method==='state'||message.method==='configure'?child.state:message.method==='send'?{accepted:true}:message.method==='plugin'?{observed:true}:{ok:true}}));return true;};
     child.kill=(signal:string)=>{signals.push({pid:child.pid,signal});return true;};children.push(child);return child;
   };
+  const model={id:'unit',provider:'main-fixture',name:'Main fixture',api:'openai-completions',baseUrl:'http://127.0.0.1',reasoning:false,input:['text'],contextWindow:4096,maxTokens:32,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
+  const modelRuntime={refresh:async()=>{},getModel:(provider:string,id:string)=>provider===model.provider&&id===model.id?model:undefined,getModels:()=>[model],getProviders:()=>[{id:model.provider,name:'Fixture'}],hasConfiguredAuth:()=>true,getAuth:async()=>({auth:{apiKey:'private-fixture'}}),complete:async()=>({stopReason:'stop',content:[{type:'text',text:'OK'}]})};
   const context:any={console,Buffer,Promise,Map,Set,Date,Error,JSON,Number,String,Boolean,Array,URL,queueMicrotask,
     setTimeout:(callback:()=>void,delay:number)=>{const id=++nextTimer;timers.set(id,{at:now+delay,callback});return id;},clearTimeout:(id:number)=>timers.delete(id),
     process:{argv:['node','main.mjs'],env:{FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_NODE:'/fixture/node'},platform:'darwin',resourcesPath:'/fixture/resources',kill:(pid:number,signal:string)=>{signals.push({pid,signal});return true;}},
@@ -44,7 +47,8 @@ function fixture(){
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
       if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){}async request(){return {terminals:[]};}}};
-      if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>({refresh:async()=>{}}),providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
+      if(specifier==='./model-readiness.js')return modelReadiness;
+      if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>modelRuntime,providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
       throw new Error(`Unrecognized production dependency: ${specifier}`);
     },
   };
@@ -58,7 +62,7 @@ function fixture(){
   async function flush(){for(let i=0;i<100;i++)await Promise.resolve();}
   async function tick(duration:number){const end=now+duration;await flush();while(true){const row=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!row)break;now=row[1].at;timers.delete(row[0]);row[1].callback();await flush();}now=end;await flush();}
   function cleanup(){for(const worker of api.workers.values())api.retireWorker(worker,new Error('audit fixture closed'));api.stopAudit();timers.clear();api.store.close();fs.rmSync(directory,{recursive:true,force:true});}
-  return {directory,project,dataDir,api,children,signals,unlinkFailures,record,history,ready,flush,tick,cleanup};
+  return {directory,project,dataDir,modelRuntime,api,children,signals,unlinkFailures,record,history,ready,flush,tick,cleanup};
 }
 
 function ownedGraph(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType<typeof fixture>['record']>){
@@ -120,7 +124,7 @@ test('interrupted deletion preserves its fixed inventory and preparing cleanup r
 });
 
 async function temporary(f:ReturnType<typeof fixture>){
- const pending=f.api.handle('session.new',{}),child=f.children.at(-1),record=f.api.store.list('session:').map((row:any)=>row.value).find((record:any)=>!f.api.workers.get(record.id)?.state.sessionFile);
+ const pending=f.api.handle('session.new',{});await f.flush();const child=f.children.at(-1),record=f.api.store.list('session:').map((row:any)=>row.value).find((record:any)=>!f.api.workers.get(record.id)?.state.sessionFile);
  assert.ok(record);const cwd=record.workspaceDir,manager=SessionManager.create(cwd,path.join(f.dataDir,'sessions'));manager.appendMessage({role:'user',content:'temporary-native-history',timestamp:Date.now()});
  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});await pending;return {record:f.api.store.get('session:'+record.id).value,child,manager};
 }
@@ -142,4 +146,8 @@ test('project order persists exact permutations without altering active executio
  for(const ids of [['fixture'],['third','third','fixture'],['third','foreign','fixture']])await assert.rejects(f.api.handle('project.reorder',{ids}));assert.deepEqual(Array.from(f.api.store.get('project-order').value),['third','fixture','second']);
  f.api.store.put('project:new',{id:'new',path:f.project,name:'New'});assert.deepEqual(Array.from((await f.api.handle('app.state',{})).projects,(p:any)=>p.id),['third','fixture','second','new']);
  }finally{f.cleanup();}
+});
+
+test('desktop refuses inference before dispatch and first-send workspace allocation unless exact model passed a test',async()=>{
+ const f=fixture();try{fs.mkdirSync(path.join(f.dataDir,'pi'),{recursive:true});modelReadiness.registerSavedModel(f.dataDir,'main-fixture/unit');const record=f.record('model-guard'),child=await f.ready(record);child.state.modelId='main-fixture/unit';const before=child.commands.length;await assert.rejects(f.api.handle('session.send',{sessionId:record.id,text:'must not run',ready:true}),/连接测试/);await assert.rejects(f.api.handle('plan.approve',{sessionId:record.id,ready:true}),/连接测试/);assert.equal(child.commands.slice(before).some((command:any)=>['send','plan.approve'].includes(command.method)),false);const count=f.api.store.list('session:').length;await assert.rejects(f.api.handle('session.new',{forSend:true,modelId:'main-fixture/unit'}),/连接测试/);assert.equal(f.api.store.list('session:').length,count);assert.equal(fs.existsSync(path.join(f.dataDir,'workspaces')),false);await modelReadiness.testConfiguredModel(f.modelRuntime as never,f.dataDir,'main-fixture/unit');await f.api.handle('session.send',{sessionId:record.id,text:'now accepted'});assert.ok(child.commands.some((command:any)=>command.method==='send'));}finally{f.cleanup();}
 });

@@ -4,10 +4,12 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { SessionManager, getAgentDir } from '@earendil-works/pi-coding-agent';
+import { SessionManager, getAgentDir, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import {requireReadyModel} from './model-readiness.js';
+export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
+const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
 export type JsonObject = Record<string, unknown>;
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
@@ -161,7 +163,9 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
     },
     complete:async (prompt, options = {}) => {
       if (!model) throw new Error('请先配置模型');
-      const result = await ctx.modelRegistry.complete(model, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
+      let executionModel=model;
+      if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){let verifying=desktopVerificationRuntimes.get(ctx.modelRegistry);if(!verifying){verifying=(async()=>{const runtime=await ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false});if(process.env.FRIEND_PI_TEST_PROVIDER==='1')await installFixtureProvider(runtime);return runtime;})();desktopVerificationRuntimes.set(ctx.modelRegistry,verifying);}executionModel=await requireReadyModel(await verifying,dataDir,`${model.provider}/${model.id}`);await ctx.modelRegistry.refresh({allowNetwork:false});}
+      const result = await ctx.modelRegistry.complete(executionModel, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
       if (result.stopReason === 'error' || result.stopReason === 'aborted') throw new Error(result.errorMessage || '模型调用未完成');
       return visibleText(result.content);
     },
@@ -218,7 +222,7 @@ export function parseModelJson(value: string): JsonObject {
 
 /** Explicit test-only provider. Never registered for an ordinary launch. */
 export async function installFixtureProvider(runtime:ModelRuntime) {
-  const fixture=fauxProvider({provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
+  const fixture=fauxProvider({api:'friend-fixture-api',provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
   const respond: Parameters<typeof fixture.setResponses>[0][number] = (context) => {
     fixture.appendResponses([respond]);
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');

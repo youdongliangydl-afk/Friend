@@ -4,6 +4,7 @@ import './style.css';
 import './readability.css';
 import './layout.css';
 import './client-workspace.css';
+import './model-settings.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

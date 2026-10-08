@@ -7,13 +7,16 @@ import { join,resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import {createProviderRuntime} from '../apps/desktop/src/provider-settings.js';
+import {registerSavedModel,testConfiguredModel,invalidateProvider} from '../apps/desktop/src/model-readiness.js';
+import {installFixtureProvider} from '../packages/core/src/index.js';
 import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import { RecordStore,projectIdentity } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
-async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string}={}){
+async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
- const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_STATUS:options.status}});
+ const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_STATUS:options.status,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined}});
  let readyResolve:(value:Message)=>void=()=>{};let readyReject:(error:Error)=>void=()=>{};let stderr='';
  const ready=new Promise<Message>((resolveResult,reject)=>{readyResolve=resolveResult;readyReject=reject;});
  child.stderr?.on('data',bytes=>{stderr+=String(bytes);});
@@ -208,4 +211,12 @@ test('native streaming IDs commit to JSONL and every timeline snapshot shows one
 test('SDK terminal tool uses broker IPC and plan mode blocks terminal creation before dispatch',{timeout:30000},async()=>{
  for(const planMode of [false,true]){const f=await start();try{let calls=0;f.child.on('message',(raw:any)=>{if(raw.type==='terminal.request'){calls++;assert.equal(raw.method,'create');f.child.send({type:'terminal.response',id:raw.id,result:{id:'service',owner:'agent',authorityEpoch:1}});}});await f.request('send',{text:'QA_TERMINAL',planMode});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));assert.equal(calls,planMode?0:1);const state=await f.request('state') as {messages:DisplayMessage[]};assert.ok(state.messages.some(m=>m.role==='toolResult'&&m.toolName==='friend_terminal'));if(planMode)assert.ok(state.messages.some(m=>m.text.includes('计划模式只允许读取')));
  }finally{await f.close();}}
+});
+
+test('desktop-managed SDK requires exact verified model before native input and plan decision', {timeout:30000},async()=>{
+ const f=await start({managed:true});try{const before=await f.request('state') as {sessionFile:string;messages:unknown[]};await assert.rejects(f.request('send',{text:'must not enter native history',ready:true}),/连接测试/);let after=await f.request('state') as {messages:unknown[]};assert.equal(after.messages.length,before.messages.length);const runtime=await createProviderRuntime(f.dataDir);await installFixtureProvider(runtime);registerSavedModel(f.dataDir,'friend-fixture/offline');await testConfiguredModel(runtime,f.dataDir,'friend-fixture/offline');await f.request('send',{text:'QA_PLAN_SUBMIT',planMode:true});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));const plan=await f.request('plan.read') as Record<string,unknown>;assert.ok(plan.id);const history=readFileSync(before.sessionFile,'utf8');invalidateProvider(f.dataDir,'friend-fixture');await assert.rejects(f.request('plan.approve',plan),/连接测试/);assert.equal(readFileSync(before.sessionFile,'utf8'),history);assert.deepEqual(await f.request('plan.read'),plan);await assert.rejects(f.request('send',{text:'also blocked'}),/连接测试/);}finally{await f.close();}
+});
+
+test('desktop-managed history remains readable when its selected model is missing; plugin inference is also gated', {timeout:30000},async()=>{
+ let f=await start({managed:true});try{const runtime=await createProviderRuntime(f.dataDir);await installFixtureProvider(runtime);registerSavedModel(f.dataDir,'friend-fixture/offline');await assert.rejects(f.request('plugin',{plugin:'swarm',action:'prepare',input:{goal:'must not call unverified model'}}),/连接测试/);await testConfiguredModel(runtime,f.dataDir,'friend-fixture/offline');await f.request('send',{text:'retained verified history'});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));const before=await f.request('state') as {sessionFile:string;messages:unknown[];models:{id:string}[]};assert.deepEqual(before.models.map(model=>model.id),['friend-fixture/offline']);const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'missing-provider/removed',managed:true});const after=await f.request('state') as {messages:unknown[];modelId:string};assert.equal(after.messages.length,before.messages.length);assert.equal(after.modelId,'missing-provider/removed');await assert.rejects(f.request('send',{text:'must not use fallback'}),/历史型号不可用/);await assert.rejects(f.request('plugin',{plugin:'expert',action:'validation.run',input:{id:'missing-guard'}}),/历史型号不可用/);assert.equal((await f.request('state') as {messages:unknown[]}).messages.length,before.messages.length);}finally{await f.close();}
 });

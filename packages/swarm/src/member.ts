@@ -6,7 +6,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { installFixtureProvider,object,digest } from '@friend-pi/core';
+import { installFixtureProvider,object,digest,requireReadyModel,dataDirectory,guardDesktopModelRequests } from '@friend-pi/core';
 import { guardMember } from './guard.js';
 import type { MemberInput, MemberOutput, MemberStart } from './types.js';
 
@@ -61,7 +61,8 @@ async function run(start:MemberStart): Promise<void> {
   if (process.env.FRIEND_PI_TEST_PROVIDER==='1') await installFixtureProvider(runtime);
   const slash = start.modelId?.indexOf('/') ?? -1;
   if (slash < 1) throw new Error('成员缺少冻结的模型配置');
-  const model = runtime.getModel(start.modelId!.slice(0,slash),start.modelId!.slice(slash+1));
+  let model = runtime.getModel(start.modelId!.slice(0,slash),start.modelId!.slice(slash+1));
+  if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')model=await requireReadyModel(runtime,dataDirectory(),start.modelId!);
   if (!model) throw new Error(`成员模型不可用：${start.modelId}`);
   const expert = start.expert && typeof start.expert === 'object' ? start.expert as Record<string,unknown> : undefined;
   const allowed=start.mode === 'read' ? ['read','grep','find','ls'] : ['read','write','edit','bash'];
@@ -87,12 +88,14 @@ async function run(start:MemberStart): Promise<void> {
     }});
   };
   const coordinationTools=start.reviewResult?['swarm_review_result']:['swarm_message','swarm_shared',...(expert&&!expert.unavailable?['friend_expert']:[])];
-  const settings = SettingsManager.inMemory({extensions:[],packages:[],defaultTools:tools});
+  guardDesktopModelRequests(runtime,dataDirectory());
+  const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
   const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
   session = created.session;
+  if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDirectory(),`${model.provider}/${model.id}`),context,options);}
   if(expert&&!start.reviewResult){
     session.sessionManager.appendCustomEntry('friend-pi.expert.run',{v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,frozen:expert});
     for(const raw of Array.isArray(expert.experts)?expert.experts:[]){const item=object(raw);if(!Array.isArray(expert.adoptedIds)||!expert.adoptedIds.includes(item.id))continue;const adoption={v:1,runId:start.attemptId,graphId:start.graphId,taskId:start.taskId,mode:'selected',id:item.id,version:item.version,hash:item.hash,snapshotHash:expert.hash,skills:(Array.isArray(item.skillContents)?item.skillContents:[]).map(raw=>{const skill=object(raw);return {path:skill.path,hash:skill.hash};}),toolScope:expert.toolScope};session.sessionManager.appendCustomEntry('friend-pi.expert.adoption',adoption);output({v:1,type:'expert.adopted',adoption,toolScope:Array.isArray(expert.toolScope)?expert.toolScope.map(String):undefined});}

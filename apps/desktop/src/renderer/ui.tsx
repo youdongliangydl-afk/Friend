@@ -58,22 +58,22 @@ export function Markdown({ text,basePath,workspace }: { text: string;basePath?:s
 }
 export function RichMessage({message}:{message:Message}){return <>{message.role==='user'?<p className="user-original">{message.userText??message.text}</p>:<Markdown text={message.text}/>} {(message.parts||[]).map((part,index)=>part.type==='thinking'?<details className="thinking-block" key={index}><summary>思考过程</summary><pre>{String(part.thinking||'')}</pre></details>:part.type==='toolCall'?<details className="history-tool" key={index}><summary>{String(part.name)} · {String(part.id)}</summary><JsonView value={part.arguments}/></details>:part.type==='image'&&/^image\/(png|jpeg|gif|webp)$/.test(String(part.mimeType))?<img className="message-image" key={index} src={`data:${part.mimeType};base64,${part.data}`} alt="原始消息附件"/>:null)}</>;}
 
-export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({ title, children, onClose, wide = false, className = '',closeDisabled=false }: {closeDisabled?:boolean; className?:string;title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   const ref = useRef<HTMLElement>(null);
   const titleId = useId();
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const element = ref.current;
-    (element?.querySelector<HTMLElement>('input, textarea, select') || element?.querySelector<HTMLElement>('button'))?.focus();
+    [...(element?.querySelectorAll<HTMLElement>('input,textarea,select,button')||[])].find(control=>control.getClientRects().length>0&&!control.hasAttribute('disabled'))?.focus();
     return () => previous?.focus();
   }, []);
-  return createPortal(<div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={ref} className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={event => {
-    if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
+  return createPortal(<div className="modal-backdrop" onMouseDown={event => { if (!closeDisabled&&event.target === event.currentTarget) onClose(); }}><section ref={ref} className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={event => {
+    if (event.key === 'Escape') { event.stopPropagation(); if(!closeDisabled)onClose(); }
     if (event.key === 'Tab') {
       const controls = [...(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]') || [])].filter(control=>control.getClientRects().length>0);
       const first = controls[0]; const last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
-  }}><div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭弹窗">×</button></div>{children}</section></div>, document.body);
+  }}><div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" disabled={closeDisabled} onClick={onClose} aria-label="关闭弹窗">×</button></div>{children}</section></div>, document.body);
 }
