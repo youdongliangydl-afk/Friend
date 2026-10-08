@@ -159,7 +159,8 @@ async function main() {
   cpSync(join(root, 'node_modules/electron/dist/Electron.app'), stagedApp, { recursive: true, dereference: false, verbatimSymlinks: true });
   const resources = join(stagedApp, 'Contents', 'Resources'); const appRoot = join(resources, 'app'); const runtime = join(resources, 'runtime'); mkdirSync(appRoot, { recursive: true }); mkdirSync(runtime, { recursive: true });
   if (existsSync(join(resources, 'default_app.asar'))) rmSync(join(resources, 'default_app.asar'));
-  copyDesktopBuild(join(root, 'apps/desktop/dist'), join(appRoot, 'apps/desktop/dist'));
+  const targetDesktop = join(appRoot, 'apps/desktop/dist');
+  copyDesktopBuild(join(root, 'apps/desktop/dist'), targetDesktop);
   for (const name of ['core', ...pluginNames]) copyOwnPackage(name, join(appRoot, 'packages', name));
   const closure = copyProductionDependencies(appRoot);
   copyOwnPackage('core', join(appRoot, 'node_modules/@friend-pi/core'));
