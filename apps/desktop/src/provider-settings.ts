@@ -19,5 +19,5 @@ export async function saveProviderConfiguration(runtime:ModelRuntime,dataDir:str
     const merged={id:modelId,name:catalog?.name||modelId,reasoning:catalog?.reasoning||false,input:catalog?.input||['text'],contextWindow:catalog?.contextWindow||32768,maxTokens:catalog?.maxTokens||4096,cost:catalog?.cost||{input:0,output:0,cacheRead:0,cacheWrite:0},...prior,...(typeof input.reasoning==='boolean'?{reasoning:input.reasoning}:{}),...(Array.isArray(input.input)?{input:input.input}:{}),...(typeof input.contextWindow==='number'?{contextWindow:input.contextWindow}:{})};
     providers[provider]={...previous,baseUrl,api:typeof input.api==='string'?input.api:previous.api||'openai-completions',models:[...priorModels.filter(model=>model.id!==modelId),merged]};atomicWrite(path,JSON.stringify({...config,providers},null,2));
   }
-  await runtime.refresh();if(input.apiKey){const key=text(input.apiKey,'Key',8192);await runtime.login(provider,'api_key',{prompt:async()=>key,notify:()=>{}});}await runtime.refresh();return provider;
+  await runtime.refresh({allowNetwork:false});if(input.apiKey){const key=text(input.apiKey,'Key',8192);await runtime.login(provider,'api_key',{prompt:async()=>key,notify:()=>{}});}await runtime.refresh({allowNetwork:false});return provider;
 }

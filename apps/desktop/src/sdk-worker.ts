@@ -245,7 +245,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='provider.save'||method==='provider.refresh'){
     if(!session.isIdle||swarmBusy())throw new Error('请先停止当前执行，再修改供应商配置');
-    const provider=method==='provider.save'?await saveProviderConfiguration(runtime,dataDir,input):typeof input.provider==='string'?input.provider:undefined;await runtime.refresh();
+    const provider=method==='provider.save'?await saveProviderConfiguration(runtime,dataDir,input):typeof input.provider==='string'?input.provider:undefined;await runtime.refresh({allowNetwork:false});
     if(method==='provider.save'&&provider){const available=await runtime.getAvailable(provider);if(available[0])await session.setModel(available[0]);}else if(session.model){const latest=runtime.getModel(session.model.provider,session.model.id);if(latest)await session.setModel(latest);}
     return {...current(),...modelState()};
   }
