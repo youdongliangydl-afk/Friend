@@ -37,7 +37,7 @@ const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await cr
 function requireActive(){if(shuttingDown)throw new Error('应用正在退出');}
 async function loadProviderMetadata(){const runtime=await getProviderRuntime();requireActive();await runtime.refresh({allowNetwork:false});requireActive();const metadata=await configuredModelMetadata(runtime,dataDir);models=metadata.models;providers=metadata.providers;}
 async function settings(projectId?:string){await loadProviderMetadata();return {preferences:preferences(projectId),globalPreferences:preferences(),projectOverrides:projectId?store.get(`preferences:${projectId}`)?.value:undefined,models,providers,paths:{dataDir},piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
-interface Worker {child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';terminalEpoch?:number;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
+interface Worker {child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';terminalEpoch?:number;terminalRequests?:Map<string,object>;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let selectedWorkspace:string|undefined;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
 let models:unknown[]=[];let providers:unknown[]=[];
 let learningReady=false;let learning:ChildProcess|undefined;let learningRestarts=0;const learningPending=new Map<string,{resolve:(v:unknown)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
@@ -66,7 +66,7 @@ function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.
 function publishState(){if(!shuttingDown)publish('state',state());}
 function persist(record:SessionRecord){if(storeClosed)throw new Error('应用已经退出');if(store.get(`deleting:${record.id}`))return;store.put(`session:${record.id}`,record);}
 function persistWorker(worker:Worker){worker.record.archived=store.get<SessionRecord>(`session:${worker.record.id}`)?.value.archived||false;const s=worker.state;worker.record.updatedAt=new Date().toISOString();if(typeof s.sessionFile==='string')worker.record.path=s.sessionFile;if(typeof s.sessionId==='string')worker.record.piSessionId=s.sessionId;if(typeof s.lifecycleStatus==='string')worker.record.status=s.lifecycleStatus;if(typeof s.modelId==='string')worker.record.modelId=s.modelId;if(typeof s.thinkingLevel==='string')worker.record.thinkingLevel=s.thinkingLevel;if(typeof s.executionMode==='string')worker.record.executionMode=s.executionMode;if(typeof s.planMode==='boolean')worker.record.planMode=s.planMode;if(typeof s.permissionMode==='string')worker.record.permissionMode=parsePermissionMode(s.permissionMode);persist(worker.record);}
-function retireWorker(worker:Worker,error:Error,interrupted=false):void {
+function retireWorker(worker:Worker,error:Error,interrupted=false):void {worker.terminalRequests?.clear();
   if(worker.phase==='stopping'||worker.phase==='exited')return;
   worker.phase='stopping';clearTimeout(worker.startupTimer);worker.rejectReady(error);
   for(const pending of worker.pending.values()){clearTimeout(pending.timer);pending.reject(error);}worker.pending.clear();
@@ -129,20 +129,22 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
       clearTimeout(worker.startupTimer);worker.phase='ready';worker.state=object(message.state);persistWorker(worker);resolveReady();publishState();
     }else if(message.type==='response'){
       const pending=worker.pending.get(String(message.id));if(!pending)return;clearTimeout(pending.timer);worker.pending.delete(String(message.id));if(message.error)pending.reject(new Error(String(message.error)));else pending.resolve(message.result);
+    }else if(message.type==='terminal.cancel'){worker.terminalRequests?.delete(String(message.id));
     }else if(message.type==='terminal.request'){
       const method=String(message.method);
       if(!['create','list','read','input','stop'].includes(method)||worker.record.archived){child.send({type:'terminal.response',id:message.id,error:'终端请求不允许'});return;}
+      const requestId=String(message.id);const requests=worker.terminalRequests||=new Map<string,object>();if(requests.has(requestId))return;const ticket={};requests.set(requestId,ticket);child.send({type:'terminal.waiting',id:requestId});
       void(async()=>{
         const epoch=worker.terminalEpoch||0,scopeRun=worker.state.runId,scopePermission=worker.state.permissionMode,scopeEpoch=worker.state.permissionEpoch,args=object(message.input||{}),readonly=worker.state.planMode===true||message.planMode===true;
         if(readonly&&!['list','read'].includes(method))throw new Error('计划模式只允许读取已有服务终端');
         if(['input','stop'].includes(method))await terminalBroker.request('read',args,terminalContext(worker.record,'agent',readonly));
         if(['create','input','stop'].includes(method)){
           const approval={operation:method==='create'?'启动服务终端':method==='input'?'输入终端命令':'停止服务终端',message:String(args.command||args.data||args.id||'服务终端'),autoEligible:method==='stop',requireExplicit:worker.record.workspace?.kind==='temporary'&&method!=='stop'};
-          if(!await request(worker,'permission.confirm',approval))throw new Error('用户未批准终端操作');
+          if(!await request(worker,'permission.confirm',{...approval,terminalRequestId:requestId}))throw new Error('用户未批准终端操作');
         }
-        const validate=()=>{if(worker.record.workspace?.kind==='temporary')sessionWorkspace(store,worker.record);if(['create','input','stop'].includes(method)&&((worker.terminalEpoch||0)!==epoch||worker.state.permissionEpoch!==scopeEpoch||worker.state.runId!==scopeRun||worker.state.permissionMode!==scopePermission||worker.phase!=='ready'||workers.get(record.id)!==worker||worker.record.archived||worker.state.planMode===true||worker.state.lifecycleStatus==='stopping'))throw new Error('终端操作已取消');};
-        validate();const result=await terminalBroker.request(method,args,terminalContext(worker.record,'agent',readonly),validate);if(child.connected)child.send({type:'terminal.response',id:message.id,result});
-      })().catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});});
+        const validate=()=>{if(requests.get(requestId)!==ticket)throw new Error('终端请求已失效');if(worker.record.workspace?.kind==='temporary')sessionWorkspace(store,worker.record);if(['create','input','stop'].includes(method)&&((worker.terminalEpoch||0)!==epoch||worker.state.permissionEpoch!==scopeEpoch||worker.state.runId!==scopeRun||worker.state.permissionMode!==scopePermission||worker.phase!=='ready'||workers.get(record.id)!==worker||worker.record.archived||worker.state.planMode===true||worker.state.lifecycleStatus==='stopping'))throw new Error('终端操作已取消');};
+        validate();const result=await terminalBroker.request(method,args,terminalContext(worker.record,'agent',readonly),()=>{validate();child.send({type:'terminal.admitted',id:requestId});});if(child.connected)child.send({type:'terminal.response',id:message.id,result});
+      })().catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});}).finally(()=>{if(requests.get(requestId)===ticket)requests.delete(requestId);});
     }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
     else if(message.type==='event'){
       const event=object(message.event);if(event.type==='state'){worker.state=object(event.data);persistWorker(worker);const next=pendingConfigurations.get(worker.record.id);if(next&&!worker.state.isRunning){pendingConfigurations.delete(worker.record.id);void request(worker,'configure',next).then(raw=>{worker.state=object(raw);worker.record.plugins=next.plugins;persistWorker(worker);publishState();}).catch(error=>publish('notice',{level:'error',message:String(error)},worker.record.id));}publishState();}

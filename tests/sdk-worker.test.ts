@@ -328,3 +328,21 @@ test('temporary backend initialization cannot write logs through an outside .pi 
 test('temporary backend rechecks its actual runtime output subdirectory before each job',{timeout:30000},async()=>{
  const root=mkdtempSync(join(tmpdir(),'friend-temporary-run-dir-')),directory=join(root,'session'),outside=join(root,'outside');mkdirSync(directory);mkdirSync(outside);const f=await start({directory,temporary:true,permissionMode:'allPermissions'});try{const fs=await import('node:fs');const tasks=join(directory,'.pi/tasks'),run=fs.readdirSync(tasks)[0];assert.ok(run);fs.renameSync(join(tasks,run),join(tasks,run+'-old'));fs.symlinkSync(outside,join(tasks,run));const admission=f.request('runtime',{action:'jobs.run',input:{command:'node --version'}});const rejected=assert.rejects(admission,/产物路径/);await f.wait(()=>f.events.some(e=>e.event?.type==='dialog'));const d=f.events.find(e=>e.event?.type==='dialog')!.event!.data;await f.request('dialog.respond',{id:d.id,confirmed:true});await rejected;assert.deepEqual(fs.readdirSync(outside),[]);assert.deepEqual(await f.request('runtime',{action:'jobs.list'}),[]);}finally{await f.close();rmSync(root,{recursive:true,force:true});}
 });
+
+
+test('service terminal remains pending while user approval exceeds the execution deadline',{timeout:40000},async()=>{
+ const f=await start({temporary:true});try{
+  f.child.on('message',(raw:any)=>{if(raw.type!=='terminal.request')return;f.child.send({type:'terminal.waiting',id:raw.id});void f.request('permission.confirm',{operation:'启动服务终端',message:'fixture service',requireExplicit:true,terminalRequestId:raw.id}).then(approved=>{f.child.send({type:'terminal.admitted',id:raw.id});f.child.send({type:'terminal.response',id:raw.id,...(approved?{result:{id:'delayed-service',owner:'agent',authorityEpoch:1}}:{error:'未批准'})});});});
+  await f.request('send',{text:'QA_TERMINAL'});await f.wait(()=>f.events.some(e=>e.event?.type==='dialog'));
+  await new Promise(done=>setTimeout(done,21000));const before=await f.request('state') as {isRunning:boolean;messages:DisplayMessage[]};assert.equal(before.isRunning,true);assert.equal(before.messages.some(m=>m.role==='toolResult'&&m.toolName==='friend_terminal'),false);
+  const dialog=f.events.find(e=>e.event?.type==='dialog')!.event!.data;await f.request('dialog.respond',{id:dialog.id,confirmed:true});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {messages:DisplayMessage[]};assert.ok(state.messages.some(m=>m.role==='toolResult'&&m.toolName==='friend_terminal'&&!m.isError));
+ }finally{await f.close();}
+});
+
+test('stopping a pending service terminal cancels its desktop admission promptly',{timeout:10000},async()=>{
+ const f=await start();try{let id='';f.child.on('message',(raw:any)=>{if(raw.type==='terminal.request'){id=raw.id;f.child.send({type:'terminal.waiting',id});}});await f.request('send',{text:'QA_TERMINAL'});await f.wait(()=>!!id);
+  await Promise.race([f.request('stop'),new Promise((_,no)=>setTimeout(()=>no(Error('stop waited on terminal approval')),1500))]);assert.ok(f.events.some(e=>e.type==='terminal.cancel'&&e.id===id));
+  f.child.send({type:'terminal.response',id,result:{id:'late-reply'}});const state=await f.request('state') as {isRunning:boolean};assert.equal(state.isRunning,false);
+ }finally{await f.close();}
+});

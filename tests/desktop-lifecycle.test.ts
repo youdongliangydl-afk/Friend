@@ -193,3 +193,22 @@ test('failed host cleanup retains the browser controller; successful retry destr
   assert.equal(f.quitCalls,1);assert.equal(hidden,2);assert.equal(destroyed,1);
  }finally{f.cleanup();}
 });
+
+
+test('cancelled SDK terminal admission cannot start after a late permission answer',async()=>{
+ const f=fixture();try{const a=await temporary(f);let allow!:(value:boolean)=>void;f.control.permissionGate=new Promise(done=>allow=done);
+  a.child.emit('message',{type:'terminal.request',id:'expired-terminal',method:'create',input:{command:'fixture service'}});await f.flush();
+  assert.ok(a.child.commands.some((m:any)=>m.type==='terminal.waiting'&&m.id==='expired-terminal'));
+  a.child.emit('message',{type:'terminal.cancel',id:'expired-terminal'});allow(true);await f.flush();await f.flush();
+  assert.equal(f.control.terminalRequests.length,0);assert.ok(a.child.commands.some((m:any)=>m.type==='terminal.response'&&m.id==='expired-terminal'&&m.error?.includes('失效')));
+ }finally{f.cleanup();}
+});
+
+
+test('cancelled terminal admission stays cancelled through delayed broker startup',async()=>{
+ const f=fixture();try{const a=await temporary(f);let ready!:()=>void;const gate=new Promise<void>(done=>ready=done);f.control.terminalGate=()=>gate;
+  a.child.emit('message',{type:'terminal.request',id:'cancel-host',method:'create',input:{command:'fixture service'}});await f.flush();
+  a.child.emit('message',{type:'terminal.cancel',id:'cancel-host'});ready();await f.flush();await f.flush();
+  assert.equal(f.control.terminalRequests.length,0);assert.equal(a.child.commands.some((m:any)=>m.type==='terminal.admitted'&&m.id==='cancel-host'),false);
+ }finally{f.cleanup();}
+});
