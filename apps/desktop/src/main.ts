@@ -1,3 +1,5 @@
+import {BrowserHost} from './browser-host.js';
+import {initialView,validateView,type LayoutMode,type BrowserScope,type SessionViewState} from './session-view.js';
 import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} from './terminal-processes.js';
 import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
@@ -27,8 +29,8 @@ const store=new RecordStore('desktop',dataDir);
 interface SessionRecord {id:string;projectId:string;workspace?:WorkspaceRef;workspaceDir?:string;name:string;path?:string;piSessionId?:string;archived?:boolean;updatedAt:string;modelId?:string;thinkingLevel?:string;plugins?:string[];status?:string;executionMode?:string;planMode?:boolean}
 const pluginNames=['swarm','expert','memory','topic-rebuild'];
 const thinkingLevels=['off','minimal','low','medium','high','xhigh','max'];
-interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
-const preferenceDefaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,contextMode:'native',backgroundModelId:''};
+interface Preferences {defaultLayoutMode:LayoutMode;defaultBrowserScope:BrowserScope;defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
+const preferenceDefaults:Preferences={defaultLayoutMode:'standard',defaultBrowserScope:'app',defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,contextMode:'native',backgroundModelId:''};
 function preferences(projectId?:string):Preferences{return {...preferenceDefaults,...store.get<Partial<Preferences>>('preferences')?.value,...(projectId?store.get<Partial<Preferences>>(`preferences:${projectId}`)?.value:{})};}
 let providerRuntime:Promise<ProviderRuntime>|undefined;
 const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await createProviderRuntime(dataDir);if(process.env.FRIEND_PI_TEST_PROVIDER==='1'){await installFixtureProvider(runtime);registerSavedModel(dataDir,'friend-fixture/offline');}return runtime;})();
@@ -44,6 +46,7 @@ function startLearning(){if(shuttingDown||learning)return;processSnapshot();lear
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('link.open');allowed.add('model.test');
+for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload','composer.sync'])allowed.add(method);
 for(const method of ['session.promote','project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
 for(const method of ['create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
@@ -51,10 +54,14 @@ function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boo
 const deletionPreviews=new Map<string,{token:string;updatedAt:string}>();
 const pendingConfigurations=new Map<string,{plugins:string[];contextMode:string}>();
 function idleRecord(input:Record<string,unknown>){const id=text(input.id),record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record||store.get(`deleting:${id}`))throw new Error('会话不存在或已删除');const active=workers.get(id);if(active&&(active.phase==='starting'||active.state.isRunning||active.state.lifecycleStatus==='stopping'))throw new Error('请先停止前台和 Swarm 执行');return {record,active};}
-async function chooseAfterArchive(projectId:string){const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];currentId=undefined;store.remove('current');if(recent){try{await startWorker(recent);currentId=recent.id;store.put('current',recent.id);}catch{publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}}
+async function chooseAfterArchive(projectId:string){const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];selectCurrent(undefined);store.remove('current');if(recent){try{await startWorker(recent);selectCurrent(recent.id);store.put('current',recent.id);}catch{publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}}
 function records(){return store.list<SessionRecord>('session:').map(row=>row.value);}
 function projects(){return orderedProjects(store.list<Project>('project:').map(row=>row.value),store.get<string[]>('project-order')?.value||[]);}
-function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {projects:projects(),sessions:records(),current:worker?{...worker.state,pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
+function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {projects:projects(),sessions:records(),current:worker?{...worker.state,pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,ui:viewContext(worker.record.id).ui,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
+let browserHost:BrowserHost|undefined;
+function selectCurrent(id:string|undefined){if(id!==currentId)browserHost?.hide();currentId=id;}
+function viewContext(id:string){const record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不存在');return {id,workspacePath:sessionWorkspace(store,record).path,ui:store.get<SessionViewState>('session-ui:'+id)?.value||initialView()};}
+function saveView(id:string,ui:SessionViewState){viewContext(id);const next=validateView(ui);store.put('session-ui:'+id,next);publish('view',next,id);return next;}
 function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.isDestroyed())window.webContents.send('friend-pi:event',{type,data,sessionId});}
 function publishState(){if(!shuttingDown)publish('state',state());}
 function persist(record:SessionRecord){if(storeClosed)throw new Error('应用已经退出');if(store.get(`deleting:${record.id}`))return;store.put(`session:${record.id}`,record);}
@@ -163,11 +170,30 @@ async function finishDeletion(mark:Deletion){
  for(const file of mark.files||[]){if(file&&existsSync(file)){const rel=relative(realpathSync(dataDir),realpathSync(file));if(!rel.startsWith('..')&&!isAbsolute(rel))unlinkSync(file);}}
  for(const graphId of mark.graphIds||[]){if(!/^[A-Za-z0-9_-]+$/.test(graphId))continue;const dir=join(dataDir,'swarm-shared',graphId);if(existsSync(dir))for(const entry of readdirSync(dir,{withFileTypes:true})){const file=join(dir,entry.name);if(entry.isFile()&&realpathSync(file).startsWith(realpathSync(dir)+'/'))unlinkSync(file);}}
  const goalIds=store.db.prepare("SELECT json FROM documents WHERE namespace='goal-journal'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value&&typeof value==='object'&&(mark.nativeIds||[]).includes(value.sessionId)).map(value=>String(value.id));const taskIds=store.db.prepare("SELECT json FROM documents WHERE namespace='task-journal'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value&&typeof value==='object'&&(mark.nativeIds||[]).includes(value.sessionId)).map(value=>String(value.id));
- store.transaction(()=>{for(const namespace of ['sessions','topic-rebuild','plans','diff','swarm','memory','goal-journal','task-journal','runtime-wake','runtime-activity','process-jobs','swarm-workflow','expert']){const rows=store.db.prepare('SELECT key,json FROM documents WHERE namespace=?').all(namespace);for(const row of rows){if(namespace==='sessions'&&String(row.key).startsWith('tombstone:'))continue;const value=JSON.parse(String(row.json));if((mark.nativeIds||[]).some(id=>value.sessionId===id||value.field?.sessionId===id||row.key===id||String(row.key).endsWith(':'+id)||String(row.key).includes(':'+id+':'))||(mark.graphIds||[]).includes(value.graphId)||namespace==='goal-journal'&&goalIds.some(id=>String(row.key).startsWith(`write:${id}:`))||namespace==='task-journal'&&(goalIds.some(id=>String(row.key).includes(':'+id+':'))||taskIds.some(id=>row.key===`execution-evidence:${id}`)))store.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(namespace,String(row.key));}}for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(nativeId||'');for(const sourceId of (mark.nativeIds||[]).filter(id=>id!==nativeId))for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(sourceId);store.remove(`session:${mark.id}`);store.put(`deleting:${mark.id}`,{...mark,state:'complete'});});
+ store.transaction(()=>{for(const namespace of ['sessions','topic-rebuild','plans','diff','swarm','memory','goal-journal','task-journal','runtime-wake','runtime-activity','process-jobs','swarm-workflow','expert']){const rows=store.db.prepare('SELECT key,json FROM documents WHERE namespace=?').all(namespace);for(const row of rows){if(namespace==='sessions'&&String(row.key).startsWith('tombstone:'))continue;const value=JSON.parse(String(row.json));if((mark.nativeIds||[]).some(id=>value.sessionId===id||value.field?.sessionId===id||row.key===id||String(row.key).endsWith(':'+id)||String(row.key).includes(':'+id+':'))||(mark.graphIds||[]).includes(value.graphId)||namespace==='goal-journal'&&goalIds.some(id=>String(row.key).startsWith(`write:${id}:`))||namespace==='task-journal'&&(goalIds.some(id=>String(row.key).includes(':'+id+':'))||taskIds.some(id=>row.key===`execution-evidence:${id}`)))store.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(namespace,String(row.key));}}for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(nativeId||'');for(const sourceId of (mark.nativeIds||[]).filter(id=>id!==nativeId))for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(sourceId);store.remove(`session-ui:${mark.id}`);store.remove(`session:${mark.id}`);store.put(`deleting:${mark.id}`,{...mark,state:'complete'});});
  if(currentId===mark.id)await chooseAfterArchive(mark.listProjectId??mark.projectId);return {deleted:true,id:mark.id,piSessionId:nativeId};
 }
 async function applyPreferenceSnapshots(projectId?:string){for(const active of workers.values())if(!active.record.archived&&(!projectId||active.record.projectId===projectId)){const effective=preferences(active.record.projectId),next={plugins:effective.defaultPlugins,contextMode:effective.contextMode};if(active.state.isRunning||active.state.lifecycleStatus==='stopping')pendingConfigurations.set(active.record.id,next);else {active.state=object(await request(active,'configure',next));active.record.plugins=effective.defaultPlugins;persistWorker(active);}}}
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
+  requireActive();
+  if(method==='session.ui.get')return viewContext(text(input.sessionId)).ui;
+  if(method==='session.ui.update'){
+    const id=text(input.sessionId),prior=viewContext(id).ui;let next=validateView(input.ui);
+    if(prior.browserScope!==next.browserScope&&prior.tabs.some(t=>t.kind==='browser')&&input.confirmReload!==true)throw new Error('更改登录范围需要确认重新加载网页');
+    const live=browserHost?.snapshot(id).tabs||[];
+    next={...next,tabs:next.tabs.map(t=>{const current=live.find(e=>e.id===t.id);return t.kind==='browser'&&current?{...t,url:current.url,title:current.title}:t;})};
+    saveView(id,next);browserHost?.reconcile(id,next,prior.browserScope!==next.browserScope);return next;
+  }
+  if(method.startsWith('browser.')||method==='composer.sync'){
+    const id=text(input.sessionId);viewContext(id);if(id!==currentId)throw new Error('会话已切换');if(!browserHost)throw new Error('浏览器尚未就绪');
+    if(method==='browser.list')return browserHost.snapshot(id);
+    if(method==='browser.present'){browserHost.present(id,text(input.tabId||'none'),input.bounds as Electron.Rectangle|undefined);return {ok:true};}
+    if(method==='browser.navigate'){await browserHost.navigate(id,text(input.tabId),text(input.url));return browserHost.snapshot(id);}
+    if(method==='browser.action'){browserHost.action(id,text(input.tabId),text(input.action));return {ok:true};}
+    if(method==='browser.cancelDownload'){browserHost.cancelDownload(id,text(input.id));return {ok:true};}
+    if(method==='composer.sync'){browserHost.syncComposer(id,object(input.snapshot),input.bounds as Electron.Rectangle|undefined);return {ok:true};}
+  }
+
   requireActive();
   if(method==='app.state'){await loadProviderMetadata();return state();}
   if(method.startsWith('terminal.')){const id=text(input.sessionId||currentId),record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不可用');if(record.archived&&!['terminal.list','terminal.read'].includes(method))throw new Error('归档会话为只读');return await terminalBroker.request(method.slice(9),input,terminalContext(record,'user'));}
@@ -180,14 +206,16 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.delete'){
     const id=text(input.id),existing=store.get<Deletion>(`deleting:${id}`)?.value;if(existing){if(existing.token!==input.token)throw new Error('删除确认已失效');if(existing.state==='complete')return {deleted:true,id};const result=await finishDeletion(existing);publishState();return result;}
     const {record}=idleRecord(input),preview=deletionPreviews.get(record.id);if(!preview||preview.token!==input.token||preview.updatedAt!==record.updatedAt)throw new Error('删除预览已变化，请重新确认');deletionPreviews.delete(record.id);let nativeId=record.piSessionId;if(!nativeId&&record.path&&existsSync(record.path)){try{const header=JSON.parse(readFileSync(record.path,'utf8').split('\n')[0]);if(header.type==='session'&&typeof header.id==='string')nativeId=header.id;}catch{}}
-    const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:sessionWorkspace(store,record).id,workspaceDir:sessionWorkspace(store,record).path,listProjectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
+    browserHost?.removeSession(record.id);const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:sessionWorkspace(store,record).id,workspaceDir:sessionWorkspace(store,record).path,listProjectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
   }
-  if(method==='session.relocate'){const {record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});currentId=record.id;store.put('current',record.id);publishState();return state();}
+  if(method==='session.relocate'){const {record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});selectCurrent(record.id);store.put('current',record.id);publishState();return state();}
   if(method==='settings.get')return await settings(typeof input.projectId==='string'?input.projectId:undefined);
   if(method==='settings.update'){
     const projectId=typeof input.projectId==='string'?input.projectId:undefined;if(projectId&&!store.get(`project:${projectId}`))throw new Error('项目不存在');const key=projectId?`preferences:${projectId}`:'preferences';
     if(input.reset===true&&projectId){store.remove(key);await applyPreferenceSnapshots(projectId);await learningRequest('refresh').catch(()=>{});publishState();return await settings(projectId);}
     const next={...preferences(projectId)};
+    if(input.defaultLayoutMode!==undefined){if(!['standard','fullscreen'].includes(String(input.defaultLayoutMode)))throw new Error('默认布局无效');next.defaultLayoutMode=input.defaultLayoutMode as LayoutMode;}
+    if(input.defaultBrowserScope!==undefined){if(!['app','project','session'].includes(String(input.defaultBrowserScope)))throw new Error('默认浏览器登录范围无效');next.defaultBrowserScope=input.defaultBrowserScope as BrowserScope;}
     if(input.defaultModelId!==undefined){const id=String(input.defaultModelId);if(id&&!(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.some(model=>model.id===id&&model.ready))throw new Error('默认型号不可用');next.defaultModelId=id;}
     if(input.defaultThinkingLevel!==undefined){if(!thinkingLevels.includes(String(input.defaultThinkingLevel)))throw new Error('思考等级无效');next.defaultThinkingLevel=String(input.defaultThinkingLevel);}
     if(input.defaultPlugins!==undefined){if(!Array.isArray(input.defaultPlugins)||input.defaultPlugins.some(name=>!pluginNames.includes(String(name))))throw new Error('插件无效');next.defaultPlugins=[...new Set(input.defaultPlugins.map(String))];}
@@ -229,16 +257,16 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
     const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(dataDir,id);
     const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels.find(level=>level===defaults.defaultThinkingLevel)||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels[0]||'off',plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode};
-    persist(record);currentId=record.id;store.put('current',currentId);await startWorker(record);publishState();return state();
+    store.put('session-ui:'+id,initialView(defaults));persist(record);selectCurrent(record.id);store.put('current',currentId);await startWorker(record);publishState();return state();
   }
   if(method==='project.select'){
     const projectId=typeof input.projectId==='string'?input.projectId:'';if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
     const recent=records().filter(record=>record.projectId===projectId&&!record.archived).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
     if(recent)return await handle('session.open',{id:recent.id});
-    currentId=undefined;store.remove('current');publishState();return state();
+    selectCurrent(undefined);store.remove('current');publishState();return state();
   }
   if(method==='session.open'){
-    const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();currentId=id;store.put('current',id);publishState();return state();
+    const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();selectCurrent(id);store.put('current',id);publishState();return state();
   }
   if(method==='session.rename'){
     const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker){worker.record.name=record.name;await request(worker,'rename',{name:record.name});}publishState();return state();
@@ -281,6 +309,9 @@ else {
     await loadProviderMetadata();startLearning();for(const mark of store.list<Deletion>('deleting:').map(row=>row.value))if(mark.state==='preparing'||mark.memoryPending)await finishDeletion(mark).catch(error=>publish('notice',{level:'warning',message:'删除清理待恢复：'+String(error)}));
     const qaWidth=Number(process.env.FRIEND_PI_QA_WIDTH);const qaHeight=Number(process.env.FRIEND_PI_QA_HEIGHT);
     window=new BrowserWindow({title:'Friend-Pi',titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},width:Number.isInteger(qaWidth)&&qaWidth>=680?qaWidth:1320,height:Number.isInteger(qaHeight)&&qaHeight>=550?qaHeight:860,minWidth:680,minHeight:550,backgroundColor:'#f7f8fb',webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+    browserHost=new BrowserHost(window,root,viewContext,saveView,publish);
+    ipcMain.handle('friend-composer:ready',async event=>{if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');return browserHost.readyOverlay();});
+    ipcMain.handle('friend-composer:action',async(event,raw:unknown)=>{if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');const input=object(raw);if(input.sessionId!==currentId)throw new Error('会话已切换');browserHost.overlayAction(input);return {ok:true};});
     window.on('close',event=>{if(!shuttingDown){event.preventDefault();window.hide();}});
     Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Friend-Pi',submenu:[{role:'about'},{type:'separator'},{role:'quit'}]},{label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'显示',submenu:[{role:'reload'},{role:'toggleDevTools'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'}]}]));
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
@@ -288,7 +319,7 @@ else {
       if(event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame)throw new Error('请求来源无效');if(typeof method!=='string'||!allowed.has(method))throw new Error('客户端操作无效');return await handle(method,object(raw||{}));
     });
     await window.loadFile(join(__dirname,'renderer','index.html'));
-    const previous=currentId?store.get<SessionRecord>(`session:${currentId}`)?.value:undefined;if(previous&&!previous.archived&&!store.get(`deleting:${previous.id}`))void startWorker(previous).catch(error=>publish('notice',{level:'error',message:String(error)},previous.id));else {currentId=undefined;store.remove('current');}
+    const previous=currentId?store.get<SessionRecord>(`session:${currentId}`)?.value:undefined;if(previous&&!previous.archived&&!store.get(`deleting:${previous.id}`))void startWorker(previous).catch(error=>publish('notice',{level:'error',message:String(error)},previous.id));else {selectCurrent(undefined);store.remove('current');}
     if(shuttingDown)return;
     if(currentId){const record=store.get<SessionRecord>(`session:${currentId}`)?.value;if(record)try{await startWorker(record);}catch(error){publish('notice',{level:'error',message:String(error)});}}
     publishState();
@@ -300,6 +331,7 @@ else {
     void (async()=>{
       const children=[...liveWorkers];let hostCleanupFailed=false;const closing=new Error('应用正在退出，执行已中断；未自动重放请求');
       try {
+        browserHost?.destroy();
         await terminalBroker.shutdown().catch(error=>{hostCleanupFailed=true;publish('notice',{level:'error',message:String(error)});});
         await learningRequest('shutdown',{},3000).catch(()=>{});
         if(learningOwned.size){try{if(!await terminateOwned(learningOwned.values(),learningOwned))throw new Error('后台学习宿主清理未能核实');learningOwned.clear();}catch(error){hostCleanupFailed=true;publish('notice',{level:'error',message:String(error)});}}

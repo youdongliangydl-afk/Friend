@@ -1,3 +1,4 @@
+import * as sessionView from '../apps/desktop/src/session-view.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -42,6 +43,8 @@ function fixture(){
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
       if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted};
+      if(specifier==='./session-view.js')return sessionView;
+      if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
@@ -159,3 +162,5 @@ test('unavailable ownership inspection fails before creating an SDK child',async
 test('terminal cleanup failure keeps the application and permits a later verified quit',async()=>{const f=fixture();try{f.control.terminalFailures=1;const event={preventDefault(){}};f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,0);assert.equal(f.api.isClosed(),false);f.app.emit('before-quit',event);await f.flush();assert.equal(f.quitCalls,1);assert.equal(f.api.isClosed(),true);}finally{f.cleanup();}});
 
 test('a late ownership handshake cannot initialize SDK while quit waits for terminal cleanup',async()=>{const f=fixture();try{let release!:()=>void;f.control.terminalGate=()=>new Promise<void>(yes=>{release=yes;});const starting=f.api.startWorker(f.record('late-handshake')),stopped=assert.rejects(starting,/启动授权已失效/);const child=f.children[0];f.app.emit('before-quit',{preventDefault(){}});await f.flush();child.emit('message',{type:'supervisor.await'});await stopped;assert.equal(child.commands.some((message:any)=>message.type==='supervisor.ready'),false);release();await f.flush();assert.equal(f.quitCalls,1);}finally{f.cleanup();}});
+
+ test('session view state is isolated from Pi history and defaults only initialize new sessions',async()=>{const f=fixture();try{const a=f.record('ui-a'),b=f.record('ui-b'),before=fs.readFileSync(a.path,'utf8');const legacy=await f.api.handle('session.ui.get',{sessionId:a.id});assert.equal(legacy.mode,'standard');const next={...legacy,mode:'fullscreen',browserScope:'session',tabs:[{id:'diff-ui',kind:'tool',page:'diff'}],active:'diff-ui'};await f.api.handle('session.ui.update',{sessionId:a.id,ui:next});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');assert.equal(fs.readFileSync(a.path,'utf8'),before);assert.equal(f.api.store.get('session-ui:'+a.id).value.browserScope,'session');await f.api.handle('settings.update',{defaultLayoutMode:'fullscreen',defaultBrowserScope:'project'});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');await assert.rejects(f.api.handle('session.ui.update',{sessionId:a.id,ui:{...next,tabs:[{id:'web-ui',kind:'browser',url:'https://example.com'}],active:'missing'}}),/不存在/);}finally{f.cleanup();}});
