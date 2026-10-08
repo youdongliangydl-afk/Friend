@@ -57,7 +57,7 @@ export function FileWorkspace({ workspace, workspaceKey, cache, material, report
   workspace: WorkspaceRef; workspaceKey: string; cache: FileWorkspaceCache; material?: Material; report(message: string, error?: boolean): void;
 }) {
   if (!cache.has(workspaceKey)) cache.set(workspaceKey, { directories: new Map(), expanded: new Set(['']), documents: [], selected: '', preview: false, next: new Map() });
-  const state = cache.get(workspaceKey)!;
+  const state = cache.get(workspaceKey)!,tabs=useRef<HTMLDivElement>(null);
   const [, redraw] = useState(0), [query, setQuery] = useState(''),[location,setLocation]=useState<{path:string;line?:number}>(), [saving, setSaving] = useState(false);
   const [search,setSearch]=useState<Entry[]>([]),[searchTruncated,setSearchTruncated]=useState(false);
   useEffect(()=>{let active=true;const timer=setTimeout(()=>{if(query.trim())void window.friendPi.request('file.search',{workspace,query}).then(raw=>{if(active){const result=asObject(raw);setSearch(asList<Entry>(result.entries));setSearchTruncated(result.truncated===true);}}).catch(error=>report(String(error),true));else setSearch([]);},160);return()=>{active=false;clearTimeout(timer);};},[query,workspaceKey]);
@@ -98,6 +98,7 @@ export function FileWorkspace({ workspace, workspaceKey, cache, material, report
     }
   }, [material, workspaceKey]);
   const selected = state.documents.find(doc => doc.path === state.selected);
+  useEffect(()=>{tabs.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({block:'nearest',inline:'nearest'});},[state.selected,state.documents.length]);
   const save = async (doc: Document, expectedHash = doc.hash) => {
     if (!doc.editable || saveLock.current) return false;
     saveLock.current=true;saveEpoch.current++;setSaving(true);
@@ -145,7 +146,7 @@ export function FileWorkspace({ workspace, workspaceKey, cache, material, report
   return <div className="editable-workspace">
     <div className="file-workspace-toolbar"><input aria-label="查找项目文件" placeholder="查找项目文件…" value={query} onChange={event => setQuery(event.target.value)}/><button aria-label="刷新目录" onClick={() => { state.directories.clear();state.expanded=new Set(['']);state.next.clear(); void loadDirectory(''); }}>↻</button></div>
     <div className="file-workspace-body"><details className="directory-browser" open><summary>项目文件</summary><div className="directory-scroll">{query.trim()?<>{search.map(entry=><button key={entry.path} className="tree-entry" onClick={()=>void load(entry.path)}>{entry.path}</button>)}{searchTruncated&&<p>搜索已达 2000 项上限，请展开目录定位。</p>}</>:tree('')}{!query.trim()&&state.next.has('') && <button onClick={() => void loadDirectory('', state.next.get(''))}>更多文件…</button>}</div></details>
-    <div className="file-document"><div className="material-tabs" role="tablist">{state.documents.map(doc => <div className="editor-tab" key={doc.path}>
+    <div className="file-document"><div ref={tabs} className="material-tabs" role="tablist">{state.documents.map(doc => <div className="editor-tab" key={doc.path}>
       <button role="tab" aria-selected={state.selected === doc.path} title={doc.path} onClick={() => { state.selected = doc.path; update(); }}>{doc.path.split('/').at(-1)}{doc.content !== doc.original ? ' ●' : ''}</button>
       <button aria-label={'关闭文件 ' + doc.path} onClick={() => doc.content !== doc.original ? setCloseDoc(doc) : remove(doc)}>×</button></div>)}</div>
       {selected ? <><div className="file-caption">{selected.path}</div><div className="editor-actions">

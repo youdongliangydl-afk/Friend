@@ -4,7 +4,7 @@
 .project-tab{transition:background .15s,transform .15s}.project-tab.drop-before{box-shadow:-3px 0 #397961}.project-tab.drop-after{box-shadow:3px 0 #397961}
 .timeline-tool summary{display:flex;align-items:center;gap:8px}.timeline-tool strong{flex:1}
 .expand-workbench{position:absolute;right:48px;top:21px;z-index:2;font-size:11px}.workspace{position:relative!important}
-.workbench-expanded .workspace{position:absolute!important;left:calc(var(--sidebar-width) + 28px);right:10px;top:68px;bottom:10px;z-index:45;width:auto!important;box-shadow:0 16px 60px #24312630}
+.workbench-expanded .workspace{grid-area:auto!important;position:absolute!important;left:calc(var(--sidebar-width) + 28px);right:10px;top:68px;bottom:10px;z-index:45;width:auto!important;box-shadow:0 16px 60px #24312630}
 .workbench-expanded.sidebar-hidden .workspace{left:10px}
 .editable-workspace{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .file-workspace-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e0e7df}.file-workspace-toolbar input{min-width:0;flex:1;margin:0}
