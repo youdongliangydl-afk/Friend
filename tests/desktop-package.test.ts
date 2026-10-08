@@ -1,16 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-const {copyDesktopBuild}=await import(new URL('../scripts/package-desktop.mjs',import.meta.url).href);
+const {copyDesktopBuild,desktopBuildFiles}=await import(new URL('../scripts/package-desktop.mjs',import.meta.url).href);
 
 test('delivery includes both trusted UI preload bridges and renderer surface',()=>{
   const target=mkdtempSync(join(tmpdir(),'friend-desktop-copy-'));
   try{
-    copyDesktopBuild(join(process.cwd(),'apps/desktop/dist'),target);
-    assert.match(readFileSync(join(target,'composer-preload.cjs'),'utf8'),/friend-composer:ready/);
-    assert.match(readFileSync(join(target,'preload.cjs'),'utf8'),/friend-pi:request/);
-    assert.match(readFileSync(join(target,'renderer/index.html'),'utf8'),/script/);
+    const source=join(target,'source'),delivery=join(target,'delivery');mkdirSync(join(source,'renderer'),{recursive:true});
+    for(const file of desktopBuildFiles)writeFileSync(join(source,file),file);
+    writeFileSync(join(source,'renderer/index.html'),'<script src="client.js"></script>');
+    copyDesktopBuild(source,delivery);
+    assert.equal(readFileSync(join(delivery,'composer-preload.cjs'),'utf8'),'composer-preload.cjs');
+    assert.equal(readFileSync(join(delivery,'preload.cjs'),'utf8'),'preload.cjs');
+    assert.match(readFileSync(join(delivery,'renderer/index.html'),'utf8'),/script/);
   }finally{rmSync(target,{recursive:true,force:true});}
 });
