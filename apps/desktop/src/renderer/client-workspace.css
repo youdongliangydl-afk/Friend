@@ -36,6 +36,6 @@
 
 .project-tab-group{display:flex;align-items:center;min-width:0;flex:1;gap:8px}.project-tab-group>.temporary-tab{flex:none}.markdown img{max-width:100%;height:auto}.directory-browser{resize:horizontal;overflow:auto;min-width:130px;max-width:70%}
 
-.project-strip-shell,.project-tab-group,.project-tabs{-webkit-app-region:no-drag!important}.project-tab{touch-action:none;user-select:none}
+.project-strip-shell,.project-tab-group{-webkit-app-region:drag}.project-strip-shell .project-tabs{flex:0 1 auto;max-width:100%;-webkit-app-region:no-drag!important}.project-tab{touch-action:none;user-select:none}
 
 .friend-layout .sidebar-settings{flex-shrink:0;margin-top:auto}
