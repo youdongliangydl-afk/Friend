@@ -135,17 +135,12 @@ export function learningHostAvailable(dataDir:string):boolean {
 }
 const REQUEST = 'friend-pi:v1:request';
 const RESPONSE = 'friend-pi:v1:response';
-export function requestPlugin(bus: Bus, plugin: string, action: string, input: JsonObject = {}, timeoutMs = 120000, origin: 'user'|'plugin' = 'plugin'): Promise<unknown> {
-  const id = randomUUID();
-  return new Promise((resolveResult,reject) => {
-    const off = bus.on(RESPONSE, raw => {
-      if (!raw || typeof raw !== 'object' || !('id' in raw) || raw.id !== id) return;
-      clearTimeout(timer); off(); const response = object(raw);
-      if (response.error) reject(new Error(String(response.error))); else resolveResult(response.result);
-    });
-    const timer = setTimeout(() => { off(); reject(new Error(`${plugin} 不可用或操作超时`)); }, timeoutMs);
-    bus.emit(REQUEST, { v: 1, id, plugin, action, input, origin });
-  });
+interface PluginPending {resolve(value:unknown):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}
+const pluginRouters=new WeakMap<Bus,{pending:Map<string,PluginPending>;off():void}>();
+export function requestPlugin(bus:Bus,plugin:string,action:string,input:JsonObject={},timeoutMs=120000,origin:'user'|'plugin'='plugin'):Promise<unknown>{
+ let router=pluginRouters.get(bus);
+ if(!router){const pending=new Map<string,PluginPending>();const off=bus.on(RESPONSE,raw=>{if(!raw||typeof raw!=='object')return;const response=object(raw),call=pending.get(String(response.id));if(!call)return;pending.delete(String(response.id));clearTimeout(call.timer);if(!pending.size){off();pluginRouters.delete(bus);}response.error?call.reject(new Error(String(response.error))):call.resolve(response.result);});router={pending,off};pluginRouters.set(bus,router);}
+ const active=router,id=randomUUID();return new Promise((resolveResult,reject)=>{const release=()=>{active.pending.delete(id);if(!active.pending.size){active.off();pluginRouters.delete(bus);}};const timer=setTimeout(()=>{release();reject(new Error(`${plugin} 不可用或操作超时`));},timeoutMs);active.pending.set(id,{resolve:resolveResult,reject,timer});try{bus.emit(REQUEST,{v:1,id,plugin,action,input,origin});}catch(error){clearTimeout(timer);release();reject(error instanceof Error?error:new Error(String(error)));}});
 }
 export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent'): PluginContext {
   const model = ctx.model;

@@ -32,6 +32,7 @@ export function ModelPicker({models,modelId,thinkingLevel,thinkingLevels,disable
   };
   const commit=async()=>{if(!gesture.current)return;gesture.current=false;const next=value.current;if(disabled||pending||next===level)return;const generation=version.current;setPending(true);try{await onChange({thinkingLevel:next});}catch(reason){if(generation===version.current){setPreview(level);setError(errorText(reason));}}finally{setPending(false);}};
   const cancel=()=>{gesture.current=false;setPreview(level);value.current=level;};
+  if(!models.some(item=>item.ready))return <div className="model-empty-control"><span>{models.length?'模型尚未通过连接测试':'请先配置模型'}</span><button type="button" disabled={disabled} onClick={onConfigure}>配置模型 ↗</button></div>;
   return <div className="composer-model-controls">
     <button ref={trigger} type="button" className="model-picker-trigger" disabled={disabled||pending}
       aria-label={`模型与思考强度：${model?.name||modelId?.split('/').at(-1)||'请先配置模型'}，${thinkingNames[level]||level}`}
