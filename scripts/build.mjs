@@ -8,6 +8,7 @@ for(const name of ['core','swarm','expert','memory','topic-rebuild']){
 }
 await build({...base,entryPoints:['packages/swarm/src/member.ts'],outfile:'packages/swarm/dist/member.js',packages:undefined,external:['@earendil-works/*','typebox'],alias:{'@friend-pi/core':'./packages/core/src/index.ts'}});
 await build({...base,entryPoints:['apps/desktop/src/sdk-worker.ts'],outfile:'apps/desktop/dist/sdk-worker.mjs'});
+await build({...base,entryPoints:['apps/desktop/src/terminal-host.ts'],outfile:'apps/desktop/dist/terminal-host.mjs'});
 await build({...base,entryPoints:['apps/desktop/src/learning-worker.ts'],outfile:'apps/desktop/dist/learning-worker.mjs'});
 await build({...base,entryPoints:['apps/desktop/src/main.ts'],outfile:'apps/desktop/dist/main.mjs',format:'esm',external:['electron']});
 await build({...base,entryPoints:['apps/desktop/src/preload.ts'],outfile:'apps/desktop/dist/preload.cjs',format:'cjs',external:['electron']});

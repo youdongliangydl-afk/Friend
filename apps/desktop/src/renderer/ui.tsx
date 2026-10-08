@@ -1,6 +1,8 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { statusLabels } from './types.js';
+import {materialPath} from './material-links.js';
+import type {WorkspaceRef} from './types.js';
 import type {Message} from './types.js';
 
 export function Badge({ value }: { value: string }) { return <span className={`badge badge-${value}`}>{statusLabels[value] || value}</span>; }
@@ -29,23 +31,28 @@ export function TextDiff({ before, after }: { before: string; after: string }) {
   return <pre className="diff-view">{lines.map((line, i) => <span key={i} className={line.type}>{line.type === 'diff-add' ? '+ ' : line.type === 'diff-remove' ? '- ' : '  '}{line.value}{'\n'}</span>)}</pre>;
 }
 
-function Inline({ text }: { text: string }) {
-  const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^\s)]+\))/g);
-  return <>{parts.map((part, i) => {const link=/^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);if(link){const url=link[2];return <a key={i} href={/^https?:\/\//i.test(url)?url:'#'} onClick={event=>{event.preventDefault();if(/^https?:\/\//i.test(url))void window.friendPi.request('link.open',{url});else {const match=/^(.*?)(?::(\d+))?$/.exec(url)!;window.dispatchEvent(new CustomEvent('friend-pi:file-open',{detail:{path:decodeURIComponent(match[1]),line:match[2]?Number(match[2]):undefined}}));}}}>{link[1]}</a>;}return part.startsWith('`') && part.endsWith('`') ? <code key={i}>{part.slice(1, -1)}</code> : part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part;})}</>;
+function LocalImage({url,alt,basePath,workspace}:{url:string;alt:string;basePath?:string;workspace?:WorkspaceRef}){
+  const [src,setSrc]=useState('');const target=materialPath(url,basePath);
+  useEffect(()=>{let active=true;setSrc('');if(workspace&&target)void window.friendPi.request<{dataUrl?:string}>('file.read',{workspace,path:target.path}).then(result=>{if(active)setSrc(result.dataUrl||'');}).catch(()=>{});return()=>{active=false;};},[url,basePath,JSON.stringify(workspace)]);
+  return src?<img src={src} alt={alt}/>:<span>{alt}（图片不可用）</span>;
+}
+function Inline({ text,basePath,workspace }: { text: string;basePath?:string;workspace?:WorkspaceRef }) {
+  const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|!?\[[^\]\n]*\]\([^\s)]+\))/g);
+  return <>{parts.map((part, i) => {const link=/^(!?)\[([^\]]*)\]\(([^)]+)\)$/.exec(part);if(link){const url=link[3];if(link[1])return <LocalImage key={i} url={url} alt={link[2]} basePath={basePath} workspace={workspace}/>;return <a key={i} href={/^https?:\/\//i.test(url)?url:'#'} onClick={event=>{event.preventDefault();if(/^https?:\/\//i.test(url))void window.friendPi.request('link.open',{url});else {const target=materialPath(url,basePath);if(target)window.dispatchEvent(new CustomEvent('friend-pi:file-open',{detail:target}));}}}>{link[2]}</a>;}return part.startsWith('`') && part.endsWith('`') ? <code key={i}>{part.slice(1, -1)}</code> : part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part;})}</>;
 }
 /** Render a small safe Markdown subset. Model/user content never becomes HTML. */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text,basePath,workspace }: { text: string;basePath?:string;workspace?:WorkspaceRef }) {
   const blocks = text.split(/(```[\s\S]*?(?:```|$))/g);
   return <div className="markdown">{blocks.map((block, index) => {
     if (block.startsWith('```')) { const newline = block.indexOf('\n'); return <pre key={index}><code>{block.slice(newline < 0 ? 3 : newline + 1).replace(/```$/, '')}</code></pre>; }
     return <div key={index}>{block.split(/\n\s*\n/).filter(Boolean).map((paragraph, i) => {
       const heading = /^(#{1,6})\s+([^\n]+)(?:\n([\s\S]*))?$/.exec(paragraph);
-      if (heading) return <div key={i}><h3><Inline text={heading[2]} /></h3>{heading[3]&&<Markdown text={heading[3]}/>}</div>;
-      const lines = paragraph.split('\n');if(lines.every(line=>/^>\s?/.test(line)))return <blockquote key={i}><Markdown text={lines.map(line=>line.replace(/^>\s?/, '')).join('\n')}/></blockquote>;
-      if(lines.length>=2&&/^\s*\|?\s*:?-{3}/.test(lines[1])){const cells=(line:string)=>line.trim().replace(/^\||\|$/g,'').split('|').map(x=>x.trim());return <div className="table-scroll" key={i}><table><thead><tr>{cells(lines[0]).map((cell,j)=><th key={j}><Inline text={cell}/></th>)}</tr></thead><tbody>{lines.slice(2).map((line,j)=><tr key={j}>{cells(line).map((cell,k)=><td key={k}><Inline text={cell}/></td>)}</tr>)}</tbody></table></div>;}
-      if(lines.every(line=>/^\s*\d+[.)]\s+/.test(line)))return <ol key={i}>{lines.map((line,j)=><li key={j}><Inline text={line.replace(/^\s*\d+[.)]\s+/,'')}/></li>)}</ol>;
-      if (lines.every(line => /^\s*[-*]\s+/.test(line))) return <ul key={i}>{lines.map((line, j) => <li key={j}><Inline text={line.replace(/^\s*[-*]\s+/, '')} /></li>)}</ul>;
-      return <p key={i}><Inline text={paragraph} /></p>;
+      if (heading) return <div key={i}><h3><Inline basePath={basePath} workspace={workspace} text={heading[2]} /></h3>{heading[3]&&<Markdown basePath={basePath} workspace={workspace} text={heading[3]}/>}</div>;
+      const lines = paragraph.split('\n');if(lines.every(line=>/^>\s?/.test(line)))return <blockquote key={i}><Markdown basePath={basePath} workspace={workspace} text={lines.map(line=>line.replace(/^>\s?/, '')).join('\n')}/></blockquote>;
+      if(lines.length>=2&&/^\s*\|?\s*:?-{3}/.test(lines[1])){const cells=(line:string)=>line.trim().replace(/^\||\|$/g,'').split('|').map(x=>x.trim());return <div className="table-scroll" key={i}><table><thead><tr>{cells(lines[0]).map((cell,j)=><th key={j}><Inline basePath={basePath} workspace={workspace} text={cell}/></th>)}</tr></thead><tbody>{lines.slice(2).map((line,j)=><tr key={j}>{cells(line).map((cell,k)=><td key={k}><Inline basePath={basePath} workspace={workspace} text={cell}/></td>)}</tr>)}</tbody></table></div>;}
+      if(lines.every(line=>/^\s*\d+[.)]\s+/.test(line)))return <ol key={i}>{lines.map((line,j)=><li key={j}><Inline basePath={basePath} workspace={workspace} text={line.replace(/^\s*\d+[.)]\s+/,'')}/></li>)}</ol>;
+      if (lines.every(line => /^\s*[-*]\s+/.test(line))) return <ul key={i}>{lines.map((line, j) => <li key={j}><Inline basePath={basePath} workspace={workspace} text={line.replace(/^\s*[-*]\s+/, '')} /></li>)}</ul>;
+      return <p key={i}><Inline basePath={basePath} workspace={workspace} text={paragraph} /></p>;
     })}</div>;
   })}</div>;
 }

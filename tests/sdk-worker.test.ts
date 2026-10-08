@@ -7,6 +7,8 @@ import { join,resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
+import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import { RecordStore,projectIdentity } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string}={}){
@@ -194,4 +196,16 @@ test('an attachment-only turn preserves the empty original input and its native 
   await f.close(true);f=undefined;f=await start({directory,sessionFile:state.sessionFile,status:'completed'});
   const cold=await f.request('state') as State;assert.equal(cold.runId,runs.at(-1));assert.deepEqual(cold.messages.filter(m=>m.role==='user'),users,'empty originals and image/hint parts survive cold restart');
  }finally{if(f)await f.close();else rmSync(directory,{recursive:true,force:true});}
+});
+
+test('native streaming IDs commit to JSONL and every timeline snapshot shows one tool record',{timeout:30000},async()=>{
+ const f=await start();try{writeFileSync(join(f.directory,'README.md'),'read-only fixture');await f.request('send',{text:'QA_TIMELINE'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+ const commits=f.events.filter(e=>e.event?.type==='stream.committed').map(e=>e.event!.data);assert.ok(commits.length>=2);const state=await f.request('state') as {messages:DisplayMessage[];sessionFile:string};const native=readFileSync(state.sessionFile,'utf8').split('\n').filter(Boolean).map(row=>JSON.parse(row));for(const commit of commits)assert.ok(native.some(entry=>entry.id===commit.entryId&&entry.message?.role==='assistant'));
+ for(const event of f.events.filter(e=>e.event?.type==='state')){const messages=event.event!.data.messages as DisplayMessage[];if(!messages)continue;const parts=projectTimeline(messages,null,[],Boolean(event.event!.data.isRunning)).flatMap(row=>row.parts).filter(part=>part.kind==='tool');const ids=parts.map(part=>part.kind==='tool'&&part.tool.id);assert.equal(new Set(ids).size,ids.length);}
+ assert.deepEqual(projectTimeline(state.messages,null,[],false).flatMap(row=>row.parts).filter(part=>part.kind==='tool').map(part=>part.kind==='tool'&&[part.tool.id,part.tool.status]),[['qa-read','completed'],['qa-ls','completed']]);
+ }finally{await f.close();}
+});
+test('SDK terminal tool uses broker IPC and plan mode blocks terminal creation before dispatch',{timeout:30000},async()=>{
+ for(const planMode of [false,true]){const f=await start();try{let calls=0;f.child.on('message',(raw:any)=>{if(raw.type==='terminal.request'){calls++;assert.equal(raw.method,'create');f.child.send({type:'terminal.response',id:raw.id,result:{id:'service',owner:'agent',authorityEpoch:1}});}});await f.request('send',{text:'QA_TERMINAL',planMode});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));assert.equal(calls,planMode?0:1);const state=await f.request('state') as {messages:DisplayMessage[]};assert.ok(state.messages.some(m=>m.role==='toolResult'&&m.toolName==='friend_terminal'));if(planMode)assert.ok(state.messages.some(m=>m.text.includes('计划模式只允许读取')));
+ }finally{await f.close();}}
 });

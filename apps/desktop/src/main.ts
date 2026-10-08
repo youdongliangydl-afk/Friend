@@ -1,4 +1,4 @@
-import { app,BrowserWindow,ipcMain,dialog,Menu,shell } from 'electron';
+import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
 import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync } from 'node:fs';
 import { join,resolve,dirname,relative,isAbsolute } from 'node:path';
@@ -8,6 +8,11 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { RecordStore,object,text,projectIdentity,digest } from '@friend-pi/core';
 import {fileTree,previewFile,workspaceDiff,captureRunBaseline,projectFile,type DiffScope} from './workspace-files.js';
+import { TerminalBroker } from './terminal-broker.js';
+import type { TerminalContext } from './terminal-controller.js';
+import { sessionWorkspace, temporaryWorkspace, orderedProjects, validateProjectOrder, type Project, type WorkspaceRef } from './workspaces.js';
+import { listDirectory, readEditorFile, writeEditorFile } from './file-editor.js';
+import { grantHtmlPreview, revokeHtmlPreview, htmlPreviewResponse } from './html-preview.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration,type ProviderRuntime } from './provider-settings.js';
 
 if(process.argv.includes('--version')){console.log(`v${process.versions.electron}`);app.exit(0);}
@@ -16,8 +21,7 @@ const execute=promisify(execFile);const root=app.isPackaged?app.getAppPath():res
 const dataDir=resolve(process.env.FRIEND_PI_DATA_DIR||join(app.getPath('appData'),'Friend-Pi'));process.env.FRIEND_PI_DATA_DIR=dataDir;
 const node=process.env.FRIEND_PI_NODE||(app.isPackaged?join(process.resourcesPath,'runtime','node'):join(process.env.HOME||'','/.local/bin/node'));
 const store=new RecordStore('desktop',dataDir);
-interface Project {id:string;path:string;name:string}
-interface SessionRecord {id:string;projectId:string;name:string;path?:string;piSessionId?:string;archived?:boolean;updatedAt:string;modelId?:string;thinkingLevel?:string;plugins?:string[];status?:string;executionMode?:string;planMode?:boolean}
+interface SessionRecord {id:string;projectId:string;workspace?:WorkspaceRef;workspaceDir?:string;name:string;path?:string;piSessionId?:string;archived?:boolean;updatedAt:string;modelId?:string;thinkingLevel?:string;plugins?:string[];status?:string;executionMode?:string;planMode?:boolean}
 const pluginNames=['swarm','expert','memory','topic-rebuild'];
 const thinkingLevels=['off','minimal','low','medium','high','xhigh'];
 interface Preferences {defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'swarm';defaultPlanMode:boolean;contextMode:'native'|'infinite';backgroundModelId:string}
@@ -37,13 +41,17 @@ function startLearning(){if(shuttingDown||learning)return;learning=fork(join(roo
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('link.open');allowed.add('model.test');
+for(const method of ['session.promote','project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
+const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
+for(const method of ['create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
+function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boolean):TerminalContext {const workspace=sessionWorkspace(store,record);return {sessionId:record.id,workspaceId:workspace.id,cwd:workspace.path,actor,planMode,runId:typeof workers.get(record.id)?.state.runId==='string'?String(workers.get(record.id)?.state.runId):undefined};}
 const deletionPreviews=new Map<string,{token:string;updatedAt:string}>();
 const pendingConfigurations=new Map<string,{plugins:string[];contextMode:string}>();
 function idleRecord(input:Record<string,unknown>){const id=text(input.id),record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record||store.get(`deleting:${id}`))throw new Error('会话不存在或已删除');const active=workers.get(id);if(active&&(active.phase==='starting'||active.state.isRunning||active.state.lifecycleStatus==='stopping'))throw new Error('请先停止前台和 Swarm 执行');return {record,active};}
 async function chooseAfterArchive(projectId:string){const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];currentId=undefined;store.remove('current');if(recent){try{await startWorker(recent);currentId=recent.id;store.put('current',recent.id);}catch{publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}}
 function records(){return store.list<SessionRecord>('session:').map(row=>row.value);}
-function projects(){return store.list<Project>('project:').map(row=>row.value);}
-function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {projects:projects(),sessions:records(),current:worker?{...worker.state,pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,piSessionId:worker.state.sessionId,projectId:worker.record.projectId}:undefined,models,providers,preferences:preferences(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
+function projects(){return orderedProjects(store.list<Project>('project:').map(row=>row.value),store.get<string[]>('project-order')?.value||[]);}
+function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {projects:projects(),sessions:records(),current:worker?{...worker.state,pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
 function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.isDestroyed())window.webContents.send('friend-pi:event',{type,data,sessionId});}
 function publishState(){if(!shuttingDown)publish('state',state());}
 function persist(record:SessionRecord){if(storeClosed)throw new Error('应用已经退出');if(store.get(`deleting:${record.id}`))return;store.put(`session:${record.id}`,record);}
@@ -94,7 +102,7 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   if(store.get(`deleting:${record.id}`))throw new Error('会话已删除');
   if(record.path&&!existsSync(record.path))throw new Error('原始会话历史缺失。请重新定位原史或明确另建会话，索引保持不变。');
   const previous=workers.get(record.id);if(previous){await previous.ready;if(previous.phase!=='ready'||workers.get(record.id)!==previous)throw new Error('运行时已退出，请重新打开会话');return previous;}
-  const project=store.get<Project>(`project:${record.projectId}`)?.value;if(!project)throw new Error('项目不可用');
+  const project=sessionWorkspace(store,record);
   if(!existsSync(node))throw new Error('Node 运行时缺失，请重新构建');
   if(['running','awaiting_review','rebuilding'].includes(record.status||'')){record.status='interrupted';persist(record);}
   let resolveReady:()=>void=()=>{};let rejectReady:(error:Error)=>void=()=>{};
@@ -117,6 +125,10 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
       clearTimeout(worker.startupTimer);worker.phase='ready';worker.state=object(message.state);persistWorker(worker);models=Array.isArray(message.models)?message.models:[];providers=Array.isArray(message.providers)?message.providers:[];resolveReady();publishState();
     }else if(message.type==='response'){
       const pending=worker.pending.get(String(message.id));if(!pending)return;clearTimeout(pending.timer);worker.pending.delete(String(message.id));if(message.error)pending.reject(new Error(String(message.error)));else pending.resolve(message.result);
+    }else if(message.type==='terminal.request'){
+      const method=String(message.method);
+      if(!['create','list','read','input','stop'].includes(method)||worker.record.archived){child.send({type:'terminal.response',id:message.id,error:'终端请求不允许'});return;}
+      void terminalBroker.request(method,object(message.input||{}),terminalContext(worker.record,'agent',worker.state.planMode===true||message.planMode===true)).then(result=>{if(child.connected)child.send({type:'terminal.response',id:message.id,result});}).catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});});
     }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker);if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
     else if(message.type==='event'){
       const event=object(message.event);if(event.type==='state'){worker.state=object(event.data);persistWorker(worker);const next=pendingConfigurations.get(worker.record.id);if(next&&!worker.state.isRunning){pendingConfigurations.delete(worker.record.id);void request(worker,'configure',next).then(raw=>{worker.state=object(raw);worker.record.plugins=next.plugins;persistWorker(worker);publishState();}).catch(error=>publish('notice',{level:'error',message:String(error)},worker.record.id));}publishState();}
@@ -135,30 +147,41 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
 }
 async function target(input:Record<string,unknown>):Promise<Worker>{const id=text(input.sessionId||currentId,'会话');const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话已不可用');return await startWorker(record);}
 function pathInProject(projectId:string,path:string){const project=store.get<Project>(`project:${projectId}`)?.value;if(!project)throw new Error('项目不存在');const actual=realpathSync(resolve(project.path,path));const rel=relative(realpathSync(project.path),actual);if(rel.startsWith('..')||isAbsolute(rel))throw new Error('只能读取当前项目文件');return actual;}
-interface Deletion {id:string;piSessionId?:string;path?:string;projectId:string;state:'preparing'|'complete';token:string;memoryPending?:boolean;nativeIds?:string[];files?:string[];graphIds?:string[];at:string}
+function resolveWorkspaceInput(input:Record<string,unknown>){
+  const ref=object(input.workspace||{});
+  if(ref.kind==='temporary'){
+    const record=store.get<SessionRecord>('session:'+text(ref.sessionId))?.value;
+    if(!record||store.get('deleting:'+record.id))throw new Error('临时工作区不可用');return sessionWorkspace(store,record);
+  }
+  const projectId=typeof ref.projectId==='string'?ref.projectId:typeof input.projectId==='string'?input.projectId:undefined;
+  if(projectId){const project=store.get<Project>('project:'+projectId)?.value;if(!project)throw new Error('项目不存在');return {...project,ref:{kind:'project',projectId} as WorkspaceRef};}
+  const record=store.get<SessionRecord>('session:'+text(input.sessionId||currentId))?.value;if(!record)throw new Error('请先创建会话');return sessionWorkspace(store,record);
+}
+interface Deletion { listProjectId?:string;workspaceDir?:string;id:string;piSessionId?:string;path?:string;projectId:string;state:'preparing'|'complete';token:string;memoryPending?:boolean;nativeIds?:string[];files?:string[];graphIds?:string[];at:string}
 async function finishDeletion(mark:Deletion){
- const nativeId=mark.piSessionId;if(!mark.nativeIds){const graphs=store.db.prepare("SELECT json FROM documents WHERE namespace='swarm'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value.sessionId===nativeId&&Array.isArray(value.attempts));mark.graphIds=graphs.map(value=>value.id);const histories=graphs.flatMap(value=>[...value.attempts,...(value.reviews||[]),...(value.reviewAttempts||[]),value.integration?.review].filter(Boolean));mark.nativeIds=[...new Set([nativeId,...histories.map(value=>value.sessionId)].filter(Boolean))];mark.files=[...new Set([mark.path,...histories.map(value=>value.sessionFile)].filter(Boolean))];for(const graphId of mark.graphIds||[]){if(!/^[A-Za-z0-9_-]+$/.test(graphId))continue;const ownedDir=join(dataDir,'swarm-sessions',graphId);if(!existsSync(ownedDir))continue;for(const entry of readdirSync(ownedDir,{recursive:true,withFileTypes:true})){if(!entry.isFile()||!entry.name.endsWith('.jsonl'))continue;const path=join(entry.parentPath,entry.name);if(!realpathSync(path).startsWith(realpathSync(ownedDir)+'/'))continue;try{const header=JSON.parse(readFileSync(path,'utf8').split('\n')[0]);if(header.type==='session'&&typeof header.id==='string'){mark.nativeIds.push(header.id);mark.files.push(path);}}catch{}}}mark.nativeIds=[...new Set(mark.nativeIds)];mark.files=[...new Set(mark.files)];store.put(`deleting:${mark.id}`,mark);}const active=workers.get(mark.id);let cleanupPending=false;for(const sourceId of mark.nativeIds||[]){const registry=new RecordStore('sessions',dataDir);try{registry.put(`tombstone:${sourceId}`,{desktopId:mark.id,at:mark.at});}finally{registry.close();}await learningRequest('cancelSource',{sessionId:sourceId}).catch(()=>{});const project=store.get<Project>(`project:${mark.projectId}`)?.value;if(project){try{await learningRequest('source.deleted',{sessionId:sourceId,projectId:mark.projectId,projectDir:project.path,sessionFile:mark.path});mark.memoryPending=false;}catch{cleanupPending=true;}}}
+ const nativeId=mark.piSessionId;if(!mark.nativeIds){const graphs=store.db.prepare("SELECT json FROM documents WHERE namespace='swarm'").all().map(row=>JSON.parse(String(row.json))).filter(value=>value.sessionId===nativeId&&Array.isArray(value.attempts));mark.graphIds=graphs.map(value=>value.id);const histories=graphs.flatMap(value=>[...value.attempts,...(value.reviews||[]),...(value.reviewAttempts||[]),value.integration?.review].filter(Boolean));mark.nativeIds=[...new Set([nativeId,...histories.map(value=>value.sessionId)].filter(Boolean))];mark.files=[...new Set([mark.path,...histories.map(value=>value.sessionFile)].filter(Boolean))];for(const graphId of mark.graphIds||[]){if(!/^[A-Za-z0-9_-]+$/.test(graphId))continue;const ownedDir=join(dataDir,'swarm-sessions',graphId);if(!existsSync(ownedDir))continue;for(const entry of readdirSync(ownedDir,{recursive:true,withFileTypes:true})){if(!entry.isFile()||!entry.name.endsWith('.jsonl'))continue;const path=join(entry.parentPath,entry.name);if(!realpathSync(path).startsWith(realpathSync(ownedDir)+'/'))continue;try{const header=JSON.parse(readFileSync(path,'utf8').split('\n')[0]);if(header.type==='session'&&typeof header.id==='string'){mark.nativeIds.push(header.id);mark.files.push(path);}}catch{}}}mark.nativeIds=[...new Set(mark.nativeIds)];mark.files=[...new Set(mark.files)];store.put(`deleting:${mark.id}`,mark);}const active=workers.get(mark.id);let cleanupPending=false;for(const sourceId of mark.nativeIds||[]){const registry=new RecordStore('sessions',dataDir);try{registry.put(`tombstone:${sourceId}`,{desktopId:mark.id,at:mark.at});}finally{registry.close();}await learningRequest('cancelSource',{sessionId:sourceId}).catch(()=>{});const project=store.get<Project>(`project:${mark.projectId}`)?.value||(mark.workspaceDir?{id:mark.projectId,path:mark.workspaceDir}:undefined);if(project){try{await learningRequest('source.deleted',{sessionId:sourceId,projectId:mark.projectId,projectDir:project.path,sessionFile:mark.path});mark.memoryPending=false;}catch{cleanupPending=true;}}}
  mark.memoryPending=cleanupPending;
  if(active){try{await request(active,'shutdown',{},3000);}catch{}retireWorker(active,new Error('会话已删除'));await terminateWorker(active);}
  for(const file of mark.files||[]){if(file&&existsSync(file)){const rel=relative(realpathSync(dataDir),realpathSync(file));if(!rel.startsWith('..')&&!isAbsolute(rel))unlinkSync(file);}}
  for(const graphId of mark.graphIds||[]){if(!/^[A-Za-z0-9_-]+$/.test(graphId))continue;const dir=join(dataDir,'swarm-shared',graphId);if(existsSync(dir))for(const entry of readdirSync(dir,{withFileTypes:true})){const file=join(dir,entry.name);if(entry.isFile()&&realpathSync(file).startsWith(realpathSync(dir)+'/'))unlinkSync(file);}}
  store.transaction(()=>{for(const namespace of ['sessions','topic-rebuild','plans','diff','swarm','memory']){const rows=store.db.prepare('SELECT key,json FROM documents WHERE namespace=?').all(namespace);for(const row of rows){if(namespace==='sessions'&&String(row.key).startsWith('tombstone:'))continue;const value=JSON.parse(String(row.json));if((mark.nativeIds||[]).some(id=>value.sessionId===id||value.field?.sessionId===id||row.key===id||String(row.key).endsWith(':'+id)||String(row.key).includes(':'+id+':'))||(mark.graphIds||[]).includes(value.graphId))store.db.prepare('DELETE FROM documents WHERE namespace=? AND key=?').run(namespace,String(row.key));}}for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(nativeId||'');for(const sourceId of (mark.nativeIds||[]).filter(id=>id!==nativeId))for(const table of ['rebuild_history','rebuild_history_search'])if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))store.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(sourceId);store.remove(`session:${mark.id}`);store.put(`deleting:${mark.id}`,{...mark,state:'complete'});});
- if(currentId===mark.id)await chooseAfterArchive(mark.projectId);return {deleted:true,id:mark.id,piSessionId:nativeId};
+ if(currentId===mark.id)await chooseAfterArchive(mark.listProjectId??mark.projectId);return {deleted:true,id:mark.id,piSessionId:nativeId};
 }
 async function applyPreferenceSnapshots(projectId?:string){for(const active of workers.values())if(!active.record.archived&&(!projectId||active.record.projectId===projectId)){const effective=preferences(active.record.projectId),next={plugins:effective.defaultPlugins,contextMode:effective.contextMode};if(active.state.isRunning||active.state.lifecycleStatus==='stopping')pendingConfigurations.set(active.record.id,next);else {active.state=object(await request(active,'configure',next));active.record.plugins=effective.defaultPlugins;persistWorker(active);}}}
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
   requireActive();
   if(method==='app.state')return state();
+  if(method.startsWith('terminal.')){const id=text(input.sessionId||currentId),record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不可用');if(record.archived&&!['terminal.list','terminal.read'].includes(method))throw new Error('归档会话为只读');return await terminalBroker.request(method.slice(9),input,terminalContext(record,'user'));}
   if(method==='link.open'){const url=new URL(text(input.url));if(!['https:','http:'].includes(url.protocol))throw new Error('链接协议不可打开');await shell.openExternal(url.toString());return {ok:true};}
   if(method==='model.test'){const runtime=await getProviderRuntime(),id=text(input.modelId),slash=id.indexOf('/'),model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(!model)throw new Error('型号不可用');const response=await runtime.complete(model,{messages:[{role:'user',content:[{type:'text',text:'Reply only OK.'}],timestamp:Date.now()}]},{maxTokens:16});if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error('模型测试调用失败');return {ok:true,modelId:id};}
   if(method==='learning.pause'||method==='learning.resume'){store.put('learning-paused',method==='learning.pause');return await learningRequest(method==='learning.pause'?'pause':'resume');}
   if(method==='learning.state'){const jobs=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_jobs'").get()?store.db.prepare('SELECT state,count(*) AS count FROM memory_jobs GROUP BY state').all():[];return {alive:learningReady&&!!learning?.connected,paused:store.get<boolean>('learning-paused')?.value||false,jobs};}
-  if(method==='session.archive'){const {record}=idleRecord(input);if(typeof input.archived!=='boolean')throw new Error('归档状态无效');record.archived=input.archived;const cached=workers.get(record.id);if(cached)cached.record.archived=record.archived;persist(record);if(currentId===record.id&&record.archived)await chooseAfterArchive(record.projectId);publishState();return state();}
-  if(method==='session.delete.preview'){const {record}=idleRecord(input);const token=digest([record.id,record.updatedAt,record.path,randomUUID()]);deletionPreviews.set(record.id,{token,updatedAt:record.updatedAt});return {id:record.id,name:record.name,token,piSessionId:record.piSessionId,path:record.path,scope:'会话历史和独占插件记录；项目文件、原附件与Git成果保留'};}
+  if(method==='session.archive'){const {record}=idleRecord(input);if(await terminalBroker.hasRunning(terminalContext(record,'user')))throw new Error('请先关闭此会话的运行终端，再归档');if(typeof input.archived!=='boolean')throw new Error('归档状态无效');record.archived=input.archived;const cached=workers.get(record.id);if(cached)cached.record.archived=record.archived;persist(record);if(currentId===record.id&&record.archived)await chooseAfterArchive(record.projectId);publishState();return state();}
+  if(method==='session.delete.preview'){const {record}=idleRecord(input);if(await terminalBroker.hasRunning(terminalContext(record,'user')))throw new Error('请先关闭此会话的运行终端，再删除');const token=digest([record.id,record.updatedAt,record.path,randomUUID()]);deletionPreviews.set(record.id,{token,updatedAt:record.updatedAt});return {id:record.id,name:record.name,token,piSessionId:record.piSessionId,path:record.path,scope:'会话历史和独占插件记录；项目文件、原附件与Git成果保留'};}
   if(method==='session.delete'){
     const id=text(input.id),existing=store.get<Deletion>(`deleting:${id}`)?.value;if(existing){if(existing.token!==input.token)throw new Error('删除确认已失效');if(existing.state==='complete')return {deleted:true,id};const result=await finishDeletion(existing);publishState();return result;}
     const {record}=idleRecord(input),preview=deletionPreviews.get(record.id);if(!preview||preview.token!==input.token||preview.updatedAt!==record.updatedAt)throw new Error('删除预览已变化，请重新确认');deletionPreviews.delete(record.id);let nativeId=record.piSessionId;if(!nativeId&&record.path&&existsSync(record.path)){try{const header=JSON.parse(readFileSync(record.path,'utf8').split('\n')[0]);if(header.type==='session'&&typeof header.id==='string')nativeId=header.id;}catch{}}
-    const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
+    const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:sessionWorkspace(store,record).id,workspaceDir:sessionWorkspace(store,record).path,listProjectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
   }
   if(method==='session.relocate'){const {record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});currentId=record.id;store.put('current',record.id);publishState();return state();}
   if(method==='settings.get')return await settings(typeof input.projectId==='string'?input.projectId:undefined);
@@ -189,11 +212,26 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     let path=typeof input.path==='string'?input.path:undefined;if(!path){const result=await dialog.showOpenDialog(window,{title:'打开项目',properties:['openDirectory']});if(result.canceled)return {cancelled:true};path=result.filePaths[0];}
     requireActive();const canonical=realpathSync(text(path));const project:Project={id:projectIdentity(canonical),path:canonical,name:canonical.split('/').at(-1)||canonical};store.put(`project:${project.id}`,project);publishState();return project;
   }
+  if(method==='project.reorder'){
+    store.put('project-order',validateProjectOrder(projects(),input.ids));publishState();return state();
+  }
+  if(method==='session.promote'){
+    const {record,active}=idleRecord(input);if(record.archived)throw new Error('请先恢复归档会话');
+    if(record.workspace?.kind!=='temporary')throw new Error('此会话已归属项目');
+    const workspace=sessionWorkspace(store,record),project:Project={id:workspace.id,path:workspace.path,name:typeof input.name==='string'?text(input.name,'项目名称',100):record.name==='新会话'?'新项目':record.name.slice(0,60)};
+    store.transaction(()=>{store.put('project:'+project.id,project);record.projectId=project.id;record.workspace={kind:'project',projectId:project.id};persist(record);});
+    if(active)active.record=record;publishState();return state();
+  }
   if(method==='session.new'){
-    const projectId=text(input.projectId);if(!store.get(`project:${projectId}`))throw new Error('请先打开项目');const defaults=preferences(projectId);if(defaults.defaultMode==='swarm'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');const record:SessionRecord={id:randomUUID(),projectId,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:defaults.defaultModelId||undefined,thinkingLevel:defaults.defaultThinkingLevel,plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode};persist(record);currentId=record.id;store.put('current',currentId);await startWorker(record);publishState();return state();
+    const projectId=typeof input.projectId==='string'?input.projectId:'',defaults=preferences(projectId||undefined);
+    if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
+    if(defaults.defaultMode==='swarm'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');
+    const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(dataDir,id);
+    const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:typeof input.modelId==='string'&&input.modelId?input.modelId:defaults.defaultModelId||undefined,thinkingLevel:defaults.defaultThinkingLevel,plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode};
+    persist(record);currentId=record.id;store.put('current',currentId);await startWorker(record);publishState();return state();
   }
   if(method==='project.select'){
-    const projectId=text(input.projectId);if(!store.get(`project:${projectId}`))throw new Error('项目不存在');
+    const projectId=typeof input.projectId==='string'?input.projectId:'';if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
     const recent=records().filter(record=>record.projectId===projectId&&!record.archived).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
     if(recent)return await handle('session.open',{id:recent.id});
     currentId=undefined;store.remove('current');publishState();return state();
@@ -205,26 +243,38 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker){worker.record.name=record.name;await request(worker,'rename',{name:record.name});}publishState();return state();
   }
   if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加附件',properties:['openFile','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
-  if(['file.read','file.tree','file.open','git.diff'].includes(method)){const project=store.get<Project>(`project:${text(input.projectId)}`)?.value;if(!project)throw new Error('项目不存在');if(method==='file.tree')return fileTree(project.path);if(method==='file.read')return previewFile(project.path,text(input.path),typeof input.offset==='number'?input.offset:0,typeof input.line==='number'?input.line:undefined);if(method==='file.open'){await shell.openPath(projectFile(project.path,text(input.path)));return {ok:true};}const scope=String(input.scope||'workspace');if(!['workspace','unstaged','staged','run'].includes(scope))throw new Error('Diff 范围无效');return await workspaceDiff(project.path,project.id,dataDir,scope as DiffScope,typeof input.runId==='string'?input.runId:workers.get(currentId||'')?.state.runId as string|undefined);}
+  if(method==='file.preview.revoke'){revokeHtmlPreview(text(input.token));return {revoked:true};}
+  if(['file.search','file.read','file.tree','file.open','file.write','file.preview','git.diff'].includes(method)){
+    const workspace=resolveWorkspaceInput(input);
+    if(method==='file.search'){const all=fileTree(workspace.path),query=text(input.query).toLowerCase();return {entries:all.entries.filter(entry=>entry.kind!=='directory'&&entry.path.toLowerCase().includes(query)).map(entry=>({...entry,name:entry.path})),truncated:all.truncated};}
+    if(method==='file.tree')return typeof input.directory==='string'?listDirectory(workspace.path,input.directory,Number(input.offset)||0):fileTree(workspace.path);
+    if(method==='file.read')return input.edit===true?readEditorFile(workspace.path,text(input.path)):previewFile(workspace.path,text(input.path),typeof input.offset==='number'?input.offset:0,typeof input.line==='number'?input.line:undefined);
+    if(method==='file.write'){if(typeof input.content!=='string')throw new Error('文件内容无效');const result=writeEditorFile(workspace.path,text(input.path),input.content,text(input.expectedHash));if(result.saved)publish('files.changed',{workspaceId:workspace.id,path:input.path});return result;}
+    if(method==='file.preview')return grantHtmlPreview(workspace.path,text(input.path),typeof input.content==='string'?input.content:undefined);
+    if(method==='file.open'){await shell.openPath(projectFile(workspace.path,text(input.path)));return {ok:true};}
+    const scope=String(input.scope||'workspace');if(!['workspace','unstaged','staged','run'].includes(scope))throw new Error('Diff 范围无效');return await workspaceDiff(workspace.path,workspace.id,dataDir,scope as DiffScope,typeof input.runId==='string'?input.runId:workers.get(currentId||'')?.state.runId as string|undefined);
+  }
   if(method==='dialog.respond'){const owner=dialogOwners.get(text(input.id));if(!owner)throw new Error('交互已失效');dialogOwners.delete(String(input.id));const worker=workers.get(owner);if(!worker)throw new Error('运行时已结束');return await request(worker,'dialog.respond',input);}
   const worker=await target(input);
   if(method==='session.send'){
-    if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');const nextRun=worker.state.isRunning?String(worker.state.runId):randomUUID();const project=store.get<Project>(`project:${worker.record.projectId}`)!.value;if(!worker.state.isRunning)await captureRunBaseline(project.path,project.id,nextRun,dataDir,worker.record.piSessionId).catch(()=>{});const response=await request(worker,'send',{...input,runId:nextRun});if(worker.record.name==='新会话'){worker.record.name=text(input.text).slice(0,48);persist(worker.record);}worker.state=object(await request(worker,'state'));publishState();return response;
+    if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');const nextRun=worker.state.isRunning?String(worker.state.runId):randomUUID();const project=sessionWorkspace(store,worker.record);if(!worker.state.isRunning)await captureRunBaseline(project.path,project.id,nextRun,dataDir,worker.record.piSessionId).catch(()=>{});const response=await request(worker,'send',{...input,runId:nextRun});if(worker.record.name==='新会话'){worker.record.name=text(input.text).slice(0,48);persist(worker.record);}worker.state=object(await request(worker,'state'));publishState();return response;
   }
-  if(method.startsWith('plan.')){if(method!=='plan.read'&&worker.record.archived)throw new Error('请先恢复归档会话');const nextRun=randomUUID();if(method==='plan.approve'){const project=store.get<Project>(`project:${worker.record.projectId}`)!.value;await captureRunBaseline(project.path,project.id,nextRun,dataDir,worker.record.piSessionId).catch(()=>{});}const result=await request(worker,method,{...input,runId:nextRun});worker.state=object(await request(worker,'state'));persistWorker(worker);publishState();return result;}
-  if(method==='session.stop'){worker.state=object(await request(worker,'stop',input));publishState();return state();}
+  if(method.startsWith('plan.')){if(method!=='plan.read'&&worker.record.archived)throw new Error('请先恢复归档会话');const nextRun=randomUUID();if(method==='plan.approve'){const project=sessionWorkspace(store,worker.record);await captureRunBaseline(project.path,project.id,nextRun,dataDir,worker.record.piSessionId).catch(()=>{});}const result=await request(worker,method,{...input,runId:nextRun});worker.state=object(await request(worker,'state'));persistWorker(worker);publishState();return result;}
+  if(method==='session.stop'){try{worker.state=object(await request(worker,'stop',input));}finally{await terminalBroker.stopAgentServices(terminalContext(worker.record,'user'));}publishState();return state();}
   if(method==='session.configure'){
     if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');worker.state=object(await request(worker,'configure',input));worker.record.modelId=typeof worker.state.modelId==='string'?worker.state.modelId:undefined;worker.record.thinkingLevel=typeof worker.state.thinkingLevel==='string'?worker.state.thinkingLevel:undefined;worker.record.plugins=Array.isArray(worker.state.plugins)?worker.state.plugins.map(String):undefined;persist(worker.record);publishState();return state();
   }
   if(method==='plugin.call'){if(worker.record.archived&&!['snapshot','read','search','versions','usage','plan','shared.readVersion','shared.conflicts','invalidation.snapshot'].includes(String(input.action)))throw new Error('归档会话为只读，请先恢复');return await request(worker,'plugin',input);}
   throw new Error('未知客户端操作');
 }
+protocol?.registerSchemesAsPrivileged?.([{scheme:'friend-preview',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
 app.setName('Friend-Pi');app.setPath('userData',dataDir);
 if(!app.requestSingleInstanceLock())app.quit();
 else {
   app.on('second-instance',()=>{window?.show();window?.focus();});
   app.whenReady().then(async()=>{
     if(shuttingDown)return;
+    protocol?.handle?.('friend-preview',request=>htmlPreviewResponse(request.url));
     for(const record of records())if(['running','awaiting_review','rebuilding'].includes(record.status||'')){record.status='interrupted';persist(record);}
     await loadProviderMetadata();startLearning();for(const mark of store.list<Deletion>('deleting:').map(row=>row.value))if(mark.state==='preparing'||mark.memoryPending)await finishDeletion(mark).catch(error=>publish('notice',{level:'warning',message:'删除清理待恢复：'+String(error)}));
     const qaWidth=Number(process.env.FRIEND_PI_QA_WIDTH);const qaHeight=Number(process.env.FRIEND_PI_QA_HEIGHT);
@@ -248,6 +298,7 @@ else {
     void (async()=>{
       const children=[...liveWorkers];const closing=new Error('应用正在退出，执行已中断；未自动重放请求');
       try {
+        await terminalBroker.shutdown().catch(error=>console.error(String(error)));
         await learningRequest('shutdown',{},3000).catch(()=>{});
         if(learning?.pid){try{process.kill(process.platform!=='win32'?-learning.pid:learning.pid,'SIGTERM');}catch {}}
         // Never wait on startup or on a cached rejected ready promise. Ready workers

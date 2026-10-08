@@ -11,6 +11,7 @@ The machine-readable revision, license and use ledger is [docs/sources.json](doc
 - [Node.js](https://github.com/nodejs/node/blob/848430679556aed0bd073f2bc263331ad84fa119/LICENSE), original full license including its bundled component notices, copied to `third-party-licenses/node/LICENSE` and the runtime.
 - [npm CLI](https://github.com/npm/cli/blob/a62dc76bfd7cb797c6f3fb7c0dd11b8610034956/LICENSE), Artistic-2.0 and its bundled dependency licenses, retained under the packaged runtime.
 - [React and React DOM](https://github.com/facebook/react/blob/1dd4ecbdabf826f527fc9a58c05ea70375b7d170/LICENSE), MIT. React, React DOM and scheduler licenses are retained for browser-bundled code.
+- CodeMirror 6.0.2 and the locked CodeMirror language/state/view/search/Lezer packages, MIT; xterm.js 6.0.0 and addon-fit 0.11.0, MIT; node-pty 1.1.0, MIT with its bundled third-party notices. These power the editor, terminal browser display and independent Node24 PTY host. Original LICENSE files and node-pty nested notices remain in their packaged directories and are listed in the dependency ledger.
 - Other runtime npm dependency directories retain their original license/notice files. `third-party-licenses/dependencies.json` records the actual packaged versions and available retained notice paths. This root project's MIT license does not replace any third-party license.
 
 ## Architecture references

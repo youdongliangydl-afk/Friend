@@ -57,3 +57,6 @@ node scripts/package-desktop.mjs --require-clean
 `.app` 摘要使用 `sha256-tree-v1`：按相对路径顺序遍历，依次哈希条目类型、相对路径、权限、文件 SHA256 或链接原始目标。具体字节清单在 `files.json`。Zip 和插件 tarball 使用普通文件 SHA256/SHA512。摘要不包含外部验证报告，因此补充 GUI 证据不会改变制品自身身份。
 
 打包检查不代表 GUI 或真实模型验收。交付报告必须另外绑定此清单中的准确 commit、Pi SHA、应用 hash，以及真正执行的 Computer Use 与真实模型旅程；未运行项目需明确记录。
+
+
+Terminal host additions (2026-10-08): `terminal-host.mjs` runs with bundled Node 24, separately from Electron. Build node-pty 1.1.0 for that exact Node ABI with `npm_config_build_from_source=true npm rebuild node-pty --foreground-scripts`; do not rebuild it for Electron. Packaging includes native addon and spawned helper, checks the bundle outside the checkout with actual PTY read/write/resize, plan-mode guards, first-input takeover, epoch fences and verified process cleanup. CodeMirror 6.0.2, xterm 6.0.0 and addon-fit 0.11.0 are exact locked production dependencies; original licenses remain under their package directories and in the dependency notice ledger. Source tests, fake-provider package smoke, real-model runs and GUI acceptance are separate evidence.

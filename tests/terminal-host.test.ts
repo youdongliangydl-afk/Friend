@@ -1,0 +1,28 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync} from 'node:fs';import {join,resolve} from 'node:path';import {tmpdir} from 'node:os';
+import {TerminalController,type TerminalRecord,type TerminalContext} from '../apps/desktop/src/terminal-controller.js';
+import {processSnapshot,identityAlive} from '../apps/desktop/src/terminal-processes.js';
+// @ts-expect-error JS shared packaging harness
+import {verifyTerminalHost} from '../scripts/terminal-smoke.mjs';
+const shell=process.platform==='darwin'?'/bin/zsh':'/bin/sh';
+test('independent Node host uses real PTY, workspace, authority epochs and verified cleanup',{timeout:30000,skip:process.platform==='win32'},async()=>{assert.equal((await verifyTerminalHost(process.execPath,resolve('.'))).success,true);});
+test('owned background descendants stop; cold records restore output without replay',{timeout:15000,skip:process.platform==='win32'},async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'friend-terminal-tree-')),oldShell=process.env.SHELL,oldZ=process.env.ZDOTDIR;process.env.SHELL=shell;process.env.ZDOTDIR=dir;
+ const ctx:TerminalContext={sessionId:'tree',workspaceId:'tree',cwd:dir,actor:'user'};let controller=new TerminalController(join(dir,'data'),()=>{});
+ try{
+  const job=join(dir,'job.cjs'),pids=join(dir,'pids');
+  writeFileSync(job,"const {spawn}=require('node:child_process');const fs=require('node:fs');const c=spawn(process.execPath,['-e','process.on(\"SIGTERM\",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.argv[2],process.pid+' '+c.pid);process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
+  const terminal=await controller.handle('create',{},ctx) as TerminalRecord;await controller.handle('input',{id:terminal.id,data:JSON.stringify(process.execPath)+' '+JSON.stringify(job)+' '+JSON.stringify(pids)+' &\r'},ctx);
+  const deadline=Date.now()+5000;while(!existsSync(pids)){assert.ok(Date.now()<deadline);await new Promise(yes=>setTimeout(yes,50));}
+  const captured=readFileSync(pids,'utf8').split(' ').map(pid=>processSnapshot().get(Number(pid))!);assert.ok(captured.every(Boolean));
+  const result=await controller.handle('stop',{id:terminal.id},ctx) as TerminalRecord;assert.equal(result.state,'exited');assert.ok(captured.every(p=>!identityAlive(p,processSnapshot())));
+  const before=result.output;assert.equal(await controller.shutdown(),true);controller=new TerminalController(join(dir,'data'),()=>{});const restored=await controller.handle('read',{id:terminal.id},ctx) as TerminalRecord;assert.equal(restored.output,before);assert.equal(restored.state,'exited');assert.equal((await controller.handle('list',{},ctx) as {terminals:TerminalRecord[]}).terminals.length,1);await assert.rejects(controller.handle('input',{id:terminal.id,data:'replay\r'},ctx),/已结束/);
+ }finally{await controller.shutdown();process.env.SHELL=oldShell;if(oldZ===undefined)delete process.env.ZDOTDIR;else process.env.ZDOTDIR=oldZ;rmSync(dir,{recursive:true,force:true});}
+});
+test('invalid terminal name cannot create an unregistered shell',{skip:process.platform==='win32'},async()=>{const dir=mkdtempSync(join(tmpdir(),'friend-terminal-invalid-')),controller=new TerminalController(dir,()=>{});try{await assert.rejects(controller.handle('create',{name:''},{sessionId:'a',workspaceId:'a',cwd:dir,actor:'user'}),/终端名称/);assert.deepEqual(await controller.handle('list',{}, {sessionId:'a',workspaceId:'a',cwd:dir,actor:'user'}),{terminals:[]});}finally{await controller.shutdown();rmSync(dir,{recursive:true,force:true});}});
+
+test('stop freezes a forking SIGTERM handler before it can detach a surviving descendant',{timeout:15000,skip:process.platform==='win32'},async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'friend-terminal-term-fork-')),old=process.env.SHELL,oldZ=process.env.ZDOTDIR;process.env.SHELL=shell;process.env.ZDOTDIR=dir;const controller=new TerminalController(join(dir,'data'),()=>{}),ctx:TerminalContext={actor:'user',cwd:dir,sessionId:'fork',workspaceId:'fork'};
+ try{const ready=join(dir,'ready'),forked=join(dir,'forked'),script=join(dir,'fork.cjs');writeFileSync(script,"const fs=require('node:fs');const {spawn}=require('node:child_process');fs.writeFileSync(process.argv[2],String(process.pid));process.on('SIGTERM',()=>{const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});fs.writeFileSync(process.argv[3],String(c.pid));c.unref();process.exit(0)});setInterval(()=>{},1000);");const term=await controller.handle('create',{},ctx) as TerminalRecord;await controller.handle('input',{id:term.id,data:JSON.stringify(process.execPath)+' '+JSON.stringify(script)+' '+JSON.stringify(ready)+' '+JSON.stringify(forked)+'\r'},ctx);const until=Date.now()+5000;while(!existsSync(ready)){assert.ok(Date.now()<until);await new Promise(yes=>setTimeout(yes,50));}const identity=processSnapshot().get(Number(readFileSync(ready,'utf8')))!;assert.equal((await controller.handle('stop',{id:term.id},ctx) as TerminalRecord).state,'exited');assert.equal(identityAlive(identity,processSnapshot()),false);assert.equal(existsSync(forked),false,'TERM handler cannot run between process scans');
+ }finally{await controller.shutdown();if(old===undefined)delete process.env.SHELL;else process.env.SHELL=old;if(oldZ===undefined)delete process.env.ZDOTDIR;else process.env.ZDOTDIR=oldZ;rmSync(dir,{recursive:true,force:true});}
+});

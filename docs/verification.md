@@ -25,3 +25,10 @@ SDK 集成测试实际 fork Node、加载四插件、执行 Pi 工具、保存 J
 以上是施工中的观测，不是最终制品验收。最终候选必须重新构建、完整测试、打包并实际 Computer Use；绑定记录位于 `.artifacts/qa/evolution-candidate-verification.md`、`.artifacts/qa/real-model-report.json` 与 `.artifacts/mac/delivery-manifest.json`。原失败及施工记录保留，最终报告逐项区分通过、未运行和限制。
 
 [实施清单](implementation/2026-10-07/修复清单.md) 和 [18 项前后对比](implementation/2026-10-07/comparison.html) 说明本批范围；第 17 项专家验证界面不扩展。
+
+
+## 2026-10-08 client workspace candidate
+
+This candidate implements composer Enter/IME boundaries, native tool timeline projection, temporary workspace promotion, persisted project sorting, editable file workbench and independent Node24 terminal host. Focused tests execute production workspace/file/controller paths, native Pi JSONL/tool hooks and real Unix PTY subprocesses; GUI input, scrolling, docking, drafts and sandbox appearance require separate Computer Use evidence. Existing regression cases remain intact. The first unconstrained parallel run hit learning/HTTP timeouts; target cases are rechecked and the stable final suite runs with bounded concurrency. Do not combine evidence from intermediate dirty builds with final acceptance.
+
+Final evidence is written outside source in `.artifacts/qa/client-workspace-acceptance.json`, `.artifacts/qa/full-regression-final.log`, and `.artifacts/mac/delivery-manifest.json`, binding exact commit, Pi SHA, dependency lock and artifact hash. Real-model evidence must name the observed configured provider separately from the explicit fake Provider. File tabs/drafts survive in-app workspace/panel switching; save file edits before quitting. Terminal records restore without command replay; explicit stop freezes the owned process tree before termination to prevent TERM handlers spawning surviving children.

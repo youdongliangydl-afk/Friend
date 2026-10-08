@@ -10,6 +10,9 @@ import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {RecordStore,object,text,digest,projectIdentity,isSessionDeleted} from '../packages/core/src/index.js';
+import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
+import * as fileEditor from '../apps/desktop/src/file-editor.js';
+import * as htmlPreview from '../apps/desktop/src/html-preview.js';
 import * as workspace from '../apps/desktop/src/workspace-files.js';
 
 const root=path.resolve('.');
@@ -37,6 +40,10 @@ function fixture(){
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
       if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted};
       if(specifier==='./workspace-files.js')return workspace;
+      if(specifier==='./workspaces.js')return workspaceRefs;
+      if(specifier==='./file-editor.js')return fileEditor;
+      if(specifier==='./html-preview.js')return htmlPreview;
+      if(specifier==='./terminal-broker.js')return {TerminalBroker:class{async hasRunning(){return false;}async stopAgentServices(){}async shutdown(){}async request(){return {terminals:[]};}}};
       if(specifier==='./provider-settings.js')return {createProviderRuntime:async()=>({refresh:async()=>{}}),providerMetadata:()=>({models:[],providers:[]}),saveProviderConfiguration:async()=>{}};
       throw new Error(`Unrecognized production dependency: ${specifier}`);
     },
@@ -110,4 +117,29 @@ test('interrupted deletion preserves its fixed inventory and preparing cleanup r
   const f=fixture();try{const record=f.record('interrupted-delete'),owned=ownedGraph(f,record);f.unlinkFailures.add(record.path);const preview=await f.api.handle('session.delete.preview',{id:record.id});await assert.rejects(f.api.handle('session.delete',{id:record.id,token:preview.token}),/EACCES/);const saved=f.api.store.get('deleting:interrupted-delete').value;assert.equal(saved.state,'preparing');assert.ok(saved.nativeIds.includes(owned.member.id));assert.ok(saved.nativeIds.includes(owned.review.id));assert.ok(saved.files.includes(record.path));assert.equal(f.children.length,0);
     f.unlinkFailures.clear();assert.match(mainSource,/mark\.state==='preparing'\|\|mark\.memoryPending/,'startup must consume durable pending deletion records');const completed=await f.api.finishDeletion(saved);assert.equal(completed.deleted,true);assertDeleted(f,record,owned);assert.equal(f.children.length,0,'recovery cleans records instead of dispatching a model or user tool');
   }finally{f.cleanup();}
+});
+
+async function temporary(f:ReturnType<typeof fixture>){
+ const pending=f.api.handle('session.new',{}),child=f.children.at(-1),record=f.api.store.list('session:').map((row:any)=>row.value).find((record:any)=>!f.api.workers.get(record.id)?.state.sessionFile);
+ assert.ok(record);const cwd=record.workspaceDir,manager=SessionManager.create(cwd,path.join(f.dataDir,'sessions'));manager.appendMessage({role:'user',content:'temporary-native-history',timestamp:Date.now()});
+ child.state={isRunning:false,lifecycleStatus:'idle',sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});await pending;return {record:f.api.store.get('session:'+record.id).value,child,manager};
+}
+test('temporary workspaces are isolated, recoverable and compatible with file APIs',async()=>{
+ const f=fixture();try{const a=await temporary(f),b=await temporary(f);assert.notEqual(a.record.workspaceDir,b.record.workspaceDir);assert.equal(a.record.projectId,'');assert.deepEqual(JSON.parse(JSON.stringify(a.record.workspace)),{kind:'temporary',sessionId:a.record.id});assert.equal(a.child.options.cwd,a.record.workspaceDir);assert.equal(a.child.options.env.FRIEND_PI_PROJECT,a.record.workspaceDir);
+ fs.writeFileSync(path.join(a.record.workspaceDir,'中文.md'),'临时正文');assert.equal((await f.api.handle('file.read',{workspace:a.record.workspace,path:'中文.md',edit:true})).content,'临时正文');assert.equal(f.api.store.list('project:').length,1);assert.equal((await f.api.handle('file.read',{projectId:'fixture',path:(fs.writeFileSync(path.join(f.project,'legacy.txt'),'old'),'legacy.txt')})).content,'old');
+ const cold=new RecordStore('desktop',f.dataDir);try{assert.equal(cold.get<{workspaceDir:string}>('session:'+a.record.id)!.value.workspaceDir,a.record.workspaceDir);}finally{cold.close();}
+ }finally{f.cleanup();}
+});
+test('promotion retains directory, original Pi identity and worker; running promotion is rejected',async()=>{
+ const f=fixture();try{const a=await temporary(f),worker=f.api.workers.get(a.record.id);worker.state.isRunning=true;await assert.rejects(f.api.handle('session.promote',{id:a.record.id,name:'登记项目'}),/停止/);worker.state.isRunning=false;
+ const before={cwd:worker.child.options.cwd,file:a.record.path,native:a.record.piSessionId,count:f.children.length};await f.api.handle('session.promote',{id:a.record.id,name:'登记项目'});const record=f.api.store.get('session:'+a.record.id).value;assert.equal(f.api.workers.get(a.record.id),worker);assert.equal(f.children.length,before.count);assert.equal(record.path,before.file);assert.equal(record.piSessionId,before.native);assert.equal(record.workspace.kind,'project');assert.equal(f.api.store.get('project:'+record.projectId).value.path,before.cwd);
+ a.child.emit('message',{type:'event',event:{type:'state',data:a.child.state}});await f.flush();assert.equal(f.api.store.get('session:'+a.record.id).value.projectId,record.projectId);await assert.rejects(f.api.handle('session.promote',{id:a.record.id,name:'again'}),/已归属/);
+ }finally{f.cleanup();}
+});
+test('project order persists exact permutations without altering active execution target',async()=>{
+ const f=fixture();try{for(const id of ['second','third'])f.api.store.put('project:'+id,{id,path:f.project,name:id});const record=f.record('active'),child=await f.ready(record);await f.api.handle('session.open',{id:record.id});f.api.workers.get(record.id).state.isRunning=true;
+ const sorted=await f.api.handle('project.reorder',{ids:['third','fixture','second']});assert.deepEqual(Array.from(sorted.projects,(p:any)=>p.id),['third','fixture','second']);assert.equal(sorted.current.sessionId,record.id);assert.equal(f.api.workers.get(record.id).child,child);
+ for(const ids of [['fixture'],['third','third','fixture'],['third','foreign','fixture']])await assert.rejects(f.api.handle('project.reorder',{ids}));assert.deepEqual(Array.from(f.api.store.get('project-order').value),['third','fixture','second']);
+ f.api.store.put('project:new',{id:'new',path:f.project,name:'New'});assert.deepEqual(Array.from((await f.api.handle('app.state',{})).projects,(p:any)=>p.id),['third','fixture','second','new']);
+ }finally{f.cleanup();}
 });

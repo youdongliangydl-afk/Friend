@@ -3,6 +3,7 @@ import App from './App.js';
 import './style.css';
 import './readability.css';
 import './layout.css';
+import './client-workspace.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

@@ -242,6 +242,9 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
       try{const result=JSON.parse(visibleText(results.at(-1)!.content));if(result.id&&result.status==='created')return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'start',input:{graphId:result.id}}),{stopReason:'toolUse'});}catch{}
       return fauxAssistantMessage('离线 Swarm 已派发。成员执行和复核状态以任务图为准。');
     }
+    if(content.includes('QA_TERMINAL')&&!hasResult)return fauxAssistantMessage(fauxToolCall('friend_terminal',{action:'create',name:'QA Agent service',command:"printf '%s%s\\n' 'AGENT_' 'SERVICE_OK'"}),{stopReason:'toolUse'});
+    if(content.includes('QA_TIMELINE')&&!hasResult)return fauxAssistantMessage([{type:'text',text:'先读取 README，再列目录。'},{type:'thinking',thinking:'只读检查当前工作目录。'},{type:'toolCall',id:'qa-read',name:'read',arguments:{path:'README.md'}},{type:'text',text:'然后列出目录。'},{type:'toolCall',id:'qa-ls',name:'ls',arguments:{path:'.'}}],{stopReason:'toolUse'});
+    if(content.includes('QA_TIMELINE'))return fauxAssistantMessage('只读检查完成。\n\n'+Array.from({length:20},(_,i)=>'第 '+(i+1)+' 项：工具记录应随会话正文一起滚动。').join('\n\n'));
     if(content.includes('QA_PLAN_SUBMIT')){if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='friend_plan'))return fauxAssistantMessage(fauxToolCall('friend_plan',{action:'submit',body:'Read README.md and verify the documented UTF-8 constraint. Change no files.'}),{stopReason:'toolUse'});return fauxAssistantMessage('The complete plan was submitted. Please approve it.');}
     if(content.includes('QA_WRITE')&&!hasResult)return fauxAssistantMessage(fauxToolCall('write',{path:'fixture-result.txt',content:'Friend-Pi SDK tool execution verified.\n'}),{stopReason:'toolUse'});
     if(/APPROVE|approved|独立复核|独立审查/.test(content))return fauxAssistantMessage('{"approved":true,"findings":"离线测试复核，不代表真实模型质量"}');

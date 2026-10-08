@@ -31,9 +31,18 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+    "@codemirror/lang-css": "6.3.1",
+    "@codemirror/lang-html": "6.4.12",
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@earendil-works/pi-agent-core": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz",
     "@earendil-works/pi-ai": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-ai-1.0.4-a76ca247dfc4.tgz",
-    "@earendil-works/pi-agent-core": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz"
+    "@earendil-works/pi-coding-agent": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "codemirror": "6.0.2",
+    "node-pty": "1.1.0"
   },
   "overrides": {
     "@earendil-works/chord": "file:./.cache/pi/artifacts/tarballs/earendil-works-chord-1.0.4-776259c36bad.tgz",

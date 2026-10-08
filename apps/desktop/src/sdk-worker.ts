@@ -57,7 +57,10 @@ function settledStatus(){
 }
 function modelState(){return providerMetadata(runtime);}
 function selectedModel(id:string){const slash=id.indexOf('/');const model=runtime.getModel(id.slice(0,slash),id.slice(slash+1));if(slash<1||!model)throw new Error('型号不可用，请重新选择');return model;}
+const terminalRequests=new Map<string,{resolve(value:unknown):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}>();
+function terminalRequest(method:string,input:Record<string,unknown>){const id=randomUUID();return new Promise<unknown>((resolve,reject)=>{const timer=setTimeout(()=>{terminalRequests.delete(id);reject(new Error('终端操作超时，未自动重放'));},20000);terminalRequests.set(id,{resolve,reject,timer});output({type:'terminal.request',id,method,input,planMode});});}
 function guard():ExtensionFactory{return pi=>{
+  pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.registerTool({name:'friend_plan',label:'提交计划',description:'只读规划完成后提交可供用户批准的计划；模型不能批准或启动。',parameters:Type.Object({action:Type.Union([Type.Literal('submit'),Type.Literal('read')]),body:Type.Optional(Type.String())}),async execute(_id,input){const result=input.action==='read'?plans.current():plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode});publish('state',current());return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   pi.on('before_agent_start',event=>{
     // Public Pi input hooks identify the submitted prompt before Pi appends image
@@ -70,11 +73,11 @@ function guard():ExtensionFactory{return pi=>{
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);
     if(planMode){
-      const readActions=new Set(['snapshot','search','read','get','versions','history.search','history.read','history.around']);
+      const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
       if(!['read','ls','find','grep'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
-    if(event.toolName==='bash'&&typeof input.command==='string'&&/(?:^|[;&|\s])(?:sudo|rm|rmdir|dd|mkfs|shutdown|reboot)(?:\s|$)|\bgit\s+(?:reset\s+--hard|clean\b|push\b|branch\s+-[dD])|\b(?:npm|pnpm|yarn)\s+publish\b/i.test(input.command)){
-      if(!await ctx.ui.confirm('确认关键操作',input.command))return {block:true,reason:'用户未批准该操作'};
+    if(['bash','friend_terminal'].includes(event.toolName)&&typeof (input.command||input.data)==='string'&&/(?:^|[;&|\s])(?:sudo|rm|rmdir|dd|mkfs|shutdown|reboot)(?:\s|$)|\bgit\s+(?:reset\s+--hard|clean\b|push\b|branch\s+-[dD])|\b(?:npm|pnpm|yarn)\s+publish\b/i.test(String(input.command||input.data))){
+      if(!await ctx.ui.confirm('确认关键操作',String(input.command||input.data)))return {block:true,reason:'用户未批准该操作'};
     }
   });
 };}
@@ -113,7 +116,10 @@ async function initialize(){
   plans=new PlanStore(businessStore,projectIdentity(cwd),manager.getSessionId());
   const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager});session=created.session;
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
+  let liveSequence=0;let liveStreamId="";
   session.subscribe(event=>{
+    if(event.type==='message_start'&&event.message.role==='assistant')liveStreamId="stream-"+session.sessionId+"-"+(++liveSequence);
+    if(['message_start','message_update','message_end'].includes(event.type))publish('stream',{streamId:liveStreamId,event});
     publish('pi',event);
     if(event.type==='message_start'&&event.message.role==='user'){
       const nativeMessage=event.message;const nativeText=visibleText(nativeMessage.content);
@@ -143,7 +149,7 @@ async function initialize(){
       lifecycleStatus=runId&&settledRunId===runId?settledStatus():statusBeforeCompaction;
       statusBeforeCompaction=undefined;
     }
-    if(['message_end','agent_settled','compaction_start','compaction_end'].includes(event.type))publish('state',current());
+    if(event.type==='message_end'){const ended=event.message,streamId=liveStreamId;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===ended);if(ended.role==='assistant'&&entry)publish('stream.committed',{streamId,entryId:entry.id});publish('state',current());});}else if(['agent_settled','compaction_start','compaction_end'].includes(event.type))publish('state',current());
   });
   bus.on('friend-pi:v1:event',raw=>{
     publish('plugin',raw);
@@ -248,7 +254,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   throw new Error(`未知操作：${method}`);
 }
 function publicError(error:unknown):string{return (error instanceof Error?error.message:String(error)).replace(/sk-[A-Za-z0-9_-]{8,}/g,'[密钥已隐藏]');}
-async function shutdown(){if(disposed)return;if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();bus.clear();}
-process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result});if(request.method==='shutdown')setImmediate(()=>process.disconnect?.());}).catch(error=>output({type:'response',id:request.id,error:publicError(error)}));});
+async function shutdown(){if(disposed)return;for(const pending of terminalRequests.values()){clearTimeout(pending.timer);pending.reject(new Error('终端请求已中断，未自动重放'));}terminalRequests.clear();if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();bus.clear();}
+process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type==='terminal.response'){const pending=terminalRequests.get(String(request.id));if(pending){clearTimeout(pending.timer);terminalRequests.delete(String(request.id));request.error?pending.reject(new Error(String(request.error))):pending.resolve(request.result);}return;}if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result});if(request.method==='shutdown')setImmediate(()=>process.disconnect?.());}).catch(error=>output({type:'response',id:request.id,error:publicError(error)}));});
 process.on('disconnect',()=>{void shutdown();});
 void initialize().catch(error=>{output({type:'fatal',error:publicError(error)});process.exitCode=1;setImmediate(()=>process.disconnect?.());});
