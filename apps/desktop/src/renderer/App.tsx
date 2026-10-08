@@ -93,6 +93,7 @@ export default function App() {
   const [terminalOpen,setTerminalOpen]=useState(false),[terminalVersion,setTerminalVersion]=useState(0),[projectDrawer,setProjectDrawer]=useState(false);
   const [layoutOwner,setLayoutOwner]=useState('');
   const [view,setView]=useState<SessionViewState>(initialView()),viewRef=useRef(view),viewOwner=useRef(''),uiQueue=useRef<Promise<unknown>>(Promise.resolve()),uiPending=useRef(0),uiVersion=useRef(0);
+  const pendingView=useRef<{id:string;ui:SessionViewState}|null>(null);
   const [browserSnapshot,setBrowserSnapshot]=useState<BrowserSnapshot>({tabs:[],downloads:[]}),[browserBlocked,setBrowserBlocked]=useState(false);
   const nativeComposer=useRef<HTMLDivElement>(null);
   const fileCache=useRef<FileWorkspaceCache>(new Map()),sendLock=useRef(false),migratingDraft=useRef(false),composing=useRef(false),navigationEpoch=useRef(0),liveCounter=useRef(0);
@@ -114,7 +115,7 @@ export default function App() {
   useEffect(()=>{void refresh().catch(error=>report(errorText(error),true)).finally(()=>setBooting(false));return window.friendPi.onEvent(event=>{
     if(event.type==='state'){setState({...EMPTY,...event.data as AppState});return;}
     if(String(event.type)==='terminal'){if(asObject(event.data).kind!=='output')setTerminalVersion(v=>v+1);return;}
-    if(String(event.type)==='view'){if(event.sessionId===stateRef.current.current?.sessionId&&!uiPending.current){viewOwner.current=event.sessionId||'';setView(event.data as SessionViewState);}return;}
+    if(String(event.type)==='view'){if(event.sessionId===stateRef.current.current?.sessionId){if(uiPending.current)pendingView.current={id:event.sessionId||'',ui:event.data as SessionViewState};else{viewOwner.current=event.sessionId||'';setView(event.data as SessionViewState);}}return;}
     if(String(event.type)==='browser'){if(event.sessionId===stateRef.current.current?.sessionId)setBrowserSnapshot(event.data as BrowserSnapshot);return;}
     if(event.sessionId&&event.sessionId!==stateRef.current.current?.sessionId)return;
     const data=asObject(event.data);
@@ -181,9 +182,9 @@ export default function App() {
     try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode};const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));setDraftOwner(id);setState({...EMPTY,...next});viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{migratingDraft.current=false;setNavigating(false);}
   };
   const writeView=async(next:SessionViewState,confirmReload=false)=>{
-    const hadSession=!!sessionId;let base=viewRef.current;const id=await ensureUiSession();if(!id)return;if(!hadSession){base=viewRef.current;next={...next,browserScope:base.browserScope};}const version=++uiVersion.current;viewOwner.current=id;viewRef.current=next;setView(next);setSidebar(next.sidebar);uiPending.current++;
+    const hadSession=!!sessionId;let base=viewRef.current;const id=await ensureUiSession();if(!id)return;if(!hadSession){base=viewRef.current;next={...next,browserScope:base.browserScope};}const version=++uiVersion.current;viewOwner.current=id;viewRef.current=next;setView(next);setSidebar(next.sidebar);if(!uiPending.current)pendingView.current=null;uiPending.current++;
     const work=uiQueue.current.catch(()=>{}).then(()=>window.friendPi.request<SessionViewState>('session.ui.update',{sessionId:id,base,ui:next,confirmReload}));uiQueue.current=work;
-    try{const result=await work;if(stateRef.current.current?.sessionId===id&&version===uiVersion.current){viewRef.current=result;setView(result);}return result;}catch(error){report(String(error),true);if(stateRef.current.current?.sessionId===id&&version===uiVersion.current){const saved=await window.friendPi.request<SessionViewState>('session.ui.get',{sessionId:id});if(version===uiVersion.current){viewRef.current=saved;setView(saved);}}throw error;}finally{uiPending.current--;}
+    try{const result=await work;if(stateRef.current.current?.sessionId===id&&version===uiVersion.current){viewRef.current=result;setView(result);}return result;}catch(error){report(String(error),true);if(stateRef.current.current?.sessionId===id&&version===uiVersion.current){const saved=await window.friendPi.request<SessionViewState>('session.ui.get',{sessionId:id});if(version===uiVersion.current){viewRef.current=saved;setView(saved);}}throw error;}finally{if(!--uiPending.current){const last=pendingView.current;pendingView.current=null;if(last&&last.id===stateRef.current.current?.sessionId&&last.id===viewOwner.current){viewRef.current=last.ui;setView(last.ui);}}}
   };
   const openToolView=async(page:ToolPage)=>{if(!fullscreen){if(page==='terminal'){await ensureUiSession();setTerminalOpen(true);}else setTab(page);return;}await writeView(openTool(viewRef.current,page));};
   const showTerminal=async()=>{if(fullscreen){await openToolView('terminal');return;}if(await ensureUiSession())setTerminalOpen(true);};
