@@ -1,5 +1,5 @@
 import {BrowserHost} from './browser-host.js';
-import {initialView,validateView,type LayoutMode,type BrowserScope,type SessionViewState} from './session-view.js';
+import {initialView,validateView,mergeViewUpdate,type LayoutMode,type BrowserScope,type SessionViewState} from './session-view.js';
 import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} from './terminal-processes.js';
 import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
@@ -178,7 +178,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   requireActive();
   if(method==='session.ui.get')return viewContext(text(input.sessionId)).ui;
   if(method==='session.ui.update'){
-    const id=text(input.sessionId),prior=viewContext(id).ui;let next=validateView(input.ui);
+    const id=text(input.sessionId),prior=viewContext(id).ui;let next=mergeViewUpdate(prior,input.base?validateView(input.base):prior,validateView(input.ui));
     if(prior.browserScope!==next.browserScope&&prior.tabs.some(t=>t.kind==='browser')&&input.confirmReload!==true)throw new Error('更改登录范围需要确认重新加载网页');
     const live=browserHost?.snapshot(id).tabs||[];
     next={...next,tabs:next.tabs.map(t=>{const current=live.find(e=>e.id===t.id);return t.kind==='browser'&&current?{...t,url:current.url,title:current.title}:t;})};

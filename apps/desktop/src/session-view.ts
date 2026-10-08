@@ -33,3 +33,12 @@ export function validateView(raw: unknown): SessionViewState {
   return {version:1,mode:v.mode,browserScope:v.browserScope,sidebar:v.sidebar,composerCollapsed:v.composerCollapsed,active:v.active,tabs,normalPage:v.normalPage||null,normalTerminal:v.normalTerminal===true};
 }
 export function newBrowserTab(url: string): ViewTab { return {id:crypto.randomUUID(),kind:'browser',url:browserUrl(url),title:'网页'}; }
+// Renderer writes express changes against a base; popup lifecycle may have changed tabs meanwhile.
+export function mergeViewUpdate(prior:SessionViewState,base:SessionViewState,next:SessionViewState):SessionViewState {
+  const baseIds=new Set(base.tabs.map(t=>t.id)),priorIds=new Set(prior.tabs.map(t=>t.id));
+  const tabs=next.tabs.filter(t=>!baseIds.has(t.id)||priorIds.has(t.id));
+  for(const tab of prior.tabs)if(!baseIds.has(tab.id)&&!tabs.some(t=>t.id===tab.id))tabs.push(tab);
+  let active=next.active===base.active?prior.active:next.active;
+  if(active!=='conversation'&&!tabs.some(t=>t.id===active))active=tabs.some(t=>t.id===prior.active)?prior.active:'conversation';
+  return validateView({...next,tabs,active});
+}

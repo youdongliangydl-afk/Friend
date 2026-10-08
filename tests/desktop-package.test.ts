@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {copyDesktopBuild} from '../scripts/package-desktop.mjs';
+const {copyDesktopBuild}=await import(new URL('../scripts/package-desktop.mjs',import.meta.url).href);
 
 test('delivery includes both trusted UI preload bridges and renderer surface',()=>{
   const target=mkdtempSync(join(tmpdir(),'friend-desktop-copy-'));

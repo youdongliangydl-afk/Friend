@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {initialView,validateView,browserUrl} from '../apps/desktop/src/session-view.js';
+import {initialView,validateView,browserUrl,mergeViewUpdate} from '../apps/desktop/src/session-view.js';
 import {browserPartition} from '../apps/desktop/src/browser-policy.js';
 import {openTool,addNewTab,closeViewTab} from '../apps/desktop/src/renderer/view-tabs.js';
+test('pending renderer updates preserve concurrent popup creation and self-close',()=>{
+  const base=validateView({...initialView(),tabs:[{id:'web',kind:'browser',url:'https://example.com'}],active:'web'});
+  const popup={id:'popup',kind:'browser' as const,url:'about:blank'},prior=validateView({...base,tabs:[...base.tabs,popup],active:'popup'});
+  const merged=mergeViewUpdate(prior,base,{...base,sidebar:false});assert.equal(merged.active,'popup');assert.equal(merged.tabs.length,2);assert.equal(merged.sidebar,false);
+  const closed=validateView({...prior,tabs:base.tabs,active:'web'});
+  const after=mergeViewUpdate(closed,prior,{...prior,composerCollapsed:true});assert.equal(after.active,'web');assert.equal(after.tabs.length,1);
+  const explicit=mergeViewUpdate(prior,base,{...base,tabs:[],active:'conversation'});assert.deepEqual(explicit.tabs.map(t=>t.id),['popup']);assert.equal(explicit.active,'conversation');
+});
 test('legacy layout remains standard; new session defaults and normal panel snapshot round trip',()=>{
   assert.equal(initialView().mode,'standard');const view=initialView({defaultLayoutMode:'fullscreen',defaultBrowserScope:'project'});
   assert.deepEqual(validateView({...view,normalPage:'diff',normalTerminal:true}),{...view,normalPage:'diff',normalTerminal:true});
