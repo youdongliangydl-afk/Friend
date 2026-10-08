@@ -24,7 +24,7 @@ export function redactJobOutput(value:string){return value.replace(/\bsk-[A-Za-z
 const quote=(value:string)=>`'${value.replaceAll("'","'\\''")}'`;
 
 export class ProcessJobs {
- readonly store:RecordStore;private readonly backendBus=createEventBus();private ready=false;private disposed=false;
+ readonly store:RecordStore;private readonly backendBus=createEventBus();private ready=false;private disposed=false;private temporaryOutputDirectory?:string;
  private readonly pending=new Map<string,Set<Promise<unknown>>>();private readonly cancelledRuns=new Map<string,number>();private readonly latestGenerations=new Map<string,number>();private readonly ownedPids=new Set<number>();
  private readonly terminalWaiters=new Map<string,Set<(job:ProcessJob)=>void>>();
  constructor(readonly dataDir:string,readonly onTerminal:(job:ProcessJob)=>void,readonly emit:(event:string,data:unknown)=>void,private readonly backendFactory:ExtensionFactory=originalBackend){
@@ -39,7 +39,7 @@ export class ProcessJobs {
    // Own the presentation and wake path; the backend never starts model turns.
    sendMessage:()=>{},
    on:(event:string,handler:(event:unknown,ctx:ExtensionContext)=>unknown)=>{
-    if(event==='session_start')pi.on('session_start',async(e,ctx)=>{if(process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT)try{assertTemporaryArtifactPath(resolve(ctx.cwd,'.pi/tasks'),process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT);}catch(error){this.ready=false;ctx.ui?.notify(String(error),'error');return;}await handler(e,{...ctx,ui:{...ctx.ui,setStatus:()=>{},notify:()=>{},setWidget:()=>{},setWorkingMessage:()=>{}}});this.ready=true;});
+    if(event==='session_start')pi.on('session_start',async(e,ctx)=>{if(process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT)try{const session=ctx.sessionManager.getSessionId().replace(/[^a-zA-Z0-9_.-]+/g,'-').replace(/^-+|-+$/g,'')||'session';this.temporaryOutputDirectory=resolve(ctx.cwd,'.pi/tasks',`${session}-${process.pid}`);assertTemporaryArtifactPath(this.temporaryOutputDirectory,process.env.FRIEND_PI_TEMPORARY_WRITE_ROOT);}catch(error){this.ready=false;ctx.ui?.notify(String(error),'error');return;}await handler(e,{...ctx,ui:{...ctx.ui,setStatus:()=>{},notify:()=>{},setWidget:()=>{},setWorkingMessage:()=>{}}});this.ready=true;});
     else if(event==='session_shutdown')pi.on('session_shutdown',async(e,ctx)=>{this.ready=false;await handler(e,ctx);});
    },
   } as unknown as ExtensionAPI;
@@ -70,7 +70,8 @@ export class ProcessJobs {
   }
   if(this.disposed||ctx.signal?.aborted||generation<=(this.cancelledRuns.get(this.runKey(ctx))??-1))throw new Error('后台命令已取消，未开始执行');
 
-  assertTemporaryArtifactPath(resolve(ctx.projectDir,'.pi/tasks'),ctx.policy?.temporaryWriteRoot);
+  const session=ctx.sessionId.replace(/[^a-zA-Z0-9_.-]+/g,'-').replace(/^-+|-+$/g,'')||'session';
+  assertTemporaryArtifactPath(this.temporaryOutputDirectory||resolve(ctx.projectDir,'.pi/tasks',`${session}-${process.pid}`),ctx.policy?.temporaryWriteRoot);
   const kind=input.kind==='service'?'service':'task';const origin=ctx.origin||'agent';const raw=await this.request('run',{name:text(input.name||command.slice(0,80),'任务名称',200),command,isAgent:false,timeoutSeconds:Math.max(1,Math.min(86400,Number(input.timeoutSeconds)|| (kind==='service'?86400:3600))),notifyOnCompletion:false,triggerOnCompletion:false});
   const job:ProcessJob={id:text(raw.id),projectId:ctx.projectId,sessionId:ctx.sessionId,runId:ctx.runId,goalId:ctx.policy?.goalId,generation,name:String(raw.name),command,kind,origin,notify:input.notify!==false,autoContinue:kind==='task'&&(typeof input.autoContinue==='boolean'?input.autoContinue:origin==='agent'),status:'running',pid:typeof raw.pid==='number'?raw.pid:undefined,outputPath:typeof raw.outputPath==='string'?resolve(ctx.projectDir,raw.outputPath):undefined,startedAt:new Date(Number(raw.startTime)||Date.now()).toISOString()};
   this.store.put(this.key(ctx,job.id),job,null);ctx.appendEntry('friend-pi.job.started',{jobId:job.id,kind,runId:job.runId});ctx.emit('jobs.changed',this.list(ctx));
