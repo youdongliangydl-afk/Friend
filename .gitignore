@@ -2,6 +2,8 @@ node_modules/
 .cache/
 .artifacts/
 dist/
+!third-party/pi-background-tasks/dist/
+!third-party/pi-background-tasks/dist/**
 *.tsbuildinfo
 .DS_Store
 .friend-pi-data/
