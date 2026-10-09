@@ -10,7 +10,7 @@ export interface Preferences {defaultLayoutMode?:import('../session-view.js').La
 export interface AppState {
   projects: Project[];
   sessions: SessionSummary[];
-  current: { ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; changes?:import('../run-changes.js').RunChangesSummary[];traceSystems?:import('../message-projection.js').TraceSystem[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
+  current: { monitor?:import('../session-monitor.js').SessionMonitor;ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; changes?:import('../run-changes.js').RunChangesSummary[];traceSystems?:import('../message-projection.js').TraceSystem[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
   models: Model[];
   providers: { id: string; name: string; configured: boolean;supportsApiKey?:boolean }[];
   preferences?:Preferences;

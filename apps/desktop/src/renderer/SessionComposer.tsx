@@ -1,10 +1,11 @@
 import {useEffect,useRef,useState,type RefObject} from 'react';
 import {Icon} from './Icons.js';
+import {SessionStats} from './SessionStats.js';
 import {ModelPicker} from './model-picker.js';
 import {composerKeyAction,insertNewline} from './composer-keys.js';
 import {ComposerPermissions} from './composer-permissions.js';
 import type {PermissionMode,Model,JsonObject} from './types.js';
-export interface ComposerSnapshot {sessionId:string;epoch:number;draft:string;attachments:{path:string}[];running:boolean;sending:boolean;navigating:boolean;archived:boolean;planMode:boolean;permissionMode:PermissionMode;permissionExplicit:boolean;mode:'single'|'team'|'swarm';plugins:string[];models:Model[];modelId:string;thinkingLevel:string;thinkingLevels:string[];ready:boolean;floating:boolean;collapsed:boolean;status:string;notice?:string}
+export interface ComposerSnapshot {monitor?:import('../session-monitor.js').SessionMonitor;sessionId:string;epoch:number;draft:string;attachments:{path:string}[];running:boolean;sending:boolean;navigating:boolean;archived:boolean;planMode:boolean;permissionMode:PermissionMode;permissionExplicit:boolean;mode:'single'|'team'|'swarm';plugins:string[];models:Model[];modelId:string;thinkingLevel:string;thinkingLevels:string[];ready:boolean;floating:boolean;collapsed:boolean;status:string;notice?:string}
 export interface ComposerAction {type:string;value?:unknown;text?:string;sessionId?:string;epoch?:number;token?:string}
 export function SessionComposer({value,action,inputRef}:{value:ComposerSnapshot;action(input:ComposerAction):Promise<unknown>;inputRef?:RefObject<HTMLTextAreaElement|null>}){
   const own=useRef<HTMLTextAreaElement>(null),ref=inputRef||own,composing=useRef(false),draft=useRef(value.draft);draft.current=value.draft;
@@ -24,6 +25,7 @@ export function SessionComposer({value,action,inputRef}:{value:ComposerSnapshot;
         {value.running?<button className="stop-button" aria-label="停止当前任务" onClick={()=>void dispatch({type:'stop'})}>停止</button>:<button className="send-button" aria-label="发送消息" title="Enter 发送；⌘ Enter 换行" disabled={busy||!value.draft.trim()||!value.ready} onClick={()=>void dispatch({type:'send',text:draft.current})}><Icon name="send"/></button>}
       </div>
     </div>
+    {!value.floating&&<SessionStats key={value.sessionId} stats={value.monitor}/>}
   </div>;
 }
 interface OverlayBridge {action(input:ComposerAction):Promise<unknown>;onSnapshot(handler:(value:ComposerSnapshot&{token:string;revision:number})=>void):()=>void}

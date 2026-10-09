@@ -9,6 +9,7 @@ import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
 import {projectMessages,projectTraceSystems,traceJSON} from './message-projection.js';
 import {RunChangesTracker,projectRunChanges,RUN_CHANGES_TYPE} from './run-changes.js';
+import {SessionMetricRecorder,projectSessionMonitor,SESSION_METRIC_TYPE} from './session-monitor.js';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import {guardDesktopModelRequests} from '@friend-pi/core';
 import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
@@ -42,7 +43,7 @@ const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']
 const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
 function swarmBusy(){return swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0;}
 let missingModelId:string|undefined;
-function current(){const entries=session.sessionManager.getBranch();return {sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(entries),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context:session.getContextUsage(),sessionFile:session.sessionFile,runId};}
+function current(){const entries=session.sessionManager.getBranch(),sdkStats=session.getSessionStats(),context=sdkStats.contextUsage;return {monitor:projectSessionMonitor(session.sessionManager.getEntries(),sdkStats,context),sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(entries),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context,sessionFile:session.sessionFile,runId};}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=executionMode==='swarm'&&!planMode&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
@@ -158,8 +159,11 @@ async function initialize(){
   changeTracker=new RunChangesTracker(cwd,projectIdentity(cwd),dataDir,session.sessionId,summary=>{session.sessionManager.appendCustomEntry(RUN_CHANGES_TYPE,summary);publish('state',current());},()=>projectRunChanges(session.sessionManager.getBranch()));
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDir,`${model.provider}/${model.id}`),context,options);}
   if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
-  let liveSequence=0;let liveStreamId="";
+  let liveSequence=0;let liveStreamId="";const metricRecorder=new SessionMetricRecorder();let metricMessage:unknown;
   session.subscribe(event=>{
+    if(event.type==='message_end'&&event.message.role==='assistant')metricMessage=event.message;
+    const metric=metricRecorder.observe(event),measuredMessage=metricMessage;
+    if(metric&&measuredMessage)queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getEntries().find(e=>e.type==='message'&&e.message===measuredMessage);if(entry){session.sessionManager.appendCustomEntry(SESSION_METRIC_TYPE,{...metric,entryId:entry.id});publish('state',current());}});
     if(event.type==='agent_start')changeTracker?.reopen(runId);
     if(event.type==='message_start'&&event.message.role==='assistant')liveStreamId="stream-"+session.sessionId+"-"+(++liveSequence);
     if(['message_start','message_update','message_end'].includes(event.type))publish('stream',{streamId:liveStreamId,event});
