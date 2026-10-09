@@ -35,7 +35,7 @@ export interface Graph {
   executionStyle?:'team'|'swarm';workflowId?:string;deferPreparation?:boolean;integratedTaskIds?:string[];parentTools?:string[];permissionMode?:PermissionMode;temporaryWriteRoot?:string;goalId?:string;audit?:boolean;auditEvidence?:unknown;
   reviews?:Review[];reviewAttempts?:ReviewAttempt[];
 }
-export interface MemberMessage {id: string; graphId: string; from: string; to: string; body: string; createdAt: string; deliveredAt?: string; processedAt?: string; attemptId?: string; memberId?:string; sequence?:number; receivedAt?:string; nativeEntryId?:string; bodyDigest?:string; generation?:number; senderMemberId?:string; kind?:'constraint'|'discussion'}
+export interface MemberMessage {id: string; graphId: string; from: string; to: string; body: string; createdAt: string; deliveredAt?: string; processedAt?: string; attemptId?: string; memberId?:string; sequence?:number; receivedAt?:string; nativeEntryId?:string; bodyDigest?:string; generation?:number; senderMemberId?:string; kind?:'constraint'|'discussion';contextKind?:'constraint'|'discussion';contextGraphId?:string;contextTaskId?:string}
 export interface Teammate {
   id:string; projectId:string; rootSessionId:string; name:string; description:string; key?:string;
   state:'idle'|'running'|'stopping'|'paused'|'failed'; generation:number; nextSequence:number;

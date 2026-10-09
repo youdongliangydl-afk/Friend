@@ -26,8 +26,9 @@ test('receiver drains a durable ordered prefix, survives received-before-context
   const f=fixture(),db=new RecordStore('swarm',f.ctx.dataDir),members=new TeammateStore(db);
   let inbox:MemberInbox|undefined;
   try{
-    const member=members.create({name:'ordered'},f.ctx),lease=members.acquire(member.id,'attempt','graph','task',f.ctx,'runtime');
+    const member=members.create({name:'ordered'},f.ctx);
     const one=members.enqueue(member.id,{messageId:'one',body:'first'},f.ctx,'你'),two=members.enqueue(member.id,{messageId:'two',body:'second'},f.ctx,'你');
+    assert.equal(two.kind,'discussion');const lease=members.acquire(member.id,'attempt','graph','task',f.ctx,'runtime');
     const dir=join(f.ctx.dataDir,'swarm-sessions','project','chat',member.id);mkdirSync(dir,{recursive:true});const manager=SessionManager.create(f.ctx.projectDir,dir);
     const session={sessionManager:manager,get sessionFile(){return manager.getSessionFile();}} as AgentSession;
     const start:MemberStart={v:2,type:'start',memberId:member.id,rootSessionId:'chat',generation:lease.generation,graphId:'graph',taskId:'task',attemptId:'attempt',cwd:f.ctx.projectDir,dataDir:f.ctx.dataDir,agentDir:dir,sessionDir:dir,prompt:'task',mode:'read',writeScopes:[]};
@@ -38,7 +39,7 @@ test('receiver drains a durable ordered prefix, survives received-before-context
     // Crash after native append, before context ACK: history repairs the acknowledgement.
     members.update(member.id,f.ctx,m=>{m.sessionFile=manager.getSessionFile();m.sessionId=manager.getSessionId();});inbox.close();inbox=undefined;members.recover(member.id,f.ctx);
     inbox=new MemberInbox(start,session,()=>{});assert.deepEqual(inbox.receiveOrdered(two.id,two.bodyDigest).map(message=>message.id),['two']);manager.appendMessage({role:'user',content:[{type:'text',text:teamMessageText(two)}],timestamp:Date.now()});inbox.reconcile();
-    assert.equal(members.messages(member.id,f.ctx).filter(message=>message.nativeEntryId).length,2);assert.deepEqual(inbox.receiveOrdered(two.id,two.bodyDigest),[]);
+    assert.equal(members.messages(member.id,f.ctx).filter(message=>message.nativeEntryId).length,2);assert.equal(members.messages(member.id,f.ctx)[1].kind,'discussion');assert.equal(members.messages(member.id,f.ctx)[1].contextKind,'constraint');assert.equal(members.messages(member.id,f.ctx)[1].contextGraphId,'graph');assert.equal(members.messages(member.id,f.ctx)[1].contextTaskId,'task');assert.deepEqual(inbox.receiveOrdered(two.id,two.bodyDigest),[]);
     members.update(member.id,f.ctx,m=>{m.generation++;m.state='paused';});assert.equal(inbox.owned(),false);assert.deepEqual(inbox.receiveOrdered(two.id,two.bodyDigest),[]);
   }finally{inbox?.close();db.close();f.close();}
 });
@@ -64,4 +65,15 @@ test('unknown exit receipts block both member and graph resume until the origina
 test('prelaunch role failure records a confirmed no-child boundary instead of permanent stopping',async()=>{
  const f=fixture(),controller=new SwarmController(()=>{throw Error('launcher should not run');});
  try{const graph=await controller.dispatch('create',{goal:'bad role',tasks:[{...task('reader'),roleId:'missing-role'}]},f.ctx) as Graph;await controller.dispatch('start',{graphId:graph.id},f.ctx);const snap=controller.snapshot(f.ctx) as {graphs:Graph[];teammates:{state:string;stopReceipt:StopObject}[]};assert.equal(snap.graphs[0].tasks[0].status,'blocked');assert.equal(snap.teammates[0].state,'paused');assert.equal(snap.teammates[0].stopReceipt.status,'terminated');assert.match(snap.graphs[0].error!,/角色/);}finally{await controller.dispose();f.close();}
+});
+
+
+test('review keeps native user constraints from an interrupted earlier attempt of the same task',async()=>{
+ const f=fixture(),c=controlled(),controller=new SwarmController(c.launcher);let db:RecordStore|undefined,inbox:MemberInbox|undefined;
+ try{
+  const graph=await controller.dispatch('create',{goal:'constraint survives retry',tasks:[task('reader')]},f.ctx) as Graph;await controller.dispatch('start',{graphId:graph.id},f.ctx);await wait(()=>c.starts.size===1);const first=[...c.starts.values()][0],memberId=graph.tasks[0].memberId!;
+  const sent=await controller.dispatch('member.send',{memberId,body:'必须保留用户的 UTF-8 约束'},f.ctx) as {id:string};db=new RecordStore('swarm',f.ctx.dataDir);const members=new TeammateStore(db),dir=join(f.ctx.dataDir,'swarm-sessions','project','chat',memberId);mkdirSync(dir,{recursive:true});const manager=SessionManager.create(f.ctx.projectDir,dir),native={sessionManager:manager,get sessionFile(){return manager.getSessionFile();}} as AgentSession;inbox=new MemberInbox(first,native,()=>{});const message=inbox.receive(sent.id)!;manager.appendMessage({role:'user',content:[{type:'text',text:teamMessageText(message)}],timestamp:Date.now()});inbox.reconcile();members.update(memberId,f.ctx,m=>{m.sessionFile=manager.getSessionFile();m.sessionId=manager.getSessionId();});inbox.close();inbox=undefined;
+  await controller.dispatch('member.interrupt',{memberId},f.ctx);await controller.dispatch('member.resume',{memberId,confirmUnknown:true},f.ctx);await wait(()=>c.starts.size===2);const retry=[...c.starts.values()][1];c.outputs.get(retry.attemptId)!({v:1,type:'settled',summary:'current attempt'});c.ended.get(retry.attemptId)!({id:retry.attemptId,kind:'member',status:'terminated'});await wait(()=>c.starts.size===3);const review=[...c.starts.values()][2];assert.equal(review.reviewResult,true);assert.ok(review.prompt.includes('必须保留用户的 UTF-8 约束'));assert.equal(members.messages(memberId,f.ctx)[0].attemptId,first.attemptId,'the original native receipt must remain attached to its original attempt');
+  c.outputs.get(review.attemptId)!({v:1,type:'settled',summary:JSON.stringify({approved:true,findings:'fixture review'})});c.ended.get(review.attemptId)!({id:review.attemptId,kind:'member',status:'terminated'});await wait(()=>(controller.snapshot(f.ctx) as {graphs:Graph[]}).graphs[0].status==='integrated');
+ }finally{inbox?.close();await controller.dispose();db?.close();f.close();}
 });

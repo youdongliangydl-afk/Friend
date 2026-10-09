@@ -390,3 +390,14 @@ test('abort-aware fake wait permits prompt member stop with a confirmed exit rec
   const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {teammates:{state:string;stopReceipt:{status:string}}[]};assert.equal(snapshot.teammates[0].state,'paused');assert.equal(snapshot.teammates[0].stopReceipt.status,'terminated');
  }finally{await f.close();}
 });
+
+
+test('user interruption of a persistent discussion keeps its explicit pause reason and does not release the cancelled lease',{timeout:30000},async()=>{
+ const f=await start();
+ try{
+  await f.request('configure',{executionMode:'swarm'});const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{goal:'discussion cancel lease',tasks:[{id:'reader',title:'读者',prompt:'只读检查',mode:'read'}]}}) as {id:string;tasks:{memberId:string}[]};await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
+  const roster=()=>{const frames=f.events.filter(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed');return (frames.at(-1)?.event?.data.data as {teammates?:{state:string;generation:number;reason?:string}[]})?.teammates||[];};await f.wait(()=>roster()[0]?.state==='idle');const memberId=graph.tasks[0].memberId;await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,body:'QA_HOLD 只读讨论中止'}});await f.wait(()=>roster()[0]?.state==='running'&&roster()[0]?.generation===2);
+  await f.request('plugin',{plugin:'swarm',action:'member.interrupt',input:{memberId}});await new Promise(done=>setTimeout(done,100));const history=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string;generation:number;reason?:string}};assert.equal(history.member.state,'paused');assert.equal(history.member.generation,3);assert.match(history.member.reason!,/成员已暂停/);
+  await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,body:'必须等待明确接续'}});await new Promise(done=>setTimeout(done,50));assert.equal(roster()[0].state,'paused');assert.equal(roster()[0].generation,3);
+ }finally{await f.close();}
+});

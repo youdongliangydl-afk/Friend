@@ -13,10 +13,12 @@ This change extends Swarm only. Single and Team retain their existing execution 
 ## Client
 
 - Header and task workbench roster open a separate central teammate route, scoped by root chat and member.
+- The selected teammate's name replaces the header roster label, with Return to main chat immediately to its left. Member conversations reuse the main composer styling and keyboard behavior; recipient names appear in the input placeholder and accessible label. Running members permit supplements and scoped Stop together. Only actionable wait reasons remain visible.
 - Native messages and tools use the existing timeline projection; pending inbox bodies remain visible until an exact native entry exists.
 - Drafts, stable send IDs, expanded native tool/thinking blocks and scroll positions are member-scoped; root drafts and scroll-following state survive member navigation.
 - Worker terminal IPC is flushed before disconnect; lifecycle failure waits for process close after queued messages drain. Native history remains authoritative.
 - Events are fenced by member, attempt and generation. Member Stop affects its attempt and dependencies; root Stop fences all members.
+- Cancellation cannot release a member back to idle or replace an explicit pause reason. User supplements retain their original admission evidence while native context receipts bind the actual task, including earlier interrupted attempts whose constraints must reach the independent reviewer.
 
 ## Verification
 
