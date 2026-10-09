@@ -10,21 +10,30 @@ function ToolOutput({ value }: { value: unknown }) {
     : <JsonView key={index} value={part?.type === 'text' ? part.text : part}/>)}</>;
 }
 
-export function ToolActivity({ group, thinking, expanded, onToggle }: {
-  group: Activity; thinking: boolean; expanded: Record<string, boolean>; onToggle(id: string, open: boolean): void;
+export function ToolActivity({ group, thinking, expanded, onToggle, readingKey }: {
+  group: Activity; thinking: boolean; expanded: Record<string, boolean>; onToggle(id: string, open: boolean): void; readingKey?: string;
 }) {
-  const summary = activitySummary(group, thinking), body = useRef<HTMLDivElement>(null);
+  const summary = activitySummary(group, thinking), body = useRef<HTMLDivElement>(null), restored = useRef(false);
+  const scrollKey = readingKey ? 'friend-pi.tool-scroll:' + JSON.stringify([readingKey, group.id]) : undefined;
   const toggle = (id: string) => (event: SyntheticEvent<HTMLDetailsElement>) => {
     event.stopPropagation();
     const open = event.currentTarget.open;
     onToggle(id, open);
-    if (id === group.id && open && body.current) body.current.scrollTop = summary.status === 'running' ? body.current.scrollHeight : 0;
+    if (id === group.id) {
+      restored.current = false;
+      if (open && body.current) {
+        const saved = scrollKey ? sessionStorage.getItem(scrollKey) : null;
+        const top = saved === null ? (summary.status === 'running' ? body.current.scrollHeight : 0) : Number(saved);
+        body.current.scrollTop = Number.isFinite(top) && top >= 0 ? top : 0;
+        restored.current = true;
+      }
+    }
   };
   return <details className="tool-activity" data-tool-group-id={group.id} open={expanded[group.id] === true} onToggle={toggle(group.id)}>
     <summary><span className="disclosure-chevron" aria-hidden="true"/><span className={'tool-indicator ' + summary.status}/><span className="activity-title">{summary.title}</span>
       {summary.count > 0 && <span className="activity-count">{summary.count} 项工具</span>}
       {summary.status !== 'completed' && <Badge value={summary.status}/>}</summary>
-    <div className="tool-activity-body" ref={body} tabIndex={0} role="region" aria-label="工具调用与思考详情">
+    <div className="tool-activity-body" ref={body} tabIndex={0} role="region" aria-label="工具调用与思考详情" onScroll={event=>{if(scrollKey&&restored.current)sessionStorage.setItem(scrollKey,String(event.currentTarget.scrollTop));}}>
       {group.items.map(item => item.kind === 'thinking'
         ? <details key={item.key} className="thinking-block activity-thinking" data-thought-part={item.key} open={expanded[item.key] === true} onToggle={toggle(item.key)}>
           <summary><span className="disclosure-chevron" aria-hidden="true"/>思考过程</summary>{expanded[item.key] && <pre>{item.text}</pre>}</details>

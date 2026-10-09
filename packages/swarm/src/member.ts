@@ -121,7 +121,7 @@ async function run(start:MemberStart): Promise<void> {
   let settled=false;
   session.subscribe(event => {
     // Raw transcript lives in Pi JSONL, never copied to Swarm records.
-    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type === 'agent_settled' || start.v===2&&['message_start','message_update','message_end'].includes(event.type)) output({v:1,type:'event',event});
+    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_update' || event.type === 'tool_execution_end' || event.type === 'agent_settled' || start.v===2&&['message_start','message_update','message_end'].includes(event.type)) output({v:1,type:'event',event});
     if (event.type === 'agent_settled') settled=true;
     if(event.type==='message_end'){queueMicrotask(()=>{if(shutdown)return;if(start.v===2)inbox?.reconcile();if(event.message.role==='assistant'){const entry=session!.sessionManager.getEntries().find(item=>item.type==='message'&&item.message===event.message);if(entry)output({v:1,type:'usage',entryId:entry.id,tokens:event.message.usage?.totalTokens});}});}
     if (start.v===1 && event.type === 'message_start' && event.message.role === 'user') {

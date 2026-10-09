@@ -56,6 +56,21 @@ test('bundled standalone member runs Pi SDK in a separate process and stores onl
   }finally {child.kill('SIGTERM');await env.cleanup();}
 });
 
+test('standalone member forwards live Bash partial output before tool completion and still settles',async()=>{
+  const early='MEMBER_TOOL_EARLY',tail='MEMBER_TOOL_TAIL';
+  const env=await environment(input=>(input.messages as {role:string}[]).some(message=>message.role==='tool')?'Slow Bash completed.':{tool:'bash',args:{command:`printf '${early}\\n'; sleep 0.45; printf '${tail}\\n'`}});
+  const start:MemberStart={v:1,type:'start',graphId:'streaming-fixture',taskId:'slow-bash',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'Run the fixture Bash command and report its result.',mode:'write',writeScopes:['.']};
+  const child=fork(env.worker,[],{cwd:env.project,stdio:['ignore','pipe','pipe','ipc'],execArgv:[]});child.stdout?.resume();child.stderr?.resume();
+  try{
+    const messages:MemberOutput[]=[];const events:Record<string,unknown>[]=[];let sawEarlyWhileRunning=false;
+    const finished=new Promise<Extract<MemberOutput,{type:'settled'}>>((done,reject)=>{const timer=setTimeout(()=>reject(new Error('Streaming Bash member timed out')),15000);child.on('message',(message:MemberOutput)=>{messages.push(message);if(message.type==='event'){const event=message.event as Record<string,unknown>;if(event.type==='tool_execution_update'&&JSON.stringify(event.partialResult).includes(early)&&!JSON.stringify(event.partialResult).includes(tail)&&!events.some(prior=>prior.type==='tool_execution_end'&&prior.toolCallId===event.toolCallId))sawEarlyWhileRunning=true;events.push(event);}if(message.type==='settled'){clearTimeout(timer);done(message);}if(message.type==='failed'){clearTimeout(timer);reject(new Error(message.error));}});child.once('error',error=>{clearTimeout(timer);reject(error);});});
+    child.send(start satisfies MemberInput);const result=await finished;
+    const began=events.findIndex(event=>event.type==='tool_execution_start'&&event.toolName==='bash'),updated=events.findIndex(event=>event.type==='tool_execution_update'&&JSON.stringify(event.partialResult).includes(early)&&!JSON.stringify(event.partialResult).includes(tail)),ended=events.findIndex(event=>event.type==='tool_execution_end'&&event.toolName==='bash');
+    assert.equal(sawEarlyWhileRunning,true);assert.ok(began>=0&&began<updated&&updated<ended);assert.equal(events[updated].toolCallId,events[ended].toolCallId);assert.ok(JSON.stringify(events[ended].result).includes(early)&&JSON.stringify(events[ended].result).includes(tail));assert.equal(events[ended].isError,false);assert.equal(result.summary,'Slow Bash completed.');assert.ok(messages.some(message=>message.type==='event'&&(message.event as Record<string,unknown>).type==='agent_settled'));
+    await new Promise<void>(done=>{if(child.exitCode!==null)done();else child.once('exit',()=>done());});
+  }finally{child.kill('SIGTERM');await env.cleanup();}
+});
+
 test('native reviewer submits strict immutable tool data and waits for Pi settled despite contradictory assistant prose',async()=>{
   let continuing=false;let finishResponse!:()=>void;const gate=new Promise<void>(done=>{finishResponse=done;});let requests=0;
   const env=await environment(async input=>{
