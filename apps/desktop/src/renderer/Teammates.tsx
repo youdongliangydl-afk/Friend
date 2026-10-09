@@ -3,7 +3,7 @@
 import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {asList,asObject,errorText,type JsonObject,type Message} from './types.js';
 import {Conversation} from './Conversation.js';
-import {piLiveMessage,type ToolRun} from './timeline.js';
+import {piLiveMessage,updateToolRun,type ToolRun} from './timeline.js';
 import {SessionComposer} from './SessionComposer.js';
 export interface TeammateView {id:string;name:string;description:string;state:string;generation:number;cwd?:string;reason?:string;modelId?:string;discussion?:boolean;attemptId?:string}
 const states:Record<string,string>={idle:'待命',running:'执行中',stopping:'正在停止',paused:'已暂停',failed:'失败'};
@@ -45,7 +45,7 @@ export function TeammateConversation({rootSessionId,memberId,onBack,report,archi
     if(native.type==='message_end')void refresh().catch(()=>{});
     if(native.type==='agent_settled'){liveRef.current=null;setLive(null);setTools([]);void refresh().catch(error=>report(errorText(error),true));}
     if(native.type==='tool_execution_start')setTools(old=>[...old.filter(tool=>tool.id!==native.toolCallId),{id:String(native.toolCallId),name:String(native.toolName),status:'running',input:native.args}]);
-    if(['tool_execution_update','tool_execution_end'].includes(String(native.type)))setTools(old=>old.map(tool=>tool.id===native.toolCallId?{...tool,status:native.type==='tool_execution_end'?native.isError?'failed':'completed':'running',output:native.result??native.partialResult,error:native.isError===true}:tool));
+    if(['tool_execution_update','tool_execution_end'].includes(String(native.type)))setTools(old=>updateToolRun(old,native));
   }),[rootSessionId,memberId,refresh,report]);
   const send=async()=>{const body=draftRef.current;if(sendLock.current||!body.trim()||archived)return;sendLock.current=true;setSending(true);const generation=memberRef.current?.generation;
     const storage='friend-pi.member-send:'+key;

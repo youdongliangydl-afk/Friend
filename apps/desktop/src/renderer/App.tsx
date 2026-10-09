@@ -16,7 +16,7 @@ import {ResizeHandle} from './ResizeHandle.js';
 import {Workbench,type WorkbenchPage,type Material} from './Workbench.js';
 import {TeammateRoster,TeammateConversation} from './Teammates.js';
 import {Conversation} from './Conversation.js';
-import {piLiveMessage,type ToolRun as TimelineToolRun} from './timeline.js';
+import {piLiveMessage,updateToolRun,type ToolRun as TimelineToolRun} from './timeline.js';
 import {composerKeyAction,insertNewline} from './composer-keys.js';
 import {ProjectStrip} from './ProjectStrip.js';
 import type {FileWorkspaceCache} from './FileWorkspace.js';
@@ -139,7 +139,7 @@ export default function App() {
     if(data.type==='agent_start'){setLocalRunning(true);setLive(null);}
     if(data.type==='agent_settled'){setLocalRunning(false);setLive(null);void refresh().catch(()=>{});}
     if(data.type==='tool_execution_start')setTools(old=>[...old.filter(t=>t.id!==data.toolCallId),{id:String(data.toolCallId),name:String(data.toolName),status:'running',input:data.args}]);
-    if(['tool_execution_update','tool_execution_end'].includes(String(data.type)))setTools(old=>old.map(t=>t.id===data.toolCallId?{...t,status:data.type==='tool_execution_end'?data.isError?'failed':'completed':'running',output:data.result??data.partialResult,error:data.isError===true}:t));
+    if(['tool_execution_update','tool_execution_end'].includes(String(data.type)))setTools(old=>updateToolRun(old,data));
   });},[refresh,report]);
   useEffect(()=>{
     if(booting||migratingDraft.current||sendLock.current&&lastSubmitted.current&&!lastSubmitted.current.accepted)return;

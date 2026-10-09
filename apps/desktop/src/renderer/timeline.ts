@@ -1,5 +1,14 @@
 import type { Message, JsonObject } from './types.js';
 export interface ToolRun { id: string; name: string; status: string; input: unknown; output?: unknown; error?: boolean }
+export function updateToolRun(tools: ToolRun[], event: JsonObject): ToolRun[] {
+  if (typeof event.toolCallId !== 'string') return tools;
+  const previous = tools.find(tool => tool.id === event.toolCallId);
+  if (event.type === 'tool_execution_update' && previous && previous.status !== 'running') return tools;
+  const next: ToolRun = { id: event.toolCallId, name: typeof event.toolName === 'string' ? event.toolName : previous?.name || '工具',
+    input: event.args ?? previous?.input, output: event.result ?? event.partialResult ?? previous?.output,
+    status: event.type === 'tool_execution_end' ? event.isError ? 'failed' : 'completed' : 'running', error: event.isError === true };
+  return previous ? tools.map(tool => tool.id === next.id ? next : tool) : [...tools, next];
+}
 export type TimelinePart = { kind: 'text'; text: string } | { kind: 'thinking'; text: string } |
   { kind: 'image'; data: string; mimeType: string } |
   { kind: 'tool'; tool: ToolRun };

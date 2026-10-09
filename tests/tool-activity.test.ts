@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { projectTimeline } from '../apps/desktop/src/renderer/timeline.js';
+import { projectTimeline, updateToolRun } from '../apps/desktop/src/renderer/timeline.js';
 import { groupToolActivity, activitySummary, type ToolActivity } from '../apps/desktop/src/renderer/tool-activity.js';
 import { ToolActivity as ActivityView } from '../apps/desktop/src/renderer/ToolActivity.js';
 import type { Message } from '../apps/desktop/src/renderer/types.js';
@@ -12,6 +12,22 @@ const assistant = (id: string, parts: Message['parts'], timestamp = 1): Message 
 const result = (id: string, isError = false): Message => ({ id: 'result-' + id, role: 'toolResult', text: 'result:' + id, toolCallId: id, isError });
 const groups = (messages: Message[]) => groupToolActivity(projectTimeline(messages, null, [], false));
 const activity = (items: ToolActivity['items']): ToolActivity => ({ kind: 'activity', id: 'group:first', items });
+
+test('entering a running conversation after tool start keeps partial output through native handover', () => {
+  const input = { command: 'slow check' }, early = [{ type: 'text', text: 'early marker' }];
+  const tools = updateToolRun([], { type: 'tool_execution_update', toolCallId: 'late-entry', toolName: 'bash', args: input, partialResult: early });
+  const message = assistant('native-call', [call('late-entry', 'bash', input)]);
+  const pending = projectTimeline([message], null, tools, true)[0].parts[0];
+  assert.equal(pending.kind, 'tool');
+  if (pending.kind !== 'tool') throw Error('Expected live tool');
+  assert.equal(pending.tool.status, 'running');assert.deepEqual(pending.tool.output, early);
+  const ended = updateToolRun(tools, { type: 'tool_execution_end', toolCallId: 'late-entry', toolName: 'bash', result: 'final marker', isError: false });
+  assert.equal(ended.length, 1);assert.deepEqual(ended[0].input, input);
+  assert.equal(updateToolRun(ended, { type: 'tool_execution_update', toolCallId: 'late-entry', partialResult: 'late frame' }), ended);
+  const native = projectTimeline([message, result('late-entry')], null, ended, false)[0].parts[0];
+  assert.equal(native.kind === 'tool' && native.tool.status, 'completed');
+  assert.equal(native.kind === 'tool' && native.tool.output, 'result:late-entry');
+});
 
 test('continuous tools and reasoning span assistant messages; text and users remain boundaries', () => {
   const rows = groups([
