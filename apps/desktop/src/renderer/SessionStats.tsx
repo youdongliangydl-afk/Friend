@@ -15,7 +15,7 @@ export function SessionStats({stats}:{stats?:SessionMonitor}){
  useEffect(()=>()=>clearTimeout(hover.current),[]);
  useEffect(()=>{
   if(!open)return;
-  const outside=(event:PointerEvent)=>{if(!root.current?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))setOpen(null);};
+  const outside=(event:PointerEvent)=>{if(!triggers.current[open]?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))setOpen(null);};
   const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){setOpen(null);triggers.current[open]?.focus();}};
   document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
   return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
