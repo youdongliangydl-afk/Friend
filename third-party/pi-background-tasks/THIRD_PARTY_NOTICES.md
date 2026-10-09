@@ -29,3 +29,9 @@ Licensed under the MIT License:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## Friend host adaptation
+
+The extension factory accepts an optional `env` argument and passes it to the
+existing BackgroundTaskRegistry option. Friend supplies a credential-filtered
+command environment; upstream process execution and event routing are retained.

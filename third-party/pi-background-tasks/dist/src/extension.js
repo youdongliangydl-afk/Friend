@@ -100,7 +100,7 @@ function renderPlainResult(result, options, theme) {
     const text = result.content?.map((part) => (part.type === 'text' ? (part.text ?? '') : '')).join('\n') ?? '';
     return new Text(text, 0, 0);
 }
-export default async function backgroundTasksExtension(pi) {
+export default async function backgroundTasksExtension(pi, options = {}) {
     const config = parseBackgroundTasksConfig();
     const dockEntryHint = dockShortcutFooterHint(config.dockShortcut);
     const shellPolicy = initializeShellPolicy();
@@ -129,6 +129,7 @@ export default async function backgroundTasksExtension(pi) {
         model: ctx.model,
     });
     const registry = new BackgroundTaskRegistry({
+        env: options.env,
         onChange: () => {
             updateUi();
             for (const task of registry.allTasks()) if (task.status === 'running' && task.pid) pi.events.emit('friend-pi:process-ownership:v1', {pid: task.pid, id: task.id});

@@ -20,3 +20,15 @@ test('collaboration approval cannot admit a command after its working directory 
  const base=mkdtempSync(join(tmpdir(),'friend-temporary-cwd-')),root=realpathSync(base),cwd=join(root,'check'),outside=join(root,'outside');mkdirSync(cwd);mkdirSync(outside);let started=0;const ctx={projectDir:root,policy:{temporaryWriteRoot:root,permissionMode:'allPermissions'},approvePermission:async()=>{renameSync(cwd,cwd+'-old');symlinkSync(outside,cwd);return true;},emit:()=>{}} as unknown as PluginContext;
  try{await assert.rejects(managedCommand(process.execPath,['-e','process.exit(0)'],cwd,undefined,ctx,'test','check',()=>{started++;}),/目录已变化/);assert.equal(started,0);}finally{rmSync(base,{recursive:true,force:true});}
 });
+
+test('managed collaboration checks omit inherited credentials from the actual child',async()=>{
+ const synthetic={FRIEND_CHECK_API_KEY:'synthetic-key',FRIEND_CHECK_TOKEN:'synthetic-token',FRIEND_CHECK_SECRET:'synthetic-secret',FRIEND_CHECK_PASSWORD:'synthetic-password',FRIEND_CHECK_CREDENTIAL:'synthetic-credential',FRIEND_CHECK_VISIBLE:'preserved'};
+ const previous=new Map(Object.keys(synthetic).map(name=>[name,process.env[name]]));Object.assign(process.env,synthetic);
+ const root=mkdtempSync(join(tmpdir(),'friend-check-environment-')),ctx={projectDir:root,emit:()=>{}} as unknown as PluginContext;
+ try{
+  const names=Object.keys(synthetic).filter(name=>name!=='FRIEND_CHECK_VISIBLE');
+  const probe=`process.stdout.write(JSON.stringify({leaks:${JSON.stringify(names)}.filter(name=>Object.hasOwn(process.env,name)).length,ordinary:process.env.FRIEND_CHECK_VISIBLE==='preserved',path:Boolean(process.env.PATH)}))`;
+  const result=await managedCommand(process.execPath,['-e',probe],root,undefined,ctx,'environment-check','check',()=>{});
+  assert.equal(result.exitCode,0);assert.deepEqual(JSON.parse(result.stdout),{leaks:0,ordinary:true,path:true});assert.equal(result.stderr,'');assert.equal(process.env.FRIEND_CHECK_API_KEY,synthetic.FRIEND_CHECK_API_KEY,'parent inference environment must remain untouched');
+ }finally{for(const [name,value] of previous)if(value===undefined)delete process.env[name];else process.env[name]=value;rmSync(root,{recursive:true,force:true});}
+});

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { spawn, type IPty } from 'node-pty';
-import { RecordStore, text } from '@friend-pi/core';
+import { RecordStore, text, shellEnvironment } from '@friend-pi/core';
 import { processSnapshot, ownedDescendants, terminateOwned, type ProcessIdentity } from './terminal-processes.js';
 export interface TerminalContext { sessionId: string; workspaceId: string; cwd: string; actor: 'user' | 'agent'; planMode?: boolean; runId?: string;temporaryWriteRoot?:string }
 export interface TerminalRecord {
@@ -55,7 +55,7 @@ export class TerminalController {
       const cols=this.dimension(input.cols,100,20,400),rows=this.dimension(input.rows,24,5,200);
       const name=typeof input.name==='string'?text(input.name,'终端名称',100):ctx.actor==='agent'?'Agent 服务':'终端';
       processSnapshot(); // Fail before spawning when process inspection is unavailable.
-      const pty=spawn(shell,['-l'],{name:'xterm-256color',cols,rows,cwd,env:{...process.env,TERM:'xterm-256color'} as Record<string,string>});
+      const pty=spawn(shell,['-l'],{name:'xterm-256color',cols,rows,cwd,env:{...shellEnvironment(),TERM:'xterm-256color'} as Record<string,string>});
       const record:TerminalRecord={id:randomUUID(),sessionId:ctx.sessionId,workspaceId:ctx.workspaceId,cwd,name,service:ctx.actor==='agent',owner:ctx.actor,authorityEpoch:1,state:'running',output:'',seq:0,cols,rows,pid:pty.pid,runId:ctx.runId};
       let identity:ProcessIdentity|undefined;
       try {identity=processSnapshot().get(pty.pid);} catch(error){try{pty.kill('SIGKILL');}catch{}throw error;}

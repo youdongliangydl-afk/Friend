@@ -13,6 +13,7 @@ import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
 const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
+export {shellEnvironment} from './shell-environment.js';
 export type JsonObject = Record<string, unknown>;
 export type ExecutionMode = 'single' | 'team' | 'swarm';
 export {parsePermissionMode,permissionDecision,destructiveCommand,readOnlyCommand,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,assertTemporaryArtifactPath,permissionPath} from './permissions.js';

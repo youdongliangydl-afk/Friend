@@ -1,6 +1,6 @@
 import {spawn,type ChildProcess} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {temporaryPermission,temporaryPermissionMatches,type PluginContext} from '@friend-pi/core';
+import {temporaryPermission,temporaryPermissionMatches,shellEnvironment,type PluginContext} from '@friend-pi/core';
 import type {StopObject} from './types.js';
 
 export class CancelledError extends Error {constructor(){super('执行已取消；现场保留，未自动重放');this.name='CancelledError';}}
@@ -36,7 +36,7 @@ export async function managedCommand(command:string,args:string[],cwd:string,sig
     checkCancelled(signal);if(!temporaryPermissionMatches(request,ctx.policy.temporaryWriteRoot,cwd))throw new Error('协作目录已变化，未执行');
   }
   const id=randomUUID();const groupOwned=process.platform!=='win32';
-  const child=spawn(command,args,{cwd,detached:groupOwned,stdio:['ignore','pipe','pipe'],env:process.env});
+  const child=spawn(command,args,{cwd,detached:groupOwned,stdio:['ignore','pipe','pipe'],env:shellEnvironment()});
   const owned=ownChild(child,id,kind,groupOwned,(action,pid)=>ctx.emit('swarm.process',{v:1,graphId,operationId:id,kind,action,pid,groupOwned}));
   onStarted({id,stop:()=>owned.stop(),ended:owned.ended});
   return new Promise<ManagedResult>((done,reject)=>{

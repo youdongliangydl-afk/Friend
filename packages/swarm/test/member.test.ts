@@ -4,7 +4,7 @@ import { fork } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { build } from 'esbuild';
 import {createAgentSession,createEventBus,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager,type AgentSession} from '@earendil-works/pi-coding-agent';
@@ -25,10 +25,10 @@ function reviewResponse(input:ModelRequest):LocalResponse|undefined {
 async function waitFor(check:()=>boolean,timeout=10000){const began=Date.now();while(!check()){if(Date.now()-began>timeout)throw new Error('Member fixture wait timed out');await new Promise(done=>setTimeout(done,10));}}
 
 /** Local HTTP fixture drives the real Pi SDK; no credential or external endpoint is used. */
-async function environment(respond:(input:Record<string,unknown>)=>string|{tool:string;args:Record<string,unknown>}|Promise<string|{tool:string;args:Record<string,unknown>}>) {
+async function environment(respond:(input:Record<string,unknown>,headers:IncomingHttpHeaders)=>string|{tool:string;args:Record<string,unknown>}|Promise<string|{tool:string;args:Record<string,unknown>}>) {
   const root=mkdtempSync(join(tmpdir(),'friend-pi-member-'));const project=join(root,'project');const agentDir=join(root,'pi');mkdirSync(project);mkdirSync(agentDir);writeFileSync(join(project,'readme.txt'),'source fixture\n');
   let requests=0;
-  const server=createServer(async(req,res)=>{let body='';for await (const chunk of req) body+=chunk;const input=JSON.parse(body) as Record<string,unknown>;requests++;const response=await respond(input);const delta=typeof response==='string'?{role:'assistant',content:response}:{role:'assistant',tool_calls:[{index:0,id:`fixture-call-${requests}`,type:'function',function:{name:response.tool,arguments:JSON.stringify(response.args)}}]};res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`data: ${JSON.stringify({id:'fixture-completion',object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason:null}]})}\n\n`);res.write(`data: ${JSON.stringify({id:'fixture-completion',object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta:{},finish_reason:typeof response==='string'?'stop':'tool_calls'}]})}\n\n`);res.end('data: [DONE]\n\n');});
+  const server=createServer(async(req,res)=>{let body='';for await (const chunk of req) body+=chunk;const input=JSON.parse(body) as Record<string,unknown>;requests++;const response=await respond(input,req.headers);const delta=typeof response==='string'?{role:'assistant',content:response}:{role:'assistant',tool_calls:[{index:0,id:`fixture-call-${requests}`,type:'function',function:{name:response.tool,arguments:JSON.stringify(response.args)}}]};res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`data: ${JSON.stringify({id:'fixture-completion',object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason:null}]})}\n\n`);res.write(`data: ${JSON.stringify({id:'fixture-completion',object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta:{},finish_reason:typeof response==='string'?'stop':'tool_calls'}]})}\n\n`);res.end('data: [DONE]\n\n');});
   await new Promise<void>(resolveListen=>server.listen(0,'127.0.0.1',resolveListen));const address=server.address();assert.ok(address && typeof address==='object');
   writeFileSync(join(agentDir,'models.json'),JSON.stringify({providers:{'swarm-fixture':{baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'fixture-local-no-real-credential',models:[{id:'fixture',name:'Swarm local fixture',reasoning:false,input:['text'],contextWindow:32000,maxTokens:2048,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}]}}}));
   const buildDir=resolve('.cache','swarm-member-tests',randomUUID());mkdirSync(buildDir,{recursive:true});const worker=join(buildDir,'member.mjs');
@@ -67,6 +67,25 @@ test('standalone member forwards live Bash partial output before tool completion
     child.send(start satisfies MemberInput);const result=await finished;
     const began=events.findIndex(event=>event.type==='tool_execution_start'&&event.toolName==='bash'),updated=events.findIndex(event=>event.type==='tool_execution_update'&&JSON.stringify(event.partialResult).includes(early)&&!JSON.stringify(event.partialResult).includes(tail)),ended=events.findIndex(event=>event.type==='tool_execution_end'&&event.toolName==='bash');
     assert.equal(sawEarlyWhileRunning,true);assert.ok(began>=0&&began<updated&&updated<ended);assert.equal(events[updated].toolCallId,events[ended].toolCallId);assert.ok(JSON.stringify(events[ended].result).includes(early)&&JSON.stringify(events[ended].result).includes(tail));assert.equal(events[ended].isError,false);assert.equal(result.summary,'Slow Bash completed.');assert.ok(messages.some(message=>message.type==='event'&&(message.event as Record<string,unknown>).type==='agent_settled'));
+    await new Promise<void>(done=>{if(child.exitCode!==null)done();else child.once('exit',()=>done());});
+  }finally{child.kill('SIGTERM');await env.cleanup();}
+});
+
+test('native member keeps inference credentials while Bash receives no inherited credentials',async()=>{
+  const synthetic={FRIEND_FIXTURE_API_KEY:'synthetic-inference-only',FRIEND_FIXTURE_TOKEN:'synthetic-token',friend_fixture_secret:'synthetic-secret',FRIEND_FIXTURE_PASSWORD:'synthetic-password',FRIEND_FIXTURE_CREDENTIAL:'synthetic-credential',FRIEND_FIXTURE_VISIBLE:'preserved'};
+  const credentialNames=Object.keys(synthetic).filter(name=>name!=='FRIEND_FIXTURE_VISIBLE');let authenticatedRequests=0;
+  const probe=`process.stdout.write(JSON.stringify({leaks:${JSON.stringify(credentialNames)}.filter(name=>Object.hasOwn(process.env,name)).length,ordinary:process.env.FRIEND_FIXTURE_VISIBLE==='preserved',path:Boolean(process.env.PATH),session:Boolean(process.env.PI_SESSION_ID)}))`;
+  const env=await environment((input,headers)=>{if(headers.authorization===`Bearer ${synthetic.FRIEND_FIXTURE_API_KEY}`)authenticatedRequests++;return (input.messages as {role:string}[]).some(message=>message.role==='tool')?'Environment boundary verified.':{tool:'bash',args:{command:`'${process.execPath.replaceAll("'","'\\''")}' -e '${probe.replaceAll("'","'\\''")}'`}};});
+  const models=JSON.parse(readFileSync(join(env.agentDir,'models.json'),'utf8'));models.providers['swarm-fixture'].apiKey='$FRIEND_FIXTURE_API_KEY';writeFileSync(join(env.agentDir,'models.json'),JSON.stringify(models));
+  const start:MemberStart={v:1,type:'start',graphId:'environment-fixture',taskId:'credential-boundary',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'Run the supplied environment presence check.',mode:'write',writeScopes:['.']};
+  const child=fork(env.worker,[],{cwd:env.project,stdio:['ignore','pipe','pipe','ipc'],execArgv:[],env:{...process.env,...synthetic}});child.stdout?.resume();child.stderr?.resume();
+  try{
+    const events:Record<string,unknown>[]=[];
+    const finished=new Promise<Extract<MemberOutput,{type:'settled'}>>((done,reject)=>{const timer=setTimeout(()=>reject(new Error('Environment member timed out')),15000);child.on('message',(message:MemberOutput)=>{if(message.type==='event')events.push(message.event as Record<string,unknown>);if(message.type==='settled'){clearTimeout(timer);done(message);}if(message.type==='failed'){clearTimeout(timer);reject(new Error(message.error));}});child.once('error',error=>{clearTimeout(timer);reject(error);});});
+    child.send(start);const result=await finished;
+    const bash=events.find(event=>event.type==='tool_execution_end'&&event.toolName==='bash');assert.ok(bash);assert.equal(bash.isError,false);
+    const output=(bash.result as {content:{type:string;text?:string}[]}).content.filter(part=>part.type==='text').map(part=>part.text||'').join('\n');assert.deepEqual(JSON.parse(output),{leaks:0,ordinary:true,path:true,session:true});assert.ok(authenticatedRequests>=2,'inference must retain its configured environment credential after Bash');
+    const native=readFileSync(result.sessionFile!,'utf8');for(const value of Object.values(synthetic).slice(0,-1))assert.equal(native.includes(value),false,'credential values must not enter native messages');
     await new Promise<void>(done=>{if(child.exitCode!==null)done();else child.once('exit',()=>done());});
   }finally{child.kill('SIGTERM');await env.cleanup();}
 });

@@ -2,11 +2,11 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, createBashToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { ExtensionFactory, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { installFixtureProvider,object,digest,requireReadyModel,dataDirectory,guardDesktopModelRequests } from '@friend-pi/core';
+import { installFixtureProvider,object,digest,requireReadyModel,dataDirectory,guardDesktopModelRequests,shellEnvironment } from '@friend-pi/core';
 import { guardMember } from './guard.js';
 import {MemberInbox} from './member-inbox.js';
 import {teamMessageText} from './teammates.js';
@@ -110,7 +110,7 @@ async function run(start:MemberStart): Promise<void> {
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
   const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[pi=>{pi.on('tool_call',()=>{if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
-  const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
+  const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools],customTools:[createBashToolDefinition(start.cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});
   session = created.session;
   if(start.v===2)inbox=new MemberInbox(start,session,output);
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDirectory(),`${model.provider}/${model.id}`),context,options);}

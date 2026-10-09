@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {readFileSync,existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createEventBus,type ExtensionAPI,type ExtensionFactory,type ExtensionContext} from '@earendil-works/pi-coding-agent';
-import {RecordStore,object,text,digest,type JsonObject,type PluginContext,type AcceptanceCheck,type CheckEvidence,permissionDecision,readOnlyCommand,temporaryPermission,assertTemporaryArtifactPath,type PermissionMode} from '@friend-pi/core';
+import {shellEnvironment,RecordStore,object,text,digest,type JsonObject,type PluginContext,type AcceptanceCheck,type CheckEvidence,permissionDecision,readOnlyCommand,temporaryPermission,assertTemporaryArtifactPath,type PermissionMode} from '@friend-pi/core';
 // The retained upstream package is consumed through its factory/event contract.
 // @ts-expect-error Upstream distributes compiled JavaScript without declarations.
 import originalBackend from '../../../third-party/pi-background-tasks/dist/src/extension.js';
@@ -27,7 +27,7 @@ export class ProcessJobs {
  readonly store:RecordStore;private readonly backendBus=createEventBus();private ready=false;private disposed=false;private temporaryOutputDirectory?:string;
  private readonly pending=new Map<string,Set<Promise<unknown>>>();private readonly cancelledRuns=new Map<string,number>();private readonly latestGenerations=new Map<string,number>();private readonly ownedPids=new Set<number>();
  private readonly terminalWaiters=new Map<string,Set<(job:ProcessJob)=>void>>();
- constructor(readonly dataDir:string,readonly onTerminal:(job:ProcessJob)=>void,readonly emit:(event:string,data:unknown)=>void,private readonly backendFactory:ExtensionFactory=originalBackend){
+ constructor(readonly dataDir:string,readonly onTerminal:(job:ProcessJob)=>void,readonly emit:(event:string,data:unknown)=>void,private readonly backendFactory:((pi:ExtensionAPI,options?:{env:NodeJS.ProcessEnv})=>ReturnType<ExtensionFactory>)=originalBackend){
   this.store=new RecordStore('process-jobs',dataDir);
   this.backendBus.on('friend-pi:process-ownership:v1',raw=>{const task=object(raw);const pid=Number(task.pid);if(Number.isSafeInteger(pid)&&pid>1&&!this.ownedPids.has(pid)){this.ownedPids.add(pid);this.emit('runtime.process',{action:'started',pid,groupOwned:process.platform!=='win32'});}});
   this.backendBus.on('pi-background-tasks:terminal:v1',raw=>void this.terminal(raw).catch(error=>this.emit('jobs.error',{message:String(error)})));
@@ -43,7 +43,7 @@ export class ProcessJobs {
     else if(event==='session_shutdown')pi.on('session_shutdown',async(e,ctx)=>{this.ready=false;await handler(e,ctx);});
    },
   } as unknown as ExtensionAPI;
-  await this.backendFactory(facade);
+  await this.backendFactory(facade,{env:shellEnvironment()});
  };}
  private async request(operation:string,payload:JsonObject={}):Promise<JsonObject>{
   if(this.disposed||!this.ready)throw new Error('后台命令服务尚未就绪');
