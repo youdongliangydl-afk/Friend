@@ -50,3 +50,7 @@ test('a late wait after integration still receives the pending wake; stop fences
   if(stop){await f.controller.stop();release();await flush();assert.equal(f.sent.length,0);}else assert.equal(f.sent.length,1);
  }finally{await f.close();}}
 });
+
+test('queue suspension detaches the old Goal without stopping steps or accepting another run writes',async()=>{
+ const f=fixture();try{f.setIdle(true);f.setBusy(false);const task=f.controller.tasks.create({title:'Old goal step'},f.ctx,f.goal.id);const held=f.controller.suspendForQueuedInput();assert.equal(held?.id,f.goal.id);assert.equal(f.controller.currentGoal(),undefined);assert.equal(f.controller.goals.read(f.goal.id,f.ctx).status,'paused');assert.equal(f.controller.tasks.read(task.id,f.ctx).status,'pending');const other={...f.ctx,origin:'agent' as const,runId:'queued-run'};await assert.rejects(f.controller.dispatch('task.start',{id:task.id},other),/当前执行/);await assert.rejects(f.controller.dispatch('goal.update',{goalId:f.goal.id,progress:'foreign write'},other),/当前执行/);f.controller.account(500,'foreign','queued-run');assert.equal(f.controller.goals.read(f.goal.id,f.ctx).tokens,0);}finally{await f.close();}
+});

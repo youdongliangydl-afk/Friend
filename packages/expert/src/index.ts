@@ -62,7 +62,11 @@ export class ExpertController {
   constructor(dataDir?:string) {
     this.store=new RecordStore('expert',dataDir);
     this.store.transaction(()=>{for(const [id,title,prompt] of builtins){const key=`expert:${id}`;const saved=this.store.get<ExpertDefinition>(key);if(saved&&saved.value.scope!=='builtin'){this.store.put(expertKey(saved.value.scope,id),saved.value);this.store.remove(key);}if(!this.store.get(key))this.store.put(key,{id,version:1,title,scope:'builtin',prompt,tools:[],skills:[],enabled:true,hash:digest({prompt,tools:[],skills:[]}),createdAt:now()} satisfies ExpertDefinition,null);}});
-    this.store.transaction(()=>{for(const role of builtinRoles){const key=`role:builtin:${role.id}`;if(!this.store.get(key))this.store.put(key,roleDefinition({...role},{id:role.id,version:1,scope:'builtin'}),null);}});
+    this.store.transaction(()=>{for(const role of builtinRoles){
+      const key=`role:builtin:${role.id}`,saved=this.store.get<RoleDefinition>(key);
+      if(!saved)this.store.put(key,roleDefinition({...role},{id:role.id,version:1,scope:'builtin'}),null);
+      else if(saved.value.scope==='builtin'&&!saved.value.tools.includes('friend_todo'))this.store.put(key,roleDefinition({...saved.value,tools:[...saved.value.tools,'friend_todo']},{id:role.id,version:saved.value.version+1,scope:'builtin'}),saved.revision);
+    }});
     for(const row of this.store.list<MethodCandidate>('candidate:'))if(row.value.status==='validating'&&(!row.value.validation||!alive(row.value.validation.ownerPid)))this.store.put(row.key,{...row.value,status:'candidate',error:'验证进程已结束；未发布，待重新验证',validation:undefined},row.revision);
     const lease=this.store.get<{pid:number}>('validation:lease');if(lease&&!alive(lease.value.pid))this.store.remove(lease.key);
   }

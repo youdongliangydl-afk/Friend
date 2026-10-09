@@ -66,7 +66,7 @@ export function toolPermissionRequest(tool:string,input:Record<string,unknown>,t
     return {operation:'执行命令',message:command,autoEligible:false};
   }
   if(tool==='write'||tool==='edit')return {operation:'修改文件',message:String(input.path||''),writePath:String(input.path||''),autoEligible:true};
-  if(tool==='friend_plan'||tool==='friend_terminal')return;
+  if(tool==='friend_plan'||tool==='friend_terminal'||tool==='friend_todo'&&['read','update'].includes(String(input.action)))return;
   if(tool==='swarm_shared')return input.action==='write'?{operation:'修改共享材料',message:String(input.name||input.documentId||'共享材料'),autoEligible:true}:undefined;
   if(tool.startsWith('friend_')){
     if(/^(?:read|list|snapshot|search|get|status|result|logs|versions|role\.(?:snapshot|read|versions)|history\.(?:read|search|around)|template\.(?:read|list)|shared\.(?:readVersion|conflicts))$/.test(String(input.action)))return;

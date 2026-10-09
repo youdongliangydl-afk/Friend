@@ -5,10 +5,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PluginContext, HostPolicy } from '@friend-pi/core';
 import { ExpertController, blockedByFrozenScope, blockedByFrozenRole, assertRoleDelivery, assertRoleModel, freezeRole, type RoleDefinition, type FrozenRole, type FrozenRun, type RoleCapability } from '../src/index.js';
+import { roleDefinition } from '../src/roles.js';
 
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'friend-roles-')),controller=new ExpertController(dir),entries:{type:string;value:unknown}[]=[];
-  const policy:HostPolicy={v:1,revision:1,runId:'run-one',stage:'task-1:checked',canSwitchRole:true,unsettledTools:0,tools:['read','grep','find','ls','write','edit','bash','friend_expert','friend_swarm','friend_plan','friend_goal','friend_task','friend_workflow','friend_jobs'],writeScopes:['.'],executionMode:'single',planMode:false};
+  const policy:HostPolicy={v:1,revision:1,runId:'run-one',stage:'task-1:checked',canSwitchRole:true,unsettledTools:0,tools:['read','grep','find','ls','write','edit','bash','friend_expert','friend_swarm','friend_plan','friend_goal','friend_task','friend_workflow','friend_jobs','friend_todo'],writeScopes:['.'],executionMode:'single',planMode:false};
   const ctx:PluginContext&{policy:RoleCapability;availableModels:{id:string;thinkingLevels:string[]}[]}={origin:'user',dataDir:dir,projectDir:dir,projectId:'p',sessionId:'s',runId:'run-one',modelId:'fixture/main',thinkingLevel:'off',policy,availableModels:[{id:'fixture/main',thinkingLevels:['off','medium']},{id:'fixture/review',thinkingLevels:['off','high']}],isIdle:()=>true,history:()=>[],readSource:()=>{throw Error('unused');},complete:async()=>'',request:async()=>undefined,emit:()=>{},notify:()=>{},appendEntry:(type,value)=>entries.push({type,value})};
   const input=(id:string)=>({id,runId:'run-one',stage:policy.stage,policyRevision:policy.revision});
   return {dir,controller,ctx,entries,input,dispose:()=>{controller.dispose();rmSync(dir,{recursive:true,force:true});}};
@@ -34,6 +35,55 @@ test('planner can submit plan metadata while readonly roles cannot approve, exec
       for(const action of ['start','integrate','complete','create','verify'])assert.equal(blockedByFrozenRole(reviewer,tool,{action}),true);
     }
   }finally{f.dispose();}
+});
+test('builtin roles can maintain checklist metadata without granting task, file or verification writes',()=>{
+  const f=fixture();try{
+    for(const definition of f.controller.roleDefinitions(f.ctx)){
+      const role=freezeRole(definition,f.ctx.policy);
+      for(const action of ['read','update'])assert.equal(blockedByFrozenRole(role,'friend_todo',{action,items:[]}),false,`${role.id} can ${action} checklist metadata`);
+      for(const args of [undefined,[],{}, {action:'clear'}, {action:'verify'}, {action:'start'}])assert.equal(blockedByFrozenRole(role,'friend_todo',args),true);
+      if(!role.effectiveWriteScopes.length){
+        assert.equal(blockedByFrozenRole(role,'friend_task',{action:'complete'}),true);
+        assert.equal(blockedByFrozenRole(role,'friend_expert',{action:'validation.run'}),true);
+        for(const tool of ['write','edit','bash'])assert.equal(blockedByFrozenRole(role,tool,{path:'new.ts'},f.dir),true);
+      }
+    }
+  }finally{f.dispose();}
+});
+test('checklist metadata respects custom roles, host caps and adopted method allowlists',async()=>{
+  const f=fixture();try{
+    const reviewer=f.controller.roleDefinitions(f.ctx).find(role=>role.id==='reviewer')!;
+    const custom=await f.controller.dispatch('role.create',{...reviewer,title:'Explicit read-only',tools:['read']},f.ctx) as RoleDefinition;
+    const withoutHostTool=freezeRole(reviewer,{tools:['read'],writeScopes:[]});
+    const withHostTool=freezeRole(reviewer,f.ctx.policy);
+    for(const action of ['read','update']){
+      assert.equal(blockedByFrozenRole(freezeRole(custom,f.ctx.policy),'friend_todo',{action,items:[]}),true);
+      assert.equal(blockedByFrozenRole(withoutHostTool,'friend_todo',{action,items:[]}),true);
+      assert.equal(blockedByFrozenScope({role:withHostTool,toolScope:['read']} as FrozenRun,'friend_todo',{action,items:[]}),true);
+    }
+  }finally{f.dispose();}
+});
+test('existing builtin role catalogs gain checklist metadata only for future runs',async()=>{
+  const f=fixture();let reopened:ExpertController|undefined;try{
+    const builtin=f.controller.store.get<RoleDefinition>('role:builtin:reviewer')!;
+    const prior=roleDefinition({...builtin.value,tools:builtin.value.tools.filter(tool=>tool!=='friend_todo')},{id:'reviewer',version:builtin.value.version,scope:'builtin'});
+    f.controller.store.put(builtin.key,prior,builtin.revision);
+    await f.controller.dispatch('role.assign',{id:'reviewer'},f.ctx);
+    const run=f.controller.beginRun(f.ctx);
+    await f.controller.dispatch('role.create',{...prior,title:'Custom allowlist',tools:['read']},f.ctx);
+    const savedPrior=f.controller.roleDefinitions(f.ctx).find(role=>role.id==='reviewer')!;
+    await f.controller.dispatch('role.update',{...savedPrior,tools:['read']},f.ctx);
+    f.controller.dispose();reopened=new ExpertController(f.dir);
+    const upgraded=reopened.store.get<RoleDefinition>(builtin.key)!.value;
+    assert.equal(upgraded.version,prior.version+1);assert.notEqual(upgraded.hash,prior.hash);assert.equal(upgraded.tools.includes('friend_todo'),true);
+    assert.equal(reopened.roleDefinitions(f.ctx).find(role=>role.title==='Custom allowlist')!.tools.includes('friend_todo'),false);
+    assert.deepEqual(reopened.roleDefinitions(f.ctx).find(role=>role.id==='reviewer')!.tools,['read'],'project overrides retain their explicit allowlist');
+    assert.equal((reopened.snapshot(f.ctx).adoptions as FrozenRun).roles!.find(role=>role.id==='reviewer')!.tools.includes('friend_todo'),false);
+    assert.equal((reopened.snapshot(f.ctx).adoptions as FrozenRun).role!.effectiveTools.includes('friend_todo'),false);
+    assert.deepEqual((reopened.snapshot(f.ctx).adoptions as FrozenRun).roles,run.roles);
+    reopened.dispose();reopened=new ExpertController(f.dir);
+    assert.equal(reopened.store.get<RoleDefinition>(builtin.key)!.value.version,upgraded.version,'catalog migration is idempotent');
+  }finally{reopened?.dispose();rmSync(f.dir,{recursive:true,force:true});}
 });
 test('role management is user-only, project-scoped, CAS versioned, and cannot loosen builtin reviewer',async()=>{
   const f=fixture();try{

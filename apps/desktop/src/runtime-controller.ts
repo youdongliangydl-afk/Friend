@@ -5,6 +5,7 @@ import {ProcessJobs,type ProcessJob} from './process-jobs.js';
 
 export interface RuntimeHooks {
  publish(event:string,data:unknown):void;busy():boolean;mode():ExecutionMode;planMode():boolean;
+ admitUserInput?():Promise<boolean>|boolean;
  sendWake?(frame:WakeFrame):Promise<void>|void;prepareWake(frame:WakeFrame):Promise<void>|void;haltExecution?(origin:PluginContext['origin']):Promise<void>|void;runId():string|undefined;modelId():string|undefined;thinkingLevel():string;
 }
 interface Activity {sessionId:string;id:string;tool:string;sideEffect:boolean;status:'running'|'settled'|'unknown';runId?:string}
@@ -24,6 +25,7 @@ export class RuntimeController {
  }
  generation(){return this.coordinator?.generation()||0;}
  currentGoal(){const session=this.nativeContext?.sessionManager.getSessionId();if(!session)return undefined;const id=this.goals.store.get<string>(`focus:${session}`)?.value;return id?this.goals.store.list<GoalRecord>('goal:').find(row=>row.value.id===id)?.value:undefined;}
+ suspendForQueuedInput(){const ctx=this.context(),goal=this.currentGoal();if(!goal||!['active','waiting'].includes(goal.status))return undefined;if(!this.safeObjects())throw new Error('原目标尚未收敛');this.coordinator?.invalidate();const paused=this.goals.setState('paused',ctx,'处理用户排队消息，完成后自动恢复')!;this.goals.store.remove(`focus:${ctx.sessionId}`);return {id:paused.id,revision:paused.revision,sourceRunId:paused.sourceRunId,objective:paused.objective};}
  activeTools(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.store.list<Activity>(`activity:${session}:`).map(row=>row.value).filter(row=>row.status==='running'):[];}
  safeObjects(){return !this.hooks.busy()&&!this.activeTools().length&&!this.jobs.hasFinite(this.context())&&!this.jobs.hasUnknown(this.context())&&!this.store.list<Activity>(`activity:${this.context().sessionId}:`).some(row=>row.value.status==='unknown'&&row.value.sideEffect);}
  unsettledJobs(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.jobs.store.list<ProcessJob>('job:').map(row=>row.value).filter(job=>job.sessionId===session&&(job.status==='unknown'||job.kind==='task'&&job.status==='running')):[];}
@@ -60,7 +62,7 @@ export class RuntimeController {
   const ctx=this.context();const sideEffect=['write','edit','bash'].includes(tool)||tool==='friend_jobs';this.store.put(`activity:${ctx.sessionId}:${id}`,{sessionId:ctx.sessionId,id,tool,sideEffect,status:'running',runId:ctx.runId} satisfies Activity);if(sideEffect)this.goals.noteWrite(ctx,id);this.goals.admit(ctx);
  }
  endTool(id:string){const ctx=this.context();const key=`activity:${ctx.sessionId}:${id}`,row=this.store.get<Activity>(key);if(row)this.store.put(key,{...row.value,status:'settled'});void this.drain();}
- account(tokens:number|undefined,eventId?:string){const ctx=this.context();if(!this.goals.current(ctx))return;if(eventId){const key=`usage:${ctx.sessionId}:${eventId}`;if(this.store.get(key))return;this.store.put(key,true,null);}this.goals.account(ctx,tokens);}
+ account(tokens:number|undefined,eventId?:string,usageRunId=this.hooks.runId()){const ctx=this.context(),goal=this.goals.current(ctx);if(!goal||goal.sourceRunId!==usageRunId)return;if(eventId){const key=`usage:${ctx.sessionId}:${eventId}`;if(this.store.get(key))return;this.store.put(key,true,null);}this.goals.account(ctx,tokens);}
  async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown>{
   if(action==='recovery.confirm'){if(ctx.origin!=='user'||input.confirmUnknown!==true)throw new Error('未知现场需用户检查后明确确认');const evidence=text(input.evidence,'检查说明',16000);for(const id of Array.isArray(input.activityIds)?input.activityIds:[]){const key=`activity:${ctx.sessionId}:${text(id)}`,row=this.store.get<Activity>(key);if(!row||row.value.status!=='unknown')throw new Error('未知活动版本已变化');this.store.put(key,{...row.value,status:'settled',recovery:{evidence,at:new Date().toISOString(),origin:'user'}});}for(const id of Array.isArray(input.jobIds)?input.jobIds:[])this.jobs.confirmUnknown(text(id),evidence,ctx);ctx.appendEntry('friend-pi.recovery.confirmed',{v:1,evidence,activityIds:input.activityIds,jobIds:input.jobIds});return this.snapshot(ctx);}
   const dot=action.indexOf('.'),area=action.slice(0,dot),operation=action.slice(dot+1);
@@ -69,6 +71,7 @@ export class RuntimeController {
   if(area==='jobs')return this.jobs.dispatch(operation,input,ctx,this.generation());
   if(area==='task'){
    const focused=this.goals.current(ctx),goal=focused&&['active','waiting','verifying'].includes(focused.status)?focused:undefined;
+   if(ctx.origin==='agent'&&['start','verify','fail','resolveUnknown'].includes(operation)){const target=this.tasks.read(text(input.id),ctx);if(target.goalId?target.goalId!==goal?.id||goal.sourceRunId!==ctx.runId:target.runId!==ctx.runId)throw new Error('步骤不属于当前执行，不能修改其他任务');}
    if(operation==='repair.claim')return this.tasks.claimRepair(input,ctx,goal?.id);
    if(operation==='create')return this.tasks.create(input,ctx,goal?.id);
    if(operation==='list'||operation==='snapshot')return this.tasks.list(ctx);
@@ -83,7 +86,7 @@ export class RuntimeController {
    if(operation==='create'){const goal=this.goals.create(input,ctx,this.generation());if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`create:${goal.id}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;}
    if(operation==='list'||operation==='snapshot')return this.goals.list(ctx);
    if(operation==='read'||operation==='status')return input.id?this.goals.read(text(input.id),ctx):this.goals.current(ctx)||null;
-   if(operation==='update')return this.goals.update(input,ctx);
+   if(operation==='update'){if(ctx.origin==='agent'){const focused=this.goals.current(ctx);if(!focused||focused.sourceRunId!==ctx.runId||input.goalId&&input.goalId!==focused.id)throw new Error('目标不属于当前执行');}return this.goals.update(input,ctx);}
    if(operation==='pause'||operation==='stop'){this.coordinator?.invalidate();this.goals.setState(operation==='pause'?'paused':'stopped',ctx,typeof input.reason==='string'?input.reason:'显式停止');this.tasks.stop(ctx);await this.jobs.stopRun(ctx,ctx.runId);await this.hooks.haltExecution?.(ctx.origin);return this.snapshot(ctx);}
    if(operation==='resume'){if(this.unknownActivities().length||this.jobs.hasUnknown(ctx))throw new Error('请先检查并确认未知现场，再接续目标');this.coordinator?.invalidate();const goal=this.goals.resume(input,ctx,this.generation());this.enqueue(`resume:${goal.id}:${goal.revision}`,`继续目标：${goal.objective}。依据现有成果推进。`,{goalId:goal.id});return goal;}
    if(operation==='complete')return this.goals.finish(ctx,this.tasks,goal=>this.auditGoal(goal,ctx),this.safeObjects());
@@ -134,9 +137,9 @@ export class RuntimeController {
  enqueue(id:string,message:string,options:{generation?:number;runId?:string;goalId?:string}={}){const added=this.coordinator?.enqueue(id,message,options)||false;if(added)void this.drain();return added;}
  async drain(){
   if(this.unknownActivities().length||this.jobs.hasUnknown(this.context()))return;
-  if(this.draining||this.disposed||!this.pi||!this.coordinator||this.hooks.planMode()||!this.nativeContext?.isIdle())return;
+  if(this.draining||this.disposed||!this.pi||!this.coordinator||!this.nativeContext?.isIdle())return;
   this.draining=true;let admitted:WakeFrame|undefined;
-  try{const goal=this.currentGoal();const frame=this.coordinator.take(item=>this.eligible(item,goal));admitted=frame;if(frame){await this.hooks.prepareWake(frame);if(frame.generation!==this.generation()||!this.eligible(frame,this.currentGoal())||this.hooks.planMode()||!this.nativeContext?.isIdle())return;if(this.hooks.sendWake)await this.hooks.sendWake(frame);else this.pi.sendMessage({customType:'friend-pi.runtime-wake',content:frame.message,display:true,details:{eventId:frame.id,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});}}catch(error){if(!this.disposed&&admitted?.generation===this.generation()&&this.eligible(admitted,this.currentGoal())){this.goals.setState('paused',this.context(),String(error));this.hooks.publish('notice',{level:'error',message:String(error)});}}finally{this.draining=false;if(!this.disposed&&this.coordinator?.pending().some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()))&&this.nativeContext?.isIdle()&&!this.hooks.planMode())setImmediate(()=>void this.drain());}
+  try{if(await this.hooks.admitUserInput?.()||this.hooks.planMode())return;const goal=this.currentGoal();const frame=this.coordinator.take(item=>this.eligible(item,goal));admitted=frame;if(frame){await this.hooks.prepareWake(frame);if(frame.generation!==this.generation()||!this.eligible(frame,this.currentGoal())||this.hooks.planMode()||!this.nativeContext?.isIdle())return;if(this.hooks.sendWake)await this.hooks.sendWake(frame);else this.pi.sendMessage({customType:'friend-pi.runtime-wake',content:frame.message,display:true,details:{eventId:frame.id,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});}}catch(error){if(!this.disposed&&admitted?.generation===this.generation()&&this.eligible(admitted,this.currentGoal())){this.goals.setState('paused',this.context(),String(error));this.hooks.publish('notice',{level:'error',message:String(error)});}}finally{this.draining=false;if(admitted&&!this.disposed&&this.coordinator?.pending().some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()))&&this.nativeContext?.isIdle()&&!this.hooks.planMode())setImmediate(()=>void this.drain());}
  }
  private eligible(frame:WakeFrame,goal:GoalRecord|undefined){if(frame.goalId)return goal?.id===frame.goalId&&['active','waiting'].includes(goal.status);return !frame.runId||frame.runId===this.hooks.runId();}
  async stop(){this.coordinator?.invalidate();const ctx=this.context();this.goals.setState('stopped',ctx,'用户停止当前任务');this.tasks.stop(ctx);await this.jobs.stopRun(ctx,ctx.runId);}

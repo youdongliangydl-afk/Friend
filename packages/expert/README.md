@@ -14,6 +14,8 @@ Pi 不会自动解包本地 `.tgz`。也可直接安装 `.artifacts/packages/unp
 
 Role（角色）与 Method（文本方法）是两份独立目录。五类同名内建角色另有硬工具允许列表、项目相对写入范围和结构化交付合同；选择旧方法不会暗中分配角色。方法 `tools=[]` 保持“不新增限制”语义，角色 `tools=[]` 则禁止工作工具。角色与所有已采用方法同时限制工具；方法采用只能收紧本轮权限。Reviewer（审查角色）硬只读，没有 Bash、write、edit 或启动／整合权限；planner（规划角色）可使用 `friend_plan read/submit` 提交计划元数据，不能批准或执行。只读角色可查询目标、任务、工作流和进程状态。写入路径检查包含现存祖先的 realpath；窄写入范围不开放任意 Bash。整个项目 `.` 下的 Bash 仍是宿主高信任 shell，不是 OS 沙箱。
 
+内建角色可使用 `friend_todo read/update` 维护执行清单元数据；这不开放任务完成、文件写入或验证权限，仍受宿主和已采用方法的工具范围限制。启动时为旧内建角色目录增量加入该工具；已冻结运行保留旧合同，自定义角色的显式工具允许列表不自动扩张。
+
 用户通过 `role.create/update` 管理职责、工具、写入范围、交付合同及可选模型／思考映射。模型与插件可以查询、分配下一轮角色或在宿主确认的安全阶段切换同一 Agent 的角色；不能修改角色合同。`role.assign {id,methodIds?}` 只影响后续运行；模型调用该操作也须携带安全阶段信息。`role.switch {id,runId,stage,policyRevision}` 要求真实宿主 `policy.v=1`、匹配 stage／revision／runId、`canSwitchRole=true` 且 `unsettledTools=0`；工具输入自行声明 safe 无效。切换从本轮冻结角色目录选取合同，保留已采用方法的范围交集，不因换角色恢复被方法收紧的权限。一个会话换角色始终记录 `independent:false`，不能冒充独立审核。
 
 模型映射默认继承调用会话。显式映射须存在于宿主公布的 `availableModels`，思考等级须兼容；方法采用不切换模型。角色切换返回 `modelChangeRequired` 并发出 `expert.role.changed`，由宿主在同一安全边界应用明确配置。宿主必须在派发 prompt 前用 `assertRoleModel` 核对实际模型；扩展请求钩子发现不符会调用公开 abort 并通知，工具钩子也拒绝所有工具作为兜底。Pi 对请求钩子异常会记录后继续，且 before_agent_start 的 abort 可能早于运行信号建立，故扩展钩子本身不保证未派发模型请求；原生宿主同样需要应用或拒绝显式映射。原生 JSONL 的角色收据区分目标映射与当前实际模型，不伪称切换已完成。

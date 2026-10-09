@@ -45,7 +45,7 @@ export function toolCategory(tool: ToolRun): keyof typeof labels {
   if (['bash', 'pwsh', 'exec_command', 'write_stdin', 'friend_terminal'].includes(tool.name) || tool.name.startsWith('terminal_')) return 'commands';
   if (['web_search', 'web_fetch'].includes(tool.name)) return 'web';
   if (tool.name === 'friend_swarm' || tool.name.startsWith('subagent')) return 'agents';
-  if (['todo_write', 'create_goal', 'update_goal', 'get_goal', 'friend_goal'].includes(tool.name)) return 'plan';
+  if (['todo_write', 'friend_todo', 'create_goal', 'update_goal', 'get_goal', 'friend_goal'].includes(tool.name)) return 'plan';
   return 'tools';
 }
 export function toolLabel(tool: ToolRun): string { return toolCategory(tool) === 'tools' ? tool.name : labels[toolCategory(tool)][0]; }

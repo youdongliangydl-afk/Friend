@@ -100,7 +100,7 @@ export class BrowserHost {
   }
   readyOverlay(){return {...this.overlaySnapshot,token:this.overlayToken};}
   acceptsOverlay(event:Electron.IpcMainInvokeEvent){return !!this.overlay&&event.sender===this.overlay.webContents&&event.senderFrame===this.overlay.webContents.mainFrame;}
-  overlayAction(raw:Record<string,unknown>){if(!['draft','send','attach','removeAttachment','plan','permission','mode','model','settings','stop','conversation','collapse'].includes(String(raw.type)))throw new Error('输入框操作无效');if(raw.token!==this.overlayToken||raw.sessionId!==this.overlayOwner)throw new Error('输入框所属会话已变更');this.emit('composer.action',raw,this.overlayOwner);}
+  overlayAction(raw:Record<string,unknown>){if(!['queue','queueUi','draft','send','attach','removeAttachment','plan','permission','mode','model','settings','stop','conversation','collapse'].includes(String(raw.type)))throw new Error('输入框操作无效');if(raw.token!==this.overlayToken||raw.sessionId!==this.overlayOwner)throw new Error('输入框所属会话已变更');this.emit('composer.action',raw,this.overlayOwner);}
   private watchDownloads(ses:Session){
     if(this.sessions.has(ses))return;
     ses.setPermissionRequestHandler((_c,_p,callback)=>callback(false));ses.setPermissionCheckHandler(()=>false);

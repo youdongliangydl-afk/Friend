@@ -9,6 +9,7 @@ import './model-settings.css';
 import './session-fullscreen.css';
 import './session-trace.css';
 import './session-stats.css';
+import './task-info.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

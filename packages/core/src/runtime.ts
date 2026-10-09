@@ -49,18 +49,18 @@ export class TaskLedger {
  read(id:string,ctx:PluginContext){const row=this.store.get<TaskRecord>(this.key(ctx,id));if(!row||row.value.sessionId!==ctx.sessionId)throw new Error('步骤不属于当前会话');return row.value;}
  private put(task:TaskRecord,ctx:PluginContext){task={...task,revision:task.revision+1,updatedAt:now()};this.store.put(this.key(ctx,task.id),task);ctx.emit('task.changed',task);ctx.appendEntry('friend-pi.task.receipt',{taskId:task.id,revision:task.revision,status:task.status,evidence:task.evidence.map(item=>({hash:item.hash,exitCode:item.exitCode}))});return task;}
  create(input:JsonObject,ctx:PluginContext,goalId?:string){
-  const id=randomUUID(),identity=digest({title:text(input.title,'步骤',4000),mode:input.mode==='write'?'write':'read',checks:input.checks||[],acceptance:input.acceptance||[]}),alias=`step-identity:${ctx.projectId}:${goalId||ctx.sessionId}:${identity}`,logicalStepId=this.store.get<string>(alias)?.value||(typeof input.logicalStepId==='string'?text(input.logicalStepId):identity);
+  const id=randomUUID(),identity=digest({title:text(input.title,'步骤',4000),mode:input.mode==='write'?'write':'read',checks:input.checks||[],acceptance:input.acceptance||[]}),alias=`step-identity:${ctx.projectId}:${goalId||ctx.runId||ctx.sessionId}:${identity}`,logicalStepId=this.store.get<string>(alias)?.value||(typeof input.logicalStepId==='string'?text(input.logicalStepId):identity);
   if(!this.store.get(alias))this.store.put(alias,logicalStepId,null);
-  const existing=this.list(ctx,goalId).find(task=>task.logicalStepId===logicalStepId&&task.goalId===goalId);
+  const existing=this.list(ctx,goalId).find(task=>task.logicalStepId===logicalStepId&&task.goalId===goalId&&(goalId!==undefined||task.runId===ctx.runId));
   if(existing)return existing;
   const acceptance=Array.isArray(input.acceptance)?input.acceptance.map(value=>text(value,'完成条件',4000)):[text(input.title,'步骤',4000)];
   const checks=(Array.isArray(input.checks)?input.checks:[]).map(raw=>{const check=object(raw);if(!Array.isArray(check.args)||check.args.some(value=>typeof value!=='string'))throw new Error('检查参数必须是字符串数组');return {command:text(check.command,'检查命令',1000),args:check.args as string[]};});
   const task:TaskRecord={id,logicalStepId,goalId,projectId:ctx.projectId,sessionId:ctx.sessionId,runId:ctx.runId,title:text(input.title,'步骤',4000),mode:input.mode==='write'?'write':'read',status:'pending',acceptance,checks,evidence:[],sources:[],repairCount:this.repairCount(logicalStepId,ctx,goalId),revision:0,createdAt:now(),updatedAt:now()};
   return this.put(task,ctx);
  }
- repairCount(logicalStepId:string,ctx:PluginContext,goalId?:string){return this.store.get<number>(`repairs:${ctx.projectId}:${goalId||ctx.sessionId}:${logicalStepId}`)?.value||0;}
+ repairCount(logicalStepId:string,ctx:PluginContext,goalId?:string){return this.store.get<number>(`repairs:${ctx.projectId}:${goalId||ctx.runId||ctx.sessionId}:${logicalStepId}`)?.value||0;}
  claimRepair(input:JsonObject,ctx:PluginContext,goalId?:string){
-  const logicalStepId=text(input.logicalStepId,'逻辑步骤');const key=`repairs:${ctx.projectId}:${goalId||ctx.sessionId}:${logicalStepId}`;
+  const logicalStepId=text(input.logicalStepId,'逻辑步骤');const key=`repairs:${ctx.projectId}:${goalId||ctx.runId||ctx.sessionId}:${logicalStepId}`;
   return this.store.transaction(()=>{const count=this.store.get<number>(key)?.value||0;if(count>=2)return {allowed:false,count};this.store.put(key,count+1);return {allowed:true,count:count+1};});
  }
  resolveUnknown(id:string,input:JsonObject,ctx:PluginContext){if(ctx.origin!=='user'||input.confirmUnknown!==true)throw new Error('步骤未知现场需用户检查确认');const task=this.read(id,ctx);if(task.status!=='unknown')throw new Error('步骤状态已变化');text(input.evidence,'检查说明');return this.put({...task,status:'pending',evidence:[],result:undefined,error:undefined},ctx);}
@@ -84,7 +84,7 @@ export class TaskLedger {
   return this.put({...task,evidence,result,sources,status:'completed',error:undefined,verificationWriteEpoch:writeEpoch,verificationCodeVersion:codeAfter},ctx);
  }
  fail(id:string,error:string,ctx:PluginContext,unknown=false){const task=this.read(id,ctx);return this.put({...task,status:unknown?'unknown':'blocked',error},ctx);}
- stop(ctx:PluginContext){for(const task of this.list(ctx))if(['running','repair','pending'].includes(task.status))this.put({...task,status:'stopped'},ctx);}
+ stop(ctx:PluginContext){for(const task of this.list(ctx))if((!ctx.runId||task.runId===ctx.runId)&&['running','repair','pending'].includes(task.status))this.put({...task,status:'stopped'},ctx);}
  assertComplete(goalId:string,ctx:PluginContext){const incomplete=this.list(ctx,goalId).filter(task=>task.status!=='completed');if(incomplete.length)throw new Error(`目标仍有未完成步骤：${incomplete.map(task=>task.title).join('、')}`);}
  /** Only host observers call this with a controller's committed execution snapshot. */
  syncExecution(graph:JsonObject,ctx:PluginContext,goalId:string,writeEpoch=0){

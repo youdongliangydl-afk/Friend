@@ -1,3 +1,5 @@
+import {MessageQueue} from '../apps/desktop/src/message-queue.js';
+import {ownedEntries} from '../apps/desktop/src/task-todo.js';
 import * as sessionView from '../apps/desktop/src/session-view.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -112,12 +114,12 @@ test('production blank-session bootstrap writes a real Pi header and custom chai
     const source=fs.readFileSync(path.join(root,'apps/desktop/src/sdk-worker.ts'),'utf8'),start=source.indexOf('  const priorFile='),end=source.indexOf('  plans=new PlanStore',start);
     assert.ok(start>=0&&end>start,'production initialization boundary must be identifiable');
     const boot=source.slice(start,end);assert.match(boot,/manager\.setSessionFile/,'test must execute the production public persistence path');
-    const context:any={process:{env:{FRIEND_PI_DESKTOP_SESSION_ID:'desktop-fixture'}},cwd:f.project,dataDir:f.dataDir,SessionManager,existsSync:fs.existsSync,readFileSync:fs.readFileSync,openSync:fs.openSync,closeSync:fs.closeSync,join:path.join,isSessionDeleted};
+    const context:any={process:{env:{FRIEND_PI_DESKTOP_SESSION_ID:'desktop-fixture'}},cwd:f.project,dataDir:f.dataDir,MessageQueue,ownedEntries,SessionManager,existsSync:fs.existsSync,readFileSync:fs.readFileSync,openSync:fs.openSync,closeSync:fs.closeSync,join:path.join,isSessionDeleted};
     vm.runInNewContext(transformSync(boot+'\nglobalThis.result=manager;',{loader:'ts',format:'cjs',target:'node24'}).code,context);const manager=context.result as SessionManager,file=manager.getSessionFile()!;
     assert.ok(fs.existsSync(file));assert.equal(manager.isPersisted(),true);const originalId=manager.getSessionId();
     manager.appendMessage({role:'user',content:'first genuine user input',timestamp:Date.now()});const loaded=SessionManager.open(file);
     assert.equal(loaded.getSessionId(),originalId);const entries=loaded.getBranch();assert.ok(entries.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.session.created'));assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='user'));
-    for(let i=1;i<entries.length;i++)assert.equal(entries[i]!.parentId,entries[i-1]!.id,'initial custom entry and later native append stay on the same canonical chain');
+    for(let i=1;i<entries.length;i++)assert.equal(entries[i]!.parentId,entries[i-1]!.id,'initial custom entry and later native append stay on the same canonical chain');context.inputQueue.dispose();
   }finally{f.cleanup();}
 });
 
@@ -226,5 +228,19 @@ test('cancelled terminal admission stays cancelled through delayed broker startu
   a.child.emit('message',{type:'terminal.request',id:'cancel-host',method:'create',input:{command:'fixture service'}});await f.flush();
   a.child.emit('message',{type:'terminal.cancel',id:'cancel-host'});ready();await f.flush();await f.flush();
   assert.equal(f.control.terminalRequests.length,0);assert.equal(a.child.commands.some((m:any)=>m.type==='terminal.admitted'&&m.id==='cancel-host'),false);
+ }finally{f.cleanup();}
+});
+
+test('side chat transfer reconciles a persisted draft after its response is lost without sending the source',async()=>{
+ const f=fixture();try{
+  const parent=f.record('side-parent'),source=await f.ready(parent),native=f.history('stable source context');let sourceItem:any={id:'queued',revision:1,text:'side draft',attachments:[],mode:'single',planMode:false,state:'queued',leafId:'stable'};let savedDraft:any,lost=true;
+  await f.api.handle('session.open',{id:parent.id});
+  source.send=(message:any,callback?:Function)=>{source.commands.push(message);callback?.();let result:any;
+   if(message.method==='queue'){const input=message.input;if(input.action==='move.prepare'){sourceItem={...sourceItem,state:'moving',targetId:input.targetId};result=sourceItem;}else if(input.action==='move.inspect'){if(!sourceItem)throw Error('source item no longer exists');result=sourceItem;}else if(input.action==='move.failed'){sourceItem.state='unknown';result={};}else if(input.action==='move.commit'){sourceItem=null;result={};}else throw Error('unexpected source queue action');}
+   else if(message.method==='sidechat.fork')result={path:native.file,piSessionId:native.id};else if(message.method==='state')result=source.state;else result={ok:true};queueMicrotask(()=>source.emit('message',{type:'response',id:message.id,result}));return true;};
+  const first=f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:'queued',revision:1});const failed=assert.rejects(first,/lost response/);await f.flush();const child=f.children.at(-1);assert.notEqual(child,source);
+  child.send=(message:any,callback?:Function)=>{child.commands.push(message);callback?.();if(message.method==='draft.install'){savedDraft||=message.input.payload;const shouldLose=lost;lost=false;queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,...(shouldLose?{error:'lost response after persistent write'}:{result:child.state})}));}else queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:child.state}));return true;};
+  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:native.id,sessionFile:native.file,plugins:[],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state});await failed;assert.equal(savedDraft.text,'side draft');assert.equal(sourceItem.state,'unknown');assert.equal(source.commands.some((m:any)=>m.method==='send'),false);
+  const intent=f.api.store.get('sidechat-transfer:side-parent:queued').value;const recovered=await f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:'queued',revision:1});assert.equal(recovered.sessionId,intent.id);assert.equal(f.children.filter(c=>c!==source).length,1);assert.equal(sourceItem,null);assert.equal((await f.api.handle('app.state',{})).current.sessionId,parent.id);const repeated=await f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:'queued',revision:1});assert.equal(repeated.sessionId,recovered.sessionId);assert.equal(f.children.filter(c=>c!==source).length,1);assert.equal(source.commands.some((m:any)=>m.method==='send'),false);
  }finally{f.cleanup();}
 });
