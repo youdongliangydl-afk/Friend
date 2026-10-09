@@ -1,12 +1,14 @@
 # Third-party notices
 
-Friend-Pi's original controllers and desktop interface are newly authored; persistent Swarm teammate/mailbox and member roster interactions adapt MIT DeepSeek Harness code. Pi owns the Agent loop. Architecture references remain references; the ISC process backend identified below is retained separately. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
+Friend-Pi's original controllers and desktop interface are newly authored; persistent Swarm teammate/mailbox, member roster and conversation tool disclosure interactions adapt MIT DeepSeek Harness code. Pi owns the Agent loop. Architecture references remain references; the ISC process backend identified below is retained separately. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
 
 The machine-readable revision, license and use ledger is [docs/sources.json](docs/sources.json). npm package versions, download integrity and dependency relationships are fixed in `package-lock.json`; Pi tarballs and their source commit are fixed in `pi-source.lock.json`.
 
 ## Distributed dependencies
 
 - DeepSeek Harness, commit `5badb15009ae1756c3afe0ae0cef1faafc290ccc`, MIT, Copyright (c) 2026 DeepSeek. Adapted roster/mailbox and TeamAction interaction code is documented in Swarm SOURCES.md. Full notice is retained in Swarm DEEPSEEK-LICENSE and desktop third-party-licenses/deepseek-harness/LICENSE. Pi remains the execution runtime.
+
+- DeepSeek Harness, commit `4878cdabd87d4041bdaff61d04c966883b9fd07a`, MIT, Copyright (c) 2026 DeepSeek. Conversation process grouping, activity summaries and two-level tool disclosures adapt the UI files recorded in `docs/sources.json`; the same complete DeepSeek MIT notice above is retained in the desktop artifact. Pi history and execution remain authoritative.
 
 - [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks), version 2.6.9, ISC. The original compiled process backend is retained under `third-party/pi-background-tasks`; its LICENSE, upstream notices, source integrity and documented host adaptations are copied into `third-party-licenses/pi-background-tasks` in the app. Only ordinary process execution is enabled; no delegate, Fusion or attribution extension is activated.
 

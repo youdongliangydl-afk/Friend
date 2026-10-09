@@ -260,6 +260,13 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
     const latestUser=visibleText([...messages].reverse().find(message=>message.role==='user')?.content);
+    if(latestUser.includes('QA_TOOL_GROUPS')){
+      const recent=messages.slice(messages.findLastIndex(message=>message.role==='user'));
+      const results=recent.filter(message=>message.role==='toolResult');
+      if(!results.length)return fauxAssistantMessage([{type:'text',text:'先检查项目，再查看图片；工具过程可按组展开。'},{type:'thinking',thinking:'连续的工具与思考应合为一组，正文保持原顺序。'},{type:'toolCall',id:'qa-group-read-'+randomUUID(),name:'read',arguments:{path:'README.md'}},{type:'toolCall',id:'qa-group-command-'+randomUUID(),name:'bash',arguments:{command:'pwd'}}],{stopReason:'toolUse'});
+      if(results.length===2)return fauxAssistantMessage([{type:'toolCall',id:'qa-group-image-'+randomUUID(),name:'read',arguments:{path:'qa-preview.png'}},{type:'toolCall',id:'qa-group-failed-'+randomUUID(),name:'read',arguments:{path:'qa-missing-file.txt'}}],{stopReason:'toolUse'});
+      return fauxAssistantMessage('工具分组验证完成。图片可在详情中预览，缺失文件的失败状态应保留。');
+    }
     if(messages.some(message=>message.role==='system'&&message.toolsAdded?.some(tool=>tool.name==='swarm_review_result'))){
       if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='swarm_review_result'))return fauxAssistantMessage(fauxToolCall('swarm_review_result',content.includes('QA_PERSISTENT_TEAM')&&/"id":"writer"[^}]*"resultRevision":1/.test(content)?{approved:false,findings:'离线验收：第一版需定向返工，用于验证受影响任务和重新复核',taskIds:['writer']}:{approved:true,findings:'离线测试复核，不代表真实模型质量'}),{stopReason:'toolUse'});
       return fauxAssistantMessage('离线复核说明文字；结构化工具提交才是验收结果。');

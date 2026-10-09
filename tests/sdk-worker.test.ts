@@ -11,6 +11,7 @@ import {createProviderRuntime} from '../apps/desktop/src/provider-settings.js';
 import {registerSavedModel,testConfiguredModel,invalidateProvider} from '../apps/desktop/src/model-readiness.js';
 import {installFixtureProvider} from '../packages/core/src/index.js';
 import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
+import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import { RecordStore,projectIdentity } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
@@ -399,5 +400,28 @@ test('user interruption of a persistent discussion keeps its explicit pause reas
   const roster=()=>{const frames=f.events.filter(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed');return (frames.at(-1)?.event?.data.data as {teammates?:{state:string;generation:number;reason?:string}[]})?.teammates||[];};await f.wait(()=>roster()[0]?.state==='idle');const memberId=graph.tasks[0].memberId;await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,body:'QA_HOLD 只读讨论中止'}});await f.wait(()=>roster()[0]?.state==='running'&&roster()[0]?.generation===2);
   await f.request('plugin',{plugin:'swarm',action:'member.interrupt',input:{memberId}});await new Promise(done=>setTimeout(done,100));const history=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string;generation:number;reason?:string}};assert.equal(history.member.state,'paused');assert.equal(history.member.generation,3);assert.match(history.member.reason!,/成员已暂停/);
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,body:'必须等待明确接续'}});await new Promise(done=>setTimeout(done,50));assert.equal(roster()[0].state,'paused');assert.equal(roster()[0].generation,3);
+ }finally{await f.close();}
+});
+
+test('native tool groups retain cross-step order, images and failures across repeated turns',{timeout:30000},async()=>{
+ const f=await start();try{
+  writeFileSync(join(f.directory,'README.md'),'Tool disclosure fixture.');
+  writeFileSync(join(f.directory,'qa-preview.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMwyIsGAAHLAPoiMwlmAAAAAElFTkSuQmCC','base64'));
+  for(let turn=1;turn<=2;turn++){
+   await f.request('send',{text:'QA_TOOL_GROUPS',mode:'single'});
+   await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length===turn);
+   const state=await f.request('state') as {messages:DisplayMessage[]};
+   const activities=groupToolActivity(projectTimeline(state.messages,null,[],false)).flatMap(row=>row.parts.filter(part=>part.kind==='activity'));
+   assert.equal(activities.length,turn);
+   const last=activities.at(-1)!;
+   assert.equal(last.kind,'activity');if(last.kind!=='activity')throw new Error('missing group');
+   const tools=last.items.flatMap(item=>item.kind==='tool'?[item.tool]:[]);
+   assert.deepEqual(tools.map(tool=>tool.name),['read','bash','read','read']);
+   assert.equal(activitySummary(last).status,'failed');
+   assert.equal(tools[3].status,'failed');
+   assert.ok(JSON.stringify(tools[2].output).includes('"type":"image"'),JSON.stringify(tools[2].output));
+   const ids=activities.flatMap(group=>group.kind==='activity'?group.items.flatMap(item=>item.kind==='tool'?[item.tool.id]:[]):[]);
+   assert.equal(new Set(ids).size,turn*4);
+  }
  }finally{await f.close();}
 });

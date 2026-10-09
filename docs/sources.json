@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedOn": "2026-10-08",
+  "checkedOn": "2026-10-09",
   "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. DeepSeek roster/mailbox and TeamAction interactions are adapted with retained MIT notices; remaining frameworks are references only.",
   "sources": [
     {
@@ -38,6 +38,26 @@
         "packages/experimental/agent-team/src/roster.ts",
         "packages/experimental/agent-team/src/mailbox.ts",
         "packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx"
+      ],
+      "additionalAdaptations": [
+        {
+          "commit": "4878cdabd87d4041bdaff61d04c966883b9fd07a",
+          "use": "Continuous tool/reasoning process groups, activity summaries, independent default-collapsed disclosures and bounded group scrolling adapted to the existing Pi timeline; tool result image previews use native Pi parts. No upstream runtime or store included.",
+          "upstreamFiles": [
+            "packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts",
+            "packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts",
+            "packages/client/ui-chat/src/client/chat/step-process.ts",
+            "packages/client/ui-chat/src/client/chat/ChatGroupSeat.tsx",
+            "packages/client/ui-chat/src/client/chat/ChatGroupSeat.module.css",
+            "packages/client/ui-tool/src/client/tool/components/ToolRow.tsx"
+          ],
+          "localFiles": [
+            "apps/desktop/src/renderer/tool-activity.ts",
+            "apps/desktop/src/renderer/ToolActivity.tsx",
+            "apps/desktop/src/renderer/Conversation.tsx",
+            "apps/desktop/src/renderer/client-workspace.css"
+          ]
+        }
       ]
     },
     {
