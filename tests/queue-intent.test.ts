@@ -32,16 +32,23 @@ test('pending first-session submission rejects stale draft and send actions with
  const local=new Map<string,string>(),requests:any[]=[];let release!:()=>void;
  const pending=new Promise<void>(resolve=>release=resolve);
  const ctx:any={errorText:String,EMPTY:{},crypto:webcrypto,localStorage:{getItem:(key:string)=>local.get(key)||null,setItem:(key:string,value:string)=>local.set(key,value),removeItem:(key:string)=>local.delete(key)},sendLock:{current:false},allocationLock:{current:false},navigating:false,migratingDraft:{current:false},draftRef:{current:'first A'},attachmentsRef:{current:[]},activeSession:{archived:false},activeMemberRef:{current:null},selectedModel:{ready:true},selectedModelId:'fixture',pendingThinking:'off',projectId:'',setSending:()=>{},setSubmissionRevision:()=>{},setNotice:()=>{},sessionId:'',ownerKey:'temporary',attachments:[],lastSubmitted:{},navigationEpoch:{current:1},running:false,state:{current:{queue:{items:[]}}},setState:()=>{},setLocalRunning:()=>{},setTools:()=>{},setLive:()=>{},followScroll:{},mode:'single',planMode:false,permissionMode:'auto',permissionExplicit:true,ownerRef:{current:'temporary'},setDraft:(text:string)=>{ctx.draftRef.current=text;},setAttachments:()=>{},setDraftOwner:()=>{},report:(e:string)=>{throw Error(e);},window:{friendPi:{request:async(method:string,input:any)=>{requests.push({method,input});if(method==='session.new'){await pending;return {current:{sessionId:'native'}};}return {};}}}};
+ let completions=0;ctx.setSubmissionRevision=()=>{completions++;};
  vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(readFileSync('apps/desktop/src/renderer/queue-intent.ts','utf8').replaceAll('export function','function')),ctx);
  vm.runInContext(stripTypeScriptTypes(send+action+'\nglobalThis.send=send;globalThis.action=composerAction;'),ctx);
  const submitted=ctx.send();
  await ctx.action({type:'draft',sessionId:'',epoch:1,value:'first A followed by B'});
- await ctx.send();assert.equal(ctx.draftRef.current,'first A');assert.equal(requests.length,1);
+ const materialStart=source.indexOf('const add=(event:Event)=>{');
+ const material=source.slice(materialStart,source.indexOf(";window.addEventListener('friend-pi:file-open'",materialStart));
+ let blockedMaterial=false;ctx.report=()=>{blockedMaterial=true;};
+ vm.runInContext(stripTypeScriptTypes(material+';globalThis.addMaterial=add;'),ctx);
+ ctx.addMaterial({detail:{text:'material queued during ACK'}});assert.equal(blockedMaterial,true);
+ await ctx.send();assert.equal(ctx.draftRef.current,'first A');assert.equal(requests.length,1);assert.equal(completions,0,'a busy rejection must not release the active submission');
  release();await submitted;
  assert.equal(requests[1].method,'session.send');assert.equal(requests[1].input.text,'first A');assert.equal(ctx.draftRef.current,'');assert.equal(JSON.parse(local.get('friend-pi.draft.v1:native')!).text,'');
  ctx.sessionId='native';ctx.ownerKey='native';ctx.ownerRef.current='native';ctx.running=true;
  await ctx.action({type:'draft',sessionId:'native',epoch:1,value:'new B'});await ctx.send();
  assert.equal(requests[2].method,'session.queue');assert.equal(requests[2].input.text,'new B');assert.equal(requests.length,3);
+ const completed=completions;ctx.selectedModel.ready=false;ctx.draftRef.current='blocked by changed readiness';await ctx.send();assert.equal(completions,completed+1,'host preflight rejection completes the forwarded action');assert.equal(requests.length,3);assert.equal(ctx.draftRef.current,'blocked by changed readiness');
 });
 test('native composer holds a local submission lock until the host publishes its completion',async()=>{
  const source=readFileSync('apps/desktop/src/renderer/SessionComposer.tsx','utf8');
@@ -50,7 +57,7 @@ test('native composer holds a local submission lock until the host publishes its
  const actionStart=source.indexOf('  const action=async(input:ComposerAction)=>{',callbackStart);
  const action=source.slice(actionStart,source.indexOf('  return snapshot?',actionStart));
  const bridge:any[]=[],stored:any[]=[];
- const initial={sessionId:'native',epoch:1,revision:1,submissionRevision:0,draft:'A',attachments:[],sending:false,token:'bound'};
+ const initial={sessionId:'native',epoch:1,revision:1,submissionRevision:0,draft:'A',attachments:[],sending:false,ready:true,archived:false,navigating:false,token:'bound'};
  const ctx:any={latest:{current:initial},localDraft:{current:null},localQueueUi:{current:null},pending:{current:false},revision:{current:1},submitting:{current:null},localStorage:{setItem:(...args:any[])=>stored.push(args)},setSnapshot:(next:any)=>{ctx.latest.current=next;},window:{friendComposer:{action:async(input:any)=>{bridge.push(input);return {ok:true};}}}};
  vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes('globalThis.snapshot='+callback+';\n'+action+'globalThis.action=action;'),ctx);
  await ctx.action({type:'send',text:'A'});
@@ -65,4 +72,16 @@ test('native composer holds a local submission lock until the host publishes its
  await ctx.action({type:'send',text:'new B'});
  ctx.snapshot({...initial,revision:5,submissionRevision:2,draft:'new B',notice:'request failed'});
  assert.equal(ctx.latest.current.sending,false);assert.equal(ctx.latest.current.draft,'new B');
+ for(const patch of [{draft:''},{ready:false},{archived:true},{navigating:true}]){
+  ctx.latest.current={...initial,...patch};const count=bridge.length;
+  await ctx.action({type:'send',text:ctx.latest.current.draft});
+  assert.equal(bridge.length,count);assert.equal(ctx.submitting.current,null);assert.equal(ctx.latest.current.sending,false);
+ }
+ let rejectOld!:(error:Error)=>void;ctx.latest.current={...initial};
+ ctx.window.friendComposer.action=()=>new Promise((_,reject)=>rejectOld=reject);
+ const old=ctx.action({type:'send',text:'A'}).catch(()=>{});
+ ctx.snapshot({...initial,sessionId:'new-owner',epoch:2,revision:6});
+ ctx.window.friendComposer.action=async()=>({ok:true});await ctx.action({type:'send',text:'new-owner message'});
+ const ticket=ctx.submitting.current;rejectOld(Error('late old-owner IPC failure'));await old;
+ assert.equal(ctx.submitting.current,ticket);assert.equal(ctx.latest.current.sending,true,'old errors cannot unlock a newer owner submission');
 });

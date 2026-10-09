@@ -34,22 +34,24 @@ interface OverlayBridge {action(input:ComposerAction):Promise<unknown>;onSnapsho
 declare global {interface Window {friendComposer:OverlayBridge}}
 export function ComposerSurface(){
   const [snapshot,setSnapshot]=useState<(ComposerSnapshot&{token:string;revision:number})|null>(null),latest=useRef(snapshot);latest.current=snapshot;
-  const localDraft=useRef<string|null>(null),localQueueUi=useRef<QueueUi|null>(null),pending=useRef(false),revision=useRef(0),submitting=useRef<number|null>(null);
+  const localDraft=useRef<string|null>(null),localQueueUi=useRef<QueueUi|null>(null),pending=useRef(false),revision=useRef(0),submitting=useRef<{revision:number;ticket:object}|null>(null);
   useEffect(()=>{document.body.classList.add('composer-surface');return window.friendComposer.onSnapshot(next=>{
     if(next.revision<revision.current)return;revision.current=next.revision;
     if(next.sessionId!==latest.current?.sessionId||next.epoch!==latest.current?.epoch){localDraft.current=null;localQueueUi.current=null;pending.current=false;submitting.current=null;}
-    if(submitting.current!==null&&(next.submissionRevision||0)>submitting.current)submitting.current=null;
+    if(submitting.current!==null&&(next.submissionRevision||0)>submitting.current.revision)submitting.current=null;
     if(localDraft.current===next.draft)pending.current=false;
     if(localQueueUi.current&&JSON.stringify(localQueueUi.current)===JSON.stringify(next.queueUi))localQueueUi.current=null;
     setSnapshot({...next,...(pending.current?{draft:localDraft.current||''}:{}),...(localQueueUi.current?{queueUi:localQueueUi.current}:{}),...(submitting.current!==null?{sending:true}:{})});
   });},[]);
   const action=async(input:ComposerAction)=>{
     if(!latest.current||(submitting.current!==null||latest.current.sending)&&['draft','send','attach','removeAttachment'].includes(input.type))return;
-    if(input.type==='send'){pending.current=false;submitting.current=latest.current.submissionRevision||0;setSnapshot({...latest.current,sending:true});}
+    if(input.type==='send'&&(!latest.current.ready||latest.current.archived||latest.current.navigating||!(input.text??latest.current.draft).trim()&&!latest.current.attachments.length))return;
+    const ticket={};
+    if(input.type==='send'){pending.current=false;submitting.current={revision:latest.current.submissionRevision||0,ticket};setSnapshot({...latest.current,sending:true});}
     if(input.type==='queueUi'){localQueueUi.current=input.value as QueueUi;setSnapshot({...latest.current,queueUi:localQueueUi.current});}
     if(input.type==='draft'){localDraft.current=String(input.value);pending.current=true;try{localStorage.setItem('friend-pi.draft.v1:'+latest.current.sessionId,JSON.stringify({text:localDraft.current,attachments:latest.current.attachments,planMode:latest.current.planMode,mode:latest.current.mode,permissionMode:latest.current.permissionMode,permissionExplicit:latest.current.permissionExplicit}));}catch{}setSnapshot({...latest.current,draft:localDraft.current});}
     try{return await window.friendComposer.action({...input,token:latest.current.token});}
-    catch(error){if(input.type==='send'){submitting.current=null;setSnapshot({...latest.current,sending:false});}throw error;}
+    catch(error){if(input.type==='send'&&submitting.current?.ticket===ticket){submitting.current=null;setSnapshot({...latest.current,sending:false});}throw error;}
   };
   return snapshot?<div className="overlay-composer-theme friend-layout"><SessionComposer key={snapshot.sessionId} value={snapshot} action={action}/></div>:null;
 }
