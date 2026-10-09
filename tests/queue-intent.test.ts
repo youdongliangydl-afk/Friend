@@ -24,3 +24,22 @@ await ctx.send();ctx.state.current.sideDraft=undefined;await ctx.send();
 assert.deepEqual(requests.map(r=>r.method),['session.queue','session.queue']);assert.equal(requests[0].input.fromSideDraft,true);assert.equal(requests[1].input.fromSideDraft,false);assert.equal(requests[0].input.intentId,requests[1].input.intentId);
 
 });
+test('pending first-session submission rejects stale draft and send actions without retaining submitted text',async()=>{
+ const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
+ const send=source.slice(source.indexOf('  const send=async()=>{'),source.indexOf('  const selectProject='));
+ const actionStart=source.indexOf('  const composerAction=async(action:ComposerAction)=>{');
+ const action=source.slice(actionStart,source.indexOf("    else if(action.type==='queueUi')",actionStart))+'\n  };';
+ const local=new Map<string,string>(),requests:any[]=[];let release!:()=>void;
+ const pending=new Promise<void>(resolve=>release=resolve);
+ const ctx:any={errorText:String,EMPTY:{},crypto:webcrypto,localStorage:{getItem:(key:string)=>local.get(key)||null,setItem:(key:string,value:string)=>local.set(key,value),removeItem:(key:string)=>local.delete(key)},sendLock:{current:false},allocationLock:{current:false},navigating:false,migratingDraft:{current:false},draftRef:{current:'first A'},attachmentsRef:{current:[]},activeSession:{archived:false},activeMemberRef:{current:null},selectedModel:{ready:true},selectedModelId:'fixture',pendingThinking:'off',projectId:'',setSending:()=>{},setNotice:()=>{},sessionId:'',ownerKey:'temporary',attachments:[],lastSubmitted:{},navigationEpoch:{current:1},running:false,state:{current:{queue:{items:[]}}},setState:()=>{},setLocalRunning:()=>{},setTools:()=>{},setLive:()=>{},followScroll:{},mode:'single',planMode:false,permissionMode:'auto',permissionExplicit:true,ownerRef:{current:'temporary'},setDraft:(text:string)=>{ctx.draftRef.current=text;},setAttachments:()=>{},setDraftOwner:()=>{},report:(e:string)=>{throw Error(e);},window:{friendPi:{request:async(method:string,input:any)=>{requests.push({method,input});if(method==='session.new'){await pending;return {current:{sessionId:'native'}};}return {};}}}};
+ vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(readFileSync('apps/desktop/src/renderer/queue-intent.ts','utf8').replaceAll('export function','function')),ctx);
+ vm.runInContext(stripTypeScriptTypes(send+action+'\nglobalThis.send=send;globalThis.action=composerAction;'),ctx);
+ const submitted=ctx.send();
+ await ctx.action({type:'draft',sessionId:'',epoch:1,value:'first A followed by B'});
+ await ctx.send();assert.equal(ctx.draftRef.current,'first A');assert.equal(requests.length,1);
+ release();await submitted;
+ assert.equal(requests[1].method,'session.send');assert.equal(requests[1].input.text,'first A');assert.equal(ctx.draftRef.current,'');assert.equal(JSON.parse(local.get('friend-pi.draft.v1:native')!).text,'');
+ ctx.sessionId='native';ctx.ownerKey='native';ctx.ownerRef.current='native';ctx.running=true;
+ await ctx.action({type:'draft',sessionId:'native',epoch:1,value:'new B'});await ctx.send();
+ assert.equal(requests[2].method,'session.queue');assert.equal(requests[2].input.text,'new B');assert.equal(requests.length,3);
+});

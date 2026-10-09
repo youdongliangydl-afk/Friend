@@ -224,6 +224,7 @@ export default function App() {
   const composerAction=async(action:ComposerAction)=>{
     if(activeMemberRef.current)return;
     if(action.sessionId!==(sessionId||'')||action.epoch!==navigationEpoch.current)return;
+    if(sendLock.current&&['draft','send','attach','removeAttachment'].includes(action.type))return;
     if(action.type==='draft'){draftRef.current=String(action.value||'');setDraft(draftRef.current);}
     else if(action.type==='queueUi')setQueueUi(asObject(action.value));
     else if(action.type==='queue'){const requestOwner=sessionId,requestEpoch=navigationEpoch.current;const input=asObject(action.value);const result=await window.friendPi.request('session.queue',{sessionId,...input});if(requestOwner!==stateRef.current.current?.sessionId||requestEpoch!==navigationEpoch.current)return;if(input.action==='sidechat'){setSideChatId(String(asObject(result).sessionId));if(fullscreen)await writeView({...viewRef.current,active:'conversation'});}setQueueUi(old=>({editing:old.editing}));}
