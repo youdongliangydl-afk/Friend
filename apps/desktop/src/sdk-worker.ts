@@ -292,7 +292,7 @@ async function initialize(){
       else if(typeof data.workflowId==='string')workflowStatuses.set(data.workflowId,String(data.status));
       workflowRunning=[...workflowStatuses.values()].some(status=>['running','waiting_review'].includes(status));
       if(wasRunning&&!workflowRunning&&!stopping&&session.isIdle&&!rootExecutionBusy()){lifecycleStatus=settledStatus();foregroundOpen=finiteJobs();publishAuthorityNotice();}
-      publish('state',current());return;
+      queueChanged();return;
     }
     if(event.pluginEvent==='swarm.process'&&object(event.data).action==='closed'){void services.drain();return;}
     if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
@@ -311,7 +311,9 @@ async function initialize(){
       if(rootExecutionBusy())lifecycleStatus=authority?.status||'running';
       else if(!session.isStreaming&&activeGraphIds.size){lifecycleStatus=authority?.status||lifecycleStatus;foregroundOpen=false;publishAuthorityNotice(authority);}
     }
-    publish('state',current());
+    // Member process exit can precede review/integration. Recheck queued input
+    // after the committed graph snapshot has updated every busy flag.
+    queueChanged();
   });
   await bind();const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}
   const policy=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).v===1&&object(entry.data).runId===runId&&typeof object(entry.data).requiresSwarm==='boolean');

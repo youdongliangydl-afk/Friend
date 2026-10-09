@@ -104,6 +104,8 @@ export class RuntimeController {
  }
  private jobFinished(job:ProcessJob){
   if(!this.bound())return;
+  // User-created finite jobs can release a queue without requesting a model wake.
+  setImmediate(()=>void this.drain());
   if(job.notify)this.hooks.publish('notice',{message:`后台任务“${job.name}”${job.status==='completed'?'已完成':job.status==='killed'?'已停止':'失败'}`,level:job.status==='failed'?'error':'info'});
   if(!job.autoContinue||job.generation!==this.generation())return;
   const goal=this.currentGoal();if(job.goalId&&goal?.id!==job.goalId||goal&&!job.goalId&&goal.sourceRunId!==job.runId)return;if(goal&&['paused','stopped','blocked','completed'].includes(goal.status))return;

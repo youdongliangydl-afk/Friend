@@ -552,6 +552,34 @@ test('queued work suspends and automatically resumes the original Goal identity'
  const f=await start();try{const goal:any=await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL QA_QUEUE_PAUSE'}});await f.wait(()=>f.events.some(e=>e.event?.data.type==='message_update'));await f.request('queue',{action:'add',text:'independent queued analysis'});await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).queue?.suspendedGoal));await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).runtime?.goal?.id===goal.id&&(e.event.data as any).runtime?.goal?.status==='completed'),30000);const state:any=await f.request('state');assert.equal(state.runId,goal.sourceRunId);assert.equal(state.runtime.goal.status,'completed');assert.equal(state.queue.items.length,0);assert.equal(state.queue.suspendedGoal,undefined);const request=state.messages.find((m:any)=>m.role==='user'&&m.userText==='independent queued analysis');assert.ok(request);assert.notEqual(request.runId,goal.sourceRunId);}finally{await f.close();}
 });
 
+test('queued input wakes after Swarm, Team and workflow settle without a Goal or polling',{timeout:60000},async()=>{
+ for(const owner of ['swarm','team','workflow']){const f=await start({executionMode:owner==='team'?'team':'swarm'});try{
+  if(owner==='swarm'){
+   execFileSync('git',['init','-q'],{cwd:f.directory});writeFileSync(join(f.directory,'README.md'),'fixture baseline');writeFileSync(join(f.directory,'.gitignore'),'data/\n');execFileSync('git',['add','README.md','.gitignore'],{cwd:f.directory});execFileSync('git',['-c','user.name=QA','-c','user.email=qa@localhost','commit','-qm','baseline'],{cwd:f.directory});
+   await f.request('send',{text:'完成隔离写入并独立复核',mode:'swarm'});
+   await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&((e.event.data.data as any).graphs||[]).some((g:any)=>g.status==='running')));
+  }else if(owner==='team')await f.request('plugin',{plugin:'team',action:'delegate',input:{goal:'Read only',tasks:[{id:'read',title:'Read',prompt:'QA_SLOW',mode:'read',dependencies:[]}]}});
+  else {const flow:any=await f.request('plugin',{plugin:'workflow',action:'create',input:{definition:{v:1,title:'Queued boundary',goal:'Read only',nodes:[{id:'read',title:'Read',prompt:'QA_SLOW',mode:'read',dependencies:[]}]}}});await f.request('plugin',{plugin:'workflow',action:'start',input:{workflowId:flow.id}});}
+  const queued:any=await f.request('queue',{action:'add',text:'/goal list',mode:'single',planMode:false});assert.equal(queued.items.length,1,`${owner} still owns execution`);const id=queued.items[0].id;
+  const delivered=()=>{const ready=f.initial.state?.sessionFile as string;return ready&&readFileSync(ready,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(e=>e.customType==='friend-pi.input.v1'&&e.data.queueId===id&&e.data.handled===true);};
+  // Read only the native journal while waiting: no snapshot request may wake the queue.
+  await f.wait(()=>delivered()?.length===1,12000);
+  const state:any=await f.request('state');assert.equal(state.queue.items.length,0);assert.equal(state.isRunning,false);assert.equal(state.runtime.goal,undefined);
+  const graphs:any=await f.request('plugin',{plugin:'swarm',action:'snapshot'}),terminal=graphs.graphs.find((g:any)=>g.status===(owner==='team'?'completed':'integrated'));assert.ok(terminal,owner);assert.equal(delivered().length,1);assert.ok(Date.parse(delivered()[0].timestamp)>=Date.parse(terminal.updatedAt),'queue admission follows committed member completion');
+ }finally{await f.close();}}
+});
+
+test('a finite job completion admits queued input even when automatic continuation is disabled',{timeout:30000},async()=>{
+ const f=await start({permissionMode:'allPermissions'});try{
+  await f.request('runtime',{action:'jobs.run',input:{command:'node -e "setTimeout(()=>{},750)"',kind:'task',autoContinue:false,notify:false}});
+  const queued:any=await f.request('queue',{action:'add',text:'finite job boundary',mode:'single',planMode:false});assert.equal(queued.items.length,1);
+  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).messages?.some((m:any)=>m.role==='user'&&m.userText==='finite job boundary')),10000);
+  await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));
+  const state:any=await f.request('state');assert.equal(state.queue.items.length,0);assert.equal(state.messages.filter((m:any)=>m.role==='user'&&m.userText==='finite job boundary').length,1);assert.equal(state.runtime.jobs[0].status,'completed');
+  const receipts=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(e=>e.customType==='friend-pi.input.v1'&&e.data.queueId===queued.items[0].id);assert.equal(receipts.length,1);assert.ok(Date.parse(receipts[0].timestamp)>=Date.parse(state.runtime.jobs[0].finishedAt));
+ }finally{await f.close();}
+});
+
 test('stopped FIFO restores paused drafts across restart and only explicit resume dispatches them',{timeout:30000},async()=>{
  let f=await start();try{await f.request('send',{text:'QA_SLOW'});await f.wait(()=>f.events.some(e=>e.event?.data.type==='message_update'));await f.request('queue',{action:'add',text:'cold queued request'});await f.request('stop');const before:any=await f.request('state'),dir=f.directory;assert.equal(before.queue.paused,true);assert.equal(before.queue.items.length,1);await f.close(true);f=await start({directory:dir,sessionFile:before.sessionFile,status:'stopped'});const restored:any=await f.request('state');assert.equal(restored.queue.paused,true);assert.equal(restored.queue.items[0].state,'queued');assert.equal(f.events.some(e=>e.event?.data.type==='agent_start'),false);await f.request('queue',{action:'resume'});await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));const after:any=await f.request('state');assert.equal(after.queue.items.length,0);assert.equal(after.messages.filter((m:any)=>m.role==='user'&&m.userText==='cold queued request').length,1);}finally{await f.close();}
 });
