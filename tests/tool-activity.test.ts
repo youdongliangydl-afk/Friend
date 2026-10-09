@@ -6,12 +6,20 @@ import { projectTimeline, updateToolRun } from '../apps/desktop/src/renderer/tim
 import { groupToolActivity, activitySummary, type ToolActivity } from '../apps/desktop/src/renderer/tool-activity.js';
 import { ToolActivity as ActivityView } from '../apps/desktop/src/renderer/ToolActivity.js';
 import type { Message } from '../apps/desktop/src/renderer/types.js';
+import { Conversation } from '../apps/desktop/src/renderer/Conversation.js';
 
 const call = (id: string, name = 'read', args: unknown = { path: 'README.md' }) => ({ type: 'toolCall', id, name, arguments: args });
 const assistant = (id: string, parts: Message['parts'], timestamp = 1): Message => ({ id, role: 'assistant', text: '', parts, timestamp });
 const result = (id: string, isError = false): Message => ({ id: 'result-' + id, role: 'toolResult', text: 'result:' + id, toolCallId: id, isError });
 const groups = (messages: Message[]) => groupToolActivity(projectTimeline(messages, null, [], false));
 const activity = (items: ToolActivity['items']): ToolActivity => ({ kind: 'activity', id: 'group:first', items });
+
+test('completed run changes remain attached when several native assistant rows become one tool group', () => {
+  const messages=[{...assistant('first',[call('one')]),runId:'run'},result('one'),{...assistant('last',[call('two')],2),runId:'run'},result('two')];
+  const html=renderToStaticMarkup(React.createElement(Conversation,{messages,live:null,tools:[],running:false,changes:[{v:1,runId:'run',sessionId:'s',projectId:'p',startedAt:'start',finishedAt:'finish',status:'completed',files:[]}]}));
+  assert.equal((html.match(/aria-label="本轮改动文件"/g)||[]).length,1);
+  assert.match(html,/本轮没有文件变化/);
+});
 
 test('entering a running conversation after tool start keeps partial output through native handover', () => {
   const input = { command: 'slow check' }, early = [{ type: 'text', text: 'early marker' }];

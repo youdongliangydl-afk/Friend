@@ -99,6 +99,7 @@ function copyNotices(appRoot, nodeRoot, closure) {
   const notices = join(appRoot, 'third-party-licenses'); mkdirSync(notices, { recursive: true });
   for (const [name, source] of [['deepseek-harness',join(root,'packages/swarm/DEEPSEEK-LICENSE')], ['pi', join(root, '.cache/pi/source/LICENSE')], ['node', join(nodeRoot, 'LICENSE')], ['electron', join(root, 'node_modules/electron/dist/LICENSE')], ['react', join(root, 'node_modules/react/LICENSE')], ['react-dom', join(root, 'node_modules/react-dom/LICENSE')], ['scheduler', join(root, 'node_modules/scheduler/LICENSE')]]) { mkdirSync(join(notices, name), { recursive: true }); copyFileSync(source, join(notices, name, 'LICENSE')); }
   mkdirSync(join(notices,'pi-background-tasks'),{recursive:true});for(const file of ['LICENSE','SOURCE.json','ADAPTATIONS.md','THIRD_PARTY_NOTICES.md'])copyFileSync(join(root,'third-party/pi-background-tasks',file),join(notices,'pi-background-tasks',file));
+  mkdirSync(join(notices,'deepseek-harness'),{recursive:true});for(const file of ['LICENSE','SOURCE.json','ADAPTATIONS.md'])copyFileSync(join(root,'third-party/deepseek-harness',file),join(notices,'deepseek-harness',file));
   copyFileSync(join(root, 'node_modules/electron/dist/LICENSES.chromium.html'), join(notices, 'electron', 'LICENSES.chromium.html'));
   writeFileSync(join(notices, 'dependencies.json'), `${JSON.stringify(closure, null, 2)}\n`);
   copyFileSync(join(root, 'THIRD_PARTY_NOTICES.md'), join(notices, 'NOTICE.md'));

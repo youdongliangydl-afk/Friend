@@ -16,6 +16,7 @@ import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
 import * as htmlPreview from '../apps/desktop/src/html-preview.js';
 import * as workspace from '../apps/desktop/src/workspace-files.js';
+import * as runChanges from '../apps/desktop/src/run-changes.js';
 
 const root=path.resolve('.');
 const mainSource=fs.readFileSync(path.join(root,'apps/desktop/src/main.ts'),'utf8');
@@ -46,6 +47,7 @@ function fixture(){
       if(specifier==='./session-view.js')return sessionView;
       if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
+      if(specifier==='./run-changes.js')return runChanges;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
@@ -86,6 +88,20 @@ function assertDeleted(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType
 
 test('registered missing original history rejects before forking and preserves its index',async()=>{
   const f=fixture();try{const value={...f.record('missing'),path:path.join(f.dataDir,'missing.jsonl')};f.api.store.put('session:missing',value);await assert.rejects(f.api.handle('session.open',{id:'missing'}),/原始会话历史缺失/);assert.equal(f.children.length,0);assert.equal(f.api.store.get('session:missing').value.path,value.path);}finally{f.cleanup();}
+});
+test('recorded comparison read is session-owned, starts no SDK, and is removed with its session',async()=>{
+ const f=fixture();try{
+  const record=f.record('comparison'),summaries:runChanges.RunChangesSummary[]=[];
+  const tracker=new runChanges.RunChangesTracker(f.project,'fixture',f.dataDir,record.piSessionId,value=>summaries.push(value));
+  fs.writeFileSync(path.join(f.project,'changed.txt'),'before\n');await tracker.begin('run');await tracker.captureTool('write',{path:'changed.txt'});fs.writeFileSync(path.join(f.project,'changed.txt'),'after\n');await tracker.settle('run','completed');
+  const query={sessionId:record.id,runId:'run',changeId:summaries[0].changeId,index:0};fs.rmSync(path.join(f.project,'changed.txt'));
+  const comparison=await f.api.handle('session.changes.read',query);assert.match(comparison.file.patch,/-before/);assert.match(comparison.file.patch,/\+after/);assert.equal(f.children.length,0);
+  assert.ok((await f.api.handle('session.changes.read',{...query,sessionId:f.record('other').id})).unavailable);
+  f.api.store.put('deleting:'+record.id,{state:'preparing'});await assert.rejects(f.api.handle('session.changes.read',query),/不可用/);f.api.store.remove('deleting:'+record.id);
+  const preview=await f.api.handle('session.delete.preview',{id:record.id});await f.api.handle('session.delete',{id:record.id,token:preview.token});await assert.rejects(f.api.handle('session.changes.read',query),/不可用/);
+  const store=new RecordStore('diff',f.dataDir);try{assert.equal(store.get(`snapshot:${record.piSessionId}:${summaries[0].changeId}`),undefined);assert.equal(store.get(`captures:${record.piSessionId}:run`),undefined);}finally{store.close();}
+  assert.equal(f.children.length,0);
+ }finally{f.cleanup();}
 });
 test('permission configuration persists immediately and pending project uses its effective defaults',async()=>{const f=fixture();try{f.api.store.put('preferences',{defaultPermissionMode:'auto'});f.api.store.put('preferences:fixture',{defaultPermissionMode:'ask'});const pending=await f.api.handle('project.select',{projectId:'fixture'});assert.equal(pending.preferences.defaultPermissionMode,'ask');const record=f.record('permission-cold'),child=await f.ready(record);child.state.permissionMode='ask';child.state.executionMode='team';await f.api.handle('session.configure',{sessionId:record.id,permissionMode:'ask'});const saved=f.api.store.get('session:'+record.id).value;assert.equal(saved.permissionMode,'ask');assert.equal(saved.executionMode,'team');f.api.retireWorker(f.api.workers.get(record.id),Error('cold fixture'));const reopened=await f.ready(saved);assert.equal(reopened.options.env.FRIEND_PI_PERMISSION_MODE,'ask');assert.equal(reopened.options.env.FRIEND_PI_MODE,'team');}finally{f.cleanup();}});
 test('a delayed terminal approval after stop cannot reach terminal admission',async()=>{const f=fixture();try{const record=f.record('late-terminal'),child=await f.ready(record);let approve!:(value:boolean)=>void;f.control.permissionGate=new Promise(done=>approve=done);child.emit('message',{type:'terminal.request',id:'late-create',method:'create',input:{command:'fixture service'}});await f.flush();assert.ok(child.commands.some((command:any)=>command.method==='permission.confirm'));await f.api.handle('session.stop',{sessionId:record.id});approve(true);await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);const response=child.commands.find((command:any)=>command.type==='terminal.response'&&command.id==='late-create');assert.match(response.error,/取消/);}finally{f.cleanup();}});

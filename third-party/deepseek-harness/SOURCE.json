@@ -1,0 +1,70 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "commit": "4878cdabd87d4041bdaff61d04c966883b9fd07a",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 DeepSeek",
+  "checkedOn": "2026-10-09",
+  "mode": "behavior-reference-and-placement-adaptation",
+  "files": [
+    {
+      "path": "packages/client/ui-deliverables/src/client/ChangedFiles.tsx",
+      "sha256": "563e61f5bc3317c96eda89227ccac506ee8d68795a62f004f896df2416382891"
+    },
+    {
+      "path": "packages/client/ui-deliverables/src/client/FileDiff.tsx",
+      "sha256": "96d2cd177bd5319ee7c19d02ac37cd1be7ce9b7ff9dc5a7d8b86d50b0d2e0ca8"
+    },
+    {
+      "path": "packages/client/ui-deliverables/src/client/ReviewTab.tsx",
+      "sha256": "0caf8286de174efe4e7833e8cd78e0d9ad587500989498da4597bd3a3474c263"
+    },
+    {
+      "path": "packages/client/ui-deliverables/src/client/review-store.ts",
+      "sha256": "3c552d82ced71cd1d1b2692c541ec8d0a5b7294e28d1368c3d879dfef618fc95"
+    },
+    {
+      "path": "packages/client/ui-primitives/src/HoverCard.tsx",
+      "sha256": "364a6f6d51b6319d38b70b68398b8176ee50a32a5bdc6d40f7747ddccdea9147"
+    },
+    {
+      "path": "packages/client/ui-primitives/src/pointer-grace.ts",
+      "sha256": "cba1529e052cf3ea09fd3851990219e2b80d61fa4b3d35da490f28ba9f9965c6"
+    },
+    {
+      "path": "packages/deliverables/workspace-changes/src/recorder.ts",
+      "sha256": "3c4b13be0fd6df6aef1a81a2889fb7653ab263e7bd5b09de71293370cbf85928"
+    },
+    {
+      "path": "packages/deliverables/workspace-changes/src/capture.ts",
+      "sha256": "d42b58c5bb8834c0f83509bcfa5e48933e1f720fb7267d212d706ee9cb8c1d26"
+    },
+    {
+      "path": "packages/deliverables/workspace-changes/src/compare.ts",
+      "sha256": "6ecc20f8b53909a95be8cb2d8135325f78a7fc5b862f5cf04e8f71e92d01c2aa"
+    },
+    {
+      "path": "packages/deliverables/workspace-changes/src/git.ts",
+      "sha256": "e9b2cb678ef3dee3a4fbb1a34d9433b8c5d28c5f34f189d2398367a1537fdc28"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/timeline.ts",
+      "sha256": "ed2ebfd8b4233022115d9757d50d3af6cf399690ccc4fcf36f9f3edcf8e7b173"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryToolbar.tsx",
+      "sha256": "82ff879f1becb1187e495ca7df2fc958875ad4e71a73aa87ad0090733646fcb5"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryView.tsx",
+      "sha256": "a27937dc782642dbfded762466e5f4ce64a12c39d3ccd4840e8fe730e690e5c4"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryTable.tsx",
+      "sha256": "0b8a5fa7f0f5ceb3d3a49272a0f8ff2c29de047f0bef4713f6cb8e3b8a4052e9"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/trajectory-search-index.ts",
+      "sha256": "081fdf9092da9fe24e23b255262f3bd0f0e020aa9f377e318722f956b6cd371a"
+    }
+  ]
+}

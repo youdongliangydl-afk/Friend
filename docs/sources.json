@@ -296,6 +296,19 @@
       "sourceRecord": "third-party/pi-background-tasks/SOURCE.json",
       "adaptations": "third-party/pi-background-tasks/ADAPTATIONS.md",
       "use": "Original process registry/event factory internally adapted for early process ownership and pinned package identity; only process features activated. Other extension factories/tools are hidden."
+    },
+    {
+      "name": "DeepSeekHarness changed-file review",
+      "repository": "https://github.com/deepseek-ai/deepseek-harness",
+      "commit": "4878cdabd87d4041bdaff61d04c966883b9fd07a",
+      "license": "MIT",
+      "licensePath": "third-party/deepseek-harness/LICENSE",
+      "checkedOn": "2026-10-09",
+      "mode": "behavior-reference-and-placement-adaptation",
+      "modified": true,
+      "sourceRecord": "third-party/deepseek-harness/SOURCE.json",
+      "adaptations": "third-party/deepseek-harness/ADAPTATIONS.md",
+      "use": "500ms lazy Diff hover, bounded portal positioning, per-turn review navigation and shared comparison rendering; original Friend-Pi SDK/IPC adapters, no DSH runtime dependency."
     }
   ],
   "providerConfigurationSources": {
