@@ -14,7 +14,7 @@ const queries=new Set(['snapshot','list','read','status','result','logs','histor
 export class RuntimeController {
  readonly goals:GoalLedger;readonly tasks:TaskLedger;readonly jobs:ProcessJobs;readonly store:RecordStore;
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
- private disposed=false;private draining=false;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
+ private disposed=false;private draining=false;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
  private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
   this.goals=new GoalLedger(dataDir);this.tasks=new TaskLedger(dataDir);this.store=new RecordStore('runtime-activity',dataDir);
@@ -33,7 +33,7 @@ export class RuntimeController {
  snapshot(ctx=this.context()){return {goal:this.goals.current(ctx),goals:this.goals.list(ctx),tasks:this.tasks.list(ctx),jobs:this.jobs.list(ctx),pendingWakes:this.coordinator?.pending()||[],activeTools:this.activeTools(),unknownActivities:this.unknownActivities()};}
  extension():ExtensionFactory{return pi=>{
   this.pi=pi;
-  pi.on('session_start',(_event,ctx)=>{this.nativeContext=ctx;const context=makeContext(pi,ctx);if(!this.coordinator)this.coordinator=new ContinuationCoordinator(context.sessionId,this.dataDir);});
+  pi.on('session_start',(_event,ctx)=>{const reloading=!!this.coordinator,binding=++this.bindingEpoch;this.pi=pi;this.nativeContext=ctx;const context=makeContext(pi,ctx);if(!this.coordinator)this.coordinator=new ContinuationCoordinator(context.sessionId,this.dataDir);if(reloading)setImmediate(()=>{if(this.bound(binding))void this.drain();});});
   pi.on('before_agent_start',(_event,ctx)=>{this.nativeContext=ctx;const goal=this.goals.current(makeContext(pi,ctx));if(!goal||!['active','waiting'].includes(goal.status))return;
    this.goals.admit(makeContext(pi,ctx));return {systemPrompt:`${_event.systemPrompt}\n当前长期目标 ${goal.id}：${goal.objective}\n进度：${goal.progress}\n下一步：${goal.nextAction}\n沿用原任务范围与 ${goal.mode} 模式。用 friend_task 保存步骤与实际验证，friend_goal update 记录进度和下一步；完整完成才调用 complete。等待子任务时 update continuation={kind:"wait",taskId:"实际任务ID"}，不要轮询或重放已经完成的工具。检查失败两轮修复仍无效时报告阻塞。用户停止优先于目标续跑。`};
   });
@@ -49,7 +49,7 @@ export class RuntimeController {
    pi.registerTool({name,label:description.split('。')[0],description,parameters:Type.Object({action:Type.String(),input:Type.Optional(Type.Record(Type.String(),Type.Unknown()))}),execute:async(_id,params,_signal,_update,ctx)=>{this.nativeContext=ctx;const result=await this.dispatch(`${prefix}.${params.action}`,params.input||{},makeContext(pi,ctx,'agent'));return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
    pi.registerCommand(prefix,{description,handler:async(args,ctx)=>{this.nativeContext=ctx;const split=args.indexOf(' '),action=args?(split<0?args:args.slice(0,split)):'list';const raw=split<0?'':args.slice(split+1);const result=await this.dispatch(`${prefix}.${action}`,raw.trim()?object(JSON.parse(raw)): {},makeContext(pi,ctx,'user'));ctx.ui.notify(JSON.stringify(result),'info');}});
   }
-  pi.on('session_shutdown',event=>{off();if(event.reason!=='reload'){this.disposed=true;}});
+  pi.on('session_shutdown',event=>{off();this.bindingEpoch++;this.nativeContext=undefined;this.pi=undefined;if(event.reason!=='reload'){this.disposed=true;}});
  };}
  async restore(){
   const ctx=this.context();this.jobs.recover(ctx);
@@ -103,24 +103,26 @@ export class RuntimeController {
   this.hooks.publish('runtime',this.snapshot(ctx));void this.drain();
  }
  private jobFinished(job:ProcessJob){
+  if(!this.bound())return;
   if(job.notify)this.hooks.publish('notice',{message:`后台任务“${job.name}”${job.status==='completed'?'已完成':job.status==='killed'?'已停止':'失败'}`,level:job.status==='failed'?'error':'info'});
   if(!job.autoContinue||job.generation!==this.generation())return;
   const goal=this.currentGoal();if(job.goalId&&goal?.id!==job.goalId||goal&&!job.goalId&&goal.sourceRunId!==job.runId)return;if(goal&&['paused','stopped','blocked','completed'].includes(goal.status))return;
   if(goal?.waitFor===job.id)this.goals.update({progress:`后台任务 ${job.name}：${job.status}`,nextAction:goal.nextAction},this.context());
   this.enqueue(`job:${job.id}:${job.status}`,`后台任务 ${job.name}（${job.id}）${job.status}，请读取日志并处理结果，勿无依据重跑。`,{generation:job.generation,runId:job.runId,goalId:goal?.id});
  }
- teamResult(data:JsonObject){const id=String(data.attemptId||data.graphId);if(this.wakeEvents.has(id))return;const owner=this.store.get<{generation:number;runId?:string;goalId?:string}>(`attempt-owner:${this.nativeContext?.sessionManager.getSessionId()}:${id}`)?.value;if(!owner||owner.generation!==this.generation()||owner.runId!==data.runId)return;this.wakeEvents.add(id);this.enqueue(`team:${id}`,`Team 成员成果已返回。请用 friend_team result 查询实际成果；写入仍需检查、独立复核并由主 Agent 决定整合。`,{generation:owner.generation,runId:owner.runId,goalId:owner.goalId});}
+ teamResult(data:JsonObject){if(!this.bound())return;const id=String(data.attemptId||data.graphId);if(this.wakeEvents.has(id))return;const owner=this.store.get<{generation:number;runId?:string;goalId?:string}>(`attempt-owner:${this.nativeContext?.sessionManager.getSessionId()}:${id}`)?.value;if(!owner||owner.generation!==this.generation()||owner.runId!==data.runId)return;this.wakeEvents.add(id);this.enqueue(`team:${id}`,`Team 成员成果已返回。请用 friend_team result 查询实际成果；写入仍需检查、独立复核并由主 Agent 决定整合。`,{generation:owner.generation,runId:owner.runId,goalId:owner.goalId});}
  observeSwarm(data:JsonObject){
+  if(!this.bound())return;
   const ctx=this.context(),goal=this.goals.current(ctx);for(const graph of Array.isArray(data.graphs)?data.graphs.map(object):[]){if(graph.sessionId!==ctx.sessionId||graph.audit===true)continue;
    const id=String(graph.id),previous=this.swarmStatuses.get(id);this.swarmStatuses.set(id,String(graph.status));
    for(const attempt of Array.isArray(graph.attempts)?graph.attempts.map(object):[]){const key=`attempt-owner:${ctx.sessionId}:${String(attempt.id)}`;if(!this.store.get(key)&&attempt.status==='running')this.store.put(key,{generation:this.generation(),runId:graph.runId,goalId:goal?.id});}
    if(!goal||graph.audit===true||graph.sessionId!==ctx.sessionId||(graph.goalId!==undefined?graph.goalId!==goal.id:graph.runId!==goal.sourceRunId))continue;
    if(Array.isArray(graph.attempts))for(const attempt of graph.attempts.map(object))if(attempt.mode==='write')this.goals.noteWrite(ctx,`member:${String(attempt.id)}`);this.tasks.syncExecution(graph,ctx,goal.id,this.goals.current(ctx)?.writeEpoch||0);
    if(graph.status==='integrated'&&previous&&['running','awaiting_review','ready'].includes(previous)){
-    const generation=this.generation();
+    const generation=this.generation(),binding=this.bindingEpoch;
     // The host updates its busy flags after this observer. Admit only after that stack settles.
     setImmediate(()=>{
-     if(this.disposed||generation!==this.generation())return;
+     if(!this.bound(binding)||generation!==this.generation())return;
      const current=this.currentGoal(),native=this.context();
      if(!current||current.id!==goal.id||current.generation!==generation||!['active','waiting'].includes(current.status)||graph.runId!==current.sourceRunId||native.runId!==current.sourceRunId)return;
      const tasks=(Array.isArray(graph.tasks)?graph.tasks:[]).map(object),waitIds=new Set([id,...tasks.flatMap(task=>[String(task.id),String(task.logicalStepId||`${id}:${task.id}`)])]);
@@ -135,14 +137,31 @@ export class RuntimeController {
   }
  }
  enqueue(id:string,message:string,options:{generation?:number;runId?:string;goalId?:string}={}){const added=this.coordinator?.enqueue(id,message,options)||false;if(added)void this.drain();return added;}
+ private bound(epoch=this.bindingEpoch){return !this.disposed&&epoch===this.bindingEpoch&&!!this.pi&&!!this.nativeContext&&!!this.coordinator;}
  async drain(){
+  // Pi invalidates extension contexts during quit/reload. Even querying a stale
+  // sessionManager throws, so test the binding before touching context or stores.
+  if(this.draining||!this.bound()||!this.nativeContext!.isIdle())return;
   if(this.unknownActivities().length||this.jobs.hasUnknown(this.context()))return;
-  if(this.draining||this.disposed||!this.pi||!this.coordinator||!this.nativeContext?.isIdle())return;
-  this.draining=true;let admitted:WakeFrame|undefined;
-  try{if(await this.hooks.admitUserInput?.()||this.hooks.planMode())return;const goal=this.currentGoal();const frame=this.coordinator.take(item=>this.eligible(item,goal));admitted=frame;if(frame){await this.hooks.prepareWake(frame);if(frame.generation!==this.generation()||!this.eligible(frame,this.currentGoal())||this.hooks.planMode()||!this.nativeContext?.isIdle())return;if(this.hooks.sendWake)await this.hooks.sendWake(frame);else this.pi.sendMessage({customType:'friend-pi.runtime-wake',content:frame.message,display:true,details:{eventId:frame.id,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});}}catch(error){if(!this.disposed&&admitted?.generation===this.generation()&&this.eligible(admitted,this.currentGoal())){this.goals.setState('paused',this.context(),String(error));this.hooks.publish('notice',{level:'error',message:String(error)});}}finally{this.draining=false;if(admitted&&!this.disposed&&this.coordinator?.pending().some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()))&&this.nativeContext?.isIdle()&&!this.hooks.planMode())setImmediate(()=>void this.drain());}
+  const binding=this.bindingEpoch;this.draining=true;let admitted:WakeFrame|undefined,sending=false;
+  try{
+   const userInput=await this.hooks.admitUserInput?.();if(!this.bound(binding)||userInput||this.hooks.planMode())return;
+   const goal=this.currentGoal(),frame=this.coordinator!.take(item=>this.eligible(item,goal));admitted=frame;if(!frame)return;
+   await this.hooks.prepareWake(frame);
+   if(!this.bound(binding)||frame.generation!==this.generation()||!this.eligible(frame,this.currentGoal())||this.hooks.planMode()||!this.nativeContext!.isIdle())return;
+   sending=true;if(this.hooks.sendWake)await this.hooks.sendWake(frame);else this.pi!.sendMessage({customType:'friend-pi.runtime-wake',content:frame.message,display:true,details:{eventId:frame.id,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});
+  }catch(error){
+   if(this.bound(binding)&&admitted?.generation===this.generation()&&this.eligible(admitted,this.currentGoal())){this.goals.setState('paused',this.context(),String(error));this.hooks.publish('notice',{level:'error',message:String(error)});}
+  }finally{
+   this.draining=false;
+   // Only an unsent wake can return to the queue after a reload. Once sending
+   // begins its outcome may be unknown, and replay would risk a duplicate turn.
+   if(!this.disposed&&binding!==this.bindingEpoch&&admitted&&!sending)this.coordinator?.defer(admitted);
+   if(this.bound()&&(admitted||binding!==this.bindingEpoch)&&this.coordinator!.pending().some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()))&&this.nativeContext!.isIdle()&&!this.hooks.planMode())setImmediate(()=>void this.drain());
+  }
  }
  private eligible(frame:WakeFrame,goal:GoalRecord|undefined){if(frame.goalId)return goal?.id===frame.goalId&&['active','waiting'].includes(goal.status);return !frame.runId||frame.runId===this.hooks.runId();}
  async stop(){this.coordinator?.invalidate();const ctx=this.context();this.goals.setState('stopped',ctx,'用户停止当前任务');this.tasks.stop(ctx);await this.jobs.stopRun(ctx,ctx.runId);}
  beforeQuit(){const ctx=this.context();this.goals.checkpoint(ctx,this.nativeContext?.isIdle()===true&&this.safeObjects());}
- dispose(){this.disposed=true;this.jobs.dispose();this.goals.dispose();this.tasks.dispose();this.coordinator?.dispose();this.store.close();}
+ dispose(){this.disposed=true;this.bindingEpoch++;this.nativeContext=undefined;this.pi=undefined;this.jobs.dispose();this.goals.dispose();this.tasks.dispose();this.coordinator?.dispose();this.store.close();}
 }

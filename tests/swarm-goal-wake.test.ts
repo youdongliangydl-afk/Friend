@@ -10,13 +10,13 @@ const flush=()=>new Promise<void>(done=>setImmediate(done));
 function fixture(){
  const root=mkdtempSync(join(tmpdir(),'friend-swarm-wake-'));mkdirSync(join(root,'project'));
  const previous={data:process.env.FRIEND_PI_DATA_DIR,run:process.env.FRIEND_PI_RUN_ID};process.env.FRIEND_PI_DATA_DIR=join(root,'data');process.env.FRIEND_PI_RUN_ID='run';
- const hooks=new Map<string,Function>(),bus=createEventBus(),sent:unknown[]=[];let idle=false,busy=true,plan=false,prepare:()=>Promise<void>=async()=>{};
- const controller=new RuntimeController(join(root,'data'),{publish:()=>{},busy:()=>busy,mode:()=> 'swarm',planMode:()=>plan,runId:()=> 'run',modelId:()=>undefined,thinkingLevel:()=> 'off',prepareWake:()=>prepare(),sendWake:frame=>{assert.equal(busy,false);sent.push(frame);}});
+ const hooks=new Map<string,Function>(),bus=createEventBus(),sent:unknown[]=[];let idle=false,busy=true,plan=false,prepare:()=>Promise<void>=async()=>{},admit:()=>Promise<boolean>|boolean=()=>false,retireContext=()=>{},staleReads=0,closed=false;
+ const controller=new RuntimeController(join(root,'data'),{admitUserInput:()=>admit(),publish:()=>{},busy:()=>busy,mode:()=> 'swarm',planMode:()=>plan,runId:()=> 'run',modelId:()=>undefined,thinkingLevel:()=> 'off',prepareWake:()=>prepare(),sendWake:frame=>{assert.equal(busy,false);sent.push(frame);}});
  const pi={events:bus,on:(name:string,handler:Function)=>{hooks.set(name,handler);},registerTool:()=>{},registerCommand:()=>{},getThinkingLevel:()=> 'off',appendEntry:()=>{}} as unknown as ExtensionAPI;
- controller.extension()(pi);hooks.get('session_start')!({},{cwd:join(root,'project'),sessionManager:{getSessionId:()=> 'native',getSessionFile:()=>undefined},isIdle:()=>idle,model:undefined,ui:{notify:()=>{}}});
+ const bind=()=>{let stale=false;retireContext=()=>{stale=true;};controller.extension()(pi);hooks.get('session_start')!({},{cwd:join(root,'project'),get sessionManager(){if(stale){staleReads++;throw new Error('stale Pi extension context');}return {getSessionId:()=> 'native',getSessionFile:()=>undefined};},isIdle:()=>{if(stale){staleReads++;throw new Error('stale Pi extension context');}return idle;},model:undefined,ui:{notify:()=>{}}});};bind();
  const ctx={...controller.context('user'),executionMode:'swarm' as const},goal=controller.goals.create({objective:'Inspect two members'},ctx,controller.generation());
  const graph={id:'graph',sessionId:ctx.sessionId,runId:ctx.runId,goalId:goal.id,status:'running',tasks:[{id:'writer',title:'Writer',mode:'read',status:'running',currentAttempt:'attempt',resultRevision:1}],attempts:[{id:'attempt',mode:'read',status:'running',summary:'actual evidence'}]};
- return {controller,ctx,goal,graph,sent,setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},async close(){controller.dispose();bus.clear();if(previous.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=previous.data;if(previous.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=previous.run;await flush();rmSync(root,{recursive:true,force:true});}};
+ return {controller,ctx,goal,graph,sent,bind,get staleReads(){return staleReads;},shutdown(reason='reload'){hooks.get('session_shutdown')!({reason});retireContext();},dispose(){controller.dispose();closed=true;retireContext();},setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},setAdmit(value:()=>Promise<boolean>|boolean){admit=value;},async close(){if(!closed)controller.dispose();bus.clear();if(previous.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=previous.data;if(previous.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=previous.run;await flush();rmSync(root,{recursive:true,force:true});}};
 }
 test('integrated Swarm wakes matching graph, native task, logical step and ledger waits exactly once',async()=>{
  for(const kind of ['graph','native-task','logical-step','ledger']){const f=fixture();try{
@@ -53,4 +53,37 @@ test('a late wait after integration still receives the pending wake; stop fences
 
 test('queue suspension detaches the old Goal without stopping steps or accepting another run writes',async()=>{
  const f=fixture();try{f.setIdle(true);f.setBusy(false);const task=f.controller.tasks.create({title:'Old goal step'},f.ctx,f.goal.id);const held=f.controller.suspendForQueuedInput();assert.equal(held?.id,f.goal.id);assert.equal(f.controller.currentGoal(),undefined);assert.equal(f.controller.goals.read(f.goal.id,f.ctx).status,'paused');assert.equal(f.controller.tasks.read(task.id,f.ctx).status,'pending');const other={...f.ctx,origin:'agent' as const,runId:'queued-run'};await assert.rejects(f.controller.dispatch('task.start',{id:task.id},other),/当前执行/);await assert.rejects(f.controller.dispatch('goal.update',{goalId:f.goal.id,progress:'foreign write'},other),/当前执行/);f.controller.account(500,'foreign','queued-run');assert.equal(f.controller.goals.read(f.goal.id,f.ctx).tokens,0);}finally{await f.close();}
+});
+
+test('delayed drains after quit, reload and disposal never access retired Pi context or stores',async()=>{
+ for(const reason of ['quit','reload','dispose']){const f=fixture();try{
+  f.setIdle(true);f.setBusy(false);const delayed=new Promise<void>((done,reject)=>setImmediate(()=>{f.controller.drain().then(done,reject);}));
+  if(reason==='dispose')f.dispose();else f.shutdown(reason);await delayed;
+  assert.doesNotThrow(()=>f.controller.observeSwarm({graphs:[f.graph]}));assert.doesNotThrow(()=>f.controller.teamResult({attemptId:'attempt',runId:'run'}));
+  assert.equal(f.staleReads,0,reason);assert.equal(f.sent.length,0,reason);
+ }finally{await f.close();}}
+});
+
+test('reload fences old admission and preparation, preserving unsent wake exactly once',async()=>{
+ for(const boundary of ['admission','prepare'])for(const rejectOld of [false,true])for(const rebindFirst of [false,true]){const f=fixture();try{
+  f.setBusy(false);let release!:()=>void,fail!:(error:Error)=>void;
+  const gate=new Promise<void>((done,reject)=>{release=done;fail=reject;});
+  if(boundary==='admission')f.setAdmit(async()=>{await gate;return false;});else f.setPrepare(()=>gate);
+  f.controller.enqueue('reload-wake','retained continuation',{goalId:f.goal.id});f.setIdle(true);
+  const old=f.controller.drain();await flush();f.shutdown();if(rebindFirst)f.bind();f.setAdmit(()=>false);f.setPrepare(async()=>{});
+  if(rejectOld)fail(new Error('retired preparation failed'));else release();await old;if(!rebindFirst){assert.equal(f.sent.length,0);f.bind();}await flush();await flush();
+  assert.equal(f.staleReads,0);assert.equal(f.controller.currentGoal()?.status,'active','old catch must not pause current Goal');
+  assert.equal(f.sent.length,1,`${boundary}/${rejectOld}`);assert.equal(f.controller.snapshot().pendingWakes.length,0);
+  assert.equal(f.controller.enqueue('reload-wake','duplicate'),false,'reload retains delivery dedup');
+ }finally{await f.close();}}
+});
+
+test('quit during an asynchronous wake cannot send or touch disposed stores',async()=>{
+ for(const boundary of ['admission','prepare']){const f=fixture();try{
+  f.setBusy(false);let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});
+  if(boundary==='admission')f.setAdmit(async()=>{await gate;return false;});else f.setPrepare(()=>gate);
+  f.controller.enqueue('quit-wake','cancelled continuation',{goalId:f.goal.id});f.setIdle(true);
+  const old=f.controller.drain();await flush();f.shutdown('quit');f.dispose();release();await old;await flush();
+  assert.equal(f.staleReads,0);assert.equal(f.sent.length,0);
+ }finally{await f.close();}}
 });

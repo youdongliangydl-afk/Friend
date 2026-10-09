@@ -275,6 +275,7 @@ async function initialize(){
     if(event.type==='message_end'){const ended=event.message,streamId=liveStreamId;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===ended);if(ended.role==='assistant'&&entry)publish('stream.committed',{streamId,entryId:entry.id});publish('state',current());});}else if(['agent_settled','compaction_start','compaction_end'].includes(event.type))publish('state',current());
   });
   bus.on('friend-pi:v1:event',raw=>{
+    if(disposed)return;
     publish('plugin',raw);
     if(!raw||typeof raw!=='object')return;
     const event=object(raw);

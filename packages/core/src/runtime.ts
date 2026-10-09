@@ -37,6 +37,12 @@ export class ContinuationCoordinator {
   for(const row of pending){if(row.value.generation!==this.generation()){this.store.remove(row.key);continue;}if(!eligible(row.value))continue;this.store.remove(row.key);return row.value;}
   return undefined;
  }
+ /** Return an admitted but unsent wake after extension reload, retaining dedup. */
+ defer(frame:WakeFrame){
+  const key=`queue:${this.sessionId}:${frame.id}`;
+  if(frame.generation!==this.generation()||!this.store.get(`seen:${this.sessionId}:${frame.id}`)||this.store.get(key))return false;
+  this.store.put(key,frame,null);return true;
+ }
  pending(){return this.store.list<WakeFrame>(`queue:${this.sessionId}:`).map(row=>row.value);}
  dispose(){this.store.close();}
 }

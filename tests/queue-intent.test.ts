@@ -73,7 +73,7 @@ test('native composer holds a local submission lock until the host publishes its
  ctx.snapshot({...initial,revision:5,submissionRevision:2,draft:'new B',notice:'request failed'});
  assert.equal(ctx.latest.current.sending,false);assert.equal(ctx.latest.current.draft,'new B');
  for(const patch of [{draft:''},{ready:false},{archived:true},{navigating:true}]){
-  ctx.latest.current={...initial,...patch};const count=bridge.length;
+  ctx.latest.current={...initial,...patch};const count:number=bridge.length;
   await ctx.action({type:'send',text:ctx.latest.current.draft});
   assert.equal(bridge.length,count);assert.equal(ctx.submitting.current,null);assert.equal(ctx.latest.current.sending,false);
  }
