@@ -5,18 +5,19 @@ import {Icon} from './Icons.js';
 import {cachePercent,compactTokens,decodeSpeed,statsDuration,statsPanelPosition} from './stats-format.js';
 type Panel='time'|'usage'|'context';
 export function SessionStats({stats,contextTarget}:{stats?:SessionMonitor;contextTarget:HTMLElement|null}){
- const [open,setOpen]=useState<Panel|null>(null),[position,setPosition]=useState<CSSProperties|null>(null),[tooltip,setTooltip]=useState(false);
- const root=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),triggers=useRef<Partial<Record<Panel,HTMLButtonElement|null>>>({}),hover=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+ const [open,setOpen]=useState<Panel|null>(null),[position,setPosition]=useState<CSSProperties|null>(null);
+ const root=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),triggers=useRef<Partial<Record<Panel,HTMLButtonElement|null>>>({}),hover=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),hoverOnly=useRef(false);
  const context=stats?.context,contextKnown=context?.tokens!==null&&context?.tokens!==undefined&&context.percent!==null;
  const hasTime=!!stats&&(stats.llmMs>0||stats.toolMs>0||stats.ttftSteps>0||stats.decodeMs>0),hasUsage=!!stats&&stats.tokens.total>0;
  const available=open==='context'?contextKnown:open==='time'?hasTime:open==='usage'?hasUsage:false;
  useEffect(()=>{if(open&&!available)setOpen(null);},[open,available]);
- useEffect(()=>{if(!contextKnown){clearTimeout(hover.current);setTooltip(false);}},[contextKnown]);
+ useEffect(()=>{if(!contextKnown){clearTimeout(hover.current);hoverOnly.current=false;}},[contextKnown]);
  useEffect(()=>()=>clearTimeout(hover.current),[]);
  useEffect(()=>{
   if(!open)return;
-  const outside=(event:PointerEvent)=>{if(!triggers.current[open]?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))setOpen(null);};
-  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){setOpen(null);triggers.current[open]?.focus();}};
+  const close=()=>{clearTimeout(hover.current);hoverOnly.current=false;setOpen(null);};
+  const outside=(event:PointerEvent)=>{if(!triggers.current[open]?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))close();};
+  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){close();triggers.current[open]?.focus();}};
   document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
   return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
  },[open]);
@@ -29,19 +30,21 @@ export function SessionStats({stats,contextTarget}:{stats?:SessionMonitor;contex
  if(!stats||!stats.steps&&!hasUsage&&!contextKnown)return null;
  const speed=decodeSpeed(stats.decodeTokens,stats.decodeMs),prompt=stats.tokens.input+stats.tokens.cacheRead+stats.tokens.cacheWrite,hit=cachePercent(stats.tokens.cacheRead,prompt);
  const counts=`${stats.turns} 轮 ${stats.steps} 步`,timeLabel=counts+(speed?' · '+speed:''),usageLabel=compactTokens(stats.tokens.total)+' tok'+(hit===null?'':' · 缓存命中 '+hit+'%');
- const toggle=(kind:Panel)=>{clearTimeout(hover.current);setTooltip(false);setPosition(null);setOpen(open===kind?null:kind);};
+ const toggle=(kind:Panel)=>{clearTimeout(hover.current);const pin=kind==='context'&&open===kind&&hoverOnly.current;hoverOnly.current=false;if(pin)return;setPosition(null);setOpen(open===kind?null:kind);};
+ const hoverContext=()=>{clearTimeout(hover.current);if(open!=='context')hover.current=setTimeout(()=>{hoverOnly.current=true;setPosition(null);setOpen('context');},200);};
+ const leaveContext=()=>{clearTimeout(hover.current);if(hoverOnly.current)hover.current=setTimeout(()=>{hoverOnly.current=false;setOpen(value=>value==='context'?null:value);},180);};
  const button=(kind:Panel,label:string,icon:'history'|'context')=><button ref={element=>{triggers.current[kind]=element;}} className="session-stat-pill" aria-label={label} aria-haspopup="dialog" aria-expanded={open===kind} onClick={()=>toggle(kind)}><Icon name={icon} size={14}/><span>{label}</span></button>;
  const exact=(n:number)=>n.toLocaleString('zh-CN');
  return <div ref={root} className="session-stats session-stats-heading" aria-label="会话监控">
   {stats.steps>0&&(hasTime?button('time',timeLabel,'history'):<span className="session-stat-pill"><Icon name="history" size={14}/>{timeLabel}</span>)}
   {hasUsage&&button('usage',usageLabel,'context')}
-  {contextKnown&&contextTarget&&createPortal(<span className="session-context-anchor" onPointerEnter={()=>{if(open!=='context')hover.current=setTimeout(()=>setTooltip(true),200);}} onPointerLeave={()=>{clearTimeout(hover.current);setTooltip(false);}}>
-   <button ref={element=>{triggers.current.context=element;}} className="session-stat-pill" aria-label={'上下文占用 '+context!.percent+'%'} aria-haspopup="dialog" aria-expanded={open==='context'} onClick={()=>toggle('context')} onFocus={()=>setTooltip(true)} onBlur={()=>setTooltip(false)}>
-    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" className="context-ring-track"/><circle cx="7" cy="7" r="5" className="context-ring-fill" strokeDasharray={`${31.416*context!.percent!/100} 31.416`} transform="rotate(-90 7 7)"/></svg>{context!.percent}%
-   </button>{tooltip&&open!=='context'&&<span role="tooltip" className="context-stat-tooltip">上下文占用 {context!.percent}%</span>}
+  {contextKnown&&contextTarget&&createPortal(<span className="session-context-anchor" onPointerEnter={hoverContext} onPointerLeave={leaveContext}>
+   <button ref={element=>{triggers.current.context=element;}} className="session-stat-pill" aria-label={'上下文占用 '+context!.percent+'%'} aria-haspopup="dialog" aria-expanded={open==='context'} onClick={()=>toggle('context')}>
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" className="context-ring-track"/><circle cx="7" cy="7" r="5" className="context-ring-fill" strokeDasharray={`${31.416*context!.percent!/100} 31.416`} transform="rotate(-90 7 7)"/></svg>
+   </button>
   </span>,contextTarget)}
-  {open&&available&&createPortal(<div ref={panel} className="session-stat-dialog" role="dialog" aria-label={open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'} style={position||{visibility:'hidden',left:0,top:0}}>
-   <div className="session-stat-heading"><strong>{open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'}</strong><button aria-label="关闭统计详情" onClick={()=>{setOpen(null);triggers.current[open]?.focus();}}>×</button></div>
+  {open&&available&&createPortal(<div ref={panel} className="session-stat-dialog" role="dialog" aria-label={open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'} style={position||{visibility:'hidden',left:0,top:0}} onPointerEnter={()=>clearTimeout(hover.current)} onPointerLeave={leaveContext} onFocusCapture={()=>{clearTimeout(hover.current);hoverOnly.current=false;}}>
+   <div className="session-stat-heading"><strong>{open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'}</strong><button aria-label="关闭统计详情" onClick={()=>{clearTimeout(hover.current);hoverOnly.current=false;setOpen(null);triggers.current[open]?.focus();}}>×</button></div>
    {open==='time'?<><dl>
     {stats.llmMs>0&&<><dt>模型累计耗时</dt><dd>{statsDuration(stats.llmMs)}</dd></>}{stats.toolMs>0&&<><dt>工具累计耗时</dt><dd>{statsDuration(stats.toolMs)}</dd></>}
     {stats.ttftSteps>0&&<><dt>平均首 Token 时间</dt><dd>{statsDuration(stats.ttftMs/stats.ttftSteps)}</dd></>}{speed&&<><dt>输出速度（TPS）</dt><dd>{speed}</dd></>}
