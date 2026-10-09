@@ -243,7 +243,13 @@ async function initialize(){
     }
     publish('state',current());
   });
-  await bind();const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}if(restoredGoal&&runId){for(const [id,graph] of swarmGraphs)if(graph.audit!==true&&graph.runId===runId&&(graph.goalId===undefined||graph.goalId===restoredGoal.id))runGraphIds.add(id);}
+  await bind();const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}
+  if(restoredGoal&&restoredGoal.sourceRunId===runId&&runId&&enabled.includes('swarm')){
+    // A cold controller need not emit swarm.changed. Restore only this Goal's
+    // authority evidence; reading a snapshot must not start or replay work.
+    const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
+    for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId!==session.sessionId||graph.goalId!==restoredGoal.id||graph.runId!==runId)continue;const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit!==true)runGraphIds.add(id);}
+  }
   await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 function readAttachment(path:string):{text?:string;image?:ImageContent}{

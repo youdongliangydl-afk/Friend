@@ -14,7 +14,7 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
-import { RecordStore,projectIdentity } from '../packages/core/src/index.js';
+import { RecordStore,projectIdentity,digest } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
@@ -106,6 +106,29 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
    await fixture.request('plugin',{plugin:'workflow',action:'create',input:{definition:{v:1,title:'draft only',goal:'read',nodes:[{id:'read',title:'read',prompt:'inspect',mode:'read',dependencies:[]}]}}});
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a workflow draft snapshot is not evidence of execution');
  }finally{await fixture.close();}
+});
+
+test('cold Goal resume restores only its owned integrated Swarm authority without replay',{timeout:30000},async()=>{
+ for(const scenario of ['owned','foreign-only','later-run']){
+  const directory=mkdtempSync(join(tmpdir(),'friend-pi-cold-goal-')),dataDir=join(directory,'data'),manager=SessionManager.create(directory,join(dataDir,'sessions'));
+  const sessionId=manager.getSessionId(),projectId=projectIdentity(directory),goalId=randomUUID(),sourceRunId='original-run',at=new Date(Date.now()-10000).toISOString(),text='QA_COLD_AUTHORITY';
+  manager.appendMessage({role:'user',content:text,timestamp:Date.now()-10000});
+  const entryId=manager.getLeafId();manager.appendCustomEntry('friend-pi.input.v1',{entryId,textEnd:text.length,hash:digest(text),runId:scenario==='later-run'?'later-run':sourceRunId});manager.appendThinkingLevelChange('off');
+  const goals=new RecordStore('goal-journal',dataDir);goals.put(`focus:${sessionId}`,goalId,null);goals.put(`goal:${projectId}:${goalId}`,{id:goalId,projectId,sessionId,origin:'user',sourceRunId,objective:text,mode:'swarm',status:'stopped',revision:1,progress:'Retained integrated evidence',nextAction:'Read retained evidence',tokens:0,usageAvailable:true,safeCheckpoint:false,generation:0,createdAt:at,updatedAt:at},null);goals.close();
+  const store=new RecordStore('swarm',dataDir),graph=(owned:boolean)=>({id:randomUUID(),projectId,sessionId,projectDir:directory,goal:'retained fixture evidence',goalId:owned?goalId:'foreign-goal',runId:owned?sourceRunId:'foreign-run',status:owned?'integrated':'paused',createdAt:at,updatedAt:at,tasks:[],attempts:[],checks:[],maxWorkers:1,reworkRound:0});
+  for(const item of [graph(false),...(scenario==='foreign-only'?[]:[graph(true)])])store.put(`graph:${projectId}:${item.id}`,item,null);store.close();
+  let modelStarted=false,release!:()=>void;const responseGate=new Promise<void>(done=>{release=done;});
+  const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=String(chunk);if(raw.includes(text)){modelStarted=true;await responseGate;}res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta:{role:'assistant',content:'Retained evidence inspected without execution'},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:'cold-goal',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');});
+  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const history=readFileSync(manager.getSessionFile()!,'utf8');const f=await start({directory,sessionFile:manager.getSessionFile(),status:'stopped'});
+  try{
+   assert.equal(readFileSync(manager.getSessionFile()!,'utf8'),history);assert.equal(f.initial.state?.lifecycleStatus,'stopped');assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
+   const before=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};
+   await f.request('provider.save',{provider:'cold-goal-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('configure',{executionMode:'swarm'});await f.request('runtime',{action:'goal.resume'});await f.wait(()=>modelStarted);
+   await f.request('runtime',{action:'goal.update',input:{continuation:{kind:'wait',taskId:'future-task'}}});release();await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+   const after=await f.request('state') as {lifecycleStatus:string;runtime:{goal:{status:string}}};assert.equal(after.lifecycleStatus,scenario==='owned'?'completed':'failed');assert.equal(after.runtime.goal.status,scenario==='owned'?'waiting':'paused');
+   assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,before.graphs,'cold authority restoration cannot create, start or change retained graphs');
+  }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ }
 });
 
 test('Swarm task authority rejects a provider claiming completion after create and invalid start calls',{timeout:30000},async()=>{
