@@ -52,3 +52,23 @@ test('summary renders four-file preview, totals and unavailable truthfully; anch
  assert.equal(conversation.match(/aria-label="本轮改动文件"/g)?.length,1);assert.ok(conversation.indexOf('answer')<conversation.indexOf('已改动'));assert.ok(conversation.indexOf('已改动')<conversation.indexOf('next'));
  const trace=renderToStaticMarkup(React.createElement(Trajectory,{messages:[],live:null,tools:[],running:false}));assert.match(trace,/搜索轨迹/);assert.match(trace,/发送消息后/);
 });
+
+test('DSH preview placement uses card inset, viewport clamps, gap and available vertical room',async()=>{
+ const {changePreviewPosition}=await import('../apps/desktop/src/renderer/change-preview-position.js');
+ const above=changePreviewPosition({top:600,bottom:640},{left:100,width:700},350,{width:1200,height:900},40);assert.deepEqual(above,{left:124,top:242,width:652,maxHeight:420});
+ const below=changePreviewPosition({top:30,bottom:70},{left:1100,width:700},350,{width:1200,height:900},20);assert.equal(below.top,78);assert.equal(below.left,540);assert.equal(below.maxHeight,420);
+ const narrow=changePreviewPosition({top:80,bottom:120},{left:-100,width:900},500,{width:320,height:220},20);assert.equal(narrow.width,304);assert.equal(narrow.left,8);assert.equal(narrow.maxHeight,84);
+});
+test('single file uses a review header; deleted files still open their run comparison; shared diff renders red/green rows',async()=>{
+ const {FileDiffView}=await import('../apps/desktop/src/renderer/DiffView.js');const {parsePatch}=await import('../apps/desktop/src/workspace-files.js');
+ const one=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[{path:'deleted.txt',status:'D',binary:false,additions:0,deletions:1}]},workspacePath:'/workspace'}));assert.match(one,/查看变更：deleted.txt/);assert.match(one,/\/workspace\/deleted.txt/);assert.doesNotMatch(one,/disabled|title="打开/);assert.doesNotMatch(one,/<ul/);
+ const patch='@@ -1 +1 @@\n-old value\n+new value';const state={phase:'ready' as const,file:{path:'f',status:'M',staged:false,binary:false,patch,lines:parsePatch(patch),additions:1,deletions:1}};
+ const diff=renderToStaticMarkup(React.createElement(FileDiffView,{state,split:false,retry:()=>{}}));assert.match(diff,/diff-add/);assert.match(diff,/diff-remove/);assert.match(diff,/-old value/);assert.match(diff,/\+new value/);
+ const preview=renderToStaticMarkup(React.createElement(FileDiffView,{state,preview:true,retry:()=>{}}));assert.doesNotMatch(preview,/@\@/);
+ const missing=renderToStaticMarkup(React.createElement(FileDiffView,{state:{phase:'missing',message:'历史不可用'},retry:()=>{}}));assert.match(missing,/历史不可用/);
+});
+test('hover and review share one lazy comparison read; failures retry and missing comparisons do not fall back to current files',async()=>{
+ const {ChangeDiffCache}=await import('../apps/desktop/src/renderer/change-review.js');const cache=new ChangeDiffCache(),coords={sessionId:'desktop',runId:'run',changeId:'change',index:0};let calls=0;
+ const original=globalThis.window;Object.assign(globalThis,{window:{friendPi:{request:async(method:string)=>{assert.equal(method,'session.changes.read');calls++;if(calls===1)throw new Error('read failed');return {file:{path:'f',lines:[],patch:'',binary:false}};}}}});
+ try{await cache.load(coords);assert.equal(cache.get(coords)?.phase,'error');await Promise.all([cache.load(coords),cache.load(coords)]);assert.equal(calls,2);assert.equal(cache.get(coords)?.phase,'ready');await cache.load(coords);assert.equal(calls,2);await cache.load({...coords,changeId:undefined});assert.equal(cache.get({...coords,changeId:undefined})?.phase,'missing');assert.equal(calls,2);}finally{if(original)Object.assign(globalThis,{window:original});else delete (globalThis as {window?:unknown}).window;}
+});

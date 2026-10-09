@@ -1,8 +1,8 @@
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {readFileSync,readdirSync,lstatSync,realpathSync,openSync,readSync,closeSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {readFileSync,readdirSync,lstatSync,realpathSync,openSync,readSync,closeSync} from 'node:fs';
+import {structuredPatch,formatPatch} from 'diff';
 import {join,resolve,relative,isAbsolute,extname} from 'node:path';
 import {RecordStore,digest} from '@friend-pi/core';
 const execute=promisify(execFile);
@@ -22,8 +22,59 @@ export function previewFile(root:string,path:string,offset=0,line?:number):FileP
 async function statuses(root:string){const raw=await git(root,['status','--porcelain=v1','-z','--untracked-files=all']);const parts=raw.split('\0');const result:{path:string;oldPath?:string;xy:string}[]=[];for(let i=0;i<parts.length;i++){const part=parts[i];if(!part)continue;const xy=part.slice(0,2),path=part.slice(3);result.push({path,xy,...(/[RC]/.test(xy)?{oldPath:parts[++i]}:{})});}return result;}
 export function parsePatch(patch:string):DiffLine[]{let old=0,next=0,inHunk=false;return patch.split('\n').map(text=>{const h=/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);if(text.startsWith('diff '))inHunk=false;if(h){inHunk=true;old=Number(h[1]);next=Number(h[2]);return {kind:'meta',text};}if(inHunk&&text.startsWith('+'))return {kind:'add',text:text.slice(1),newLine:next++};if(inHunk&&text.startsWith('-'))return {kind:'remove',text:text.slice(1),oldLine:old++};if(text.startsWith(' ')&&old&&next)return {kind:'context',text:text.slice(1),oldLine:old++,newLine:next++};return {kind:'meta',text};});}
 function fileContent(root:string,path:string):{content?:string;binary:boolean;hash?:string;mode?:number;exists:boolean}{try{const actual=projectFile(root,path),stat=lstatSync(actual);if(!stat.isFile())return {binary:true,mode:stat.mode&0o777,exists:true};const hash=createHash('sha256');const fd=openSync(actual,'r');const chunk=Buffer.alloc(65536);try{let n;while((n=readSync(fd,chunk,0,chunk.length,null)))hash.update(chunk.subarray(0,n));}finally{closeSync(fd);}const stamp={hash:hash.digest('hex'),mode:stat.mode&0o777,exists:true};if(stat.size>MAX)return {...stamp,binary:true};const b=readFileSync(actual);return b.includes(0)?{...stamp,binary:true}:{...stamp,binary:false,content:b.toString('utf8')};}catch{return {binary:false,content:'',exists:false};}}
+export interface CapturedRunFile {exists:boolean;binary:boolean;content?:string;hash?:string;mode?:number;oversized?:boolean}
+/** Distinguish an absent Git workspace/executable from a repository whose baseline failed. */
+export async function hasGitRepository(root:string){
+ try{await execute('git',['rev-parse','--show-toplevel'],{cwd:root,encoding:'utf8',timeout:30000,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}});return true;}
+ catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;let directory=realpathSync(root);while(true){if(lstatExists(join(directory,'.git')))return true;const parent=resolve(directory,'..');if(parent===directory)return false;directory=parent;}}
+}
+/** Bounded file-tool capture, including absent paths; refuses symlink escapes and unrelated directories. */
+export function captureToolFile(root:string,path:string):{path:string;file:CapturedRunFile}|undefined {
+ const base=realpathSync(root),absolute=resolve(base,path),rel=relative(base,absolute);
+ if(rel==='..'||rel.startsWith('../')||isAbsolute(rel))return;
+ let parent=absolute;while(!lstatExists(parent)){const next=resolve(parent,'..');if(next===parent)return;parent=next;}
+ const canonical=realpathSync(parent),parentRel=relative(base,canonical);if(parentRel==='..'||parentRel.startsWith('../')||isAbsolute(parentRel))return;
+ if(!lstatExists(absolute))return {path:rel,file:{exists:false,binary:false,content:''}};
+ const actual=projectFile(base,path),stat=lstatSync(actual);if(!stat.isFile())return;
+ const mode=stat.mode&0o777;if(stat.size>MAX)return {path:rel,file:{exists:true,binary:true,oversized:true,mode}};
+ const fd=openSync(actual,'r'),probe=Buffer.alloc(MAX+1);let length=0;
+ try{while(length<probe.length){const n=readSync(fd,probe,length,probe.length-length,null);if(!n)break;length+=n;}}finally{closeSync(fd);}
+ if(length>MAX)return {path:rel,file:{exists:true,binary:true,oversized:true,mode}};
+ const bytes=probe.subarray(0,length),binary=bytes.includes(0);
+ return {path:rel,file:{exists:true,binary,mode,hash:createHash('sha256').update(bytes).digest('hex'),...(!binary?{content:bytes.toString('utf8')}:{})}};
+}
+function lstatExists(path:string){try{lstatSync(path);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}}
+/** DSH Git snapshots cover all workspace paths except ignored files; gitlinks are never descended. */
+export async function uncoveredToolPaths(root:string,paths:string[]){
+ const entries=(await git(root,['ls-files','--stage','-z'])).split('\0');
+ const links=entries.filter(entry=>entry.startsWith('160000 ')).map(entry=>entry.slice(entry.indexOf('\t')+1));
+ const candidates=paths.filter(path=>!links.some(link=>path===link||path.startsWith(link+'/')));
+ if(!candidates.length)return new Set<string>();
+ const output=await new Promise<string>((resolveResult,reject)=>{
+  const child=execFile('git',['-c','core.fsmonitor=false','check-ignore','-z','--stdin'],{cwd:root,encoding:'utf8',maxBuffer:8*MAX,timeout:30000,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}},(error,stdout)=>{if(error&&(error as {code?:number}).code!==1)reject(error);else resolveResult(stdout);});
+  child.stdin?.on('error',()=>{});child.stdin?.end(candidates.join('\0')+'\0');
+ });
+ return new Set(output.split('\0').filter(Boolean));
+}
+export async function compareToolCapture(root:string,path:string,before:CapturedRunFile):Promise<ChangedFile|undefined>{
+ const captured=captureToolFile(root,path);if(!captured)return {path,status:'M',binary:true,staged:false,patch:'',lines:[],error:'文件路径已不在当前工作区内'};
+ const after=captured.file;if(before.exists===after.exists&&before.mode===after.mode&&(before.hash&&before.hash===after.hash||!before.exists&&!after.exists))return;
+ const binary=before.binary||after.binary,status=!after.exists?'D':!before.exists?'A':'M';
+ const patch=binary?'Binary or oversized content changed':before.content===after.content?'File mode or empty-file existence changed':await textPatch(before.content||'',after.content||'');
+ const all=parsePatch(patch),truncated=patch.length>MAX;
+ return {path,status,binary,staged:false,patch:patch.slice(0,MAX),lines:parsePatch(patch.slice(0,MAX)),truncated,...(!binary?{additions:all.filter(line=>line.kind==='add').length,deletions:all.filter(line=>line.kind==='remove').length}:{})};
+}
 async function headContent(root:string,head:string,path:string){try{const {stdout}=await execute('git',['-c','core.fsmonitor=false','show',`${head}:${path}`],{cwd:root,encoding:'buffer',maxBuffer:64*MAX,timeout:30000,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}});const info=await git(root,['ls-tree','-z',head,'--',path]);const mode=info.startsWith('100755')?0o755:0o644;return {exists:true,hash:createHash('sha256').update(stdout).digest('hex'),mode,binary:stdout.includes(0)||stdout.length>MAX,...(!stdout.includes(0)&&stdout.length<=MAX?{content:stdout.toString('utf8')}:{})};}catch{return {exists:false,binary:false,content:''};}}
-async function textPatch(before:string,after:string){const dir=mkdtempSync(join(tmpdir(),'friend-pi-run-diff-'));try{writeFileSync(join(dir,'before'),before);writeFileSync(join(dir,'after'),after);const patch=await git(dir,['diff','--no-color','--no-ext-diff','--no-textconv','--no-index','--','before','after'],true);return patch.replace(/^diff --git .*$/m,'diff 本轮开始 → 当前文件').replace(/^--- .*$/m,'--- 本轮开始').replace(/^\+\+\+ .*$/m,'+++ 当前文件');}finally{rmSync(dir,{recursive:true,force:true});}}
+/** Adapted from DSH compareText: bounded in-memory comparison, with an explicit coarse replacement on timeout. */
+async function textPatch(before:string,after:string){
+ const terminated=(text:string)=>text===''||text.endsWith('\n')?text:text+'\n';
+ const oldText=terminated(before),newText=terminated(after);
+ const patch=structuredPatch('本轮开始','本轮结束',oldText,newText,undefined,undefined,{context:3,timeout:100});
+ if(patch)return formatPatch(patch);
+ const lines=(text:string)=>text===''?[]:text.slice(0,-1).split('\n');
+ const oldLines=lines(oldText),newLines=lines(newText);
+ return ['diff 比较超时，按整文件替换展示','--- 本轮开始','+++ 本轮结束',`@@ -1,${oldLines.length} +1,${newLines.length} @@`,...oldLines.map(line=>'-'+line),...newLines.map(line=>'+'+line)].join('\n');
+}
 export async function captureRunBaseline(root:string,projectId:string,runId:string,dataDir:string,sessionId?:string,reuse=false){const s=new RecordStore('diff',dataDir);try{const prior=s.get<Baseline>(`baseline:${projectId}:${runId}`)?.value;if(reuse&&prior&&prior.sessionId===sessionId)return {complete:prior.complete,createdAt:prior.createdAt};let head:string|undefined;try{head=(await git(root,['rev-parse','HEAD'])).trim();}catch{}const rows=await statuses(root);const files:Baseline['files']={};let size=0,complete=true;for(const path of [...new Set(rows.flatMap(row=>row.oldPath?[row.path,row.oldPath]:[row.path]))]){const content=fileContent(root,path);size+=content.content?.length||0;if(size>8*MAX||Object.keys(files).length>=500){complete=false;break;}files[path]=content;}const createdAt=new Date().toISOString();s.put(`baseline:${projectId}:${runId}`,{head,sessionId,files,complete,createdAt} satisfies Baseline);return {complete,createdAt};}finally{s.close();}}
 export async function workspaceDiff(root:string,projectId:string,dataDir:string,scope:DiffScope='workspace',runId?:string):Promise<WorkspaceDiff>{let rows:Awaited<ReturnType<typeof statuses>>;try{rows=await statuses(root);}catch{return {scope,files:[],unavailable:'当前项目不是可读取的 Git 工作区'};}
  let baseline:Baseline|undefined;if(scope==='run'){const s=new RecordStore('diff',dataDir);try{baseline=runId?s.get<Baseline>(`baseline:${projectId}:${runId}`)?.value:undefined;}finally{s.close();}if(!baseline?.complete)return {scope,files:[],unavailable:'本轮开始基线不可用，不能用工作区改动代替本轮'};if(!baseline.head){for(const path of (await git(root,['ls-files','-z'])).split('\0').filter(Boolean))if(!rows.some(row=>row.path===path))rows.push({path,xy:' M'});}if(baseline.head){try{const changed=(await git(root,['diff','--name-only','-z','--no-renames',baseline.head,'--'])).split('\0').filter(Boolean);for(const path of changed)if(!rows.some(row=>row.path===path))rows.push({path,xy:' M'});}catch{return {scope,files:[],unavailable:'Git 基线不可读取，本轮范围不可用'};}}for(const path of Object.keys(baseline.files))if(!rows.some(row=>row.path===path))rows.push({path,xy:' M'});}

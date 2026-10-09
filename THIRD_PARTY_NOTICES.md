@@ -16,6 +16,10 @@ The machine-readable revision, license and use ledger is [docs/sources.json](doc
 - CodeMirror 6.0.2 and the locked CodeMirror language/state/view/search/Lezer packages, MIT; xterm.js 6.0.0 and addon-fit 0.11.0, MIT; node-pty 1.1.0, MIT with its bundled third-party notices. These power the editor, terminal browser display and independent Node24 PTY host. Original LICENSE files and node-pty nested notices remain in their packaged directories and are listed in the dependency ledger.
 - Other runtime npm dependency directories retain their original license/notice files. `third-party-licenses/dependencies.json` records the actual packaged versions and available retained notice paths. This root project's MIT license does not replace any third-party license.
 
+## Adapted interaction behavior
+
+DeepSeek Harness, MIT, Copyright (c) 2026 DeepSeek, revision `4878cdabd87d4041bdaff61d04c966883b9fd07a`: changed-file hover/review behavior and preview placement formulas are adapted for Friend-Pi. Original license, exact source hashes and adaptation boundaries are retained under `third-party/deepseek-harness` and shipped in `third-party-licenses/deepseek-harness`. No DeepSeek runtime or model loop is bundled.
+
 ## Architecture references
 
 Thanks to [DeepSeekHarness](https://github.com/deepseek-ai/deepseek-harness), [MiniMax Code](https://github.com/MiniMax-AI/minimax-code), [ZCode](https://github.com/zai-org/ZCode), [Codex](https://github.com/openai/codex), [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code), [pi-gui](https://github.com/minghinmatthewlam/pi-gui), [pi-subagents](https://github.com/tintinweb/pi-subagents), [pi-agent-orchestrator](https://github.com/GroepOnline/pi-agent-orchestrator), and [Mem0](https://github.com/mem0ai/mem0). Their roles and checked immutable revisions are recorded in the ledger. References are not shipped frameworks or hosted-service dependencies, and no performance or correctness endorsement is implied.

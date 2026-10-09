@@ -38,3 +38,42 @@ test('initial commit during a run in an unborn repository remains visible',async
  const root=mkdtempSync(join(tmpdir(),'friend-first-commit-')),data=mkdtempSync(join(tmpdir(),'friend-first-commit-data-'));const git=(...args:string[])=>execFileSync('git',args,{cwd:root});
  try{git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@localhost');git('config','commit.gpgsign','false');await captureRunBaseline(root,'p','r',data);writeFileSync(join(root,'new.txt'),'first\n');git('add','.');git('commit','-qm','first commit');const diff=await workspaceDiff(root,'p',data,'run','r');assert.equal(diff.files.length,1);assert.equal(diff.files[0].path,'new.txt');assert.equal(diff.files[0].additions,1);}finally{rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}
 });
+
+test('frozen comparison belongs to its native session/project/run and survives later file edits and deletion',async()=>{
+ const {readRunChange}=await import('../apps/desktop/src/run-changes.js');const f=fixture(),values:RunChangesSummary[]=[];
+ try{const tracker=new RunChangesTracker(f.root,'p',f.data,'native',value=>values.push(value));await tracker.begin('run');writeFileSync(join(f.root,'tracked.txt'),'new recorded\n');await tracker.settle('run','completed');const id=values[0].changeId!;
+  writeFileSync(join(f.root,'tracked.txt'),'later edit must not leak\n');rmSync(join(f.root,'tracked.txt'));
+  const diff=readRunChange(f.data,'native','p','run',id,0);assert.ok(diff.file);assert.match(diff.file.patch,/new recorded/);assert.doesNotMatch(diff.file.patch,/later edit/);assert.equal(diff.file.lines.filter(line=>line.kind==='add').length,1);assert.equal(diff.file.lines.filter(line=>line.kind==='remove').length,1);
+  for(const [session,project,run] of [['other','p','run'],['native','other','run'],['native','p','other']])assert.ok(readRunChange(f.data,session,project,run,id,0).unavailable);
+  assert.ok(readRunChange(f.data,'native','p','run',id,99).unavailable);assert.throws(()=>readRunChange(f.data,'native','p','run',id,-1),/索引/);
+ }finally{f.close();}
+});
+
+test('DSH-style file-tool captures cover non-Git and ignored files without replacing a failed Git baseline',async()=>{
+ const {readRunChange}=await import('../apps/desktop/src/run-changes.js');const root=mkdtempSync(join(tmpdir(),'friend-tool-captures-')),data=mkdtempSync(join(tmpdir(),'friend-tool-captures-data-')),values:RunChangesSummary[]=[];
+ try{const tracker=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));writeFileSync(join(root,'file.txt'),'before\n');await tracker.begin('r');await tracker.captureTool('edit',{path:'file.txt'});writeFileSync(join(root,'file.txt'),'after\n');await tracker.captureTool('write',{path:'new.txt'});writeFileSync(join(root,'new.txt'),'new\n');await tracker.settle('r','completed');assert.equal(values[0].unavailable,undefined);assert.equal(values[0].files.length,2);assert.match(values[0].note||'',/仅统计文件工具/);
+  const diff=readRunChange(data,'s','p','r',values[0].changeId!,0);assert.match(diff.file?.patch||'',/-before/);assert.match(diff.file?.patch||'',/\+after/);
+ }finally{rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}
+ const f=fixture(),ignored:RunChangesSummary[]=[];try{writeFileSync(join(f.root,'.gitignore'),'ignored.txt\n');writeFileSync(join(f.root,'ignored.txt'),'old\n');const tracker=new RunChangesTracker(f.root,'p',f.data,'s',value=>ignored.push(value));await tracker.begin('r');await tracker.captureTool('edit',{path:'ignored.txt'});writeFileSync(join(f.root,'ignored.txt'),'new\n');await tracker.settle('r','completed');assert.deepEqual(ignored[0].files.map(file=>file.path),['ignored.txt']);assert.equal(ignored[0].files[0].additions,1);}finally{f.close();}
+});
+
+test('incomplete tool captures remain unavailable after cold resume',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'friend-capture-limit-')),data=mkdtempSync(join(tmpdir(),'friend-capture-limit-data-')),values:RunChangesSummary[]=[];
+ try{const tracker=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));await tracker.begin('r');
+  for(let i=0;i<9;i++){const path=`large-${i}.txt`;writeFileSync(join(root,path),'x'.repeat(1024*1024));if(i===8)await assert.rejects(tracker.captureTool('write',{path}),/8 MiB/);else await tracker.captureTool('write',{path});writeFileSync(join(root,path),'changed\n');}
+  await tracker.settle('r','interrupted');assert.match(values[0].unavailable||'',/未完整/);
+  const cold=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));await cold.ensure('r');await cold.settle('r','completed');assert.match(values[1].unavailable||'',/未完整/);assert.deepEqual(values[1].files,[]);
+ }finally{rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}
+});
+
+test('Git-covered captures reverted to the run baseline do not reappear as tool changes',async()=>{
+ const f=fixture(),values:RunChangesSummary[]=[];
+ try{const tracker=new RunChangesTracker(f.root,'p',f.data,'s',value=>values.push(value));await tracker.begin('r');writeFileSync(join(f.root,'tracked.txt'),'shell intermediate\n');await tracker.captureTool('write',{path:'tracked.txt'});writeFileSync(join(f.root,'tracked.txt'),'old\n');await tracker.settle('r','completed');assert.equal(values[0].unavailable,undefined);assert.deepEqual(values[0].files,[]);}finally{f.close();}
+});
+
+test('file-tool comparison needs no Git executable and native failure history fences incomplete recovery',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'friend-without-git-')),data=mkdtempSync(join(tmpdir(),'friend-without-git-data-')),values:RunChangesSummary[]=[];const priorPath=process.env.PATH;
+ try{process.env.PATH='';const tracker=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));writeFileSync(join(root,'file.txt'),'before\n');await tracker.begin('r');await tracker.captureTool('write',{path:'file.txt'});writeFileSync(join(root,'file.txt'),'after\n');await tracker.settle('r','completed');assert.equal(values[0].unavailable,undefined);assert.deepEqual([values[0].files[0].additions,values[0].files[0].deletions],[1,1]);
+  const previous={...values[0],unavailable:'文件工具快照未完整记录，本轮变更不可用'};const cold=new RunChangesTracker(root,'p',data,'s',value=>values.push(value),()=>[previous]);await cold.ensure('r');await cold.settle('r','completed');assert.match(values[1].unavailable||'',/未完整/);assert.deepEqual(values[1].files,[]);
+ }finally{process.env.PATH=priorPath;rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}
+});

@@ -3,8 +3,9 @@ import { messageAnchor } from './TurnIndex.js';
 import { projectTimeline, type ToolRun } from './timeline.js';
 import type { Message } from './types.js';
 import type {RunChangesSummary} from '../run-changes.js';
+import type {ChangeDiffCache} from './change-review.js';
 import {ChangedFiles} from './ChangedFiles.js';
-export function Conversation({ messages, live, tools, running, changes=[] }: { messages: Message[]; live: Message | null; tools: ToolRun[]; running: boolean;changes?:RunChangesSummary[] }) {
+export function Conversation({ messages, live, tools, running, changes=[],sessionId,changeCache,workspacePath }: { messages: Message[]; live: Message | null; tools: ToolRun[]; running: boolean;changes?:RunChangesSummary[];sessionId?:string;changeCache?:ChangeDiffCache;workspacePath?:string }) {
   const timeline=projectTimeline(messages, live, tools, running);
   const anchors=new Map<string,string>();for(const message of timeline)if(message.source.runId)anchors.set(message.source.runId,message.id);
   return <div className="messages">{timeline.map((message, i) =>
@@ -18,6 +19,6 @@ export function Conversation({ messages, live, tools, running, changes=[] }: { m
           <summary><span className={'tool-indicator ' + part.tool.status}/><strong>{part.tool.name}</strong><Badge value={part.tool.status}/></summary>
           <JsonView value={part.tool.input}/>{part.tool.output !== undefined && <JsonView value={part.tool.output}/>}
         </details>)}
-      {changes.filter(summary=>anchors.get(summary.runId)===message.id).map(summary=><ChangedFiles key={summary.runId} summary={summary}/>)}
-    </article>)}{changes.filter(summary=>!anchors.has(summary.runId)).map(summary=><ChangedFiles key={summary.runId} summary={summary}/>)}{running && !live && <div className="working-indicator"><span/><span/><span/>正在处理任务</div>}</div>;
+      {changes.filter(summary=>anchors.get(summary.runId)===message.id).map(summary=><ChangedFiles key={summary.runId} summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/>)}
+    </article>)}{changes.filter(summary=>!anchors.has(summary.runId)).map(summary=><ChangedFiles key={summary.runId} summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/>)}{running && !live && <div className="working-indicator"><span/><span/><span/>正在处理任务</div>}</div>;
 }
