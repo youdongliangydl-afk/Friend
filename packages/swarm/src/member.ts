@@ -123,7 +123,7 @@ async function run(start:MemberStart): Promise<void> {
     // Raw transcript lives in Pi JSONL, never copied to Swarm records.
     if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type === 'agent_settled' || start.v===2&&['message_start','message_update','message_end'].includes(event.type)) output({v:1,type:'event',event});
     if (event.type === 'agent_settled') settled=true;
-    if(start.v===2&&event.type==='message_end'){queueMicrotask(()=>{if(shutdown)return;inbox?.reconcile();if(event.message.role==='assistant'){const entry=session!.sessionManager.getEntries().find(item=>item.type==='message'&&item.message===event.message);if(entry)output({v:1,type:'usage',entryId:entry.id,tokens:event.message.usage?.totalTokens});}});}
+    if(event.type==='message_end'){queueMicrotask(()=>{if(shutdown)return;if(start.v===2)inbox?.reconcile();if(event.message.role==='assistant'){const entry=session!.sessionManager.getEntries().find(item=>item.type==='message'&&item.message===event.message);if(entry)output({v:1,type:'usage',entryId:entry.id,tokens:event.message.usage?.totalTokens});}});}
     if (start.v===1 && event.type === 'message_start' && event.message.role === 'user') {
       const content = Array.isArray(event.message.content) ? event.message.content.map(p => p.type === 'text' ? p.text : '').join('\n') : String(event.message.content);
       for (const id of pendingMessages) if (content.includes(`[swarm-message:${id}]`)) {pendingMessages.delete(id);output({v:1,type:'processed',messageId:id});}
