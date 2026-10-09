@@ -51,7 +51,19 @@ export function projectTrajectory(messages: Message[], live: Message | null, too
   return rows;
 }
 export function searchTrajectory(rows: TraceRow[], query: string) {
-  const term = query.trim().toLocaleLowerCase();
-  return term ? rows.filter(row => [row.label, row.text, row.status, JSON.stringify(row.input), JSON.stringify(row.output), JSON.stringify(row.metadata)].join('\n').toLocaleLowerCase().includes(term)) : rows;
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return terms.length ? rows.filter(row => {const text=[row.id,row.label, row.text, row.status, JSON.stringify(row.input), JSON.stringify(row.output), JSON.stringify(row.metadata)].join('\n').toLocaleLowerCase();return terms.every(term=>text.includes(term));}) : rows;
+}
+export type TraceEntry={kind:'row';row:TraceRow}|{kind:'calls';id:string;rows:TraceRow[]};
+/** Pi rows retain their original identity inside DSH-style collapsible turns and call groups. */
+export function groupTrajectory(rows:TraceRow[]){
+ const turns=new Map<number,{round:number;entries:TraceEntry[]}>();
+ for(const row of rows){
+  let turn=turns.get(row.round);if(!turn){turn={round:row.round,entries:[]};turns.set(row.round,turn);}
+  const previous=turn.entries.at(-1);
+  if(row.kind==='tool'){if(previous?.kind==='calls')previous.rows.push(row);else turn.entries.push({kind:'calls',id:'calls-'+row.id,rows:[row]});}
+  else turn.entries.push({kind:'row',row});
+ }
+ return [...turns.values()];
 }
 export function traceDuration(value?: number) { return value === undefined || !Number.isFinite(value) ? '耗时未记录' : value < 1000 ? Math.round(value) + ' ms' : (value / 1000).toFixed(1) + ' s'; }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {projectMessages,projectTraceSystems} from '../apps/desktop/src/message-projection.js';
-import {projectTrajectory,searchTrajectory,traceDuration} from '../apps/desktop/src/renderer/trace-projection.js';
+import {projectTrajectory,searchTrajectory,groupTrajectory,traceDuration} from '../apps/desktop/src/renderer/trace-projection.js';
 import {ChangedFiles} from '../apps/desktop/src/renderer/ChangedFiles.js';
 import {Trajectory} from '../apps/desktop/src/renderer/Trajectory.js';
 import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
@@ -43,6 +43,11 @@ test('parallel and orphan tools, context anchors and live-to-native identities n
 test('images are diagnostic placeholders and failed empty responses remain inspectable',()=>{
  const rows=projectTrajectory([{id:'a',role:'assistant',text:'',model:'fixture',stopReason:'error',errorMessage:'failed'},{id:'r',role:'toolResult',toolCallId:'image',toolName:'read',text:'',parts:[{type:'image',data:'PRIVATE_BASE64',mimeType:'image/png'}]}],null,[],false);
  assert.equal(rows.filter(row=>row.kind==='model').length,1);assert.equal(searchTrajectory(rows,'PRIVATE_BASE64').length,0);assert.ok(JSON.stringify(rows).includes('图片附件'));
+});
+test('DSH trajectory groups preserve parallel calls and all-word search; toolbar folds rather than rescales turns',()=>{
+ const messages:Message[]=[{id:'u',role:'user',text:'request'},{id:'a',role:'assistant',text:'',parts:[{type:'toolCall',id:'one',name:'read',arguments:{path:'Alpha.txt'}},{type:'toolCall',id:'two',name:'read',arguments:{path:'Beta.txt'}}]},{id:'u2',role:'user',text:'next'}];
+ const rows=projectTrajectory(messages,null,[],false),turns=groupTrajectory(rows);assert.equal(turns.length,2);const calls=turns[0].entries.find(entry=>entry.kind==='calls');assert.ok(calls?.kind==='calls');assert.deepEqual(calls.rows.map(row=>row.id),['tool-one','tool-two']);assert.deepEqual(searchTrajectory(rows,'ALPHA read').map(row=>row.id),['tool-one']);assert.deepEqual(searchTrajectory(rows,'ALPHA missing'),[]);
+ const html=renderToStaticMarkup(React.createElement(Trajectory,{messages,live:null,tools:[],running:false}));assert.match(html,/aria-label="折叠全部轮次"/);assert.match(html,/aria-label="折叠全部调用"/);assert.match(html,/工具调用 · 2 项/);assert.match(html,/class="trace-turn" open=""/);
 });
 const summary:RunChangesSummary={v:1,runId:'run',sessionId:'session',projectId:'project',startedAt:'start',finishedAt:'end',status:'completed',note:'包括同期外部编辑',files:Array.from({length:5},(_,i)=>({path:'file-'+i,binary:i===0,status:'M',additions:i===0?undefined:2,deletions:0}))};
 test('summary renders four-file preview, totals and unavailable truthfully; anchors to its own run',()=>{

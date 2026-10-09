@@ -45,6 +45,26 @@
     {
       "path": "packages/deliverables/workspace-changes/src/git.ts",
       "sha256": "e9b2cb678ef3dee3a4fbb1a34d9433b8c5d28c5f34f189d2398367a1537fdc28"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/timeline.ts",
+      "sha256": "ed2ebfd8b4233022115d9757d50d3af6cf399690ccc4fcf36f9f3edcf8e7b173"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryToolbar.tsx",
+      "sha256": "82ff879f1becb1187e495ca7df2fc958875ad4e71a73aa87ad0090733646fcb5"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryView.tsx",
+      "sha256": "a27937dc782642dbfded762466e5f4ce64a12c39d3ccd4840e8fe730e690e5c4"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/TrajectoryTable.tsx",
+      "sha256": "0b8a5fa7f0f5ceb3d3a49272a0f8ff2c29de047f0bef4713f6cb8e3b8a4052e9"
+    },
+    {
+      "path": "packages/client/ui-trajectory/src/client/trajectory-search-index.ts",
+      "sha256": "081fdf9092da9fe24e23b255262f3bd0f0e020aa9f377e318722f956b6cd371a"
     }
   ]
 }
