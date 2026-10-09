@@ -346,3 +346,19 @@ test('stopping a pending service terminal cancels its desktop admission promptly
   f.child.send({type:'terminal.response',id,result:{id:'late-reply'}});const state=await f.request('state') as {isRunning:boolean};assert.equal(state.isRunning,false);
  }finally{await f.close();}
 });
+
+test('completed changed-files metadata and native trajectory survive a cold worker reopen',{timeout:30000},async()=>{
+ let fixture=await start();try{
+  execFileSync('git',['init','-q'],{cwd:fixture.directory});writeFileSync(join(fixture.directory,'.gitignore'),'data/\n');writeFileSync(join(fixture.directory,'dirty.txt'),'before run\n');
+  await fixture.request('send',{text:'QA_WRITE',mode:'single'});
+  await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='state'&&Array.isArray(event.event.data.changes)&&event.event.data.changes.length>0));
+  const state=await fixture.request('state') as {sessionFile:string;changes:{runId:string;files:{path:string;additions:number}[]}[];traceSystems:{text:string}[];messages:DisplayMessage[]};
+  assert.deepEqual(state.changes[0].files.map(file=>file.path),['fixture-result.txt']);assert.equal(state.changes[0].files[0].additions,1);assert.ok(state.traceSystems.length>0);assert.ok(state.messages.some(message=>message.role==='assistant'&&message.model==='offline'));
+  const native=readFileSync(state.sessionFile,'utf8');assert.match(native,/friend-pi.run.changes.v1/);assert.match(native,/\"role\":\"system\"/);
+  const directory=fixture.directory;await fixture.close(true);fixture=await start({directory,sessionFile:state.sessionFile,modelId:'friend-fixture/offline'});
+  const restored=await fixture.request('state') as typeof state;assert.deepEqual(restored.changes,state.changes);assert.deepEqual(restored.traceSystems,state.traceSystems);
+  await fixture.request('send',{text:'QA_SLOW'});await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));await fixture.request('stop');
+  await fixture.wait(()=>fixture.events.some(event=>event.event?.type==='state'&&Array.isArray(event.event.data.changes)&&event.event.data.changes.length===2));
+  const stopped=await fixture.request('state') as {changes:{status:string}[]};assert.equal(stopped.changes.at(-1)?.status,'stopped');
+ }finally{await fixture.close();}
+});

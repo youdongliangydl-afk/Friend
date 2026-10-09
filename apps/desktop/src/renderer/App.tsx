@@ -15,6 +15,7 @@ import {Icon,type IconName} from './Icons.js';
 import {ResizeHandle} from './ResizeHandle.js';
 import {Workbench,type WorkbenchPage,type Material} from './Workbench.js';
 import {Conversation} from './Conversation.js';
+import {Trajectory} from './Trajectory.js';
 import {piLiveMessage,type ToolRun as TimelineToolRun} from './timeline.js';
 import {composerKeyAction,insertNewline} from './composer-keys.js';
 import {ProjectStrip} from './ProjectStrip.js';
@@ -82,6 +83,7 @@ function PiDialog({ dialog, respond }: { dialog: DialogRequest; respond(value: J
 }
 
 export default function App() {
+  const [conversationPage,setConversationPage]=useState<'chat'|'trace'>('chat');
   const [state,setState]=useState<AppState>(EMPTY),stateRef=useRef(state);stateRef.current=state;
   const [booting,setBooting]=useState(true),[notice,setNotice]=useState<{message:string;error:boolean}|null>(null);
   const [selectedProject,setSelectedProject]=useState(''),[tab,setTab]=useState<WorkspaceTab|null>(null),[sidebar,setSidebar]=useState(true);
@@ -147,11 +149,12 @@ export default function App() {
     permissionExplicitRef.current=!sessionId&&(saved.permissionExplicit===true||saved.permissionExplicit===undefined&&saved.permissionMode!==undefined);setPermissionExplicit(permissionExplicitRef.current);
     setPermissionMode(!sessionId&&['ask','auto','allPermissions'].includes(String(saved.permissionMode))?saved.permissionMode as PermissionMode:state.current?.permissionMode||state.preferences?.defaultPermissionMode||'auto');
     setMode(!sessionId&&(saved.mode==='swarm'||saved.mode==='team'||saved.mode==='single')?saved.mode:state.current?.executionMode||state.preferences?.defaultMode||'single');
-    setLive(null);setTools([]);setDialogs([]);setLocalRunning(false);setSwarmRunning(false);followScroll.current=true;
+    setConversationPage('chat');setLive(null);setTools([]);setDialogs([]);setLocalRunning(false);setSwarmRunning(false);followScroll.current=true;
   },[ownerKey,booting]);
   useEffect(()=>{if(booting||draftOwner!==ownerKey)return;try{localStorage.setItem('friend-pi.draft.v1:'+ownerKey,JSON.stringify({text:draft,attachments,planMode,mode,permissionMode,permissionExplicit}));}catch{}},[draft,attachments,planMode,mode,permissionMode,permissionExplicit,draftOwner,ownerKey,booting]);
   useEffect(()=>{if(!booting&&draftOwner===ownerKey&&!sessionId&&!permissionExplicitRef.current)setPermissionMode(state.preferences?.defaultPermissionMode||'auto');},[sessionId,permissionExplicit,state.preferences?.defaultPermissionMode,ownerKey,draftOwner,booting]);
-  useEffect(()=>{if(!toolActive&&followScroll.current)scroll.current?.scrollTo({top:scroll.current.scrollHeight,behavior:'instant'});},[messages,live,tools,toolActive]);
+  useEffect(()=>{followScroll.current=conversationPage==='chat';scroll.current?.scrollTo({top:conversationPage==='trace'?0:scroll.current.scrollHeight,behavior:'instant'});},[conversationPage]);
+  useEffect(()=>{if(conversationPage==='chat'&&!toolActive&&followScroll.current)scroll.current?.scrollTo({top:scroll.current.scrollHeight,behavior:'instant'});},[messages,live,tools,toolActive,conversationPage]);
   useEffect(()=>{try{localStorage.setItem('friend-pi.layout.v1',JSON.stringify(layout));}catch{}},[layout]);
   useEffect(()=>{const onResize=()=>setViewportWidth(window.innerWidth);window.addEventListener('resize',onResize);return()=>window.removeEventListener('resize',onResize);},[]);
   const newSession=async()=>{
@@ -250,9 +253,10 @@ export default function App() {
     <main className="main"><header className="conversation-heading"><div className="conversation-title"><h2>{activeSession?.name||project?.name||'临时会话'}</h2><p><Icon name="folder"/><span>{workspaceKey||'无需选择项目即可开始'}</span></p></div><div className="heading-actions"><span className="session-status">{navigating?'正在打开会话':running?'正在工作':'准备就绪'}</span></div></header>
       {notice&&<div className={'notice '+(notice.error?'error':'')} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>}
       {activeSession?.archived&&<div className="notice">当前为归档会话，只读查看。<button onClick={()=>void invoke('session.archive',{id:sessionId,archived:false}).catch(()=>{})}>恢复并继续</button></div>}
-      <div className="conversation-stage"><TurnIndex messages={messages} container={scroll} sessionId={sessionId} onLocate={()=>{followScroll.current=false;}}/><div className="conversation" ref={scroll} onScroll={event=>{const e=event.currentTarget;followScroll.current=e.scrollHeight-e.scrollTop-e.clientHeight<100;}}>
-        {booting?<Empty title="正在打开工作空间…"/>:!messages.length&&!live?<div className="welcome"><div className="welcome-mark">F<span>·</span></div><h1>从一个小任务开始</h1><p>{project?'和 Friend 一起完成这个项目。':'直接聊天、处理附件或在独立临时工作区开始任务。'}</p><div className="welcome-suggestions">{['先阅读项目，告诉我整体架构','帮我实现一个小改动，并验证结果','找回这个项目的约束与关键决定'].map(text=><button key={text} onClick={()=>{setDraft(text);composer.current?.focus();}}>{text}<span>↗</span></button>)}</div></div>:<Conversation messages={messages} live={live} tools={tools} running={running}/>}
-        {state.current?.plan&&asObject(state.current.plan).status==='proposed'&&<div className="messages plan-tail"><PlanPreview body={String(asObject(state.current.plan).body||'')} disabled={running||sending||navigating||!!activeSession?.archived} canApprove={!!selectedModel?.ready}
+      <nav className="conversation-pages" role="tablist" aria-label="会话视图">{([['chat','对话'],['trace','轨迹']] as const).map(([id,label])=><button key={id} role="tab" id={'conversation-tab-'+id} aria-controls={'conversation-panel-'+id} aria-selected={conversationPage===id} onClick={()=>setConversationPage(id)}>{label}</button>)}</nav>
+      <div className={'conversation-stage '+(conversationPage==='trace'?'show-trace':'')} role="tabpanel" id={'conversation-panel-'+conversationPage} aria-labelledby={'conversation-tab-'+conversationPage}>{conversationPage==='chat'&&<TurnIndex messages={messages} container={scroll} sessionId={sessionId} onLocate={()=>{followScroll.current=false;}}/>}<div className="conversation" ref={scroll} onScroll={event=>{const e=event.currentTarget;followScroll.current=e.scrollHeight-e.scrollTop-e.clientHeight<100;}}>
+        {conversationPage==='trace'?<Trajectory key={sessionId||'new'} messages={messages} live={live} tools={tools} running={running} systems={state.current?.traceSystems}/>:booting?<Empty title="正在打开工作空间…"/>:!messages.length&&!live?<div className="welcome"><div className="welcome-mark">F<span>·</span></div><h1>从一个小任务开始</h1><p>{project?'和 Friend 一起完成这个项目。':'直接聊天、处理附件或在独立临时工作区开始任务。'}</p><div className="welcome-suggestions">{['先阅读项目，告诉我整体架构','帮我实现一个小改动，并验证结果','找回这个项目的约束与关键决定'].map(text=><button key={text} onClick={()=>{setDraft(text);composer.current?.focus();}}>{text}<span>↗</span></button>)}</div></div>:<Conversation messages={messages} live={live} tools={tools} running={running} changes={(state.current?.changes||[]).filter(summary=>!running||summary.runId!==state.current?.runId)}/>}
+        {conversationPage==='chat'&&state.current?.plan&&asObject(state.current.plan).status==='proposed'&&<div className="messages plan-tail"><PlanPreview body={String(asObject(state.current.plan).body||'')} disabled={running||sending||navigating||!!activeSession?.archived} canApprove={!!selectedModel?.ready}
           onRead={()=>{setMaterial({workspaceKey,title:'计划全文',text:String(asObject(state.current!.plan).body)});if(fullscreen)void openToolView('file');else setTab('file');}}
           onApprove={()=>void invoke('plan.approve',{...asObject(state.current!.plan),sessionId}).then(()=>setPlanMode(false)).catch(()=>{})}
           onRevise={()=>{setDraft('请修改上述计划：');composer.current?.focus();}}

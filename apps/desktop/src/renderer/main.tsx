@@ -7,6 +7,7 @@ import './layout.css';
 import './client-workspace.css';
 import './model-settings.css';
 import './session-fullscreen.css';
+import './session-trace.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

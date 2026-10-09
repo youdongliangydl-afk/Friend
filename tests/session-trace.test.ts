@@ -1,0 +1,54 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {projectMessages,projectTraceSystems} from '../apps/desktop/src/message-projection.js';
+import {projectTrajectory,searchTrajectory,traceDuration} from '../apps/desktop/src/renderer/trace-projection.js';
+import {ChangedFiles} from '../apps/desktop/src/renderer/ChangedFiles.js';
+import {Trajectory} from '../apps/desktop/src/renderer/Trajectory.js';
+import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
+import {digest} from '../packages/core/src/index.js';
+import type {Message} from '../apps/desktop/src/renderer/types.js';
+import type {RunChangesSummary} from '../apps/desktop/src/run-changes.js';
+
+test('native projection preserves empty original input, run identity and exact model/tool metadata',()=>{
+ const entries=[{type:'model_change',id:'m',provider:'fixture'}, {type:'message',id:'u',message:{role:'user',content:'附件内容',timestamp:10}},
+  {type:'custom',customType:'friend-pi.input.v1',data:{entryId:'u',textEnd:0,hash:digest(''),runId:'run'}},
+  {type:'message',id:'a',message:{role:'assistant',content:[],provider:'fixture',model:'offline',usage:{totalTokens:0},durationMs:0,stopReason:'error',errorMessage:'failure',timestamp:12}},
+  {type:'message',id:'r',message:{role:'toolResult',toolCallId:'orphan',toolName:'read',content:'response',durationMs:5,isError:true,timestamp:20}}];
+ const messages=projectMessages(entries);assert.equal(messages[0].userText,'');assert.equal(messages[1].runId,'run');assert.equal(messages[1].durationMs,0);assert.equal(messages[1].usage?.totalTokens,0);
+ const rows=projectTrajectory(messages,null,[],false);assert.deepEqual(rows.map(row=>row.kind),['input','context','model','tool']);assert.equal(rows[2].status,'failed');assert.equal(rows[3].timestamp,15);assert.equal(rows[3].status,'failed');
+ assert.equal(traceDuration(0),'0 ms');assert.equal(traceDuration(), '耗时未记录');
+});
+test('native system, custom context and compaction records stay out of chat and omit image bytes',()=>{
+ const entries=[{type:'message',id:'sys',message:{role:'system',sections:[{title:'Workspace',content:'Rules'}]}},
+  {type:'message',id:'u',message:{role:'user',content:'query'}},
+  {type:'custom_message',id:'custom',customType:'memory',content:[{type:'text',text:'Recall context'}]},
+  {type:'context_edit',id:'edit',replacement:{content:[{type:'image',mimeType:'image/png',data:'PRIVATE_IMAGE_BYTES'}]}},
+  {type:'compaction',id:'compact',summary:'shortened history'},
+  {type:'custom',id:'snapshot',customType:'friend-pi.trace.system.v1',data:{text:'Prepared system',truncated:true}}];
+ const systems=projectTraceSystems(entries);assert.equal(systems.length,5);assert.ok(systems[0].text.includes('Rules'));assert.equal(systems[1].afterMessageId,'u');assert.ok(!JSON.stringify(systems).includes('PRIVATE_IMAGE_BYTES'));
+ assert.equal(projectMessages(entries).length,1);assert.ok(projectTrajectory(projectMessages(entries),null,[],false,systems).some(row=>row.metadata));
+});
+test('parallel and orphan tools, context anchors and live-to-native identities never duplicate',()=>{
+ const user:Message={id:'u',role:'user',text:'find'};
+ const assistant:Message={id:'a',role:'assistant',text:'',parts:[{type:'toolCall',id:'one',name:'read',arguments:{path:'a'}},{type:'toolCall',id:'two',name:'read',arguments:{path:'b'}}]};
+ const r=(id:string):Message=>({id:'r-'+id,role:'toolResult',text:'needle '+id,toolCallId:id,toolName:'read',timestamp:20,durationMs:3});
+ const rows=projectTrajectory([user,assistant,r('two'),r('one'),r('orphan')],assistant,[{id:'one',name:'read',input:{},status:'failed'}],false,[{id:'context',afterMessageId:'r-orphan',label:'上下文编辑',text:'changed'}]);
+ assert.equal(rows.filter(row=>row.id==='a').length,1);assert.deepEqual(rows.filter(row=>row.kind==='tool').map(row=>row.id),['tool-one','tool-two','tool-orphan']);assert.equal(rows.filter(row=>row.id==='context').length,1);
+ assert.equal(searchTrajectory(rows,'NEEDLE').length,3);assert.equal(rows.find(row=>row.id==='tool-one')?.status,'completed');
+ assert.equal(projectTrajectory([user,assistant],null,[],false).find(row=>row.id==='tool-one')?.status,'interrupted');
+ assert.equal(projectTrajectory([user,{id:'wake',role:'automatic',text:'wake'}],null,[],false).at(-1)?.round,1);
+});
+test('images are diagnostic placeholders and failed empty responses remain inspectable',()=>{
+ const rows=projectTrajectory([{id:'a',role:'assistant',text:'',model:'fixture',stopReason:'error',errorMessage:'failed'},{id:'r',role:'toolResult',toolCallId:'image',toolName:'read',text:'',parts:[{type:'image',data:'PRIVATE_BASE64',mimeType:'image/png'}]}],null,[],false);
+ assert.equal(rows.filter(row=>row.kind==='model').length,1);assert.equal(searchTrajectory(rows,'PRIVATE_BASE64').length,0);assert.ok(JSON.stringify(rows).includes('图片附件'));
+});
+const summary:RunChangesSummary={v:1,runId:'run',sessionId:'session',projectId:'project',startedAt:'start',finishedAt:'end',status:'completed',note:'包括同期外部编辑',files:Array.from({length:5},(_,i)=>({path:'file-'+i,binary:i===0,status:'M',additions:i===0?undefined:2,deletions:0}))};
+test('summary renders four-file preview, totals and unavailable truthfully; anchors to its own run',()=>{
+ const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary}));assert.match(html,/已改动 5 个文件/);assert.match(html,/全部 5 个文件/);assert.match(html,/二进制或大文件/);assert.ok(!html.includes('file-4'));assert.match(html,/aria-expanded="false"/);
+ const missing=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[],unavailable:'Git unavailable'}}));assert.match(missing,/统计不可用/);assert.doesNotMatch(missing,/本轮没有文件变化/);
+ const conversation=renderToStaticMarkup(React.createElement(Conversation,{messages:[{id:'u',role:'user',text:'query',runId:'run'},{id:'a',role:'assistant',text:'answer',runId:'run'},{id:'u2',role:'user',text:'next',runId:'next'}],live:null,tools:[],running:false,changes:[summary]}));
+ assert.equal(conversation.match(/aria-label="本轮改动文件"/g)?.length,1);assert.ok(conversation.indexOf('answer')<conversation.indexOf('已改动'));assert.ok(conversation.indexOf('已改动')<conversation.indexOf('next'));
+ const trace=renderToStaticMarkup(React.createElement(Trajectory,{messages:[],live:null,tools:[],running:false}));assert.match(trace,/搜索轨迹/);assert.match(trace,/发送消息后/);
+});

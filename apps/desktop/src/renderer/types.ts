@@ -4,13 +4,13 @@ import type { WorkspaceRef } from '../workspaces.js';
 export type { WorkspaceRef };
 export interface Project { id: string; path: string; name: string }
 export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string;status?:string;modelId?:string;archived?:boolean }
-export interface Message { role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;timestamp?:number }
+export interface Message { role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;timestamp?:number;provider?:string;model?:string;durationMs?:number;usage?:JsonObject;stopReason?:string;errorMessage?:string }
 export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[];ready?:boolean;connectionStatus?:string;testedAt?:string;baseUrl?:string;api?:string }
 export interface Preferences {defaultLayoutMode?:import('../session-view.js').LayoutMode;defaultBrowserScope?:import('../session-view.js').BrowserScope;defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;defaultWorkspaceDir?:string;contextMode:'native'|'infinite';backgroundModelId:string}
 export interface AppState {
   projects: Project[];
   sessions: SessionSummary[];
-  current: { ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
+  current: { ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; changes?:import('../run-changes.js').RunChangesSummary[];traceSystems?:import('../message-projection.js').TraceSystem[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
   models: Model[];
   providers: { id: string; name: string; configured: boolean;supportsApiKey?:boolean }[];
   preferences?:Preferences;
