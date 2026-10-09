@@ -76,7 +76,7 @@ export class TeammateStore {
     });
   }
   history(id:string,ctx:PluginContext):{member:Teammate;entries:unknown[];messages:MemberMessage[]} {
-    const member=this.get(id,ctx);return {member,entries:member.sessionFile&&existsSync(member.sessionFile)?nativeBranch(this.trustedFile(member,ctx)):[],messages:this.messages(id,ctx)};
+    const member=this.get(id,ctx);if(member.sessionFile&&member.state!=='running'&&!existsSync(member.sessionFile))throw new Error('成员原生历史文件已丢失，保留记录并等待检查');return {member,entries:member.sessionFile&&existsSync(member.sessionFile)?nativeBranch(this.trustedFile(member,ctx)):[],messages:this.messages(id,ctx)};
   }
   trustedFile(member:Teammate,ctx:PluginContext):string {
     const file=member.sessionFile;if(!file||!existsSync(file))throw new Error('成员会话尚未持久保存或文件已丢失');

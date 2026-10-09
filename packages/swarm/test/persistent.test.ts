@@ -45,7 +45,7 @@ test('receiver drains a durable ordered prefix, survives received-before-context
 
 test('corrupt native history is rejected without rewrite and a teammate cannot read a foreign session file',()=>{
   const f=fixture(),db=new RecordStore('swarm',f.ctx.dataDir),members=new TeammateStore(db);
-  try{const member=members.create({name:'reader'},f.ctx),file=join(f.root,'foreign.jsonl');writeFileSync(file,'{"type":"session","version":3,"id":"foreign"}\n{broken}\n{}\n');const before=readFileSync(file,'utf8');assert.throws(()=>nativeBranch(file),/损坏/);assert.equal(readFileSync(file,'utf8'),before);members.update(member.id,f.ctx,m=>{m.sessionFile=file;});assert.throws(()=>members.history(member.id,f.ctx));}finally{db.close();f.close();}
+  try{const member=members.create({name:'reader'},f.ctx),file=join(f.root,'foreign.jsonl');writeFileSync(file,'{"type":"session","version":3,"id":"foreign"}\n{broken}\n{}\n');const before=readFileSync(file,'utf8');assert.throws(()=>nativeBranch(file),/损坏/);assert.equal(readFileSync(file,'utf8'),before);members.update(member.id,f.ctx,m=>{m.sessionFile=file;});assert.throws(()=>members.history(member.id,f.ctx));members.update(member.id,f.ctx,m=>{m.sessionFile=join(f.root,'missing.jsonl');});assert.throws(()=>members.history(member.id,f.ctx),/历史文件已丢失/);}finally{db.close();f.close();}
 });
 
 test('unknown exit receipts block both member and graph resume until the original process closes',async()=>{
