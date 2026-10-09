@@ -22,7 +22,7 @@ export function SessionStats({stats,contextTarget}:{stats?:SessionMonitor;contex
  },[open]);
  useLayoutEffect(()=>{
   if(!open||!available){setPosition(null);return;}
-  const place=()=>{const anchor=triggers.current[open],surface=panel.current;if(!anchor||!surface)return;const margin=document.querySelector('.app.session-fullscreen')?12:Math.max(12,(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+12);setPosition(statsPanelPosition(anchor.getBoundingClientRect(),{width:surface.offsetWidth,height:surface.offsetHeight},{width:window.innerWidth,height:window.innerHeight},margin,open==='context'?'above':'below'));};
+  const place=()=>{const anchor=triggers.current[open],surface=panel.current;if(!anchor||!surface)return;const margin=document.querySelector('.app.session-fullscreen')?12:Math.max(12,(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+12);const rect=anchor.getBoundingClientRect(),bounds={left:rect.left,right:rect.right,top:rect.top,bottom:open==='context'?rect.bottom:root.current?.getBoundingClientRect().bottom||rect.bottom};setPosition(statsPanelPosition(bounds,{width:surface.offsetWidth,height:surface.offsetHeight},{width:window.innerWidth,height:window.innerHeight},margin,open==='context'?'above':'below'));};
   place();const observer=new ResizeObserver(place);if(panel.current)observer.observe(panel.current);if(root.current)observer.observe(root.current);const composer=contextTarget?.closest('.composer');if(composer)observer.observe(composer);
   window.addEventListener('resize',place);window.addEventListener('scroll',place,true);return()=>{observer.disconnect();window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true);};
  },[open,available,stats,contextTarget]);
