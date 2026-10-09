@@ -54,6 +54,7 @@ function boundTaskPolicy(task:Task,ctx:PluginContext):void {
 }
 const taskSettled=(task:Task)=>task.status==='completed'||task.status==='skipped';
 const currentUnknown=(graph:Graph)=>graph.tasks.some(task=>task.status==='unknown'||graph.attempts.some(attempt=>attempt.id===task.currentAttempt&&attempt.status==='unknown'));
+function assertOrdinaryGraph(graph:Graph):void {if(graph.audit)throw new Error('内部 Goal 审计图不能通过通用 Swarm 操作修改或接续；请使用 friend_goal complete 重新发起独立审计。');}
 function graphKey(projectId:string,id:string): string {return `graph:${projectId}:${id}`;}
 function taskSpec(raw:unknown,index:number): Task {
   const item=object(raw); const mode=item.mode === 'read' ? 'read' : 'write';
@@ -279,6 +280,7 @@ export class SwarmController implements PluginController {
     if (action==='create') return this.create(input,ctx);
     if (action==='confirm') {if (ctx.origin && ctx.origin!=='user') throw new Error('关键确认必须来自用户');const resolver=this.confirmations.get(text(input.id));if (!resolver) throw new Error('确认请求已结束');resolver(input.accepted===true);return {accepted:input.accepted===true};}
     const id=text(input.graphId,'任务图标识',100);
+    if(!['pause','stop','shared.read','shared.readVersion','shared.conflicts'].includes(action))assertOrdinaryGraph(this.get(id,ctx).value);
     if(['start','resume','prepare','review','integrate','rework','append','update_task','workflow_skip'].includes(action))assertExecution(ctx,this.get(id,ctx).value.executionStyle||'swarm');
     if(action==='append')return this.appendTasks(id,input,ctx);
     if(action==='update_task')return this.reviseTask(id,input,ctx);
@@ -334,6 +336,7 @@ export class SwarmController implements PluginController {
     }
     assertExecution(ctx,'team');if(ctx.origin==='plugin')throw new Error('Team 委派与整合必须来自主 Agent 或用户');
     if(action==='delegate'){
+      if(graph)assertOrdinaryGraph(graph);
       if(graph&&graph.runId!==ctx.runId)throw new Error('不能向另一轮 Team 委派追加任务');
       const raw=Array.isArray(input.tasks)?input.tasks.map(item=>{const task=object(item);return {...task,mode:task.mode??'read'};}):input.tasks??[{...input,id:input.taskId??input.id??randomUUID(),title:input.title??String(input.prompt||'委派任务').slice(0,80),mode:input.mode??'read'}];
       if(graph){if(['paused','stopped','stopping'].includes(graph.status)||graph.tasks.some(task=>task.status==='unknown'))throw new Error('Team 已暂停或副作用未知，检查后显式接续');await this.appendTasks(graph.id,{...input,tasks:raw},ctx);return this.get(graph.id,ctx).value;}
