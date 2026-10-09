@@ -57,4 +57,14 @@ Git 写入成员使用独立 worktree；依赖成果通过明确的提交应用�
 只传递目录，不迁移或复制凭据，不输出密钥。`FRIEND_PI_MEMBER_WORKER`
 可为宿主指定同协议运行器。
 
-开源参考：Pi 官方 SDK / extensions / subagent 示例（MIT），以及项目根 README 和来源清单所列的调度参考。此包业务实现为 Friend-Pi 新代码，没有复制其他 Agent loop。
+开源参考：Pi 官方 SDK / extensions / subagent 示例（MIT），以及项目根 README 和来源清单所列的调度参考。持续团队的 roster/mailbox 代码按 SOURCES.md 从 DeepSeek 适配；模型执行使用 Pi 公开 SDK。
+
+## 持续队友（Swarm v2）
+
+新 Swarm 图默认按当前 Pi 聊天保存队友。任务可指定 `memberId` 或 `memberName`；同一聊天中的同名任务键默认复用队友，另一个聊天不会共享身份。`snapshot.teammates` 与任务/尝试状态分别返回。队友待命不表示成果已经验收。
+
+`member.create/list/history/send/interrupt/resume` 使用同一控制器。成员会话可只读查看；正常待命消息唤醒独立只读讨论，改动建议由主 Agent 创建新尝试。收件过程区分已保存、成员已收件和实际原生消息已进入上下文。停止后的队友保持暂停，退出收据未知时不能并发打开原生会话。
+
+成员 v2 进程使用稳定消息 ID、SQLite 接收端 inbox 和 Pi 条目身份去重。原生会话由 Pi 保存；后续任务用公开 `SessionManager.open` 恢复，写任务仍独立冻结权限/工作树。独立复核始终创建全新会话。旧图继续使用 v1，旧投递记录不提升为 v2 收件证明。
+
+DeepSeek 源码适配范围与 MIT 全文见 SOURCES.md、DEEPSEEK-LICENSE。

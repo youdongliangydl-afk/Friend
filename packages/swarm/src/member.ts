@@ -1,6 +1,6 @@
 /** Standalone native-Pi worker. Pi remains the only owner of its loop and JSONL history. */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
@@ -8,17 +8,21 @@ import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { installFixtureProvider,object,digest,requireReadyModel,dataDirectory,guardDesktopModelRequests } from '@friend-pi/core';
 import { guardMember } from './guard.js';
+import {MemberInbox} from './member-inbox.js';
+import {teamMessageText} from './teammates.js';
 import {memberRole,roleInstructions,validateMemberDelivery} from './member-role.js';
 import type { MemberInput, MemberOutput, MemberStart } from './types.js';
 
 let session: AgentSession | undefined;
 let started = false;
+let currentStart:MemberStart|undefined;
+let inbox:MemberInbox|undefined;
 let stopped = false;
 let shutdown = false;
 const confirmations = new Map<string,(value:boolean)=>void>();
 const pendingMessages = new Set<string>();
 const requests = new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-function output(message: MemberOutput): void { if (process.connected) process.send?.(message); }
+function output(message: MemberOutput): void { if (process.connected) process.send?.(currentStart?.v===2?{...message,v:2,protocol:2,memberId:currentStart.memberId,generation:currentStart.generation,attemptId:currentStart.attemptId}:message); }
 function request(action:'send'|'shared.read'|'shared.write'|'expert.adopt',input:Record<string,unknown>):Promise<unknown> {
   if (stopped || !process.connected) return Promise.reject(new Error('协调者连接已结束'));
   const requestId=randomUUID();return new Promise((resolveResult,reject)=>{
@@ -30,10 +34,10 @@ function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined
   if(start.executionStyle==='team')pi.registerTool({name:'team_message',label:'向主 Agent 发消息',description:'仅向本次委派的主 Agent 报告或澄清；不能联系同级成员或派生。',parameters:Type.Object({body:Type.String()}),async execute(_id,params){const result=await request('send',{to:'parent',body:params.body});return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   else {
   pi.registerTool({name:'swarm_message',label:'Swarm 成员消息',description:'向同一任务图中的另一个任务发消息。仅协作，不派生任务。',parameters:Type.Object({to:Type.String(),body:Type.String()}),async execute(_id,params) {const result=await request('send',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-  const bases=new Map<string,{revision:number;digest:string}>();
+  if(!start.discussion){const bases=new Map<string,{revision:number;digest:string}>();
   pi.registerTool({name:'swarm_shared',label:'Swarm 共享材料',description:'读取或使用版本 CAS 更新同一任务图的共享材料。更新须提供读取到的 revision，新建为 0。工具保留已读版本和摘要，竞争时自动三方合并；不能判断的约束冲突会保留材料。',parameters:Type.Object({action:Type.Union([Type.Literal('read'),Type.Literal('write')]),name:Type.String(),content:Type.Optional(Type.String()),expectedRevision:Type.Optional(Type.Number()),operationId:Type.Optional(Type.String())}),async execute(id,params) {const base=bases.get(params.name);const input=params.action==='write'?{...params,operationId:params.operationId||`${start.attemptId}:${id}`,...(base&&params.expectedRevision===base.revision?{baseRevision:base.revision,baseDigest:base.digest}: {})}:params;const result=await request(params.action==='read'?'shared.read':'shared.write',input);if(result&&typeof result==='object'){const row=object(result);const revision=Number(row.revision??row.version);if(Number.isInteger(revision)&&typeof row.digest==='string')bases.set(params.name,{revision,digest:row.digest});}return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-  }
-  if(expert&&!expert.unavailable){
+  }}
+  if(!start.discussion&&expert&&!expert.unavailable){
     const catalog=(Array.isArray(expert.experts)?expert.experts:[]).map(object);const adopted=new Set(Array.isArray(expert.adoptedIds)?expert.adoptedIds.map(String):[]),useReceipts=new Map<string,Record<string,unknown>>();
     pi.registerTool({name:'friend_expert',label:'采用冻结专家方法',description:'仅可使用当前成员已冻结的专家。采用后工具范围立即按交集收紧，新版本不影响本次执行。',parameters:Type.Object({action:Type.Literal('use'),input:Type.Object({id:Type.String()},{additionalProperties:false})},{additionalProperties:false}),async execute(_id,params){
       const frozen=catalog.find(item=>item.id===params.input.id);if(!frozen)throw new Error('专家不在本次成员冻结目录中');
@@ -48,6 +52,7 @@ function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined
 function stopRequests():void {for (const pending of requests.values()) {clearTimeout(pending.timer);pending.reject(new Error('成员已停止'));}requests.clear();}
 async function disposeSession():Promise<void> {
   if (shutdown) return;shutdown=true;stopRequests();
+  inbox?.close();
   if (session) {await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}
 }
 function confirm(title:string,message:string): Promise<boolean> {
@@ -59,6 +64,9 @@ function confirm(title:string,message:string): Promise<boolean> {
   });
 }
 async function run(start:MemberStart): Promise<void> {
+  currentStart=start;
+  if(start.v===2&&(!start.memberId||!start.rootSessionId||!Number.isInteger(start.generation)))throw new Error('成员 v2 身份不完整');
+  if(start.nativeSessionFile&&!existsSync(start.nativeSessionFile))throw new Error('已有成员会话丢失，保留现场，不能静默新建');
   if (start.reviewResult && start.mode!=='read') throw new Error('独立复核只能使用只读成员');
   mkdirSync(start.agentDir,{recursive:true,mode:0o700}); mkdirSync(start.sessionDir,{recursive:true,mode:0o700});
   const runtime = await ModelRuntime.create({authPath:join(start.agentDir,'auth.json'),modelsPath:join(start.agentDir,'models.json'),allowModelNetwork:false});
@@ -93,14 +101,15 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
-  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
+  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[pi=>{pi.on('tool_call',()=>{if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
-  const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
+  const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools]});
   session = created.session;
+  if(start.v===2)inbox=new MemberInbox(start,session,output);
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDirectory(),`${model.provider}/${model.id}`),context,options);}
   if(start.thinkingLevel&&!session.getAvailableThinkingLevels().includes(start.thinkingLevel as 'medium'))throw new Error('成员冻结的思考等级不受当前模型支持');
   if(expert&&!start.reviewResult){
@@ -110,9 +119,10 @@ async function run(start:MemberStart): Promise<void> {
   let settled=false;
   session.subscribe(event => {
     // Raw transcript lives in Pi JSONL, never copied to Swarm records.
-    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type === 'agent_settled') output({v:1,type:'event',event});
+    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type === 'agent_settled' || start.v===2&&['message_start','message_update','message_end'].includes(event.type)) output({v:1,type:'event',event});
     if (event.type === 'agent_settled') settled=true;
-    if (event.type === 'message_start' && event.message.role === 'user') {
+    if(start.v===2&&event.type==='message_end'){queueMicrotask(()=>{if(shutdown)return;inbox?.reconcile();if(event.message.role==='assistant'){const entry=session!.sessionManager.getEntries().find(item=>item.type==='message'&&item.message===event.message);if(entry)output({v:1,type:'usage',entryId:entry.id,tokens:event.message.usage?.totalTokens});}});}
+    if (start.v===1 && event.type === 'message_start' && event.message.role === 'user') {
       const content = Array.isArray(event.message.content) ? event.message.content.map(p => p.type === 'text' ? p.text : '').join('\n') : String(event.message.content);
       for (const id of pendingMessages) if (content.includes(`[swarm-message:${id}]`)) {pendingMessages.delete(id);output({v:1,type:'processed',messageId:id});}
     }
@@ -120,7 +130,9 @@ async function run(start:MemberStart): Promise<void> {
   await session.bindExtensions({mode:'rpc',abortHandler:()=>void session?.abort(),onError:error=>output({v:1,type:'failed',error:error.error})});
   output({v:1,type:'ready',sessionId:session.sessionId,sessionFile:session.sessionFile});
   if (stopped) {await session.abort();throw new Error('成员启动期间已停止');}
-  const prompt = `${roleInstructions(role)}\n${expert?.prompt || ''}\n${start.prompt}`;
+  const first=start.discussion?inbox?.pending()[0]:undefined;
+  const admitted=first?inbox?.receive(first.id,first.bodyDigest):undefined;
+  const prompt = admitted?teamMessageText(admitted):`${roleInstructions(role)}\n${expert?.prompt || ''}\n${start.prompt}`;
   await session.prompt(prompt,{expandPromptTemplates:false});
   // prompt resolves when Pi is idle; session's agent_settled event is emitted before completion.
   if (stopped) throw new Error('成员已停止，现场保留，需要显式接续');
@@ -128,12 +140,13 @@ async function run(start:MemberStart): Promise<void> {
   if (last && 'stopReason' in last && (last.stopReason === 'error' || last.stopReason === 'aborted')) throw new Error('errorMessage' in last ? String(last.errorMessage) : '成员未正常结束');
   if (!settled || !session.isIdle) throw new Error('Pi 成员尚未达到真正结束边界');
   if(start.reviewResult && (reviewConflict || !reviewSubmission))throw new Error(reviewConflict?'独立复核提交冲突，成果已保留':'独立复核未通过 swarm_review_result 提交结论，成果已保留');
-  const summary=start.reviewResult?JSON.stringify(reviewSubmission):session.getLastAssistantText() || '';if(!start.reviewResult)validateMemberDelivery(role,summary);
+  const summary=start.reviewResult?JSON.stringify(reviewSubmission):session.getLastAssistantText() || '';if(!start.reviewResult&&!start.discussion)validateMemberDelivery(role,summary);
   output({v:1,type:'settled',summary,sessionId:session.sessionId,sessionFile:session.sessionFile});
   await disposeSession();process.disconnect?.();
 }
 process.on('message',(raw:MemberInput) => {
-  if (!raw || raw.v !== 1) return;
+  if (!raw || ![1,2].includes(raw.v)) return;
+  if(raw.type==='steer'&&currentStart?.v===2){if(raw.v!==2||raw.memberId!==currentStart.memberId||raw.attemptId!==currentStart.attemptId||raw.generation!==currentStart.generation)return;}
   if (raw.type === 'start' && !started) {
     started = true;
     void run(raw).catch(async error => {output({v:1,type:'failed',error:error instanceof Error ? error.message : String(error)});await disposeSession();process.disconnect?.();process.exitCode=1;});
@@ -141,6 +154,7 @@ process.on('message',(raw:MemberInput) => {
   else if (raw.type === 'confirm.response') confirmations.get(raw.requestId)?.(raw.accepted);
   else if (raw.type === 'request.response') {const pending=requests.get(raw.requestId);if (pending) {clearTimeout(pending.timer);requests.delete(raw.requestId);if (raw.error) pending.reject(new Error(raw.error));else pending.resolve(raw.result);}}
   else if (raw.type === 'steer' && session) {
+    if(currentStart?.v===2){try{for(const message of inbox?.receiveOrdered(raw.messageId,raw.bodyDigest)||[])void session.steer(teamMessageText(message)).catch(error=>output({v:1,type:'failed',error:String(error)}));}catch(error){output({v:1,type:'failed',error:String(error)});}return;}
     pendingMessages.add(raw.messageId);
     void session.steer(`[swarm-message:${raw.messageId}]\n${raw.text}`).catch(error=>output({v:1,type:'failed',error:String(error)}));
   }

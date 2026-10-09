@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "checkedOn": "2026-10-08",
-  "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. Other plugins are references only.",
+  "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. DeepSeek roster/mailbox and TeamAction interactions are adapted with retained MIT notices; remaining frameworks are references only.",
   "sources": [
     {
       "name": "Pi",
@@ -30,9 +30,15 @@
       "commit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
       "license": "MIT",
       "licensePath": "LICENSE",
-      "mode": "reference",
-      "modified": false,
-      "use": "Task graph, claims, durable mailbox and source-event design. Friend-Pi controllers are original SQLite/worktree implementations."
+      "mode": "adapted-source",
+      "modified": true,
+      "use": "Persistent roster, receiver-local mailbox ordering/receipts and TeamAction navigation adapted to Pi, SQLite and Friend UI; no upstream loop or Cordis runtime bundled.",
+      "licenseRetained": "packages/swarm/DEEPSEEK-LICENSE",
+      "adaptedFiles": [
+        "packages/experimental/agent-team/src/roster.ts",
+        "packages/experimental/agent-team/src/mailbox.ts",
+        "packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx"
+      ]
     },
     {
       "name": "MiniMax Code",

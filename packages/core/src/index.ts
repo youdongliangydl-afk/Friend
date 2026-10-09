@@ -21,7 +21,7 @@ export type {PermissionMode,PermissionRequest} from './permissions.js';
 export interface HostPolicy {
   v:1; revision:number; runId?:string; stage:string; canSwitchRole:boolean; unsettledTools:number;
   tools:string[]; writeScopes:string[]; executionMode:ExecutionMode; planMode:boolean;
-  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;permissionMode?:PermissionMode;temporaryWriteRoot?:string;
+  modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;executionWaitReason?:string;permissionMode?:PermissionMode;temporaryWriteRoot?:string;
 }
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
@@ -259,12 +259,13 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     fixture.appendResponses([respond]);
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
+    const latestUser=visibleText([...messages].reverse().find(message=>message.role==='user')?.content);
     if(messages.some(message=>message.role==='system'&&message.toolsAdded?.some(tool=>tool.name==='swarm_review_result'))){
-      if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='swarm_review_result'))return fauxAssistantMessage(fauxToolCall('swarm_review_result',{approved:true,findings:'离线测试复核，不代表真实模型质量'}),{stopReason:'toolUse'});
+      if(!messages.some(message=>message.role==='toolResult'&&message.toolName==='swarm_review_result'))return fauxAssistantMessage(fauxToolCall('swarm_review_result',content.includes('QA_PERSISTENT_TEAM')&&/"id":"writer"[^}]*"resultRevision":1/.test(content)?{approved:false,findings:'离线验收：第一版需定向返工，用于验证受影响任务和重新复核',taskIds:['writer']}:{approved:true,findings:'离线测试复核，不代表真实模型质量'}),{stopReason:'toolUse'});
       return fauxAssistantMessage('离线复核说明文字；结构化工具提交才是验收结果。');
     }
     if(content.includes('QA_CONFIRM')&&!hasResult)return fauxAssistantMessage(fauxToolCall('bash',{command:'rm -f fixture-confirm.txt'}),{stopReason:'toolUse'});
-    if(content.includes('QA_SLOW'))return fauxAssistantMessage('正在进行可中止的离线流式验证。'.repeat(300));
+    if(latestUser.includes('QA_SLOW'))return fauxAssistantMessage('正在进行可中止的离线流式验证。'.repeat(300));
     if(content.includes('FRIEND_PI_REBUILD_JSON')){
       try{const entries=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const user=[...entries].reverse().find(item=>item.role==='user')||entries.at(-1);if(user)return fauxAssistantMessage(JSON.stringify({goal:{text:user.text.slice(0,400),sourceEntryIds:[user.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}catch{}
     }
@@ -275,7 +276,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(content.includes('把目标拆为可交付成果任务'))return fauxAssistantMessage(JSON.stringify({tasks:[{id:'task-1',title:'执行离线验证',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']}]}));
     if(content.includes('请用 friend_swarm create/start')){
       const results=messages.filter(message=>message.role==='toolResult'&&message.toolName==='friend_swarm');
-      if(!results.length)return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'create',input:{goal:'离线 Swarm SDK 验证',tasks:[{id:'implementation',title:'执行',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'inspect',title:'检查',prompt:'只读说明当前项目',dependencies:[],mode:'read',writeScopes:['.']}]}}),{stopReason:'toolUse'});
+      if(!results.length)return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'create',input:content.includes('QA_PERSISTENT_TEAM')?{goal:'QA_PERSISTENT_TEAM 持续团队界面验收',tasks:[{id:'writer',title:'文档队友',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'reader',title:'阅读队友',prompt:'QA_TIMELINE',dependencies:[],mode:'read',writeScopes:['.']},{id:'sleeper',title:'分析队友',prompt:'QA_SLOW',dependencies:[],mode:'read',writeScopes:['.']}]}:{goal:'离线 Swarm SDK 验证',tasks:[{id:'implementation',title:'执行',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'inspect',title:'检查',prompt:'只读说明当前项目',dependencies:[],mode:'read',writeScopes:['.']}]}}),{stopReason:'toolUse'});
       try{const result=JSON.parse(visibleText(results.at(-1)!.content));if(result.id&&result.status==='created')return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'start',input:{graphId:result.id}}),{stopReason:'toolUse'});}catch{}
       return fauxAssistantMessage('离线 Swarm 已派发。成员执行和复核状态以任务图为准。');
     }

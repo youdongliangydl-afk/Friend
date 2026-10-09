@@ -346,3 +346,22 @@ test('stopping a pending service terminal cancels its desktop admission promptly
   f.child.send({type:'terminal.response',id,result:{id:'late-reply'}});const state=await f.request('state') as {isRunning:boolean};assert.equal(state.isRunning,false);
  }finally{await f.close();}
 });
+
+
+test('persistent member GUI bridge displays native history, wakes read-only discussion, and preserves integrated delivery on stop',{timeout:45000},async()=>{
+ const f=await start();
+ try{
+  await f.request('configure',{executionMode:'swarm'});
+  const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{goal:'persistent GUI bridge',tasks:[{id:'reader',title:'阅读队友',prompt:'只读说明当前项目',mode:'read'}]}}) as {id:string;tasks:{memberId:string}[]};
+  await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(event.event.data.data).includes('"status":"integrated"')));
+  const memberId=graph.tasks[0].memberId;
+  const before=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string;state:string};messages:DisplayMessage[]};assert.ok(before.messages.some(message=>message.role==='assistant'));assert.equal(before.member.state,'idle');
+  await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'gui-supplement',body:'请补充解释，保留已完成成果'}});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-request'));
+  await f.wait(()=>f.events.slice(-5).some(event=>event.event?.type==='state'&&event.event.data.isRunning===false));
+  const after=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string};messages:DisplayMessage[];inbox:{nativeEntryId?:string}[]};assert.equal(after.member.sessionId,before.member.sessionId);assert.ok(after.inbox[0].nativeEntryId);assert.equal(after.messages.find(message=>message.id===after.inbox[0].nativeEntryId)?.userText,'请补充解释，保留已完成成果');
+  await f.request('stop');const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string}[];teammates:{state:string}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].status,'integrated');assert.equal(snapshot.teammates[0].state,'paused');
+  await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'saved-after-stop',body:'停止后保留的要求'}});const queued=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string};inbox:{id:string;nativeEntryId?:string}[]};assert.equal(queued.member.state,'paused');assert.equal(queued.inbox.find(message=>message.id==='saved-after-stop')?.nativeEntryId,undefined);
+ }finally{await f.close();}
+});

@@ -18,14 +18,14 @@ for (const name of pluginNames) {
   if (!manifest.pi?.extensions?.includes('dist/index.js')) throw new Error(`Missing native Pi extension declaration: ${name}`);
   if (Object.keys(manifest.dependencies || {}).some(pkg => pkg.startsWith('@earendil-works/'))) throw new Error(`Native package bundles host Pi dependency: ${name}`);
   for (const peer of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai', 'typebox']) if (!manifest.peerDependencies?.[peer]) throw new Error(`Missing host peer ${peer} in ${name}`);
-  for (const file of ['package.json', 'README.md', 'LICENSE', 'SOURCES.md']) if (existsSync(join(original, file))) copyFileSync(join(original, file), join(staged, file));
+  for (const file of ['package.json', 'README.md', 'LICENSE', 'SOURCES.md', 'DEEPSEEK-LICENSE']) if (existsSync(join(original, file))) copyFileSync(join(original, file), join(staged, file));
   if (!existsSync(join(staged, 'LICENSE'))) copyFileSync(join(root, 'LICENSE'), join(staged, 'LICENSE'));
   copyFileSync(join(root, 'THIRD_PARTY_NOTICES.md'), join(staged, 'NOTICE.md')); copyFileSync(join(root, '.cache/pi/source/LICENSE'), join(staged, 'PI-LICENSE'));
   cpSync(join(original, 'dist'), join(staged, 'dist'), { recursive: true, dereference: true });
   const content = readFileSync(join(staged, 'dist/index.js'), 'utf8');
   if (/\b(?:from|import)\s*['"]@friend-pi\/core['"]/.test(content)) throw new Error(`${name} still depends on an unpublished core module; build the bundled extension`);
   // Extend only the staged packaging allowlist; source manifests remain owned by their agents.
-  writeFileSync(join(staged, 'package.json'), `${JSON.stringify({ ...manifest, files: [...new Set([...(manifest.files || ['dist']), 'LICENSE', 'NOTICE.md', 'PI-LICENSE', 'SOURCES.md', 'README.md'])] }, null, 2)}\n`);
+  writeFileSync(join(staged, 'package.json'), `${JSON.stringify({ ...manifest, files: [...new Set([...(manifest.files || ['dist']), 'LICENSE', 'NOTICE.md', 'PI-LICENSE', 'SOURCES.md', 'README.md', ...(name==='swarm'?['DEEPSEEK-LICENSE']:[])])] }, null, 2)}\n`);
   const result = JSON.parse(command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', stage], staged, true));
   if (!Array.isArray(result) || result.length !== 1) throw new Error(`Unexpected npm pack output for ${name}`);
   const packed = join(stage, result[0].filename); const sha256 = fileHash(packed); const filename = `${result[0].filename.replace(/\.tgz$/, '')}-${sha256.slice(0, 12)}.tgz`;
@@ -35,6 +35,7 @@ for (const name of pluginNames) {
   command('tar', ['-xzf', join(out, filename), '-C', unpackedRoot]);
   const unpacked = join(unpackedRoot, 'package'); verifyInternalLinks(unpacked);
   if (!existsSync(join(unpacked, 'PI-LICENSE')) || !existsSync(join(unpacked, 'NOTICE.md'))) throw new Error('npm pack did not retain required license notices');
+  if(name==='swarm'&&!existsSync(join(unpacked,'DEEPSEEK-LICENSE')))throw new Error('Swarm package lost DeepSeek license');
   packages.push({ name: manifest.name, plugin: name, version: manifest.version, file: relative(root, join(out, filename)), sha256, integrity: `sha512-${fileHash(join(out, filename), 'sha512', 'base64')}`, bytes: result[0].size, unpacked: relative(root, unpacked), install: ['pi', 'install', `<absolute path to ${relative(root, unpacked)}>`] });
   console.log(`${manifest.name}: ${filename}`);
 }

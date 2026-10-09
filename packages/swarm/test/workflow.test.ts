@@ -1,3 +1,4 @@
+import {SwarmController} from './legacy-controller.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
@@ -6,7 +7,7 @@ import { join } from 'node:path';
 import type { JsonObject, PluginContext } from '@friend-pi/core';
 import { DynamicWorkflowController, evaluateWorkflowPredicate, validateWorkflowDefinition, type WorkflowBackend, type WorkflowRun, type WorkflowTemplate } from '../src/workflow.js';
 import { workflowCodeDigest } from '../src/workflow-code.js';
-import { SwarmController } from '../src/index.js';
+
 import type { Graph, MemberLauncher, MemberOutput, StopObject } from '../src/types.js';
 
 interface StubTask extends JsonObject {id:string;status:string;dependencies:string[];currentAttempt?:string;resultRevision:number;rework:number}

@@ -1,3 +1,4 @@
+import {SwarmController} from './legacy-controller.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,rmSync,writeFileSync,existsSync,readFileSync} from 'node:fs';
@@ -5,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {RecordStore,digest,type PluginContext} from '@friend-pi/core';
-import {SwarmController,type Graph,type MemberLauncher,type MemberOutput,type MemberStart,type StopObject} from '../src/index.js';
+import {type Graph,type MemberLauncher,type MemberOutput,type MemberStart,type StopObject} from '../src/index.js';
 import {SharedMaterials,threeWayLineMerge} from '../src/shared.js';
 
 function fixture(git=false){

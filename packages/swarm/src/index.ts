@@ -10,6 +10,8 @@ import { contains, destructiveCommand } from './guard.js';
 import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task,StopObject } from './types.js';
 import {managedCommand,ownChild,checkCancelled,CancelledError} from './managed.js';
 import {SharedMaterials} from './shared.js';
+import {TeammateStore} from './teammates.js';
+import type {Teammate} from './types.js';
 import {DynamicWorkflowController} from './workflow.js';
 export {DynamicWorkflowController} from './workflow.js';
 export type * from './types.js';
@@ -57,7 +59,7 @@ function taskSpec(raw:unknown,index:number): Task {
   if(item.mode!==undefined&&item.mode!=='read'&&item.mode!=='write')throw new Error('任务 mode 必须是 read 或 write');
   const scopes=item.writeScopes === undefined ? ['.'] : strings(item.writeScopes);
   if (!scopes.length || scopes.some(path=>isAbsolute(path) || !contains('/scope',resolve('/scope',path)))) throw new Error('写入范围必须相对于成员工作区，不能越出工作区');
-  const prompt=text(item.prompt || item.title,'任务要求');return {id:item.id ? text(item.id,'任务标识',100) : `task-${index+1}`,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
+  const prompt=text(item.prompt || item.title,'任务要求');return {memberId:item.memberId?text(item.memberId,'队友标识',100):undefined,memberName:item.memberName?text(item.memberName,'队友名称',80):undefined,id:item.id ? text(item.id,'任务标识',100) : `task-${index+1}`,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
 }
 export function validateDAG(tasks:Task[]): void {
   const map=new Map(tasks.map(task=>[task.id,task]));if (map.size!==tasks.length) throw new Error('任务标识重复');
@@ -82,7 +84,7 @@ function productionLauncher(start:MemberStart,output:(message:MemberOutput)=>voi
   // Keep diagnostics bounded and never echo environment/configuration containing credentials.
   let diagnostics=''; child.stderr?.on('data',chunk=>{diagnostics=(diagnostics+String(chunk)).slice(-4000);});
   child.stdout?.resume();
-  child.on('message',raw=>{if (raw && typeof raw==='object' && 'v' in raw && raw.v===1) output(raw as MemberOutput);});
+  child.on('message',raw=>{if (raw && typeof raw==='object' && 'v' in raw && [1,2].includes(Number(raw.v))) output(raw as MemberOutput);});
   child.on('error',error=>output({v:1,type:'failed',error:error.message}));
   child.on('exit',(code)=>{if (code && diagnostics) output({v:1,type:'failed',error:`成员进程退出（${code}），请查阅保留的会话与工作区`});exited(code);});
   try{child.send(start);}catch(error){void owned.stop();throw error;}
@@ -94,6 +96,7 @@ interface Execution {abort:AbortController;operations:Map<string,{stop:()=>Promi
 /** Every entry point uses this controller. SQLite transactions serialize claims and revisions. */
 export class SwarmController implements PluginController {
   private readonly stores=new Map<string,RecordStore>();
+  private readonly rosters=new Map<string,TeammateStore>();
   private readonly runtime=randomUUID();
   private readonly members=new Map<string,{handle:MemberHandle;graphId:string;context:PluginContext}>();
   private readonly pumping=new Set<string>();
@@ -105,13 +108,106 @@ export class SwarmController implements PluginController {
   private nativeConfirm?: (title:string,message:string)=>Promise<boolean>;
   private disposed=false;
   constructor(private readonly launcher:MemberLauncher=productionLauncher) {}
+  private roster(ctx:PluginContext):TeammateStore {
+    let roster=this.rosters.get(ctx.dataDir);if(roster)return roster;
+    roster=new TeammateStore(this.store(ctx));this.rosters.set(ctx.dataDir,roster);
+    for(const member of roster.list(ctx))if(['running','stopping'].includes(member.state)&&(!member.ownerPid||!alive(member.ownerPid)))roster.update(member.id,ctx,m=>{m.state='paused';m.generation++;m.reason='原运行时已结束；现场未知，消息保留，未重放';});
+    return roster;
+  }
+  private async memberAction(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
+    const roster=this.roster(ctx);
+    if(action==='list')return {teammates:roster.list(ctx)};
+    if(action==='create'){assertExecution(ctx,'swarm');const member=roster.create(input,ctx);this.changed(ctx);return member;}
+    const id=text(input.memberId,'队友标识',100),member=roster.get(id,ctx);
+    if(action==='history')return roster.history(id,ctx);
+    if(action==='send'){
+      if((ctx.policy?.executionMode??ctx.executionMode)&&(ctx.policy?.executionMode??ctx.executionMode)!=='swarm'||ctx.policy?.planMode)throw new Error('请在 Swarm 执行模式补充成员要求');
+      const message=roster.enqueue(id,input,ctx,ctx.origin==='user'?'你':'主 Agent');this.changed(ctx);
+      if(ctx.policy?.executionStopped){roster.update(id,ctx,m=>{if(m.state==='idle'){m.state='paused';m.stopReceipt={id:m.id,kind:'member',status:'terminated'};}m.reason=ctx.policy?.executionWaitReason||'当前执行已停止，消息已保存';});this.changed(ctx);}
+      else void this.wakeOrDeliver(id,ctx).catch(error=>{roster.update(id,ctx,m=>{if(m.state==='idle'){m.state='paused';m.stopReceipt={id:m.id,kind:'member',status:'terminated'};}m.reason=errorText(error);});this.changed(ctx);});
+      if(ctx.origin==='user')ctx.emit('swarm.member-supplement',{v:1,memberId:id,messageId:message.id,graphId:member.graphId,runId:ctx.runId});
+      return message;
+    }
+    if(action==='interrupt'){if(input.generation!==undefined&&input.generation!==member.generation)throw new ConflictError('队友执行代次已变化');return this.interruptMember(id,ctx);}
+    if(action==='resume'){
+      assertExecution(ctx,'swarm');if(ctx.origin!=='user')throw new Error('成员中断接续必须由用户发起');
+      if(member.state==='running'||member.state==='stopping'||member.stopReceipt?.status==='unknown')throw new Error('成员尚无明确退出收据，请等待或检查原进程');
+      if(member.state==='paused'&&input.confirmUnknown!==true)throw new Error('请检查保留的工作树和会话，并以 confirmUnknown:true 启动新尝试');
+      if(member.attemptId&&this.members.has(member.attemptId))throw new Error('成员尚无退出收据');
+      if(member.state==='paused'&&member.sessionFile&&!member.stopReceipt)throw new Error('中断现场缺少原成员退出收据，继续保留，不并发打开原会话');
+      const graph=member.graphId?this.get(member.graphId,ctx).value:undefined,task=graph?.tasks.find(item=>item.id===member.taskId);
+      if(graph&&this.execution(graph.id).abort.signal.aborted){const run=this.execution(graph.id);if(run.operations.size||run.activities.size)throw new Error('整轮停止尚未到安全边界');this.executions.delete(graph.id);}
+      if(graph&&task?.mode==='write'&&graph.baseline&&(await this.git(graph.id,graph.baseline.repoRoot,['status','--porcelain'],ctx)||await this.git(graph.id,graph.baseline.repoRoot,['rev-parse','HEAD'],ctx)!==graph.baseline.head))throw new Error('原项目基线或工作区已变化，成果保留');
+      roster.update(id,ctx,m=>{m.state='idle';m.attemptId=undefined;m.reason=undefined;});
+      if(graph&&task?.status==='unknown'){
+        this.update(graph.id,ctx,g=>{const current=g.tasks.find(item=>item.id===task.id)!;current.resumeFromAttempt=current.currentAttempt;current.status='pending';current.currentAttempt=undefined;g.status='running';g.error=undefined;g.executionOwner={pid:process.pid,runtime:this.runtime};});
+        void this.track(graph.id,this.pump(graph.id,ctx));
+      }else void this.wakeOrDeliver(id,ctx).catch(error=>{roster.update(id,ctx,m=>{if(m.state==='idle'){m.state='paused';m.stopReceipt={id:m.id,kind:'member',status:'terminated'};}m.reason=errorText(error);});this.changed(ctx);});
+      this.changed(ctx);return roster.get(id,ctx);
+    }
+    throw new Error('未知队友动作：'+action);
+  }
+  private deliverTeammate(id:string,ctx:PluginContext):void {
+    const roster=this.roster(ctx),member=roster.get(id,ctx);if(member.state!=='running'||!member.attemptId||!member.sessionId)return;
+    const handle=this.members.get(member.attemptId)?.handle;if(!handle)return;
+    roster.recover(id,ctx);
+    for(const message of roster.messages(id,ctx))if(!message.processedAt)handle.send({v:2,type:'steer',messageId:message.id,text:message.body,bodyDigest:message.bodyDigest,memberId:id,attemptId:member.attemptId,generation:member.generation});
+  }
+  private async wakeOrDeliver(id:string,ctx:PluginContext):Promise<void> {
+    const roster=this.roster(ctx),member=roster.get(id,ctx);if(member.state==='running'){this.deliverTeammate(id,ctx);return;}
+    if(member.state!=='idle'||ctx.policy?.executionStopped||ctx.policy?.planMode)return;
+    await roster.serialize(id,async()=>{
+      const latest=roster.get(id,ctx);roster.recover(id,ctx);if(latest.state!=='idle'||!roster.messages(id,ctx).some(message=>!message.processedAt))return;
+      if(!latest.graphId){roster.update(id,ctx,m=>{m.reason='队友尚未获分配任务，消息已保存';});this.changed(ctx);return;}
+      const graph=this.get(latest.graphId,ctx).value;this.execution(graph.id).context=ctx;
+      if(graph.tasks.some(task=>task.memberId===id&&['pending','running','unknown','blocked'].includes(task.status)))return;
+      const attemptId=randomUUID(),lease=roster.acquire(id,attemptId,graph.id,latest.taskId||'discussion',ctx,this.runtime,true);
+      const start:MemberStart={v:2,type:'start',memberId:id,rootSessionId:ctx.sessionId,generation:lease.generation,graphId:graph.id,taskId:lease.taskId!,attemptId,cwd:ctx.projectDir,dataDir:ctx.dataDir,agentDir:ctx.agentDir||graph.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,id),nativeSessionFile:lease.sessionFile?roster.trustedFile(lease,ctx):undefined,modelId:ctx.modelId||lease.modelId||graph.modelId,thinkingLevel:ctx.thinkingLevel||lease.thinkingLevel||graph.thinkingLevel,mode:'read',writeScopes:[],executionStyle:'swarm',discussion:true,parentTools:[...['read','grep','find','ls'].filter(tool=>!ctx.policy||ctx.policy.tools.includes(tool)),'swarm_message'],permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,prompt:'继续只读讨论补充要求。成果修改须用 swarm_message 发给 parent，由主 Agent 创建新尝试；不能修改文件、共享材料或派生成员。'};
+      roster.update(id,ctx,m=>{m.cwd=start.cwd;m.modelId=start.modelId;m.thinkingLevel=start.thinkingLevel;});
+      let handle:MemberHandle|undefined;
+      try{
+        await this.track(graph.id,new Promise<void>((resolveDiscussion,reject)=>{
+          let done=false;const timer=setTimeout(()=>finish(new Error('成员讨论超时，消息和现场保留')),120000);
+          const finish=(error?:Error)=>{if(done)return;done=true;clearTimeout(timer);error?reject(error):resolveDiscussion();};
+          handle=this.launcher(start,message=>{
+            if(message.protocol!==2||message.memberId!==id||message.generation!==lease.generation||message.attemptId!==attemptId||!roster.owns(roster.get(id,ctx),attemptId,lease.generation))return;
+            if(message.type==='ready'){roster.update(id,ctx,m=>{m.sessionId=message.sessionId;m.sessionFile=message.sessionFile;});this.deliverTeammate(id,ctx);}
+            if(message.type==='event')ctx.emit('swarm.member-event',{v:1,graphId:graph.id,memberId:id,attemptId,generation:lease.generation,event:message.event});
+            if(message.type==='usage')ctx.emit('swarm.member-usage',{v:1,graphId:graph.id,memberId:id,attemptId,entryId:message.entryId,tokens:message.tokens,runId:ctx.runId});
+            if(message.type==='request'){
+              if(message.action==='send'&&message.input.to==='parent'){ctx.emit('swarm.member-request',{v:1,graphId:graph.id,memberId:id,attemptId,runId:ctx.runId,body:text(message.input.body)});handle?.send({v:1,type:'request.response',requestId:message.requestId,result:{saved:true}});}
+              else handle?.send({v:1,type:'request.response',requestId:message.requestId,error:'完成后的补充讨论只读，修改由主 Agent 安排'});
+            }
+            if(message.type==='confirm')handle?.send({v:1,type:'confirm.response',requestId:message.requestId,accepted:false});
+            if(message.type==='settled'){ctx.emit('swarm.member-request',{v:1,graphId:graph.id,memberId:id,attemptId,runId:ctx.runId,body:'用户补充后的只读讨论结果：'+message.summary});finish();}if(message.type==='failed')finish(new Error(message.error));this.changed(ctx);
+          },()=>{if(!done)finish(new Error('成员讨论进程中断，未自动重放'));});
+          this.members.set(attemptId,{handle,graphId:graph.id,context:ctx});this.memberOwned(graph.id,attemptId,handle,ctx);this.changed(ctx);
+        }));
+        if(handle?.closed)await handle.closed;
+        roster.release(id,attemptId,ctx);this.members.delete(attemptId);this.changed(ctx);setImmediate(()=>void this.wakeOrDeliver(id,ctx).catch(()=>{}));
+      }catch(error){if(handle)await this.interruptMember(id,ctx);else roster.update(id,ctx,m=>{if(m.attemptId===attemptId){m.state='paused';m.stopReceipt={id:attemptId,kind:'member',status:'terminated',detail:'运行器未创建进程'};m.reason=errorText(error);}});this.changed(ctx);throw error;}
+    });
+  }
+  private async interruptMember(id:string,ctx:PluginContext):Promise<Teammate> {
+    const roster=this.roster(ctx),member=roster.get(id,ctx),attemptId=member.attemptId;
+    roster.update(id,ctx,m=>{m.state='stopping';m.generation++;m.reason='用户停止成员，消息保留';});this.changed(ctx);
+    if(member.graphId&&!member.discussion){this.update(member.graphId,ctx,g=>{const attempt=g.attempts.find(item=>item.id===attemptId);if(attempt?.status==='running'){attempt.status='unknown';attempt.error='用户停止该成员，现场保留';const task=g.tasks.find(item=>item.currentAttempt===attemptId);if(task)task.status='unknown';}});}
+    const handle=attemptId?this.members.get(attemptId)?.handle:undefined;
+    const receipt=handle?await handle.stop():{id:attemptId||id,kind:'member' as const,status:attemptId?'unknown' as const:'terminated' as const,detail:attemptId?'成员仍在启动或退出收据未知，现场保留':undefined};
+    const accepted=receipt||{id,kind:'member' as const,status:'unknown' as const};
+    roster.update(id,ctx,m=>{m.state=accepted.status==='terminated'?'paused':'stopping';m.stopReceipt=accepted;m.reason=accepted.status==='terminated'?'成员已暂停；检查现场后明确接续':'退出收据未知，等待原成员终止';});
+    if(accepted.status==='terminated'&&attemptId)this.members.delete(attemptId);
+    else if(handle?.closed&&attemptId)void handle.closed.then(closed=>{if(this.disposed||closed.status!=='terminated')return;roster.update(id,ctx,m=>{if(m.attemptId===attemptId){m.state='paused';m.stopReceipt=closed;}});this.members.delete(attemptId);this.changed(ctx);});
+    if(member.graphId&&!member.discussion){const graph=this.get(member.graphId,ctx).value;if(graph.status==='running'&&graph.tasks.some(task=>task.status==='unknown'||task.status==='blocked')&&!graph.attempts.some(attempt=>attempt.status==='running'))this.update(graph.id,ctx,g=>{g.status='paused';g.error='成员已暂停，依赖任务等待接续';});}
+    this.changed(ctx);return roster.get(id,ctx);
+  }
   private execution(id:string):Execution {let run=this.executions.get(id);if(!run){run={abort:new AbortController(),operations:new Map(),receipts:new Map(),activities:new Set()};this.executions.set(id,run);}return run;}
   private track<T>(id:string,promise:Promise<T>):Promise<T> {const run=this.execution(id);run.activities.add(promise);void promise.then(()=>run.activities.delete(promise),()=>run.activities.delete(promise));return promise;}
   private own(id:string,operation:{id:string;stop:()=>Promise<StopObject>;ended?:Promise<StopObject>}):void {const run=this.execution(id);run.operations.set(operation.id,operation);if(operation.ended)void operation.ended.then(receipt=>{run.receipts.set(operation.id,receipt);run.operations.delete(operation.id);});}
   private memberOwned(id:string,attemptId:string,handle:MemberHandle,ctx:PluginContext):void {
     this.own(id,{id:attemptId,ended:handle.closed,stop:async()=>await handle.stop()||{id:attemptId,kind:'member',status:'unknown',pid:handle.pid,detail:'成员适配器没有提供退出回执'}});
     const inform=(action:'started'|'closed')=>{if(handle.pid)try{ctx.emit('swarm.process',{v:1,graphId:id,operationId:attemptId,kind:'member',action,pid:handle.pid,groupOwned:!!handle.groupOwned});}catch{/* Retain local ownership even when a subscriber fails. */}};inform('started');
-    if(handle.closed)void handle.closed.then(()=>inform('closed'));
+    if(handle.closed)void handle.closed.then(receipt=>{inform('closed');if(this.disposed||receipt.status!=='terminated')return;const teammate=this.roster(ctx).list(ctx).find(member=>member.attemptId===attemptId&&member.state==='stopping');if(teammate){this.roster(ctx).update(teammate.id,ctx,m=>{if(m.attemptId===attemptId&&m.state==='stopping'){m.state='paused';m.stopReceipt=receipt;}});this.members.delete(attemptId);this.changed(ctx);}});
   }
   private signal(id:string,ctx:PluginContext):AbortSignal {const run=this.execution(id);run.context=ctx;const signal=run.abort.signal;return ctx.signal?AbortSignal.any([signal,ctx.signal]):signal;}
   private async git(id:string,cwd:string,args:string[],ctx:PluginContext):Promise<string> {
@@ -120,19 +216,21 @@ export class SwarmController implements PluginController {
   }
   private async stop(id:string,ctx:PluginContext,pause=false,reason?:string):Promise<Graph> {
     const run=this.execution(id);if(run.stopping)return run.stopping;
-    const original=this.get(id,ctx).value,owner=original.executionOwner;if(owner&&owner.runtime!==this.runtime&&alive(owner.pid)&&(!['paused','stopped'].includes(original.status)||!original.stopReceipt?.objects.every(receipt=>receipt.status==='terminated')))throw new Error('任务仍由另一个存活运行时持有；请在原运行时停止，不能冒充已终止');
+    const original=this.get(id,ctx).value;if(original.status==='integrated')throw new Error('已整合成果不能停止');const owner=original.executionOwner;if(owner&&owner.runtime!==this.runtime&&alive(owner.pid)&&(!['paused','stopped'].includes(original.status)||!original.stopReceipt?.objects.every(receipt=>receipt.status==='terminated')))throw new Error('任务仍由另一个存活运行时持有；请在原运行时停止，不能冒充已终止');
     run.stopping=(async()=>{
-      const operationId=randomUUID(),requestedAt=now();
+      const operationId=randomUUID(),requestedAt=now();for(const member of this.roster(ctx).list(ctx))if(member.graphId===id&&(member.state==='running'||member.state==='idle'))this.roster(ctx).update(member.id,ctx,m=>{m.stopReceipt=m.state==='idle'?{id:m.id,kind:'member',status:'terminated'}:undefined;m.state=m.state==='idle'?'paused':'stopping';m.generation++;m.reason='用户停止整轮 Swarm，消息保留';});
       this.update(id,ctx,g=>{if(g.status==='integrated')throw new Error('已整合成果不能停止');g.status='stopping';for(const attempt of g.attempts)if(attempt.status==='running'){attempt.status='unknown';attempt.error='用户中断；工具副作用未重放';const task=g.tasks.find(t=>t.currentAttempt===attempt.id);if(task)task.status='unknown';}for(const attempt of g.reviewAttempts||[])if(attempt.status==='running'){attempt.status='unknown';attempt.error='用户中断独立复核；结果未采用';}});this.changed(ctx);run.abort.abort();
       for(const [confirmationId,resolver] of this.confirmations)if(this.confirmationOwners.get(confirmationId)===id)resolver(false);
       const stopped=await Promise.allSettled([...run.operations.values()].map(operation=>operation.stop()));
-      const receipts=stopped.map((result,index)=>result.status==='fulfilled'?result.value:{id:`stop-${index}`,kind:'activity' as const,status:'unknown' as const,detail:errorText(result.reason)});
+      let receipts=stopped.map((result,index)=>result.status==='fulfilled'?result.value:{id:`stop-${index}`,kind:'activity' as const,status:'unknown' as const,detail:errorText(result.reason)});
       if(owner?.runtime!==this.runtime)receipts.push(...(original.stopReceipt?.objects.filter(receipt=>receipt.status==='unknown')||[]));
       for(const receipt of receipts)if(receipt.status==='terminated'||!receipt.pid){run.operations.delete(receipt.id);run.receipts.set(receipt.id,receipt);}
       let timer:ReturnType<typeof setTimeout>|undefined;
       const activities=await Promise.race([Promise.allSettled([...run.activities]).then(()=>true),new Promise<false>(done=>{timer=setTimeout(()=>done(false),5000);})]);if(timer)clearTimeout(timer);
+      const merged=new Map(receipts.map(receipt=>[receipt.id,receipt]));for(const receipt of run.receipts.values())if(receipt.status==='terminated'||!merged.has(receipt.id))merged.set(receipt.id,receipt);receipts=[...merged.values()];
       if(!activities)receipts.push({id:operationId,kind:'activity',status:'unknown',detail:'取消后仍有后台活动未到安全边界'});
-      for(const [attemptId,member] of this.members)if(member.graphId===id)this.members.delete(attemptId);
+      for(const [attemptId,member] of this.members)if(member.graphId===id){const receipt=receipts.find(item=>item.id===attemptId);if(receipt?.status==='terminated')this.members.delete(attemptId);}
+      for(const member of this.roster(ctx).list(ctx))if(member.graphId===id&&member.state==='stopping'){const receipt=receipts.find(item=>item.id===member.attemptId);this.roster(ctx).update(member.id,ctx,m=>{m.state=receipt?.status==='terminated'?'paused':'stopping';m.stopReceipt=receipt||{id:m.attemptId||m.id,kind:'member',status:'unknown'};});}
       const graph=this.update(id,ctx,g=>{g.stopReceipt={operationId,requestedAt,finishedAt:now(),objects:receipts,unknownAttemptIds:g.attempts.filter(a=>a.status==='unknown').map(a=>a.id)};g.status=pause||receipts.some(receipt=>receipt.status==='unknown')?'paused':'stopped';g.error=receipts.some(receipt=>receipt.status==='unknown')?`停止尚无完整退出回执；现场保留，请检查后显式接续${reason?`；${reason}`:''}`:reason;});this.changed(ctx);return graph;
     })();return run.stopping;
   }
@@ -165,10 +263,12 @@ export class SwarmController implements PluginController {
     if(this.disposed)throw new Error('Swarm 已关闭');
     const store=this.store(ctx);const graphs=store.list<Graph>(`graph:${ctx.projectId}:`).filter(doc=>doc.value.sessionId===ctx.sessionId).map(doc=>({...doc.value,revision:doc.revision}));
     const ids=new Set(graphs.map(graph=>graph.id));
-    return {graphs,members:graphs.flatMap(graph=>graph.attempts.map(attempt=>({...attempt,graphId:graph.id}))),messages:store.list<MemberMessage>('message:').map(doc=>doc.value).filter(msg=>ids.has(msg.graphId)),shared:store.list<SharedDocument>('shared:').map(doc=>({...doc.value,revision:doc.revision})).filter(item=>ids.has(item.graphId)),sharedConflicts:store.list('shared-conflict:').map(doc=>doc.value).filter(raw=>raw&&typeof raw==='object'&&'graphId' in raw&&ids.has(String(raw.graphId))),confirmations:[...this.confirmations.keys()],status:graphs.some(graph=>['running','stopping','awaiting_review','ready'].includes(graph.status))?'running':'idle'};
+    return {teammates:this.roster(ctx).list(ctx),graphs,members:graphs.flatMap(graph=>graph.attempts.map(attempt=>({...attempt,graphId:graph.id}))),messages:[...store.list<MemberMessage>('message:').map(doc=>doc.value).filter(msg=>ids.has(msg.graphId)),...store.list<MemberMessage>('teammate-message:'+ctx.sessionId+':').map(doc=>doc.value).filter(msg=>ids.has(msg.graphId))],shared:store.list<SharedDocument>('shared:').map(doc=>({...doc.value,revision:doc.revision})).filter(item=>ids.has(item.graphId)),sharedConflicts:store.list('shared-conflict:').map(doc=>doc.value).filter(raw=>raw&&typeof raw==='object'&&'graphId' in raw&&ids.has(String(raw.graphId))),confirmations:[...this.confirmations.keys()],status:graphs.some(graph=>['running','stopping','awaiting_review','ready'].includes(graph.status)||graph.attempts.some(attempt=>attempt.status==='running'))||this.roster(ctx).list(ctx).some(member=>['running','stopping'].includes(member.state))?'running':'idle'};
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
     if(this.disposed)throw new Error('Swarm 已关闭');
+    if(action.startsWith('member.'))return this.memberAction(action.slice(7),input,ctx);
+    if(action==='stop.members'){await Promise.allSettled(this.roster(ctx).list(ctx).filter(member=>member.state==='running'||member.state==='idle').map(member=>this.interruptMember(member.id,ctx)));return this.snapshot(ctx);}
     if(action.startsWith('team.'))return this.team(action.slice(5),input,ctx);
     if(action==='audit')return this.audit(input,ctx);
     if (action==='snapshot') return this.snapshot(ctx);
@@ -191,8 +291,10 @@ export class SwarmController implements PluginController {
       if (graph.status==='integrated') throw new Error('已整合任务不能重新执行');
       if(graph.tasks.some(task=>task.status==='blocked'&&task.rework>=2))throw new Error('任务已达 2 轮修复上限；不能用接续绕过额度');
       if (graph.tasks.some(t=>t.status==='unknown') && (input.confirmUnknown!==true || (ctx.origin && ctx.origin!=='user'))) throw new Error('存在副作用未知的任务；请检查保留的会话和工作区，并由用户以 confirmUnknown:true 明确启动新尝试');
-      this.update(id,ctx,g=>{for (const task of g.tasks) if (['unknown','blocked','cancelled'].includes(task.status)) {task.status='pending';task.currentAttempt=undefined;}g.error=undefined;});
-      this.executions.delete(id);await this.track(id,this.start(id,input,ctx));return this.get(id,ctx).value;
+      for(const memberId of new Set(graph.tasks.flatMap(task=>task.memberId?[task.memberId]:[]))){const member=this.roster(ctx).get(memberId,ctx);if(member.state==='running'||member.state==='stopping'||member.stopReceipt?.status==='unknown'||member.state==='paused'&&member.sessionFile&&!member.stopReceipt)throw new Error('成员尚无明确退出收据，不并发打开原生会话');}
+      for(const task of graph.tasks)if(task.memberId&&this.roster(ctx).get(task.memberId,ctx).state==='paused')this.roster(ctx).update(task.memberId,ctx,m=>{m.state='idle';m.attemptId=undefined;});
+      this.update(id,ctx,g=>{for (const task of g.tasks) if (['unknown','blocked','cancelled'].includes(task.status)) {if(task.status==='unknown')task.resumeFromAttempt=task.currentAttempt;task.status='pending';task.currentAttempt=undefined;}g.error=undefined;});
+      this.executions.delete(id);await this.track(id,this.start(id,input,ctx));for(const memberId of new Set(graph.tasks.flatMap(task=>task.memberId?[task.memberId]:[])))setImmediate(()=>void this.wakeOrDeliver(memberId,ctx).catch(()=>{}));return this.get(id,ctx).value;
     }
     if (action==='configure') return this.update(id,ctx,g=>{if (['running','stopping','awaiting_review'].includes(g.status)) throw new Error('并发配置在空闲边界修改');g.maxWorkers=number(input.maxWorkers,g.maxWorkers,1,16);});
     if (action==='send') return this.sendMessage(id,input,ctx);
@@ -250,6 +352,7 @@ export class SwarmController implements PluginController {
       if(baseline&&(await this.git(id,baseline.repoRoot,['status','--porcelain'],ctx)||await this.git(id,baseline.repoRoot,['rev-parse','HEAD'],ctx)!==baseline.head)){this.update(id,ctx,g=>{g.tasks.push(...tasks);g.baseline=baseline;g.status='paused';g.error='原项目基线或工作区已变化；新增写入任务保留，未启动成员';});this.changed(ctx);throw new Error('原项目基线或工作区已变化；任务保留并暂停');}
       if(baseline&&!current.baseline)this.update(id,ctx,g=>{g.baseline=baseline;});
     }
+    if(current.collaborationVersion===2)for(const task of tasks)task.memberId=this.roster(ctx).forTask(task,ctx).id;
     const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();g.tasks.push(...tasks);g.integration=undefined;g.error=undefined;if(g.status!=='created')g.status='running';});
     this.changed(ctx);if(graph.status==='running')void this.track(id,this.pump(id,ctx));return graph;
   }
@@ -285,8 +388,8 @@ export class SwarmController implements PluginController {
     let checks=checkSpecs(input.checks);
     const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
     if (input.checks===undefined && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
-    const graph:Graph={audit:audit||undefined,id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,goalId:ctx.policy?.goalId};
-    this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
+    const graph:Graph={collaborationVersion:executionStyle==='swarm'&&!audit&&input.collaborationVersion!==1?2:undefined,audit:audit||undefined,id:randomUUID(),projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,goalId:ctx.policy?.goalId};
+    this.store(ctx).transaction(()=>{if(graph.collaborationVersion===2)for(const task of tasks)task.memberId=this.roster(ctx).forTask(task,ctx).id;this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);});ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
   private async baseline(id:string,projectDir:string,ctx:PluginContext): Promise<Baseline|undefined> {
     let repoRoot:string;try {repoRoot=await this.git(id,projectDir,['rev-parse','--show-toplevel'],ctx);}catch(error) {checkCancelled(this.signal(id,ctx));return undefined;}
@@ -325,8 +428,9 @@ export class SwarmController implements PluginController {
       const catalog=graph.expertCatalog&&typeof graph.expertCatalog==='object'?graph.expertCatalog as Record<string,unknown>:undefined;const role=task.roleId&&Array.isArray(catalog?.roles)?catalog.roles.map(object).find(item=>item.id===task.roleId):undefined;
       const selected={...task,modelId:task.modelId??(typeof role?.modelId==='string'?role.modelId:undefined),thinkingLevel:task.thinkingLevel??(typeof role?.thinkingLevel==='string'?thinkingLevel(role.thinkingLevel):undefined)};
       validateTaskModel(selected,ctx,graph.modelId,graph.thinkingLevel);
-      claimed={id:randomUUID(),taskId:task.id,number:graph.attempts.filter(a=>a.taskId===task.id).length+1,resultRevision:task.resultRevision+1,requirementVersion:task.requirementVersions?.at(-1)?.version||1,status:'running',cwd:ctx.projectDir,mode:task.mode,ownerPid:process.pid,ownerRuntime:this.runtime,startedAt:now(),modelId:selected.modelId??graph.modelId,thinkingLevel:selected.thinkingLevel??graph.thinkingLevel,writeScopes:task.writeScopes};
-      task.status='running';task.currentAttempt=claimed.id;graph.attempts.push(claimed);
+      claimed={id:randomUUID(),memberId:task.memberId,retainedFrom:task.resumeFromAttempt,taskId:task.id,number:graph.attempts.filter(a=>a.taskId===task.id).length+1,resultRevision:task.resultRevision+1,requirementVersion:task.requirementVersions?.at(-1)?.version||1,status:'running',cwd:ctx.projectDir,mode:task.mode,ownerPid:process.pid,ownerRuntime:this.runtime,startedAt:now(),modelId:selected.modelId??graph.modelId,thinkingLevel:selected.thinkingLevel??graph.thinkingLevel,writeScopes:task.writeScopes};
+      if(claimed.memberId)claimed.generation=this.roster(ctx).acquire(claimed.memberId,claimed.id,id,task.id,ctx,this.runtime).generation;
+      task.resumeFromAttempt=undefined;task.status='running';task.currentAttempt=claimed.id;graph.attempts.push(claimed);
     });return claimed!;
   }
   private async freezeExpert(task:Task|undefined,ctx:PluginContext): Promise<unknown> {
@@ -349,7 +453,8 @@ export class SwarmController implements PluginController {
     if(task.roleId){if(expert.unavailable)throw new Error('明确角色需要启用 Expert 插件');const role=await ctx.request('expert','freeze.role',{catalogHash:expert.hash,roleId:task.roleId,capability:{tools:graph.parentTools??(task.mode==='read'?['read','grep','find','ls','friend_expert']:['read','write','edit','bash','friend_expert']),writeScopes:task.mode==='read'?[]:task.writeScopes,modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel}},1500);expert.role=role;const frozen=object(role);if(frozen.modelId&&frozen.modelId!==attempt.modelId||frozen.thinkingLevel&&frozen.thinkingLevel!==attempt.thinkingLevel)throw new Error('角色模型映射与已冻结任务配置不一致，请明确该任务型号后重试');const adopted=Array.isArray(expert.adoptedIds)?expert.adoptedIds:expert.selectedIds;expert.prompt=(Array.isArray(expert.experts)?expert.experts:[]).map(object).filter(method=>Array.isArray(adopted)&&adopted.includes(method.id)).map(method=>`${method.title} v${method.version}\n${method.prompt}`).join('\n\n');}
     if (this.disposed) return;checkCancelled(this.signal(id,ctx));
     let cwd=ctx.projectDir;
-    if (graph.baseline && task.mode==='write') {
+    if(graph.baseline&&task.mode==='write'&&attempt.retainedFrom){const prior=graph.attempts.find(item=>item.id===attempt.retainedFrom);if(!prior||prior.taskId!==task.id||!contains(join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId,id,'attempts'),prior.cwd))throw new Error('原尝试工作树身份不匹配');cwd=prior.cwd;await this.git(id,cwd,['rev-parse','HEAD'],ctx);}
+    else if (graph.baseline && task.mode==='write') {
       const worktree=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId,id,'attempts',attempt.id);assertTemporaryArtifactPath(worktree,ctx.policy?.temporaryWriteRoot);mkdirSync(resolve(worktree,'..'),{recursive:true,mode:0o700});
       this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.cwd=join(worktree,graph.baseline!.projectRelative);});
       await this.git(id,graph.baseline.repoRoot,['worktree','add','--detach',worktree,graph.baseline.head],ctx);
@@ -358,15 +463,17 @@ export class SwarmController implements PluginController {
       cwd=join(worktree,graph.baseline.projectRelative);
     }
     graph=this.update(id,ctx,g=>{const target=g.attempts.find(a=>a.id===attempt.id)!;target.cwd=cwd;target.expert=expert;});
-    if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running') return;
+    if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running'){if(attempt.memberId&&this.roster(ctx).get(attempt.memberId,ctx).state==='stopping')this.roster(ctx).update(attempt.memberId,ctx,m=>{m.state='paused';m.stopReceipt={id:attempt.id,kind:'member',status:'terminated',detail:'启动已到安全边界，未创建成员进程'};});return;}
     const dependencies=task.dependencies.map(dep=>{const previous=graph.attempts.find(a=>a.id===graph.tasks.find(t=>t.id===dep)?.currentAttempt);return {taskId:dep,summary:previous?.summary};});
     const requirements=task.requirementVersions?.at(-1)?.prompt||task.prompt;
-    const start:MemberStart={v:1,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,parentTools:graph.parentTools};
+    const teammate=attempt.memberId?this.roster(ctx).get(attempt.memberId,ctx):undefined;
+    const start:MemberStart={v:teammate?2:1,memberId:attempt.memberId,rootSessionId:ctx.sessionId,generation:attempt.generation,nativeSessionFile:teammate?.sessionFile?this.roster(ctx).trustedFile(teammate,ctx):undefined,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:teammate?join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,teammate.id):join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,parentTools:graph.parentTools};
     const handle=this.launcher(start,message=>void this.track(id,this.memberOutput(id,attempt.id,message,ctx)),code=>{
       if (this.disposed) return;
       this.members.delete(attempt.id);const current=this.get(id,ctx).value.attempts.find(a=>a.id===attempt.id);
       if (current?.status==='running' && !this.finishing.has(attempt.id)) void this.fail(id,attempt.id,`成员进程退出，状态未知（${code ?? 'signal'}）`,ctx,true);
     });
+    if(attempt.memberId){const timer=setTimeout(()=>{if(!this.disposed&&!this.get(id,ctx).value.attempts.find(item=>item.id===attempt.id)?.sessionId)void this.fail(id,attempt.id,'运行器未声明 v2 支持或启动超时，现场保留',ctx);},10000);timer.unref();}
     this.members.set(attempt.id,{handle,graphId:id,context:ctx});this.memberOwned(id,attempt.id,handle,ctx);this.deliverPending(id,attempt.id,ctx);this.changed(ctx);
   }
   private async pump(id:string,ctx:PluginContext): Promise<void> {
@@ -375,13 +482,14 @@ export class SwarmController implements PluginController {
       while (!this.disposed && this.get(id,ctx).value.status==='running') {
         const graph=this.get(id,ctx).value;
         const running=graph.attempts.filter(a=>a.status==='running');
-        const task=graph.tasks.find(t=>t.status==='pending'&&!t.workflowHeld && t.dependencies.every(dep=>taskSettled(graph.tasks.find(d=>d.id===dep)!)) && (graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
+        const task=graph.tasks.find(t=>t.status==='pending'&&(!t.memberId||this.roster(ctx).get(t.memberId,ctx).state==='idle')&&!t.workflowHeld && t.dependencies.every(dep=>taskSettled(graph.tasks.find(d=>d.id===dep)!)) && (graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
         if (!task || running.length>=graph.maxWorkers) break;
         const attempt=this.claim(id,task.id,ctx);
-        try {await this.launch(id,attempt,ctx);}catch (error) {if (!this.disposed&&!this.signal(id,ctx).aborted) await this.fail(id,attempt.id,errorText(error),ctx);break;}
+        try {await this.launch(id,attempt,ctx);}catch (error) {if (!this.disposed&&!this.signal(id,ctx).aborted) await this.fail(id,attempt.id,errorText(error),ctx,false,true);break;}
       }
       if (this.disposed) return;
       const graph=this.get(id,ctx).value;
+      if(graph.status==='running'&&!graph.attempts.some(a=>a.status==='running')&&graph.tasks.some(t=>t.status==='unknown'||t.status==='blocked')){this.update(id,ctx,g=>{g.status='paused';g.error='有成员需要检查并明确接续';});this.changed(ctx);}
       if (graph.status==='running' && graph.tasks.every(taskSettled)) {
         if(graph.deferPreparation||graph.executionStyle==='team'&&!graph.tasks.some(task=>task.mode==='write'&&!graph.integratedTaskIds?.includes(task.id))){this.update(id,ctx,g=>{g.status='completed';});this.changed(ctx);}
         else {this.update(id,ctx,g=>{g.status='awaiting_review';});this.changed(ctx);void this.track(id,this.prepare(id,ctx)).catch(error=>{if (!this.disposed && this.get(id,ctx).value.status==='awaiting_review') {this.update(id,ctx,g=>{g.status='paused';g.error=errorText(error);});this.changed(ctx);}});}
@@ -390,14 +498,18 @@ export class SwarmController implements PluginController {
   }
   private async memberOutput(id:string,attemptId:string,message:MemberOutput,ctx:PluginContext): Promise<void> {
     if (this.disposed) return;
+    const active=this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId);
+    if(active?.memberId&&(!this.roster(ctx).owns(this.roster(ctx).get(active.memberId,ctx),attemptId,active.generation)||message.protocol!==2||message.memberId!==active.memberId||message.generation!==active.generation||message.attemptId!==attemptId))return;
     if (!this.get(id,ctx).value.attempts.some(attempt=>attempt.id===attemptId && attempt.status==='running')) return;
     if (message.type==='settled') {await this.finish(id,attemptId,message,ctx);return;}
     if (message.type==='failed') {await this.fail(id,attemptId,message.error,ctx);return;}
-    if (message.type==='ready') {this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId);if (attempt) {attempt.sessionId=message.sessionId;attempt.sessionFile=message.sessionFile;}});this.deliverPending(id,attemptId,ctx);this.changed(ctx);}
+    if(message.type==='received'||message.type==='context'){this.changed(ctx);return;}
+    if(message.type==='usage'){ctx.emit('swarm.member-usage',{v:1,graphId:id,attemptId,memberId:active?.memberId,entryId:message.entryId,tokens:message.tokens,runId:this.get(id,ctx).value.runId});return;}
+    if (message.type==='ready') {if(active?.memberId)this.roster(ctx).update(active.memberId,ctx,member=>{member.sessionId=message.sessionId;member.sessionFile=message.sessionFile;member.cwd=active.cwd;member.modelId=active.modelId;member.thinkingLevel=active.thinkingLevel;});this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId);if (attempt) {attempt.sessionId=message.sessionId;attempt.sessionFile=message.sessionFile;}});this.deliverPending(id,attemptId,ctx);this.changed(ctx);}
     if (message.type==='processed') {
       const key=`message:${id}:${message.messageId}`;this.store(ctx).transaction(()=>{const saved=this.store(ctx).get<MemberMessage>(key);if (saved && saved.value.attemptId===attemptId && saved.value.deliveredAt && !saved.value.processedAt) {saved.value.processedAt=now();this.store(ctx).put(key,saved.value,saved.revision);}});this.changed(ctx);
     }
-    if (message.type==='event') ctx.emit('swarm.member-event',{graphId:id,attemptId,event:message.event});
+    if (message.type==='event') ctx.emit('swarm.member-event',{v:1,graphId:id,attemptId,memberId:active?.memberId,generation:active?.generation,event:message.event});
     if(message.type==='expert.adopted'){this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId)!;attempt.expertAdoptions=[...(attempt.expertAdoptions||[]),message.adoption];});this.changed(ctx);}
     if (message.type==='request') {
       try {
@@ -409,7 +521,8 @@ export class SwarmController implements PluginController {
           const frozen=object(attempt.expert);if(frozen.unavailable)throw new Error('Expert 插件当前不可用');
           const chosen=(Array.isArray(frozen.experts)?frozen.experts:[]).map(object).find(expert=>expert.id===text(message.input.id));if(!chosen)throw new Error('方法不在成员冻结目录中');
           result=await ctx.request('expert','adopt.frozen',{catalogHash:frozen.hash,id:chosen.id},1500);
-        }else result=await this.dispatch(message.action,{...message.input,graphId:id,from:attempt.taskId,taskId:attempt.taskId,attemptId},{...ctx,origin:'plugin'});
+        }else if(message.action==='send'&&message.input.to==='parent'&&attempt.memberId){ctx.emit('swarm.member-request',{v:1,graphId:id,memberId:attempt.memberId,attemptId,runId:graph.runId,body:text(message.input.body)});result={saved:true};}
+        else result=await this.dispatch(message.action,{...message.input,graphId:id,from:attempt.taskId,taskId:attempt.taskId,attemptId},{...ctx,origin:'plugin'});
         this.members.get(attemptId)?.handle.send({v:1,type:'request.response',requestId:message.requestId,result});
       }catch (error) {this.members.get(attemptId)?.handle.send({v:1,type:'request.response',requestId:message.requestId,error:errorText(error)});}
     }
@@ -433,6 +546,8 @@ export class SwarmController implements PluginController {
     if (!attempt || !task || attempt.status!=='running' || task.status!=='running') throw new ConflictError('结果不属于当前执行尝试');
     this.finishing.add(attemptId);
     try {
+      if(attempt.memberId){const handle=this.members.get(attemptId)?.handle;if(handle?.closed){const receipt=await handle.closed;if(receipt.status!=='terminated')throw new Error('成员尚无退出收据');}}
+      if(this.get(id,ctx).value.attempts.find(a=>a.id===attemptId)?.status!=='running')throw new CancelledError();
       let commit:string|undefined;
       if (original.baseline && attempt.mode==='write') {
         await this.git(id,attempt.cwd,['diff','--check'],ctx);
@@ -446,22 +561,26 @@ export class SwarmController implements PluginController {
       if (this.disposed) return;checkCancelled(this.signal(id,ctx));
       this.update(id,ctx,g=>{const a=g.attempts.find(x=>x.id===attemptId)!;const t=g.tasks.find(x=>x.currentAttempt===attemptId);if (!t || a.status!=='running') throw new ConflictError('执行尝试已被中断');a.status='completed';a.finishedAt=now();a.summary=result.summary.slice(0,100000);a.sessionId=result.sessionId||a.sessionId;a.sessionFile=result.sessionFile||a.sessionFile;a.commit=commit;t.status='completed';t.resultRevision=a.resultRevision;});
       if(original.executionStyle==='team')ctx.emit('team.result',{v:1,graphId:id,taskId:task.id,attemptId,runId:original.runId,mode:task.mode,sessionId:result.sessionId||attempt.sessionId,sessionFile:result.sessionFile||attempt.sessionFile});
-      this.members.delete(attemptId);this.changed(ctx);void this.track(id,this.pump(id,ctx));
+      if(attempt.memberId)this.roster(ctx).release(attempt.memberId,attemptId,ctx);
+      this.members.delete(attemptId);this.changed(ctx);void this.track(id,this.pump(id,ctx));if(attempt.memberId)setImmediate(()=>void this.wakeOrDeliver(attempt.memberId!,ctx).catch(()=>{}));
     }catch (error) {if(!this.signal(id,ctx).aborted)await this.fail(id,attemptId,errorText(error),ctx);}finally {this.finishing.delete(attemptId);}
   }
-  private async fail(id:string,attemptId:string,error:string,ctx:PluginContext,unknown=false): Promise<void> {
-    if (this.disposed) return;
-    this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId);if (!attempt || attempt.status!=='running') return;attempt.status=unknown?'unknown':'failed';attempt.error=error;attempt.finishedAt=now();const task=g.tasks.find(t=>t.currentAttempt===attemptId);if (task) task.status=unknown?'unknown':'blocked';g.status='paused';g.error=error;});
-    this.members.get(attemptId)?.handle.stop();this.members.delete(attemptId);this.changed(ctx);
+  private async fail(id:string,attemptId:string,error:string,ctx:PluginContext,unknown=false,noChild=false):Promise<void> {
+    if(this.disposed)return;const active=this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId);if(!active||active.status!=='running')return;
+    this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId)!;attempt.status=unknown?'unknown':'failed';attempt.error=error;attempt.finishedAt=now();const task=g.tasks.find(t=>t.currentAttempt===attemptId);if(task)task.status=unknown?'unknown':'blocked';g.status='paused';g.error=error;});
+    if(active.memberId&&noChild)this.roster(ctx).update(active.memberId,ctx,m=>{if(m.attemptId===attemptId){m.state='paused';m.stopReceipt={id:attemptId,kind:'member',status:'terminated',detail:'启动失败，未创建成员进程'};m.reason=error;}});else if(active.memberId)await this.interruptMember(active.memberId,ctx);else{await this.members.get(attemptId)?.handle.stop();this.members.delete(attemptId);}
+    this.changed(ctx);
   }
   private sendMessage(id:string,input:JsonObject,ctx:PluginContext): MemberMessage {
-    const graph=this.get(id,ctx).value;const to=text(input.to,'收件人',100);if (!graph.tasks.some(t=>t.id===to)&&!(graph.executionStyle==='team'&&to==='parent')) throw new Error('收件任务不存在');
+    const graph=this.get(id,ctx).value;const to=text(input.to,'收件人',100);
+    if(graph.collaborationVersion===2){const task=graph.tasks.find(item=>item.id===to);if(!task?.memberId)throw new Error('收件任务不存在');const sender=typeof input.from==='string'?graph.tasks.find(item=>item.id===input.from):undefined;const message=this.roster(ctx).enqueue(task.memberId,input,ctx,sender?.title||(ctx.origin==='user'?'你':'主 Agent'),sender?.memberId);void this.wakeOrDeliver(task.memberId,ctx).catch(error=>ctx.notify(errorText(error),'warning'));this.changed(ctx);return message;}if (!graph.tasks.some(t=>t.id===to)&&!(graph.executionStyle==='team'&&to==='parent')) throw new Error('收件任务不存在');
     const message:MemberMessage={id:randomUUID(),graphId:id,from:typeof input.from==='string'?input.from:'coordinator',to,body:text(input.body || input.text,'消息'),createdAt:now()};
     this.store(ctx).put(`message:${id}:${message.id}`,message,null);
     const attempt=graph.tasks.find(t=>t.id===to)?.currentAttempt;if (attempt) this.deliverPending(id,attempt,ctx);if(to==='parent')ctx.emit('team.message',{v:1,runId:graph.runId,message});this.changed(ctx);return message;
   }
   private deliverPending(id:string,attemptId:string,ctx:PluginContext): void {
     const attempt=this.get(id,ctx).value.attempts.find(a=>a.id===attemptId);const member=this.members.get(attemptId);if (!attempt || !member || !attempt.sessionId) return;
+    if(attempt.memberId){this.roster(ctx).recover(attempt.memberId,ctx);const teammate=this.roster(ctx).get(attempt.memberId,ctx);for(const message of this.roster(ctx).messages(teammate.id,ctx))if(!message.processedAt)member.handle.send({v:2,type:'steer',messageId:message.id,text:message.body,bodyDigest:message.bodyDigest,memberId:teammate.id,attemptId,generation:teammate.generation});return;}
     for (const doc of this.store(ctx).list<MemberMessage>(`message:${id}:`)) {
       if (doc.value.to!==attempt.taskId || doc.value.processedAt || (doc.value.deliveredAt && doc.value.attemptId===attemptId)) continue;
       // A delivery receipt is durable before IPC. A crash preserves uncertainty; do not redeliver
@@ -477,7 +596,7 @@ export class SwarmController implements PluginController {
     return {command:check.command,args:check.args,exitCode,output:output.slice(-20000),at:now()};
   }
   private async reviewer(graph:Graph,cwd:string,ctx:PluginContext): Promise<Omit<Review,'at'>> {
-    checkCancelled(this.signal(graph.id,ctx));const id=randomUUID();const resultVersions=Object.fromEntries(graph.tasks.map(task=>[task.id,task.resultRevision]));const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,reviewResult:true,resultVersions,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题",taskIds:["受影响任务ID"]}) 提交不可变结论；拒绝时必须明确受影响任务，不要让无关任务返工；不能归因时taskIds为空，宿主将暂停。说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.requirementVersions?.at(-1)?.prompt||t.prompt,resultRevision:t.resultRevision,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
+    checkCancelled(this.signal(graph.id,ctx));const id=randomUUID();const resultVersions=Object.fromEntries(graph.tasks.map(task=>[task.id,task.resultRevision]));const start:MemberStart={v:1,type:'start',graphId:graph.id,taskId:'independent-review',attemptId:id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir||ctx.agentDir||agentDirectory(),sessionDir:join(ctx.dataDir,'swarm-sessions',graph.id,id),modelId:graph.modelId,thinkingLevel:graph.thinkingLevel,mode:'read',writeScopes:[],permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,reviewResult:true,resultVersions,prompt:`你是独立成果审查者，未参与实现。审查目标与各成果，必要时用 read/grep/find/ls 只读原文件。没有 Bash、wc 或 Git 命令；不要调用它们，不修改或派生，不使用消息和共享材料。宿主客观检查已经实际执行，直接使用下方证据，无需重跑。不能只凭成员自评批准。完成后调用 swarm_review_result({approved:true|false,findings:"查阅的事实、检查证据和具体问题",taskIds:["受影响任务ID"]}) 提交不可变结论；拒绝时必须明确受影响任务，不要让无关任务返工；不能归因时taskIds为空，宿主将暂停。说明文字不算提交。目标：${graph.goal}\n成果：${JSON.stringify(graph.tasks.map(t=>({id:t.id,title:t.title,prompt:t.requirementVersions?.at(-1)?.prompt||t.prompt,resultRevision:t.resultRevision,result:graph.attempts.find(a=>a.id===t.currentAttempt)?.summary})))}\n用户补充约束：${JSON.stringify(graph.tasks.flatMap(task=>task.memberId?this.roster(ctx).messages(task.memberId,ctx).filter(message=>message.graphId===graph.id&&message.from==='你'&&message.kind==='constraint'&&!!message.processedAt&&message.attemptId===task.currentAttempt):[]))}\n宿主客观检查证据：${JSON.stringify(graph.integration?.checks || [])}`};
     if(graph.audit)start.prompt+=`\n目标控制器提供的审核材料（需要独立核验，不视为模型执行证明）：${JSON.stringify(graph.auditEvidence)}`;
     this.update(graph.id,ctx,g=>{g.reviewAttempts=[...(g.reviewAttempts||[]),{attemptId:id,cwd,status:'running',startedAt:now()}];});
     return new Promise((resolveResult,reject)=>{
@@ -590,6 +709,7 @@ export class SwarmController implements PluginController {
   }
   async dispose(): Promise<void> {
     if(this.disposed)return;
+    await Promise.allSettled([...this.executions.values()].flatMap(run=>run.context?this.roster(run.context).list(run.context).filter(member=>member.state==='running').map(member=>this.interruptMember(member.id,run.context!)):[]));
     await Promise.allSettled([...this.executions].map(async([id,run])=>{const active=run.operations.size||run.activities.size||(run.context&&['running','awaiting_review','ready','stopping'].includes(this.get(id,run.context).value.status));if(active&&run.context&&this.get(id,run.context).value.status!=='integrated')await this.stop(id,run.context,true);else {run.abort.abort();await Promise.allSettled([...run.operations.values()].map(operation=>operation.stop()));}}));
     // A claimed attempt can be waiting on Expert or worktree creation before its handle exists.
     // Persist its uncertainty as well, rather than leaving a live-PID orphan after /new.
@@ -616,8 +736,9 @@ const extension:ExtensionFactory=pi=>{
   const offWorkflowEvents=pi.events.on('friend-pi:v1:event',raw=>{if(closed||!raw||typeof raw!=='object')return;const event=object(raw);if(!currentContext||event.sessionId!==currentContext.sessionManager.getSessionId())return;const data=event.data&&typeof event.data==='object'?object(event.data):{};if(event.pluginEvent==='swarm.changed'||event.pluginEvent==='swarm.process'&&data.action==='closed')scheduleAdvance();});
   pi.on('session_shutdown',()=>{closed=true;pendingAdvance=false;currentContext=undefined;offWorkflowEvents();});
   registerPlugin(pi,'swarm',{snapshot:ctx=>controller.snapshot(ctx),dispatch:(action,input,ctx)=>controller.dispatch(action,input,ctx),dispose:async()=>{await draining;await workflow.dispose();await controller.dispose();}},'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
-    actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts'],
+    actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts','member.create','member.list','member.history','member.send','member.interrupt','member.resume'],
     toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status 或自行声称成员执行。
+队友动作：member.create {name,description?}；member.list {}；member.history {memberId}；member.send {memberId,body,messageId?,generation?}；member.interrupt {memberId,generation?}；member.resume {memberId,confirmUnknown?}。任务可携带 memberId 或 memberName 复用当前聊天队友。队友 idle 不是成果完成。成员只读讨论中的修改建议由你创建新尝试，不重放旧工具。
 1. create 的 input={goal,tasks:[{id,title,prompt,dependencies:[],mode:"read"|"write",writeScopes:["."]}],maxWorkers?,checks?:[{command,args:[]}]}。必须明确每个任务的 mode；只读分析任务用 mode:"read"，不能省略后变成写入。需要自动规划且不提供 tasks 时明确传 automatic:true。返回 Graph.id 是完整 UUID，created 只代表计划保存，不代表成员已执行。
 2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
 3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图启动异步复核，立即返回保留的状态，再用 snapshot 查询；重复 prepare 不会同时开启复核。integrate 仅对已通过检查/复核的 ready 图整合。

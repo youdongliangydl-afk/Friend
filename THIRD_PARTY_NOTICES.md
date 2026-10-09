@@ -1,10 +1,12 @@
 # Third-party notices
 
-Friend-Pi's four capability controllers and desktop interface are newly authored. Pi owns the Agent loop. Architecture references remain references; the ISC process backend identified below is retained separately. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
+Friend-Pi's original controllers and desktop interface are newly authored; persistent Swarm teammate/mailbox and member roster interactions adapt MIT DeepSeek Harness code. Pi owns the Agent loop. Architecture references remain references; the ISC process backend identified below is retained separately. Pi's published SDK, runtime, model catalog and extension interfaces are consumed without modifying Pi source.
 
 The machine-readable revision, license and use ledger is [docs/sources.json](docs/sources.json). npm package versions, download integrity and dependency relationships are fixed in `package-lock.json`; Pi tarballs and their source commit are fixed in `pi-source.lock.json`.
 
 ## Distributed dependencies
+
+- DeepSeek Harness, commit `5badb15009ae1756c3afe0ae0cef1faafc290ccc`, MIT, Copyright (c) 2026 DeepSeek. Adapted roster/mailbox and TeamAction interaction code is documented in Swarm SOURCES.md. Full notice is retained in Swarm DEEPSEEK-LICENSE and desktop third-party-licenses/deepseek-harness/LICENSE. Pi remains the execution runtime.
 
 - [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks), version 2.6.9, ISC. The original compiled process backend is retained under `third-party/pi-background-tasks`; its LICENSE, upstream notices, source integrity and documented host adaptations are copied into `third-party-licenses/pi-background-tasks` in the app. Only ordinary process execution is enabled; no delegate, Fusion or attribution extension is activated.
 
@@ -18,6 +20,6 @@ The machine-readable revision, license and use ledger is [docs/sources.json](doc
 
 ## Architecture references
 
-Thanks to [DeepSeekHarness](https://github.com/deepseek-ai/deepseek-harness), [MiniMax Code](https://github.com/MiniMax-AI/minimax-code), [ZCode](https://github.com/zai-org/ZCode), [Codex](https://github.com/openai/codex), [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code), [pi-gui](https://github.com/minghinmatthewlam/pi-gui), [pi-subagents](https://github.com/tintinweb/pi-subagents), [pi-agent-orchestrator](https://github.com/GroepOnline/pi-agent-orchestrator), and [Mem0](https://github.com/mem0ai/mem0). Their roles and checked immutable revisions are recorded in the ledger. References are not shipped frameworks or hosted-service dependencies, and no performance or correctness endorsement is implied.
+Thanks to [DeepSeekHarness](https://github.com/deepseek-ai/deepseek-harness), [MiniMax Code](https://github.com/MiniMax-AI/minimax-code), [ZCode](https://github.com/zai-org/ZCode), [Codex](https://github.com/openai/codex), [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code), [pi-gui](https://github.com/minghinmatthewlam/pi-gui), [pi-subagents](https://github.com/tintinweb/pi-subagents), [pi-agent-orchestrator](https://github.com/GroepOnline/pi-agent-orchestrator), and [Mem0](https://github.com/mem0ai/mem0). Their roles and checked immutable revisions are recorded in the ledger. Except for the specifically documented DeepSeek source adaptations above, references are not shipped frameworks or hosted-service dependencies, and no performance or correctness endorsement is implied.
 
 The user's original Friend project informed client layout and scope. Its checkout, configuration and data remain separate; it is not bundled or migrated into this product.

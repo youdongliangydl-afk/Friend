@@ -1,3 +1,4 @@
+import {SwarmController} from './legacy-controller.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
@@ -5,7 +6,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import type {PluginContext} from '@friend-pi/core';
-import {SwarmController,type Graph,type MemberLauncher,type MemberStart,type MemberOutput,type StopObject} from '../src/index.js';
+import {type Graph,type MemberLauncher,type MemberStart,type MemberOutput,type StopObject} from '../src/index.js';
 import {guardMember} from '../src/guard.js';
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {validateMemberDelivery} from '../src/member-role.js';

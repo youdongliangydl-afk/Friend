@@ -5,9 +5,28 @@
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
-  "exports": {".": "./dist/index.js", "./member": "./dist/member.js"},
-  "files": ["dist", "README.md", "LICENSE", "SOURCES.md"],
-  "engines": {"node": ">=24.15.0"},
-  "pi": {"extensions": ["dist/index.js"]},
-  "peerDependencies": {"@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-ai": "*", "typebox": "*"}
+  "exports": {
+    ".": "./dist/index.js",
+    "./member": "./dist/member.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SOURCES.md",
+    "DEEPSEEK-LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "pi": {
+    "extensions": [
+      "dist/index.js"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  }
 }

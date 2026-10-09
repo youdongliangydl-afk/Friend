@@ -91,13 +91,13 @@ export function copyProductionDependencies(destination) {
 }
 function copyOwnPackage(name, destination) {
   const source = join(root, 'packages', name); mkdirSync(destination, { recursive: true });
-  for (const file of ['package.json', 'README.md', 'LICENSE', 'SOURCES.md']) if (existsSync(join(source, file))) copyFileSync(join(source, file), join(destination, file));
+  for (const file of ['package.json', 'README.md', 'LICENSE', 'SOURCES.md', 'DEEPSEEK-LICENSE']) if (existsSync(join(source, file))) copyFileSync(join(source, file), join(destination, file));
   cpSync(join(source, 'dist'), join(destination, 'dist'), { recursive: true, dereference: true });
   if (!existsSync(join(destination, 'LICENSE'))) copyFileSync(join(root, 'LICENSE'), join(destination, 'LICENSE'));
 }
 function copyNotices(appRoot, nodeRoot, closure) {
   const notices = join(appRoot, 'third-party-licenses'); mkdirSync(notices, { recursive: true });
-  for (const [name, source] of [['pi', join(root, '.cache/pi/source/LICENSE')], ['node', join(nodeRoot, 'LICENSE')], ['electron', join(root, 'node_modules/electron/dist/LICENSE')], ['react', join(root, 'node_modules/react/LICENSE')], ['react-dom', join(root, 'node_modules/react-dom/LICENSE')], ['scheduler', join(root, 'node_modules/scheduler/LICENSE')]]) { mkdirSync(join(notices, name), { recursive: true }); copyFileSync(source, join(notices, name, 'LICENSE')); }
+  for (const [name, source] of [['deepseek-harness',join(root,'packages/swarm/DEEPSEEK-LICENSE')], ['pi', join(root, '.cache/pi/source/LICENSE')], ['node', join(nodeRoot, 'LICENSE')], ['electron', join(root, 'node_modules/electron/dist/LICENSE')], ['react', join(root, 'node_modules/react/LICENSE')], ['react-dom', join(root, 'node_modules/react-dom/LICENSE')], ['scheduler', join(root, 'node_modules/scheduler/LICENSE')]]) { mkdirSync(join(notices, name), { recursive: true }); copyFileSync(source, join(notices, name, 'LICENSE')); }
   mkdirSync(join(notices,'pi-background-tasks'),{recursive:true});for(const file of ['LICENSE','SOURCE.json','ADAPTATIONS.md','THIRD_PARTY_NOTICES.md'])copyFileSync(join(root,'third-party/pi-background-tasks',file),join(notices,'pi-background-tasks',file));
   copyFileSync(join(root, 'node_modules/electron/dist/LICENSES.chromium.html'), join(notices, 'electron', 'LICENSES.chromium.html'));
   writeFileSync(join(notices, 'dependencies.json'), `${JSON.stringify(closure, null, 2)}\n`);

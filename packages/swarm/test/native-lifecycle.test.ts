@@ -1,3 +1,4 @@
+import {SwarmController} from './legacy-controller.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -7,7 +8,7 @@ import {
   createAgentSessionRuntime,createAgentSessionServices,createAgentSessionFromServices,createEventBus,
   initTheme,ModelRuntime,SessionManager,SettingsManager,type CreateAgentSessionRuntimeFactory,
 } from '@earendil-works/pi-coding-agent';
-import swarmExtension,{SwarmController,type Graph} from '../src/index.js';
+import swarmExtension,{type Graph} from '../src/index.js';
 import expertExtension from '../../expert/src/index.js';
 import memoryExtension from '../../memory/src/index.js';
 import rebuildExtension,{type WorkingField} from '../../topic-rebuild/src/index.js';
