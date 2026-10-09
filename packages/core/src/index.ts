@@ -215,7 +215,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent') => {
     const context = makeContext(pi,ctx,origin); const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
-    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
+    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
   pi.on('before_agent_start',(_event,ctx) => { current = ctx; });

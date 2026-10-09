@@ -57,7 +57,7 @@ function swarmAuthority():{status:string;message?:string}|undefined {
   return {status:'failed',message:'Swarm 本轮任务图尚未启动或完成整合，不能认定协作已完成。请查看任务图并显式启动或接续。'};
 }
 function publishAuthorityNotice(authority=swarmAuthority()){
-  if(!authority?.message)return;
+  if(!authority?.message){if(authority?.status==='completed'&&authorityNotice){authorityNotice='';publish('notice',{level:'info',message:'Swarm 成果已通过检查与独立复核并完成整合。'});}return;}
   const fingerprint=JSON.stringify([runId,authority.status,authority.message,[...runGraphIds,...activeGraphIds].map(id=>[id,swarmGraphs.get(id)?.status])]);
   if(fingerprint===authorityNotice)return;authorityNotice=fingerprint;
   publish('notice',{level:authority.status==='failed'?'error':'warning',message:authority.message});
