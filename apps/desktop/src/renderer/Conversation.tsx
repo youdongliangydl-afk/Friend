@@ -6,7 +6,7 @@ import { groupToolActivity } from './tool-activity.js';
 import { ToolActivity } from './ToolActivity.js';
 import type { Message } from './types.js';
 export function Conversation({ messages, live, tools, running, initialExpanded = {} }: { messages: Message[]; live: Message | null; tools: ToolRun[]; running: boolean; initialExpanded?: Record<string, boolean> }) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(initialExpanded);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => ({ ...initialExpanded }));
   const toggle = (id: string, open: boolean) => setExpanded(previous => previous[id] === open ? previous : { ...previous, [id]: open });
   return <div className="messages">{groupToolActivity(projectTimeline(messages, live, tools, running)).map((message, i) =>
     <article className={'chat-message ' + (message.role === 'user' ? 'user' : 'assistant') + (message.live ? ' live' : '')}
