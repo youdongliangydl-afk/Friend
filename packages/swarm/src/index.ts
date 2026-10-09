@@ -30,7 +30,7 @@ function thinkingLevel(value:unknown,fallback?:string):string|undefined {
   if(typeof value!=='string'||!['off','minimal','low','medium','high','xhigh'].includes(value))throw new Error('未知思考等级');
   return value;
 }
-function strings(value:unknown): string[] {if (!Array.isArray(value) || value.some(x=>typeof x !== 'string')) throw new Error('必须提供字符串数组'); return value as string[];}
+function strings(value:unknown,label=''): string[] {if (!Array.isArray(value) || value.some(x=>typeof x !== 'string')) throw new Error(`${label}必须提供字符串数组`); return value as string[];}
 type ExecutionContext=PluginContext&{planMode?:boolean};
 function assertExecution(ctx:PluginContext,style:'team'|'swarm'):void {
   const host=ctx as ExecutionContext,mode=host.policy?.executionMode??host.executionMode;
@@ -57,11 +57,12 @@ const currentUnknown=(graph:Graph)=>graph.tasks.some(task=>task.status==='unknow
 function assertOrdinaryGraph(graph:Graph):void {if(graph.audit)throw new Error('内部 Goal 审计图不能通过通用 Swarm 操作修改或接续；请使用 friend_goal complete 重新发起独立审计。');}
 function graphKey(projectId:string,id:string): string {return `graph:${projectId}:${id}`;}
 function taskSpec(raw:unknown,index:number): Task {
-  const item=object(raw); const mode=item.mode === 'read' ? 'read' : 'write';
-  if(item.mode!==undefined&&item.mode!=='read'&&item.mode!=='write')throw new Error('任务 mode 必须是 read 或 write');
-  const scopes=item.writeScopes === undefined ? ['.'] : strings(item.writeScopes);
-  if (!scopes.length || scopes.some(path=>isAbsolute(path) || !contains('/scope',resolve('/scope',path)))) throw new Error('写入范围必须相对于成员工作区，不能越出工作区');
-  const prompt=text(item.prompt || item.title,'任务要求');return {memberId:item.memberId?text(item.memberId,'队友标识',100):undefined,memberName:item.memberName?text(item.memberName,'队友名称',80):undefined,id:item.id ? text(item.id,'任务标识',100) : `task-${index+1}`,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
+  const item=object(raw),id=item.id ? text(item.id,'任务标识',100) : `task-${index+1}`; const mode=item.mode === 'read' ? 'read' : 'write';
+  if(item.mode!==undefined&&item.mode!=='read'&&item.mode!=='write')throw new Error(`任务 ${id} 的 mode 必须是 read 或 write`);
+  const scopes=item.writeScopes === undefined ? ['.'] : strings(item.writeScopes,`任务 ${id} 的写入范围：`);
+  if (mode==='write'&&!scopes.length)throw new Error(`任务 ${id}：写入任务必须提供非空 writeScopes`);
+  if (scopes.some(path=>isAbsolute(path) || !contains('/scope',resolve('/scope',path)))) throw new Error(`任务 ${id}：写入范围必须相对于成员工作区，不能越出工作区`);
+  const prompt=text(item.prompt || item.title,'任务要求');return {memberId:item.memberId?text(item.memberId,'队友标识',100):undefined,memberName:item.memberName?text(item.memberName,'队友名称',80):undefined,id,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
 }
 export function validateDAG(tasks:Task[]): void {
   const map=new Map(tasks.map(task=>[task.id,task]));if (map.size!==tasks.length) throw new Error('任务标识重复');

@@ -28,6 +28,22 @@ function controlled() {
   return {launcher,starts,outputs,sent};
 }
 
+test('read tasks accept empty write scopes without gaining write capability in a mixed graph',async()=>{
+  const f=fixture(true),worker=controlled(),controller=new SwarmController(worker.launcher);
+  try{
+    const graph=await controller.dispatch('create',{goal:'mixed safe scopes',tasks:[{...spec('writer','write'),writeScopes:['sum.mjs']},{...spec('reader'),writeScopes:[]}]},f.context) as Graph;
+    assert.deepEqual(graph.tasks.map(task=>[task.id,task.mode,task.writeScopes]),[['writer','write',['sum.mjs']],['reader','read',[]]]);
+    for(const task of [{id:'empty-writer',mode:'write',writeScopes:[]},{id:'escaping-writer',mode:'write',writeScopes:['../outside']},{id:'escaping-reader',mode:'read',writeScopes:['../outside']},{id:'absolute-reader',mode:'read',writeScopes:['/outside']},{id:'invalid-reader',mode:'read',writeScopes:[42]}])await assert.rejects(controller.dispatch('create',{goal:'invalid scopes',tasks:[{...spec(task.id),...task}]},f.context),error=>error instanceof Error&&error.message.includes(task.id));
+    assert.equal(snapshot(controller,f.context).graphs.length,1,'invalid scopes must not create partial graphs');
+    await controller.dispatch('start',{graphId:graph.id},f.context);await waitFor(()=>worker.starts.size===2);
+    const reader=[...worker.starts.values()].find(start=>start.taskId==='reader')!;assert.equal(reader.mode,'read');assert.deepEqual(reader.writeScopes,[]);
+    const callbacks=new Map<string,Function>();guardMember(reader,async()=>false)({on:(name:string,callback:Function)=>callbacks.set(name,callback)} as unknown as ExtensionAPI);const call=callbacks.get('tool_call')!;
+    assert.equal(await call({toolName:'read',input:{path:'original.txt'}}),undefined);
+    for(const event of [{toolName:'write',input:{path:'sum.mjs',content:'forbidden'}},{toolName:'edit',input:{path:'original.txt'}},{toolName:'bash',input:{command:'echo forbidden > sum.mjs'}}])assert.equal((await call(event)).block,true);
+    assert.equal(existsSync(join(f.project,'sum.mjs')),false);assert.equal(readFileSync(join(f.project,'original.txt'),'utf8'),'original\n');
+  }finally{await controller.dispose();f.cleanup();}
+});
+
 test('DAG validation rejects cycles, duplicate ids, and absent dependencies before storage',async()=>{
   const f=fixture();const controller=new SwarmController();
   try {
