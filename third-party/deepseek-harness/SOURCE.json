@@ -65,6 +65,38 @@
     {
       "path": "packages/client/ui-trajectory/src/client/trajectory-search-index.ts",
       "sha256": "081fdf9092da9fe24e23b255262f3bd0f0e020aa9f377e318722f956b6cd371a"
+    },
+    {
+      "path": "packages/client/ui-chat/src/client/chat/StatsPills.tsx",
+      "sha256": "7c74b7b3538e297d6f3352508f4d17a424c962dcd1bc61d13f70093e0b02667c"
+    },
+    {
+      "path": "packages/client/ui-chat/src/client/chat/stat-dialog.ts",
+      "sha256": "b2ed41cce24be8522dea0508ebdab109da2f1fe98f69a830a52f886304b66ada"
+    },
+    {
+      "path": "packages/client/ui-chat/src/client/chat/token-format.ts",
+      "sha256": "143a024cbec7ad51a8e0b15db5ea68a6c994bd584b6530b8ce3fb9c5c9e8646f"
+    },
+    {
+      "path": "packages/client/ui-chat/src/client/contract/turn-metrics.ts",
+      "sha256": "73d4f7efa088db97c091daa921f4489e43ce52ef6e8e199f09a5733a90b2705b"
+    },
+    {
+      "path": "packages/session/session-stats/src/projection.ts",
+      "sha256": "8e38b0c0c5a0e98c4184a82763363086133efc13b64d0a8b2a6c515e43f7d99c"
+    },
+    {
+      "path": "packages/client/ui-conversation/src/client/context-occupancy.ts",
+      "sha256": "00f785594ab5a5fa75e10d0f9ddad781d49d0d550b8ecac12604010e275a80a8"
+    },
+    {
+      "path": "packages/client/ui-conversation/src/client/skeleton/ContextMeter.tsx",
+      "sha256": "84e568164bb26fadc8cae50d82de7dbd4d14be0d957f5ae7fd9c4575a1f1568d"
+    },
+    {
+      "path": "packages/client/ui-primitives/src/useAnchoredPosition.ts",
+      "sha256": "7a98a11f845fb6252f33c6f526712b46dcb2d9729f44c2394005f58b5c6e0b15"
     }
   ]
 }
