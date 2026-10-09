@@ -14,11 +14,10 @@ export function SessionStats({stats,contextTarget}:{stats?:SessionMonitor;contex
  useEffect(()=>{if(!contextKnown){clearTimeout(hover.current);hoverOnly.current=false;}},[contextKnown]);
  useEffect(()=>()=>clearTimeout(hover.current),[]);
  useEffect(()=>{
-  if(!open)return;
   const close=()=>{clearTimeout(hover.current);hoverOnly.current=false;setOpen(null);};
-  const outside=(event:PointerEvent)=>{if(!triggers.current[open]?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))close();};
-  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){close();triggers.current[open]?.focus();}};
-  document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
+  const outside=(event:PointerEvent)=>{if(open&&!triggers.current[open]?.contains(event.target as Node)&&!panel.current?.contains(event.target as Node))close();};
+  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){close();if(open)triggers.current[open]?.focus();}};
+  if(open)document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
   return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
  },[open]);
  useLayoutEffect(()=>{
