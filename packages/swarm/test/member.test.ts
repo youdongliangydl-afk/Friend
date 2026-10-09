@@ -36,8 +36,8 @@ async function environment(respond:(input:Record<string,unknown>)=>string|{tool:
   return {root,project,agentDir,worker,requests:()=>requests,cleanup:async()=>{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));rmSync(root,{recursive:true,force:true});rmSync(buildDir,{recursive:true,force:true});}};
 }
 
-function runReviewer(env:Awaited<ReturnType<typeof environment>>){
-  const start:MemberStart={v:1,type:'start',graphId:'review-fixture',taskId:'independent-review',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'独立成果审查者：read/grep/find/ls only. Host objective check passed. Submit using swarm_review_result.',mode:'read',writeScopes:[],reviewResult:true};
+function runReviewer(env:Awaited<ReturnType<typeof environment>>,resultVersions?:Record<string,number>){
+  const start:MemberStart={v:1,type:'start',graphId:'review-fixture',taskId:'independent-review',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'独立成果审查者：read/grep/find/ls only. Host objective check passed. Submit using swarm_review_result.',mode:'read',writeScopes:[],reviewResult:true,resultVersions};
   const child=fork(env.worker,[],{cwd:env.project,stdio:['ignore','pipe','pipe','ipc'],execArgv:[]});child.stdout?.resume();child.stderr?.resume();const messages:MemberOutput[]=[];
   const terminal=new Promise<Extract<MemberOutput,{type:'settled'|'failed'}>>((done,reject)=>{const timer=setTimeout(()=>reject(new Error('Reviewer fixture timed out')),15000);child.on('message',(message:MemberOutput)=>{messages.push(message);if(message.type==='settled'||message.type==='failed'){clearTimeout(timer);done(message);}});child.once('error',error=>{clearTimeout(timer);reject(error);});});
   child.send(start);return {start,child,messages,terminal};
@@ -91,6 +91,30 @@ test('native reviewer refuses missing, invalid and conflicting submissions witho
   for(const scenario of ['missing','invalid','conflict'] as const){
     let turns=0;const env=await environment(()=>{turns++;if(scenario==='missing')return '{"approved":true,"findings":"unsubmitted raw JSON"}';if(turns===1)return {tool:'swarm_review_result',args:{approved:scenario==='invalid'?'true':true,findings:'initial evidence'}};if(scenario==='conflict'&&turns===2)return {tool:'swarm_review_result',args:{approved:false,findings:'changed judgment'}};return 'Verification complete. {"approved":true,"findings":"unsubmitted replacement"}';});const reviewer=runReviewer(env);
     try{const result=await reviewer.terminal;assert.equal(result.type,'failed',scenario);if(result.type!=='failed')throw new Error('unexpected reviewer success');assert.match(result.error,scenario==='conflict'?/冲突/:/未通过 swarm_review_result/);assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);assert.equal(readFileSync(join(env.project,'readme.txt'),'utf8'),'source fixture\n');assert.equal(readdirSync(reviewer.start.sessionDir).filter(file=>file.endsWith('.jsonl')).length,1);}finally{reviewer.child.kill('SIGTERM');await env.cleanup();}
+  }
+});
+
+test('native reviewer exposes exact result task ids and rejects Goal ledger ids without resubmission',async()=>{
+  const ledgerId='e290ae34-20c9-4fbc-88b5-3e21704c2c61',resultVersions={'audit-evidence':1},allowedIds=JSON.stringify(Object.keys(resultVersions));
+  for(const taskIds of [[ledgerId],[],undefined]){
+    let turns=0;
+    const env=await environment(input=>{
+      const tool=(input.tools as {function:{name:string;description:string;parameters:TSchema&{properties:{taskIds:{description:string}}}}}[]).find(tool=>tool.function.name==='swarm_review_result')!.function;
+      assert.ok(tool.description.includes(allowedIds));assert.match(tool.description,/Goal 台账 ID/);assert.match(tool.description,/approved:true 可省略 taskIds 或传 \[\]/);
+      assert.ok(tool.parameters.properties.taskIds.description.includes(allowedIds));
+      turns++;if(turns===1)return {tool:'swarm_review_result',args:{approved:true,findings:'checked source evidence',...(taskIds===undefined?{}:{taskIds})}};
+      const result=(input.messages as {role:string;content:string}[]).filter(message=>message.role==='tool').at(-1)!;
+      if(taskIds?.length)assert.ok(result.content.includes(allowedIds),'invalid ID feedback must expose the legal namespace');
+      return 'Verification complete. {"approved":true,"findings":"prose cannot replace tool data"}';
+    });const reviewer=runReviewer(env,resultVersions);
+    try{
+      const result=await reviewer.terminal;assert.equal(turns,2,'host must not resubmit on the model’s behalf');
+      const files=readdirSync(reviewer.start.sessionDir).filter(file=>file.endsWith('.jsonl')),entries=readFileSync(join(reviewer.start.sessionDir,files[0]),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+      const calls=entries.filter(entry=>entry.type==='message'&&entry.message.role==='assistant').flatMap(entry=>entry.message.content).filter(part=>part.type==='toolCall'&&part.name==='swarm_review_result');assert.equal(calls.length,1);assert.deepEqual(calls[0].arguments.taskIds,taskIds,'submitted IDs must never be coerced');
+      const receipts=entries.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='swarm_review_result');assert.equal(receipts.length,1);assert.equal(receipts[0].message.isError,!!taskIds?.length);
+      if(taskIds?.length){assert.equal(result.type,'failed');assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);}
+      else {assert.equal(result.type,'settled');if(result.type!=='settled')throw new Error('Reviewer rejected legal task IDs');assert.deepEqual(JSON.parse(result.summary),{approved:true,findings:'checked source evidence',...(taskIds===undefined?{}:{taskIds}),resultVersions});}
+    }finally{reviewer.child.kill('SIGTERM');await env.cleanup();}
   }
 });
 
