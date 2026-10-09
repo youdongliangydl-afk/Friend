@@ -28,13 +28,13 @@ let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGI
 let changeTracker:RunChangesTracker|undefined;let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let runRequiresSwarm:boolean|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let permissionMode:PermissionMode=process.env.FRIEND_PI_PERMISSION_MODE?parsePermissionMode(process.env.FRIEND_PI_PERMISSION_MODE):'auto';let executionMode:ExecutionMode=['team','swarm'].includes(process.env.FRIEND_PI_MODE||'')?process.env.FRIEND_PI_MODE as ExecutionMode:'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;let permissionEpoch=0;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>;terminalRequestId?:string}>();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;let teammateRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
-const services=new RuntimeController(dataDir,{admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed)publish('state',current());},busy:()=>swarmBusy(),mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:async frame=>{await new Promise<void>(done=>setImmediate(done));if(stopping||disposed||frame.generation!==services.generation()||frame.goalId&&services.currentGoal()?.status!=='active'&&services.currentGoal()?.status!=='waiting')return;await ensureModelReady();const input:PendingInput={id:randomUUID(),text:frame.message,combinedLength:frame.message.length,combinedHash:digest(frame.message),imageHash:imageIdentity([]),expectsStart:true,automatic:true,memberContinuation:frame.id.startsWith('member-request:'),runId};pendingInputs.push(input);session.sessionManager.appendCustomEntry('friend-pi.runtime-wake',{v:1,eventId:frame.id,generation:frame.generation,goalId:frame.goalId});try{await session.prompt(frame.message,{expandPromptTemplates:false});}finally{const position=pendingInputs.indexOf(input);if(position>=0)pendingInputs.splice(position,1);}},prepareWake:async frame=>{if(memberBudgetWait())throw new Error(memberBudgetWait());if(disposed||stopping)throw new Error('执行已停止');if(!runId){runId=frame.runId||randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();captureRunPolicy(frame.id.startsWith('member-request:')?false:undefined);}const goal=services.currentGoal();if(frame.id.startsWith('resume:')&&goal)captureRunPolicy(goal.mode==='swarm'&&!planMode);await changeTracker?.ensure(runId);foregroundOpen=true;cancelRequested=false;lifecycleStatus='running';policyRevision++;await applyAssignedRole();await ensureModelReady();}});
+const services=new RuntimeController(dataDir,{admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed)publish('state',current());},busy:()=>swarmBusy(),mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:async frame=>{await new Promise<void>(done=>setImmediate(done));if(stopping||disposed||frame.generation!==services.generation()||frame.goalId&&services.currentGoal()?.status!=='active'&&services.currentGoal()?.status!=='waiting')return;const wakeEpoch=queueEpoch;await ensureModelReady();const input:PendingInput={id:randomUUID(),text:frame.message,combinedLength:frame.message.length,combinedHash:digest(frame.message),imageHash:imageIdentity([]),expectsStart:true,automatic:true,memberContinuation:frame.id.startsWith('member-request:'),runId};pendingInputs.push(input);session.sessionManager.appendCustomEntry('friend-pi.runtime-wake',{v:1,eventId:frame.id,generation:frame.generation,goalId:frame.goalId});try{await session.prompt(frame.message,{expandPromptTemplates:false,preflightResult:()=>{if(stopping||disposed||wakeEpoch!==queueEpoch||frame.generation!==services.generation())throw new Error('接续已取消');}});}finally{const position=pendingInputs.indexOf(input);if(position>=0)pendingInputs.splice(position,1);}},prepareWake:async frame=>{const wakeGeneration=services.generation();if(memberBudgetWait())throw new Error(memberBudgetWait());if(disposed||stopping)throw new Error('执行已停止');if(!runId){runId=frame.runId||randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();captureRunPolicy(frame.id.startsWith('member-request:')?false:undefined);}const goal=services.currentGoal();if(frame.id.startsWith('resume:')&&goal)captureRunPolicy(goal.mode==='swarm'&&!planMode);await changeTracker?.ensure(runId);if(stopping||disposed||wakeGeneration!==services.generation())throw new Error('接续已取消');foregroundOpen=true;cancelRequested=false;lifecycleStatus='running';policyRevision++;await applyAssignedRole();await ensureModelReady();}});
 function runtimeState(){try{return services.snapshot();}catch{return undefined;}}
 function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runId);}catch{return false;}}
 async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
-interface PendingInput {queueId?:string;id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;automatic?:boolean;memberContinuation?:boolean;nativeMessage?:unknown;runId?:string}
+interface PendingInput {queueId?:string;id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;preflightStarted?:boolean;automatic?:boolean;memberContinuation?:boolean;nativeMessage?:unknown;runId?:string}
 const pendingInputs:PendingInput[]=[];let startedInputId:string|undefined;let stopping=false;
-let inputQueue:MessageQueue;let queueDriving=false;let queueEpoch=0;let queueResumeAuthorised=false;
+let inputQueue:MessageQueue;let queueDriving=false;let queueEpoch=0;let queueResumeAuthorised=false;let queueRestoring:Promise<boolean>|undefined;
 interface GoalSuspension {id:string;revision:number;sourceRunId?:string;objective:string;mode:ExecutionMode;planMode:boolean;modelId:string;thinkingLevel:ThinkingLevel}
 const suspensionKey=()=>`suspension:${session.sessionId}`;
 function cancelQueueResume(){inputQueue?.store.remove(suspensionKey());}
@@ -57,23 +57,39 @@ async function admitQueuedInput():Promise<boolean>{
    await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();
    const latest=inputQueue.snapshot();if(admissionEpoch!==queueEpoch||latest.paused||stopping||latest.items[0]?.id!==head.id||latest.items[0]?.revision!==head.revision)return true;
    const item=inputQueue.claim(head.id,head.revision,randomUUID());queueResumeAuthorised=false;queueChanged();
-   try{await handle('send',{payload:item,queueId:item.id,admissionEpoch,runId:item.runId,mode:item.mode,planMode:item.planMode});}catch(error){inputQueue.failed(item.id);queueChanged();throw error;}return true;
+   queueRestoring=handle('send',{payload:item,queueId:item.id,admissionEpoch,runId:item.runId,mode:item.mode,planMode:item.planMode}).then(()=>true);try{await queueRestoring;}catch(error){inputQueue.failed(item.id);queueChanged();throw error;}finally{queueRestoring=undefined;}return true;
   }
   if(suspended){
    const goal=services.goals.read(suspended.id,services.context());
-   if(goal.status!=='paused'||goal.revision!==suspended.revision||services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)||!suspended.sourceRunId){cancelQueueResume();return false;}
-   if(!queueResumeAuthorised&&['failed','stopped','interrupted'].includes(lifecycleStatus)){inputQueue.pause(true);queueChanged();return true;}
+   if(goal.status!=='paused'||goal.revision!==suspended.revision||!suspended.sourceRunId){cancelQueueResume();return false;}
+   const focused=services.currentGoal();
+   const incompleteGoal=focused&&focused.id!==goal.id&&!['completed','stopped'].includes(focused.status);
+   const independentRun=runId!==suspended.sourceRunId;
+   const incompleteTask=independentRun&&services.tasks.list(services.context()).some(task=>task.runId===runId&&task.status!=='completed');
+   const incompleteGraph=independentRun&&[...swarmGraphs.values()].some(graph=>graph.runId===runId&&graph.audit!==true&&!['integrated','completed'].includes(String(graph.status)));
+   if(incompleteGoal||incompleteTask||incompleteGraph||independentRun&&!queueResumeAuthorised&&lifecycleStatus!=='completed'){inputQueue.pause(true);queueChanged();return true;}
    if(goal.tokenBudget!==undefined&&(!goal.usageAvailable||goal.tokens>=goal.tokenBudget))throw new Error('原目标预算需要处理，未自动恢复');
    if(goal.sessionId!==session.sessionId)throw new Error('原目标不属于当前会话');
+   const valid=()=>{const marker=inputQueue.store.get<GoalSuspension>(suspensionKey())?.value,currentGoal=services.goals.read(goal.id,services.context());return admissionEpoch===queueEpoch&&!stopping&&!disposed&&!inputQueue.snapshot().paused&&!inputQueue.snapshot().items.length&&marker?.id===goal.id&&marker.revision===goal.revision&&currentGoal.status==='paused'&&currentGoal.revision===goal.revision;};
+   queueRestoring=(async()=>{
    await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();
-   if(admissionEpoch!==queueEpoch||inputQueue.snapshot().paused)return true;
-   await session.setModel(selectedModel(suspended.modelId));session.setThinkingLevel(suspended.thinkingLevel);executionMode=suspended.mode;planMode=suspended.planMode;await ensureModelReady();
+   const snapshot=enabled.includes('swarm')?object(await requestPlugin(bus,'swarm','snapshot',{},1000)):{};
+   await changeTracker?.ensure(suspended.sourceRunId!);
+   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,suspended.modelId);
+   if(!valid())return true;
+   const previousModel=session.model,previousThinking=session.thinkingLevel;
+   await session.setModel(selectedModel(suspended.modelId));
+   // Manual mutations wait for this restoration to retire. If cancelled during
+   // the SDK's async model change, restore B before applying the user's change.
+   if(!valid()){if(previousModel)await session.setModel(previousModel);session.setThinkingLevel(previousThinking);return true;}
+   session.setThinkingLevel(suspended.thinkingLevel);executionMode=suspended.mode;planMode=suspended.planMode;
    runId=suspended.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;settledRunId=runId;cancelRequested=false;authorityNotice='';activeGraphIds.clear();runGraphIds.clear();baselineGraphIds.clear();
    const nativePolicy=ownedEntries(session.sessionManager.getBranch()).findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).runId===runId);
    runRequiresSwarm=nativePolicy?.type==='custom'?object(nativePolicy.data).requiresSwarm===true:goal.mode==='swarm';
-   if(enabled.includes('swarm')){const snap=object(await requestPlugin(bus,'swarm','snapshot',{},1000));for(const raw of Array.isArray(snap.graphs)?snap.graphs:[]){const graph=object(raw);if(graph.sessionId===session.sessionId&&graph.runId===runId&&graph.audit!==true){swarmGraphs.set(String(graph.id),graph);runGraphIds.add(String(graph.id));}}}
-   await changeTracker?.ensure(runId);const marker=inputQueue.store.get<GoalSuspension>(suspensionKey())?.value,currentGoal=services.goals.read(goal.id,services.context());if(admissionEpoch!==queueEpoch||stopping||disposed||inputQueue.snapshot().paused||inputQueue.snapshot().items.length||marker?.id!==goal.id||marker.revision!==goal.revision||currentGoal.status!=='paused'||currentGoal.revision!==goal.revision)return true;services.goals.store.put(`focus:${session.sessionId}`,goal.id);
+   for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId===session.sessionId&&graph.runId===runId&&graph.audit!==true){swarmGraphs.set(String(graph.id),graph);runGraphIds.add(String(graph.id));}}
+   services.goals.store.put(`focus:${session.sessionId}`,goal.id);
    await services.dispatch('goal.resume',{goalId:goal.id},services.context('user'));cancelQueueResume();queueResumeAuthorised=false;lifecycleStatus='running';queueChanged();return false;
+   })();try{return await queueRestoring;}finally{queueRestoring=undefined;}
   }
   return false;
  }catch(error){inputQueue.pause(true);publish('notice',{level:'error',message:publicError(error)});publish('state',current());return true;}finally{queueDriving=false;}
@@ -233,9 +249,9 @@ async function initialize(){
       // Queued steering/follow-up inputs do not run before_agent_start. They are
       // delivered unchanged by Pi, so require both complete text and image hashes.
       const input=started||pendingInputs.find(input=>!input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(nativeText)&&input.imageHash===imageIdentity(typeof nativeMessage.content==='string'?[]:nativeMessage.content.filter(part=>part.type==='image')));
-      if(input&&digest(nativeText.slice(0,input.combinedLength))===input.combinedHash)input.nativeMessage=nativeMessage;
+      if(input&&(input.preflightStarted||digest(nativeText.slice(0,input.combinedLength))===input.combinedHash))input.nativeMessage=nativeMessage;
     }
-    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position];if(digest(visibleText(nativeMessage.content).slice(0,input.text.length))!==digest(input.text))return;session.sessionManager.appendCustomEntry(input.automatic?'friend-pi.runtime-wake.input':'friend-pi.input.v1',{entryId:entry.id,textEnd:input.text.length,hash:digest(input.text),runId:input.runId,...(input.queueId?{queueId:input.queueId}:{})});if(input.queueId)inputQueue.delivered(input.queueId,input.runId);pendingInputs.splice(position,1);publish('state',current());});}
+    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position],nativeText=visibleText(nativeMessage.content),exact=digest(nativeText.slice(0,input.text.length))===digest(input.text);if(!exact&&!input.preflightStarted)return;const deliveredText=exact?input.text:nativeText;session.sessionManager.appendCustomEntry(input.automatic?'friend-pi.runtime-wake.input':'friend-pi.input.v1',{entryId:entry.id,textEnd:deliveredText.length,hash:digest(deliveredText),runId:input.runId,...(input.queueId?{queueId:input.queueId}:{})});if(input.queueId)inputQueue.delivered(input.queueId,input.runId);pendingInputs.splice(position,1);publish('state',current());});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=rootExecutionBusy();
@@ -312,9 +328,20 @@ async function initialize(){
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
   if(disposed&&method!=='shutdown')throw new Error('会话已结束');
   if(session&&isSessionDeleted(dataDir,session.sessionId)&&method!=='shutdown')throw new Error('会话已删除');
+  if(method==='send'&&!input.queueId){queueEpoch++;cancelQueueResume();}
+  const mutation=['stop','configure','send','provider.refresh','provider.save','plan.approve','plan.reject'].includes(method)||method==='queue'&&input.action!=='list'||method==='runtime'&&!/^(snapshot|.*\.(read|list|status|logs))$/.test(String(input.action))||method==='plugin'&&!/^(snapshot|read|list|status|.*\.(read|list|history))$/.test(String(input.action));
+  if(queueRestoring&&mutation){queueEpoch++;await queueRestoring.catch(()=>true);}
+
   if(method==='queue'){
     const action=String(input.action),id=String(input.id||''),revision=Number(input.revision);
-    if(action==='add'){const payload=captureInput(input);if(payload.attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');inputQueue.add(payload);}
+    if(action==='add'){
+      const intentId=typeof input.intentId==='string'?text(input.intentId,'消息提交标识',80):undefined,identity=digest({text:input.text,attachments:Array.isArray(input.attachments)?input.attachments.map(raw=>object(raw).path):[],mode:input.mode,planMode:input.planMode});
+      if(intentId&&inputQueue.accepted(intentId,identity))return queueState();
+      if(input.fromSideDraft===true)await handle('draft.update',input);
+      const payload=input.fromSideDraft===true?inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value:captureInput(input);if(!payload)throw new Error('侧边草稿不存在');
+      if(payload.attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');
+      inputQueue.store.transaction(()=>{inputQueue.add(payload,intentId,identity);if(input.fromSideDraft===true)inputQueue.store.remove(`draft:${session.sessionId}`);});
+    }
     else if(action==='pause'){queueEpoch++;queueResumeAuthorised=false;inputQueue.pause(true);}
     else if(action==='resume'){if(services.unknownActivities().length||services.jobs.hasUnknown(services.context()))throw new Error('请先处理未知执行现场');queueEpoch++;queueResumeAuthorised=true;inputQueue.pause(false);}
     else if(action==='edit')inputQueue.edit(id,revision);
@@ -329,7 +356,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     }
     else if(action==='move.prepare'){const leaf=stableForkLeaf(session.sessionManager.getBranch());if(!leaf)throw new Error('尚无可继承的上下文');return inputQueue.moving(id,revision,text(input.targetId),leaf);}
     else if(action==='move.inspect'){const item=inputQueue.read(id);if(item.targetId!==input.targetId||!['moving','unknown'].includes(item.state))throw new Error('侧聊交接身份不匹配');return item;}
-    else if(action==='move.failed')inputQueue.unknown(id);
+    else if(action==='move.failed'){const item=inputQueue.snapshot().items.find(row=>row.id===id);if(item&&item.targetId===input.targetId&&['moving','unknown'].includes(item.state))inputQueue.unknown(id);}
     else if(action==='move.commit'){if(inputQueue.snapshot().items.some(item=>item.id===id))inputQueue.moved(id,text(input.targetId));}
     else if(action==='move.cancel')inputQueue.release(id,text(input.targetId));
     else if(action!=='list')throw new Error('未知排队操作');
@@ -337,18 +364,26 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='sidechat.fork'){
     const leafId=typeof input.leafId==='string'?input.leafId:stableForkLeaf(session.sessionManager.getBranch()),file=session.sessionFile;if(!leafId||!file)throw new Error('尚无可继承的已提交上下文');
-    const childManager=SessionManager.open(file,text(input.sessionDir),text(input.cwd));
+    const key=typeof input.targetId==='string'?`sidechat-fork:${session.sessionId}:${input.targetId}`:undefined,identity={leafId,cwd:text(input.cwd),sessionDir:text(input.sessionDir)};
+    const saved=key?inputQueue.store.get<{identity:typeof identity;result:{path:string;piSessionId:string}}>(key)?.value:undefined;
+    if(saved){if(digest(saved.identity)!==digest(identity))throw new Error('侧聊分叉身份已变化');return saved.result;}
+    const childManager=SessionManager.open(file,identity.sessionDir,identity.cwd);
     const path=childManager.createBranchedSession(leafId);if(!path)throw new Error('无法创建侧边会话');
     childManager.appendCustomEntry(SIDECHAT_TYPE,{v:1,sourceSessionId:session.sessionId,leafId});
-    return {path,piSessionId:childManager.getSessionId()};
+    const result={path,piSessionId:childManager.getSessionId()};if(key)inputQueue.store.put(key,{identity,result});return result;
   }
-  if(method==='draft.install'){const key=`draft:${session.sessionId}`;if(!inputQueue.store.get(key))inputQueue.store.put(key,input.payload);return current();}
+  if(method==='draft.install'){
+    const payload=object(input.payload),transferId=typeof payload.id==='string'?payload.id:undefined,key=`draft:${session.sessionId}`,receipt=transferId?`draft-install:${session.sessionId}:${transferId}`:undefined,hash=digest({text:payload.text,attachments:payload.attachments,mode:payload.mode,planMode:payload.planMode}),installed=receipt?inputQueue.store.get<{hash:string}>(receipt)?.value:undefined;
+    if(installed&&installed.hash!==hash)throw new Error('侧边草稿交接内容已变化');
+    if(!installed)inputQueue.store.transaction(()=>{if(!inputQueue.store.get(key))inputQueue.store.put(key,{...payload,submissionId:randomUUID()});if(receipt)inputQueue.store.put(receipt,{hash});});return current();
+  }
   if(method==='draft.read')return inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value||null;
   if(method==='draft.update'){const key=`draft:${session.sessionId}`,old=inputQueue.store.get<InputPayload>(key)?.value;if(!old)throw new Error('侧边草稿不存在');if(typeof input.removePath==='string')inputQueue.store.put(key,{...old,attachments:old.attachments.filter(a=>a.path!==input.removePath)});else{if(typeof input.text!=='string'||Buffer.byteLength(input.text)>128*1024)throw new Error('草稿内容无效');let attachments=old.attachments;if(Array.isArray(input.attachments)){const paths=input.attachments.map(raw=>text(object(raw).path)),added=paths.filter(path=>!old.attachments.some(a=>a.path===path));attachments=[...old.attachments.filter(a=>paths.includes(a.path)),...(added.length?captureInput({text:'',attachments:added.map(path=>({path}))}).attachments:[])];}if(input.mode!==undefined&&!['single','team','swarm'].includes(String(input.mode)))throw new Error('协作方式无效');inputQueue.store.put(key,{...old,text:input.text,attachments,...(input.mode===undefined?{}:{mode:input.mode}),...(input.planMode===undefined?{}:{planMode:input.planMode===true})});}return current();}
   if(method==='draft.send'){
-    const key=`draft:${session.sessionId}`,payload=inputQueue.store.get<InputPayload>(key)?.value;if(!payload)throw new Error('侧边草稿不存在');
-    const item=inputQueue.add(payload);inputQueue.claim(item.id,item.revision,randomUUID());
-    try{const result=await handle('send',{queueId:item.id,admissionEpoch:queueEpoch,runId:inputQueue.read(item.id).runId,mode:payload.mode,planMode:payload.planMode});inputQueue.store.remove(key);return result;}catch(error){inputQueue.failed(item.id);throw error;}
+    const key=`draft:${session.sessionId}`,payload=inputQueue.store.get<InputPayload&{submissionId?:string}>(key)?.value;
+    if(!payload){if(inputQueue.store.get(`draft-consumed:${session.sessionId}`))return current();throw new Error('侧边草稿不存在');}
+    const intentId='draft:'+String(payload.submissionId||digest(payload)),identity=digest(payload);
+    inputQueue.store.transaction(()=>{if(!inputQueue.accepted(intentId,identity))inputQueue.add(payload,intentId,identity);inputQueue.store.remove(key);inputQueue.store.put(`draft-consumed:${session.sessionId}`,{intentId});});queueChanged();return current();
   }
   if(method==='state'){if(session.isIdle&&!swarmBusy()&&!finiteJobs()&&!stopping&&!['active','waiting','verifying'].includes(services.currentGoal()?.status||'')){await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();}return {...current(),...await modelState()};}
   if(method==='plan.read')return plans.current();
@@ -363,6 +398,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     return await handle('send',{text:`执行用户已批准的计划，保持计划范围及检查标准。\n${plan.body}`,mode:plan.mode,planMode:false,runId:input.runId});
   }
   if(method==='send'){
+    const sendEpoch=queueEpoch;
     if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
     if(stopping)throw new Error('正在停止，请等待终止回执');
     if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');
@@ -387,10 +423,17 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(queued&&(input.admissionEpoch!==queueEpoch||stopping))throw new Error('消息交付已取消');
     const inputRecord:PendingInput={id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
     if(queued)inputQueue.handoff(queued.id);
-    void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp'}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);if(inputRecord.queueId)inputQueue.failed(inputRecord.queueId);foregroundOpen=rootExecutionBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});publish('state',current());});
+    void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
+      if(sendEpoch!==queueEpoch||stopping||disposed)throw new Error('消息交付已取消');
+      if(result==='started'){inputRecord.preflightStarted=true;startedInputId=inputRecord.id;}
+      if(result==='handled'){
+        if(queued){session.sessionManager.appendCustomEntry('friend-pi.input.v1',{v:1,queueId:queued.id,runId:inputRecord.runId,handled:true,hash:digest(combined)});inputQueue.delivered(queued.id,inputRecord.runId);}
+        const position=pendingInputs.indexOf(inputRecord);if(position>=0)pendingInputs.splice(position,1);if(session.isIdle&&!swarmBusy()&&!finiteJobs()){foregroundOpen=false;lifecycleStatus='completed';}queueChanged();
+      }
+    }}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);if(inputRecord.queueId)inputQueue.failed(inputRecord.queueId);if(sendEpoch===queueEpoch&&!disposed){foregroundOpen=rootExecutionBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});}publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
-  if(method==='runtime'){const action=text(input.action);if(['goal.pause','goal.stop','goal.create','goal.resume'].includes(action))cancelQueueResume();if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;captureRunPolicy();await changeTracker?.begin(runId);baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;policyRevision++;}const result=await services.dispatch(action,object(input.input||{}),services.context('user'));if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
+  if(method==='runtime'){const action=text(input.action);if(['goal.pause','goal.stop','goal.create','goal.resume'].includes(action)){queueEpoch++;cancelQueueResume();}if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;captureRunPolicy();await changeTracker?.begin(runId);baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;policyRevision++;}const result=await services.dispatch(action,object(input.input||{}),services.context('user'));if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
   if(method==='workflow.generate'){if(executionMode!=='swarm'||planMode||!session.isIdle)throw new Error('请在闲置 Swarm 执行模式生成工作流');await ensureModelReady();const result=await services.context('user').complete('只返回JSON，结构为 {v:1,title,goal,maxWorkers:4,nodes:[{id,title,prompt,dependencies:[],mode:"read"或"write",writeScopes:[最窄实际目录]}]}; 写入节点writeScopes非空，读取节点可省略。至多64节点，无脚本，条件用结构化谓词。目标：'+text(input.prompt),{maxTokens:6000});const body=result.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');return requestPlugin(bus,'workflow','create',{definition:object(JSON.parse(body))},1000,'user');}
   if(method==='stop'){
     queueEpoch++;queueResumeAuthorised=false;inputQueue.pause(true);cancelQueueResume();session.clearQueue();for(const item of inputQueue.snapshot().items)if(item.state==='dispatching')inputQueue.failed(item.id);

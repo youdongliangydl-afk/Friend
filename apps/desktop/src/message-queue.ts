@@ -21,8 +21,9 @@ export class MessageQueue {
  private key(){return `queue:${this.sessionId}`;}
  snapshot():QueueSnapshot{return this.store.get<QueueSnapshot>(this.key())?.value||{paused:false,items:[]};}
  private put(next:QueueSnapshot){this.store.put(this.key(),next);return next;}
+ accepted(intentId:string,identity:string){const row=this.store.get<{identity:string}>(`intent:${this.sessionId}:${intentId}`)?.value;if(row&&row.identity!==identity)throw new Error('消息提交身份已变化');return !!row;}
  recover(){const old=this.snapshot();if(old.items.length)this.put({paused:true,items:old.items.map(item=>({...item,state:['dispatching','moving'].includes(item.state)?'unknown':item.state==='editing'?'queued':item.state,revision:item.revision+1}))});}
- add(payload:InputPayload){const value={...payload,id:randomUUID(),revision:1,state:'queued' as const,createdAt:new Date().toISOString()};const old=this.snapshot();if(old.items.length>=50||Buffer.byteLength(JSON.stringify([...old.items,value]))>32*1024*1024)throw new Error('排队消息最多 50 条');this.put({...old,items:[...old.items,value]});return value;}
+ add(payload:InputPayload,intentId?:string,identity?:string){const value={...payload,id:randomUUID(),revision:1,state:'queued' as const,createdAt:new Date().toISOString()};const old=this.snapshot();if(intentId&&this.accepted(intentId,identity!))throw new Error('消息已经接收');if(old.items.length>=50||Buffer.byteLength(JSON.stringify([...old.items,value]))>32*1024*1024)throw new Error('排队消息最多 50 条');this.store.transaction(()=>{this.put({...old,items:[...old.items,value]});if(intentId)this.store.put(`intent:${this.sessionId}:${intentId}`,{identity,id:value.id});});return value;}
  read(id:string){const item=this.snapshot().items.find(item=>item.id===id);if(!item)throw new Error('排队消息已发送或移除');return item;}
  change(id:string,revision:number,update:(item:QueuedInput)=>QueuedInput|null){const old=this.snapshot(),item=this.read(id);if(item.revision!==revision)throw new Error('排队消息已变化，请重试');const next=update(item);return this.put({...old,items:old.items.flatMap(row=>row.id===id?next?[{...next,revision:row.revision+1}]:[]:[row])});}
  pause(paused:boolean){return this.put({...this.snapshot(),paused});}
@@ -34,7 +35,7 @@ export class MessageQueue {
  handoff(id:string){const item=this.read(id);if(item.state!=='dispatching')throw new Error('消息交付已取消');this.change(id,item.revision,row=>({...row,submitted:true}));}
  failed(id:string){const item=this.snapshot().items.find(item=>item.id===id);if(item?.state==='dispatching'&&!item.submitted)this.change(id,item.revision,row=>({...row,state:'queued',runId:undefined}));else if(item&&item.state!=='queued')this.unknown(id);this.pause(true);}
  unknown(id:string){const item=this.snapshot().items.find(item=>item.id===id);if(item)this.change(id,item.revision,row=>({...row,state:'unknown'}));this.pause(true);}
- moving(id:string,revision:number,targetId:string,leafId?:string){this.change(id,revision,item=>{if(item.state!=='queued')throw new Error('消息当前不能移出');return {...item,state:'moving',targetId,leafId};});return this.read(id);}
+ moving(id:string,revision:number,targetId:string,leafId?:string){const existing=this.read(id);if(existing.targetId===targetId&&['moving','unknown'].includes(existing.state))return existing;this.change(id,revision,item=>{if(item.state!=='queued')throw new Error('消息当前不能移出');return {...item,state:'moving',targetId,leafId};});return this.read(id);}
  moved(id:string,targetId:string){const item=this.read(id);if(!['moving','unknown'].includes(item.state)||item.targetId!==targetId)throw new Error('侧边草稿交接身份不匹配');return this.change(id,item.revision,()=>null);}
  release(id:string,targetId:string){const item=this.read(id);if(item.state!=='moving'||item.targetId!==targetId)throw new Error('侧边草稿交接身份已变化');return this.change(id,item.revision,row=>({...row,state:'queued',targetId:undefined}));}
  dispose(){this.store.close();}

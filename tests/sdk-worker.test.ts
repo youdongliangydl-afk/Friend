@@ -559,3 +559,43 @@ test('stopped FIFO restores paused drafts across restart and only explicit resum
 test('side draft keeps captured attachment bytes and applies the user current Plan policy',{timeout:30000},async()=>{
  const f=await start();try{const path=join(f.directory,'side-draft.txt');writeFileSync(path,'changed file must not replace snapshot');await f.request('draft.install',{payload:{text:'',attachments:[{path,name:'side-draft.txt',hash:'captured',text:'\nQA_TODO captured side attachment'}],mode:'single',planMode:false}});await f.request('draft.update',{text:'',attachments:[{path}],mode:'single',planMode:true});const draft:any=await f.request('draft.read');assert.equal(draft.planMode,true);assert.equal(draft.attachments[0].hash,'captured');await f.request('draft.send');await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));const state:any=await f.request('state');assert.equal(state.planMode,true);assert.equal(state.sideDraft,undefined);assert.equal(state.todo.items.length,3);const message=state.messages.find((m:any)=>m.role==='user');assert.match(message.text,/captured side attachment/);assert.doesNotMatch(message.text,/changed file/);}finally{await f.close();}
 });
+
+test('queued handled Pi commands drain FIFO and acknowledged submission retries never enqueue again',{timeout:30000},async()=>{
+ const f=await start();try{
+  await f.request('queue',{action:'pause'});
+  const input={action:'add',text:'/goal read',intentId:'command-intent',attachments:[],mode:'single',planMode:false};
+  await f.request('queue',input);await f.request('queue',input);assert.equal((await f.request('queue',{action:'list'}) as any).items.length,1);
+  await f.request('queue',{action:'add',text:'after handled command',attachments:[],mode:'single',planMode:false});await f.request('queue',{action:'resume'});
+  await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));
+  const state:any=await f.request('state');assert.equal(state.queue.items.length,0);assert.equal(state.messages.filter((m:any)=>m.role==='user'&&m.userText==='after handled command').length,1);
+  assert.match(readFileSync(state.sessionFile,'utf8'),/"handled":true/);
+  await f.request('queue',input);assert.equal((await f.request('queue',{action:'list'}) as any).items.length,0);
+  await assert.rejects(f.request('queue',{...input,text:'changed intent'}),/身份/);
+ }finally{await f.close();}
+});
+test('native side forks and consumed draft installs are idempotent; queueing retains frozen attachment bytes',{timeout:30000},async()=>{
+ const f=await start();let child:Awaited<ReturnType<typeof start>>|undefined;try{
+  await f.request('send',{text:'QA_TODO'});await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));const state:any=await f.request('state');
+  const leafId=SessionManager.open(state.sessionFile).getLeafId(),input={targetId:'stable-side-target',cwd:f.directory,sessionDir:join(f.directory,'data','sessions'),leafId};
+  const forked:any=await f.request('sidechat.fork',input);assert.deepEqual(await f.request('sidechat.fork',input),forked);
+  child=await start({directory:f.directory,sessionFile:forked.path});const file=join(f.directory,'missing-original.txt');
+  const payload={id:'source-queue-id',text:'frozen side payload',attachments:[{path:file,name:'missing-original.txt',hash:'captured',text:' ORIGINAL_CAPTURED_BYTES'}],mode:'single',planMode:false};
+  await child.request('draft.install',{payload});await child.request('queue',{action:'pause'});
+  await child.request('queue',{action:'add',fromSideDraft:true,intentId:'side-intent',text:payload.text,attachments:[{path:file}],mode:'single',planMode:false});
+  const queue:any=await child.request('queue',{action:'list'});assert.equal(queue.items.length,1);assert.equal(queue.items[0].attachments[0].hash,'captured');assert.match(queue.items[0].attachments[0].text,/ORIGINAL_CAPTURED_BYTES/);
+  await child.request('queue',{action:'resume'});await child.wait(()=>child!.events.some(e=>e.event?.data.type==='agent_settled'));
+  await child.request('draft.install',{payload});assert.equal((await child.request('state') as any).sideDraft,undefined);
+  assert.equal((await child.request('state') as any).messages.filter((m:any)=>m.role==='user'&&m.userText==='frozen side payload').length,1);
+ }finally{if(child)await child.close(true);await f.close();}
+});
+
+test('a rejected side-draft admission remains one paused message and retry cannot resurrect the draft',{timeout:30000},async()=>{
+ const f=await start();try{
+  await f.request('configure',{plugins:[]});await f.request('draft.install',{payload:{id:'reject-once',text:'one side request',attachments:[],mode:'swarm',planMode:false}});
+  await f.request('draft.send');await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).queue?.paused));
+  let state:any=await f.request('state');assert.equal(state.sideDraft,undefined);assert.equal(state.queue.items.length,1);assert.equal(state.queue.items[0].state,'queued');
+  await f.request('draft.send');state=await f.request('state');assert.equal(state.queue.items.length,1);
+  await f.request('configure',{plugins:['swarm']});await f.request('queue',{action:'resume'});await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));
+  state=await f.request('state');assert.equal(state.messages.filter((m:any)=>m.role==='user'&&m.userText==='one side request').length,1);assert.equal(state.queue.items.length,0);
+ }finally{await f.close();}
+});

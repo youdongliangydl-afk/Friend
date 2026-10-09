@@ -1,3 +1,4 @@
+import {queueIntent,acknowledgeQueueIntent,hasQueueIntent} from './queue-intent.js';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {PiDialog} from './PiDialog.js';
 import type {DialogRequest} from './types.js';
@@ -16,8 +17,7 @@ export function SideChat({id,onClose,onOpen,onSettings,report}:{id:string;onClos
   if(input.type==='send'){
    if(lock.current)return;lock.current=true;setSending(true);const body=input.text??draftRef.current,files=[...attachmentRef.current];
    try{
-    if(state?.current?.isRunning||state?.current?.queue?.items.length)await window.friendPi.request('session.queue',{sessionId:id,action:'add',text:body,attachments:files,mode,planMode});
-    else if(state?.current?.sideDraft){await window.friendPi.request('session.sidechat.draft',{sessionId:id,text:body,attachments:files,mode,planMode});await window.friendPi.request('session.sidechat.send',{sessionId:id});}
+    if(state?.current?.isRunning||state?.current?.queue?.items.length||!!state?.current?.sideDraft||hasQueueIntent(id,{text:body,attachments:files,mode,planMode})){const payload={text:body,attachments:files,mode,planMode},intent=queueIntent(id,payload);await window.friendPi.request('session.queue',{sessionId:id,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state?.current?.sideDraft});acknowledgeQueueIntent(intent);}
     else await window.friendPi.request('session.send',{sessionId:id,text:body,attachments:files,mode,planMode});
     const nextBody=draftRef.current===body?'':draftRef.current,nextFiles=JSON.stringify(attachmentRef.current)===JSON.stringify(files)?[]:attachmentRef.current;
     draftRef.current=nextBody;attachmentRef.current=nextFiles;setDraft(nextBody);setAttachments(nextFiles);saveDraft(nextBody,nextFiles);await refresh();

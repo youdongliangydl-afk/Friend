@@ -1,3 +1,4 @@
+import {queueIntent,acknowledgeQueueIntent,hasQueueIntent} from './queue-intent.js';
 import {PiDialog} from './PiDialog.js';
 import {permissionOptions} from './composer-permissions.js';
 import type {PermissionMode} from './types.js';
@@ -185,9 +186,10 @@ export default function App() {
       let target=sessionId;
       if(!target){const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:selectedModelId,forSend:true,permissionMode});target=next.current?.sessionId;if(!target)throw new Error('会话尚未就绪');submitted.sessionId=target;if(epoch!==navigationEpoch.current)throw new Error('工作区已切换，原草稿已保留');setState({...EMPTY,...next});setDraftOwner(target);if(pendingThinking!=='off')await window.friendPi.request('session.configure',{sessionId:target,thinkingLevel:pendingThinking});}
       if(epoch!==navigationEpoch.current)throw new Error('工作区已切换，原草稿已保留');
-      const queued=running||!!state.current?.queue?.items.length;
+      const queued=running||!!state.current?.queue?.items.length||!!state.current?.sideDraft||hasQueueIntent(target,{text:submitted.text,attachments:submitted.attachments,mode,planMode});
       if(!queued){setLocalRunning(true);setTools([]);setLive(null);followScroll.current=true;}
-      if(!queued&&state.current?.sideDraft){await window.friendPi.request('session.sidechat.draft',{sessionId:target,text:submitted.text,attachments:submitted.attachments,mode,planMode});await window.friendPi.request('session.sidechat.send',{sessionId:target});}else await window.friendPi.request(queued?'session.queue':'session.send',{sessionId:target,...(queued?{action:'add'}:{}),text:submitted.text,mode,attachments:submitted.attachments,planMode});submitted.accepted=true;
+      if(queued){const payload={text:submitted.text,attachments:submitted.attachments,mode,planMode},intent=queueIntent(target,payload);await window.friendPi.request('session.queue',{sessionId:target,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state.current?.sideDraft});acknowledgeQueueIntent(intent);}
+      else await window.friendPi.request('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});submitted.accepted=true;
       try{const remaining={text:draftRef.current===submitted.text?'':draftRef.current,attachments:JSON.stringify(attachmentsRef.current)===JSON.stringify(submitted.attachments)?[]:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};localStorage.setItem('friend-pi.draft.v1:'+target,JSON.stringify(remaining));if(submitted.owner!==target)localStorage.removeItem('friend-pi.draft.v1:'+submitted.owner);}catch{}
       if(ownerRef.current===submitted.owner||ownerRef.current===target){if(draftRef.current===submitted.text)setDraft('');setAttachments(old=>JSON.stringify(old)===JSON.stringify(submitted.attachments)?[]:old);setDraftOwner(target);}
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}

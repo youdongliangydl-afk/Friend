@@ -39,7 +39,7 @@ function fixture(){
   const modelRuntime={refresh:async()=>{},getModel:(provider:string,id:string)=>provider===model.provider&&id===model.id?model:undefined,getModels:()=>[model],getProviders:()=>[{id:model.provider,name:'Fixture'}],hasConfiguredAuth:()=>true,getAuth:async()=>({auth:{apiKey:'private-fixture'}}),complete:async()=>({stopReason:'stop',content:[{type:'text',text:'OK'}]})};
   const context:any={console,Buffer,Promise,Map,Set,Date,Error,JSON,Number,String,Boolean,Array,URL,queueMicrotask,
     setTimeout:(callback:()=>void,delay:number)=>{const id=++nextTimer;timers.set(id,{at:now+delay,callback});return id;},clearTimeout:(id:number)=>timers.delete(id),
-    process:{argv:['node','main.mjs'],env:{FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_NODE:'/fixture/node'},platform:'darwin',resourcesPath:'/fixture/resources',kill:(pid:number,signal:string)=>{signals.push({pid,signal});return true;}},
+    process:{argv:['node','main.mjs'],execPath:'/fixture/Friend-Pi',env:{FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_NODE:'/fixture/node'},platform:'darwin',resourcesPath:'/fixture/resources',kill:(pid:number,signal:string)=>{signals.push({pid,signal});return true;}},
     require(specifier:string){
       if(specifier==='electron')return {app,BrowserWindow:class{},ipcMain:{handle(){}},dialog:{showOpenDialog:async()=>({canceled:true})},Menu:{},shell:{openPath:async()=>'',openExternal:async()=>{}}};
       if(specifier==='node:child_process')return {fork,execFile(){}};
@@ -243,4 +243,26 @@ test('side chat transfer reconciles a persisted draft after its response is lost
   child.state={isRunning:false,lifecycleStatus:'idle',sessionId:native.id,sessionFile:native.file,plugins:[],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state});await failed;assert.equal(savedDraft.text,'side draft');assert.equal(sourceItem.state,'unknown');assert.equal(source.commands.some((m:any)=>m.method==='send'),false);
   const intent=f.api.store.get('sidechat-transfer:side-parent:queued').value;const recovered=await f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:'queued',revision:1});assert.equal(recovered.sessionId,intent.id);assert.equal(f.children.filter(c=>c!==source).length,1);assert.equal(sourceItem,null);assert.equal((await f.api.handle('app.state',{})).current.sessionId,parent.id);const repeated=await f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:'queued',revision:1});assert.equal(repeated.sessionId,recovered.sessionId);assert.equal(f.children.filter(c=>c!==source).length,1);assert.equal(source.commands.some((m:any)=>m.method==='send'),false);
  }finally{f.cleanup();}
+});
+
+test('side transfers recover prepare and fork reply loss in project and temporary workspaces',async()=>{
+ for(const temporary of [false,true])for(const lostStage of ['prepare','fork']){
+  const f=fixture();const queue=new MessageQueue('transfer-native',f.dataDir);try{
+   let parent:any=f.record('transfer-parent');if(temporary){parent={...parent,projectId:undefined,...workspaceRefs.temporaryWorkspace(path.join(f.dataDir,'workspaces'),parent.id)};f.api.store.put('session:'+parent.id,parent);}
+   const source=await f.ready(parent),native=f.history('complete inherited context'),item=queue.add({text:'durable draft',attachments:[],mode:'single',planMode:false});let lost=true,forkCalls=0;
+   source.send=(message:any,callback?:Function)=>{source.commands.push(message);callback?.();let result:any,error:string|undefined;try{
+    if(message.method==='queue'){const input=message.input;if(input.action==='move.prepare'){result=queue.moving(input.id,input.revision,input.targetId,'stable');if(lost&&lostStage==='prepare'){lost=false;error='reply lost after prepare';}}
+     else if(input.action==='move.failed'){const row=queue.snapshot().items.find(i=>i.id===input.id);if(row?.targetId===input.targetId)queue.unknown(input.id);result={};}
+     else if(input.action==='move.commit'){if(queue.snapshot().items.length)queue.moved(input.id,input.targetId);result={};}else result={};}
+    else if(message.method==='sidechat.fork'){forkCalls++;result={path:native.file,piSessionId:native.id};if(lost&&lostStage==='fork'){lost=false;error='reply lost after native fork';}}
+    else result=source.state;
+   }catch(e){error=String(e);}queueMicrotask(()=>source.emit('message',{type:'response',id:message.id,...(error?{error}:{result})}));return true;};
+   await assert.rejects(f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:item.id,revision:1}),/reply lost/);
+   const intent=f.api.store.get(`sidechat-transfer:${parent.id}:${item.id}`).value;assert.equal(queue.read(item.id).targetId,intent.id);
+   const retry=f.api.handle('session.queue',{sessionId:parent.id,action:'sidechat',id:item.id,revision:1});await f.flush();const child=f.children.at(-1);assert.notEqual(child,source);
+   child.state={isRunning:false,lifecycleStatus:'idle',sessionId:native.id,sessionFile:native.file,plugins:[],thinkingLevels:['off']};child.send=(message:any,callback?:Function)=>{child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'response',id:message.id,result:child.state}));return true;};child.emit('message',{type:'ready',state:child.state});
+   const result=await retry;assert.equal(result.sessionId,intent.id);assert.equal(queue.snapshot().items.length,0);assert.equal(f.children.length,2);assert.equal(forkCalls,lostStage==='fork'?2:1);
+   if(temporary){const directories=fs.readdirSync(path.join(f.dataDir,'workspaces'));assert.deepEqual(directories.sort(),['transfer-parent',intent.id].sort());}
+  }finally{queue.dispose();f.cleanup();}
+ }
 });

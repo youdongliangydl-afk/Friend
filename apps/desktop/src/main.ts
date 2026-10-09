@@ -4,7 +4,7 @@ import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} fr
 import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
 import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync } from 'node:fs';
-import { join,resolve,dirname,relative,isAbsolute } from 'node:path';
+import { join,resolve,dirname,relative,isAbsolute,basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -302,24 +302,27 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(worker.record.archived)throw new Error('归档会话只读');
     if(input.action==='sidechat'){
       const transferKey=`sidechat-transfer:${worker.record.id}:${text(input.id)}`;
-      let transfer=store.get<{id:string;phase:'prepared'|'saved'}>(transferKey)?.value;
+      let transfer=store.get<{id:string;phase:'preparing'|'prepared'|'saved';workspace?:{workspace:WorkspaceRef;workspaceDir?:string}}>(transferKey)?.value;
       const id=transfer?.id||randomUUID();
       if(transfer?.phase==='saved'){
         const record=store.get<SessionRecord>('session:'+id)?.value;if(!record)throw new Error('侧边会话已移除');
         const child=await startWorker(record);await request(worker,'queue',{action:'move.commit',id:input.id,targetId:id});publishState();return {sessionId:id,state:sideState(child)};
       }
-      const payload=object(await request(worker,'queue',transfer?{action:'move.inspect',id:input.id,targetId:id}:{action:'move.prepare',id:input.id,revision:input.revision,targetId:id}));
-      if(!transfer){transfer={id,phase:'prepared'};store.put(transferKey,transfer);}
+      // A lost IPC reply must retry the same destination and native fork.
+      if(!transfer){transfer={id,phase:'preparing'};store.put(transferKey,transfer);}
       try{
+        const payload=object(await request(worker,'queue',{action:'move.prepare',id:input.id,revision:input.revision,targetId:id}));
+        transfer={...transfer,phase:'prepared'};store.put(transferKey,transfer);
         let record=store.get<SessionRecord>('session:'+id)?.value;
         if(!record){
-          const projectId=worker.record.projectId,workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id);
+          const projectId=worker.record.projectId,workspace=transfer.workspace||(projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id));
+          transfer={...transfer,workspace};store.put(transferKey,transfer);
           record={...worker.record,...workspace,id,name:String(payload.text||'侧边聊天').slice(0,48),path:undefined,piSessionId:undefined,archived:false,status:'idle',updatedAt:new Date().toISOString()};
-          const cwd=sessionWorkspace(store,record).path,forked=object(await request(worker,'sidechat.fork',{cwd,sessionDir:join(dataDir,'sessions'),leafId:payload.leafId}));record.path=text(forked.path);record.piSessionId=text(forked.piSessionId);
+          const cwd=sessionWorkspace(store,record).path,forked=object(await request(worker,'sidechat.fork',{targetId:id,cwd,sessionDir:join(dataDir,'sessions'),leafId:payload.leafId}));record.path=text(forked.path);record.piSessionId=text(forked.piSessionId);
           persist(record);store.put('session-ui:'+id,initialView(preferences(projectId)));
         }
         const child=await startWorker(record);if(transfer.phase!=='saved')child.state=object(await request(child,'draft.install',{payload}));
-        store.put(transferKey,{id,phase:'saved'});await request(worker,'queue',{action:'move.commit',id:input.id,targetId:id});publishState();return {sessionId:id,state:sideState(child)};
+        store.put(transferKey,{...transfer,id,phase:'saved'});await request(worker,'queue',{action:'move.commit',id:input.id,targetId:id});publishState();return {sessionId:id,state:sideState(child)};
       }catch(error){await request(worker,'queue',{action:'move.failed',id:input.id,targetId:id}).catch(()=>{});throw error;}
     }
     if(!['list','add','edit','save','cancelEdit','remove','steer','pause','resume'].includes(String(input.action)))throw new Error('排队操作无效');
@@ -341,7 +344,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   throw new Error('未知客户端操作');
 }
 protocol?.registerSchemesAsPrivileged?.([{scheme:'friend-preview',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
-app.setName('Friend-Pi');app.setPath('userData',dataDir);
+const clientName=app.isPackaged?basename(process.execPath):'Friend-Pi';app.setName(clientName);app.setPath('userData',dataDir);
 if(!app.requestSingleInstanceLock())app.quit();
 else {
   app.on('second-instance',()=>{window?.show();window?.focus();});
@@ -351,12 +354,12 @@ else {
     for(const record of records())if(['running','awaiting_review','rebuilding'].includes(record.status||'')){record.status='interrupted';persist(record);}
     await loadProviderMetadata();startLearning();for(const mark of store.list<Deletion>('deleting:').map(row=>row.value))if(mark.state==='preparing'||mark.memoryPending)await finishDeletion(mark).catch(error=>publish('notice',{level:'warning',message:'删除清理待恢复：'+String(error)}));
     const qaWidth=Number(process.env.FRIEND_PI_QA_WIDTH);const qaHeight=Number(process.env.FRIEND_PI_QA_HEIGHT);
-    window=new BrowserWindow({title:'Friend-Pi',titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},width:Number.isInteger(qaWidth)&&qaWidth>=680?qaWidth:1320,height:Number.isInteger(qaHeight)&&qaHeight>=550?qaHeight:860,minWidth:680,minHeight:550,backgroundColor:'#f7f8fb',webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+    window=new BrowserWindow({title:clientName,titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},width:Number.isInteger(qaWidth)&&qaWidth>=680?qaWidth:1320,height:Number.isInteger(qaHeight)&&qaHeight>=550?qaHeight:860,minWidth:680,minHeight:550,backgroundColor:'#f7f8fb',webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
     browserHost=new BrowserHost(window,root,viewContext,saveView,publish);
     ipcMain.handle('friend-composer:ready',async event=>{requireActive();if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');return browserHost.readyOverlay();});
     ipcMain.handle('friend-composer:action',async(event,raw:unknown)=>{requireActive();if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');const input=object(raw);if(input.sessionId!==currentId)throw new Error('会话已切换');browserHost.overlayAction(input);return {ok:true};});
     window.on('close',event=>{if(!shuttingDown){event.preventDefault();window.hide();}});
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Friend-Pi',submenu:[{role:'about'},{type:'separator'},{role:'quit'}]},{label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'显示',submenu:[{role:'reload'},{role:'toggleDevTools'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'}]}]));
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{label:clientName,submenu:[{role:'about'},{type:'separator'},{role:'quit'}]},{label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'显示',submenu:[{role:'reload'},{role:'toggleDevTools'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'}]}]));
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
     ipcMain.handle('friend-pi:request',async(event,method:unknown,raw:unknown)=>{
       if(event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame)throw new Error('请求来源无效');if(typeof method!=='string'||!allowed.has(method))throw new Error('客户端操作无效');return await handle(method,object(raw||{}));
