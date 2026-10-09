@@ -8,7 +8,7 @@ export function Conversation({ messages, live, tools, running }: { messages: Mes
       data-message-id={messageAnchor(message.source, i)} key={message.id}>
       <div className="message-role">{message.source.senderLabel|| (message.role === 'user' ? '你' : message.role==='automatic'?'自动接续':'Friend')}{message.live && running && <span className="pulse-dot"/>}</div>
       {message.parts.map((part, index) => part.kind === 'text' ? <Markdown key={index} text={part.text}/> :
-        part.kind === 'thinking' ? <details key={index} className="thinking-block"><summary>思考过程</summary><pre>{part.text}</pre></details> :
+        part.kind === 'thinking' ? <details key={index} data-thought-part={index} className="thinking-block"><summary>思考过程</summary><pre>{part.text}</pre></details> :
         part.kind === 'image' ? <img className="message-image" key={index} src={'data:' + part.mimeType + ';base64,' + part.data} alt="原始消息附件"/> :
         <details className="history-tool timeline-tool" data-tool-call-id={part.tool.id} key={part.tool.id}>
           <summary><span className={'tool-indicator ' + part.tool.status}/><strong>{part.tool.name}</strong><Badge value={part.tool.status}/></summary>

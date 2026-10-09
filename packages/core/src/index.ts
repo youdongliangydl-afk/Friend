@@ -255,7 +255,7 @@ export function parseModelJson(value: string): JsonObject {
 /** Explicit test-only provider. Never registered for an ordinary launch. */
 export async function installFixtureProvider(runtime:ModelRuntime) {
   const fixture=fauxProvider({api:'friend-fixture-api',provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096},{id:'alternate',name:'离线替代模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
-  const respond: Parameters<typeof fixture.setResponses>[0][number] = (context) => {
+  const respond: Parameters<typeof fixture.setResponses>[0][number] = (context,options) => {
     fixture.appendResponses([respond]);
     const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
@@ -265,6 +265,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
       return fauxAssistantMessage('离线复核说明文字；结构化工具提交才是验收结果。');
     }
     if(content.includes('QA_CONFIRM')&&!hasResult)return fauxAssistantMessage(fauxToolCall('bash',{command:'rm -f fixture-confirm.txt'}),{stopReason:'toolUse'});
+    if(latestUser.includes('QA_HOLD'))return new Promise(resolveHold=>{let timer:ReturnType<typeof setTimeout>;const finish=(aborted:boolean)=>{clearTimeout(timer);options?.signal?.removeEventListener('abort',abort);resolveHold(fauxAssistantMessage(aborted?'QA_WAIT_ABORTED':'QA_WAIT_COMPLETED：只读等待完成。',{stopReason:aborted?'aborted':'stop'}));};const abort=()=>finish(true);if(options?.signal?.aborted){finish(true);return;}timer=setTimeout(()=>finish(false),30000);options?.signal?.addEventListener('abort',abort,{once:true});});
     if(latestUser.includes('QA_SLOW'))return fauxAssistantMessage('正在进行可中止的离线流式验证。'.repeat(300));
     if(content.includes('FRIEND_PI_REBUILD_JSON')){
       try{const entries=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const user=[...entries].reverse().find(item=>item.role==='user')||entries.at(-1);if(user)return fauxAssistantMessage(JSON.stringify({goal:{text:user.text.slice(0,400),sourceEntryIds:[user.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}catch{}

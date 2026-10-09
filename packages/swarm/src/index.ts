@@ -86,7 +86,8 @@ function productionLauncher(start:MemberStart,output:(message:MemberOutput)=>voi
   child.stdout?.resume();
   child.on('message',raw=>{if (raw && typeof raw==='object' && 'v' in raw && [1,2].includes(Number(raw.v))) output(raw as MemberOutput);});
   child.on('error',error=>output({v:1,type:'failed',error:error.message}));
-  child.on('exit',(code)=>{if (code && diagnostics) output({v:1,type:'failed',error:`成员进程退出（${code}），请查阅保留的会话与工作区`});exited(code);});
+  // close follows stdio/IPC drain; exit can race a queued settled frame.
+  child.on('close',(code)=>{if (code && diagnostics) output({v:1,type:'failed',error:`成员进程退出（${code}），请查阅保留的会话与工作区`});exited(code);});
   try{child.send(start);}catch(error){void owned.stop();throw error;}
   return {pid:child.pid,groupOwned,closed:owned.ended,send:message=>{if (child.connected) child.send(message);},stop:()=>owned.stop(()=>{if(child.connected)child.send({v:1,type:'stop'});})};
 }

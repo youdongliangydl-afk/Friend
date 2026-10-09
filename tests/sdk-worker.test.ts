@@ -365,3 +365,28 @@ test('persistent member GUI bridge displays native history, wakes read-only disc
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'saved-after-stop',body:'停止后保留的要求'}});const queued=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string};inbox:{id:string;nativeEntryId?:string}[]};assert.equal(queued.member.state,'paused');assert.equal(queued.inbox.find(message=>message.id==='saved-after-stop')?.nativeEntryId,undefined);
  }finally{await f.close();}
 });
+
+test('large streamed member discussion drains terminal IPC before idle exit',{timeout:60000},async()=>{
+ const f=await start();
+ try{
+  await f.request('configure',{executionMode:'swarm'});
+  const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{goal:'terminal IPC drain',tasks:[{id:'reader',title:'长输出队友',prompt:'只读检查',mode:'read'}]}}) as {id:string;tasks:{memberId:string}[]};
+  await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
+  const roster=()=>{const frames=f.events.filter(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed');return (frames.at(-1)?.event?.data.data as {teammates?:{id:string;state:string;generation:number;reason?:string}[]})?.teammates||[];};
+  await f.wait(()=>roster()[0]?.state==='idle');
+  const memberId=graph.tasks[0].memberId;await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,body:'QA_SLOW 长流式讨论的正常结束边界'}});
+  await f.wait(()=>roster()[0]?.generation>=2&&['idle','paused'].includes(roster()[0]?.state),45000);
+  assert.equal(roster()[0].state,'idle',roster()[0].reason);
+  const history=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {messages:DisplayMessage[];inbox:{nativeEntryId?:string}[]};assert.ok(history.inbox[0].nativeEntryId);assert.ok(history.messages.at(-1)!.text.length>4000);
+ }finally{await f.close();}
+});
+
+test('abort-aware fake wait permits prompt member stop with a confirmed exit receipt',{timeout:30000},async()=>{
+ const f=await start();
+ try{
+  await f.request('configure',{executionMode:'swarm'});const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{goal:'controlled abort',tasks:[{id:'waiter',title:'等待队友',prompt:'QA_HOLD',mode:'read'}]}}) as {id:string};await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-event'&&JSON.stringify(event.event.data.data).includes('message_start')));
+  await Promise.race([f.request('stop'),new Promise((_,no)=>setTimeout(()=>no(Error('fake wait ignored abort')),5000).unref())]);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {teammates:{state:string;stopReceipt:{status:string}}[]};assert.equal(snapshot.teammates[0].state,'paused');assert.equal(snapshot.teammates[0].stopReceipt.status,'terminated');
+ }finally{await f.close();}
+});

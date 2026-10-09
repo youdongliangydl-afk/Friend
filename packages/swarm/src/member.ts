@@ -22,7 +22,9 @@ let shutdown = false;
 const confirmations = new Map<string,(value:boolean)=>void>();
 const pendingMessages = new Set<string>();
 const requests = new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-function output(message: MemberOutput): void { if (process.connected) process.send?.(currentStart?.v===2?{...message,v:2,protocol:2,memberId:currentStart.memberId,generation:currentStart.generation,attemptId:currentStart.attemptId}:message); }
+function envelope(message:MemberOutput):MemberOutput{return currentStart?.v===2?{...message,v:2,protocol:2,memberId:currentStart.memberId,generation:currentStart.generation,attemptId:currentStart.attemptId}:message;}
+function output(message:MemberOutput):void{if(process.connected)process.send?.(envelope(message));}
+async function terminalOutput(message:MemberOutput):Promise<void>{if(!process.connected||!process.send)throw new Error('成员协调连接已结束');await new Promise<void>((done,fail)=>process.send!(envelope(message),error=>error?fail(error):done()));}
 function request(action:'send'|'shared.read'|'shared.write'|'expert.adopt',input:Record<string,unknown>):Promise<unknown> {
   if (stopped || !process.connected) return Promise.reject(new Error('协调者连接已结束'));
   const requestId=randomUUID();return new Promise((resolveResult,reject)=>{
@@ -141,7 +143,7 @@ async function run(start:MemberStart): Promise<void> {
   if (!settled || !session.isIdle) throw new Error('Pi 成员尚未达到真正结束边界');
   if(start.reviewResult && (reviewConflict || !reviewSubmission))throw new Error(reviewConflict?'独立复核提交冲突，成果已保留':'独立复核未通过 swarm_review_result 提交结论，成果已保留');
   const summary=start.reviewResult?JSON.stringify(reviewSubmission):session.getLastAssistantText() || '';if(!start.reviewResult&&!start.discussion)validateMemberDelivery(role,summary);
-  output({v:1,type:'settled',summary,sessionId:session.sessionId,sessionFile:session.sessionFile});
+  await terminalOutput({v:1,type:'settled',summary,sessionId:session.sessionId,sessionFile:session.sessionFile});
   await disposeSession();process.disconnect?.();
 }
 process.on('message',(raw:MemberInput) => {
@@ -149,7 +151,7 @@ process.on('message',(raw:MemberInput) => {
   if(raw.type==='steer'&&currentStart?.v===2){if(raw.v!==2||raw.memberId!==currentStart.memberId||raw.attemptId!==currentStart.attemptId||raw.generation!==currentStart.generation)return;}
   if (raw.type === 'start' && !started) {
     started = true;
-    void run(raw).catch(async error => {output({v:1,type:'failed',error:error instanceof Error ? error.message : String(error)});await disposeSession();process.disconnect?.();process.exitCode=1;});
+    void run(raw).catch(async error => {await terminalOutput({v:1,type:'failed',error:error instanceof Error ? error.message : String(error)}).catch(()=>{});await disposeSession();process.disconnect?.();process.exitCode=1;});
   } else if (raw.type === 'stop') {stopped=true;stopRequests();for (const resolve of confirmations.values()) resolve(false);void session?.abort();}
   else if (raw.type === 'confirm.response') confirmations.get(raw.requestId)?.(raw.accepted);
   else if (raw.type === 'request.response') {const pending=requests.get(raw.requestId);if (pending) {clearTimeout(pending.timer);requests.delete(raw.requestId);if (raw.error) pending.reject(new Error(raw.error));else pending.resolve(raw.result);}}
