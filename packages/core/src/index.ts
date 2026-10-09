@@ -208,7 +208,7 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   };
 }
 
-export interface PluginRegistrationOptions {toolDescription?:string;actionEnum?:readonly string[]}
+export interface PluginRegistrationOptions {toolDescription?:string;actionEnum?:readonly string[];projectToolResult?:(action:string,result:unknown)=>unknown}
 /** Connect a native Pi extension and desktop requests to the same controller. */
 export function registerPlugin(pi: ExtensionAPI, name: string, controller: PluginController, description: string, options:PluginRegistrationOptions={}): void {
   if(options.actionEnum&&!options.actionEnum.length)throw new Error('插件动作枚举不能为空');
@@ -230,7 +230,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   pi.registerTool({
     name:`friend_${name.replaceAll('-','_')}`,label:description,description:options.toolDescription||description,
     parameters:Type.Object({action:options.actionEnum?Type.Union(options.actionEnum.map(action=>Type.Literal(action))):Type.String(),input:options.actionEnum?Type.Record(Type.String(),Type.Unknown()):Type.Optional(Type.Record(Type.String(),Type.Unknown()))},options.actionEnum?{additionalProperties:false}:{}),
-    async execute(_id,params,_signal,_update,ctx) { const result = await call(params.action,params.input || {},ctx); return {content:[{type:'text',text:JSON.stringify(result)}],details:result}; },
+    async execute(_id,params,_signal,_update,ctx) { const result = await call(params.action,params.input || {},ctx); const content=options.projectToolResult?options.projectToolResult(params.action,result):result; return {content:[{type:'text',text:JSON.stringify(content)}],details:result}; },
   });
   pi.registerCommand(name,{description,handler:async(args,ctx) => {
     const space = args.indexOf(' '); const action = args ? (space < 0 ? args : args.slice(0,space)) : 'snapshot'; const rest = space < 0 ? '' : args.slice(space+1);

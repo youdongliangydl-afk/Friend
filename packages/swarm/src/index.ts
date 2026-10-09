@@ -13,6 +13,7 @@ import {SharedMaterials} from './shared.js';
 import {TeammateStore} from './teammates.js';
 import type {Teammate} from './types.js';
 import {DynamicWorkflowController} from './workflow.js';
+import {projectSwarmToolResult} from './tool-result.js';
 export {DynamicWorkflowController} from './workflow.js';
 export type * from './types.js';
 
@@ -740,6 +741,7 @@ const extension:ExtensionFactory=pi=>{
   const offWorkflowEvents=pi.events.on('friend-pi:v1:event',raw=>{if(closed||!raw||typeof raw!=='object')return;const event=object(raw);if(!currentContext||event.sessionId!==currentContext.sessionManager.getSessionId())return;const data=event.data&&typeof event.data==='object'?object(event.data):{};if(event.pluginEvent==='swarm.changed'||event.pluginEvent==='swarm.process'&&data.action==='closed')scheduleAdvance();});
   pi.on('session_shutdown',()=>{closed=true;pendingAdvance=false;currentContext=undefined;offWorkflowEvents();});
   registerPlugin(pi,'swarm',{snapshot:ctx=>controller.snapshot(ctx),dispatch:(action,input,ctx)=>controller.dispatch(action,input,ctx),dispose:async()=>{await draining;await workflow.dispose();await controller.dispose();}},'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
+    projectToolResult:projectSwarmToolResult,
     actionEnum:['create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts','member.create','member.list','member.history','member.send','member.interrupt','member.resume'],
     toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status 或自行声称成员执行。
 队友动作：member.create {name,description?}；member.list {}；member.history {memberId}；member.send {memberId,body,messageId?,generation?}；member.interrupt {memberId,generation?}；member.resume {memberId,confirmUnknown?}。任务可携带 memberId 或 memberName 复用当前聊天队友。队友 idle 不是成果完成。成员只读讨论中的修改建议由你创建新尝试，不重放旧工具。
