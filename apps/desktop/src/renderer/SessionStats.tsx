@@ -4,7 +4,7 @@ import type {SessionMonitor} from '../session-monitor.js';
 import {Icon} from './Icons.js';
 import {cachePercent,compactTokens,decodeSpeed,statsDuration,statsPanelPosition} from './stats-format.js';
 type Panel='time'|'usage'|'context';
-export function SessionStats({stats}:{stats?:SessionMonitor}){
+export function SessionStats({stats,contextTarget}:{stats?:SessionMonitor;contextTarget:HTMLElement|null}){
  const [open,setOpen]=useState<Panel|null>(null),[position,setPosition]=useState<CSSProperties|null>(null),[tooltip,setTooltip]=useState(false);
  const root=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),triggers=useRef<Partial<Record<Panel,HTMLButtonElement|null>>>({}),hover=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
  const context=stats?.context,contextKnown=context?.tokens!==null&&context?.tokens!==undefined&&context.percent!==null;
@@ -22,24 +22,24 @@ export function SessionStats({stats}:{stats?:SessionMonitor}){
  },[open]);
  useLayoutEffect(()=>{
   if(!open||!available){setPosition(null);return;}
-  const place=()=>{const anchor=triggers.current[open],surface=panel.current;if(!anchor||!surface)return;const margin=document.querySelector('.app.session-fullscreen')?12:Math.max(12,(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+12);setPosition(statsPanelPosition(anchor.getBoundingClientRect(),{width:surface.offsetWidth,height:surface.offsetHeight},{width:window.innerWidth,height:window.innerHeight},margin));};
-  place();const observer=new ResizeObserver(place);if(panel.current)observer.observe(panel.current);if(root.current)observer.observe(root.current);
+  const place=()=>{const anchor=triggers.current[open],surface=panel.current;if(!anchor||!surface)return;const margin=document.querySelector('.app.session-fullscreen')?12:Math.max(12,(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0)+12);setPosition(statsPanelPosition(anchor.getBoundingClientRect(),{width:surface.offsetWidth,height:surface.offsetHeight},{width:window.innerWidth,height:window.innerHeight},margin,open==='context'?'above':'below'));};
+  place();const observer=new ResizeObserver(place);if(panel.current)observer.observe(panel.current);if(root.current)observer.observe(root.current);const composer=contextTarget?.closest('.composer');if(composer)observer.observe(composer);
   window.addEventListener('resize',place);window.addEventListener('scroll',place,true);return()=>{observer.disconnect();window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true);};
- },[open,available,stats]);
+ },[open,available,stats,contextTarget]);
  if(!stats||!stats.steps&&!hasUsage&&!contextKnown)return null;
  const speed=decodeSpeed(stats.decodeTokens,stats.decodeMs),prompt=stats.tokens.input+stats.tokens.cacheRead+stats.tokens.cacheWrite,hit=cachePercent(stats.tokens.cacheRead,prompt);
  const counts=`${stats.turns} 轮 ${stats.steps} 步`,timeLabel=counts+(speed?' · '+speed:''),usageLabel=compactTokens(stats.tokens.total)+' tok'+(hit===null?'':' · 缓存命中 '+hit+'%');
  const toggle=(kind:Panel)=>{clearTimeout(hover.current);setTooltip(false);setPosition(null);setOpen(open===kind?null:kind);};
  const button=(kind:Panel,label:string,icon:'history'|'context')=><button ref={element=>{triggers.current[kind]=element;}} className="session-stat-pill" aria-label={label} aria-haspopup="dialog" aria-expanded={open===kind} onClick={()=>toggle(kind)}><Icon name={icon} size={14}/><span>{label}</span></button>;
  const exact=(n:number)=>n.toLocaleString('zh-CN');
- return <div ref={root} className="session-stats" aria-label="会话监控">
+ return <div ref={root} className="session-stats session-stats-heading" aria-label="会话监控">
   {stats.steps>0&&(hasTime?button('time',timeLabel,'history'):<span className="session-stat-pill"><Icon name="history" size={14}/>{timeLabel}</span>)}
   {hasUsage&&button('usage',usageLabel,'context')}
-  {contextKnown&&<span className="session-context-anchor" onPointerEnter={()=>{if(open!=='context')hover.current=setTimeout(()=>setTooltip(true),200);}} onPointerLeave={()=>{clearTimeout(hover.current);setTooltip(false);}}>
+  {contextKnown&&contextTarget&&createPortal(<span className="session-context-anchor" onPointerEnter={()=>{if(open!=='context')hover.current=setTimeout(()=>setTooltip(true),200);}} onPointerLeave={()=>{clearTimeout(hover.current);setTooltip(false);}}>
    <button ref={element=>{triggers.current.context=element;}} className="session-stat-pill" aria-label={'上下文占用 '+context!.percent+'%'} aria-haspopup="dialog" aria-expanded={open==='context'} onClick={()=>toggle('context')} onFocus={()=>setTooltip(true)} onBlur={()=>setTooltip(false)}>
     <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" className="context-ring-track"/><circle cx="7" cy="7" r="5" className="context-ring-fill" strokeDasharray={`${31.416*context!.percent!/100} 31.416`} transform="rotate(-90 7 7)"/></svg>{context!.percent}%
    </button>{tooltip&&open!=='context'&&<span role="tooltip" className="context-stat-tooltip">上下文占用 {context!.percent}%</span>}
-  </span>}
+  </span>,contextTarget)}
   {open&&available&&createPortal(<div ref={panel} className="session-stat-dialog" role="dialog" aria-label={open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'} style={position||{visibility:'hidden',left:0,top:0}}>
    <div className="session-stat-heading"><strong>{open==='time'?'会话性能统计':open==='usage'?'会话 Token 用量':'当前上下文占用'}</strong><button aria-label="关闭统计详情" onClick={()=>{setOpen(null);triggers.current[open]?.focus();}}>×</button></div>
    {open==='time'?<><dl>

@@ -56,8 +56,10 @@ test('cache share never rounds partial hits to 100 and display totals use source
  assert.notEqual(cachePercent(Number.MAX_SAFE_INTEGER-1,Number.MAX_SAFE_INTEGER),'100');assert.deepEqual([compactTokens(517),compactTokens(12200),compactTokens(4500000)],['517','12.2K','4.5M']);
 });
 test('footer hides unrecorded metrics, provides accessible detail buttons, and clamps panels',()=>{
- const empty=projectSessionMonitor([],{},undefined);assert.equal(renderToStaticMarkup(React.createElement(SessionStats,{stats:empty})), '');
+ const empty=projectSessionMonitor([],{},undefined);assert.equal(renderToStaticMarkup(React.createElement(SessionStats,{stats:empty,contextTarget:null})), '');
  const stats=projectSessionMonitor([message('u','user'),message('a','assistant','u',2000)],{tokens:{input:1,cacheRead:9999,output:100,cacheWrite:0}},{tokens:1200,contextWindow:10000});
- const html=renderToStaticMarkup(React.createElement(SessionStats,{stats}));assert.match(html,/1 轮 1 步/);assert.match(html,/缓存命中 99.99%/);assert.match(html,/上下文占用 12%/);assert.match(html,/aria-haspopup="dialog"/);assert.doesNotMatch(html,/tok\/s/);
+ const html=renderToStaticMarkup(React.createElement(SessionStats,{stats,contextTarget:null}));assert.match(html,/1 轮 1 步/);assert.match(html,/缓存命中 99.99%/);assert.equal(stats.context?.percent,12);assert.match(html,/aria-haspopup="dialog"/);assert.doesNotMatch(html,/tok\/s/);
  assert.deepEqual(statsPanelPosition({left:370,top:500},{width:300,height:200},{width:400,height:600}),{left:88,top:292});
+ assert.deepEqual(statsPanelPosition({left:760,right:960,top:80,bottom:104},{width:300,height:200},{width:1000,height:800},64,'below'),{left:660,top:112});
+ assert.deepEqual(statsPanelPosition({left:760,right:960,top:740,bottom:764},{width:300,height:200},{width:1000,height:800},64,'below'),{left:660,top:532});
 });

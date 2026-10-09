@@ -4,6 +4,7 @@ import {initialView,browserUrl,browserScopeNames,type SessionViewState,type Tool
 import {openTool,addNewTab,closeViewTab} from './view-tabs.js';
 import {SessionTabs,NewTabPage} from './SessionTabs.js';
 import {SessionComposer,type ComposerSnapshot,type ComposerAction} from './SessionComposer.js';
+import {SessionStats} from './SessionStats.js';
 import {BrowserPane} from './BrowserPane.js';
 import type {BrowserSnapshot} from '../browser-host.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -87,6 +88,7 @@ function PiDialog({ dialog, respond }: { dialog: DialogRequest; respond(value: J
 export default function App() {
   const [changeReview,setChangeReview]=useState<ChangeReviewTarget>();const changeCache=useRef(new ChangeDiffCache());
   const [conversationPage,setConversationPage]=useState<'chat'|'trace'>('chat');
+  const [contextStatsTarget,setContextStatsTarget]=useState<HTMLSpanElement|null>(null);
   const [state,setState]=useState<AppState>(EMPTY),stateRef=useRef(state);stateRef.current=state;
   const [booting,setBooting]=useState(true),[notice,setNotice]=useState<{message:string;error:boolean}|null>(null);
   const [selectedProject,setSelectedProject]=useState(''),[tab,setTab]=useState<WorkspaceTab|null>(null),[sidebar,setSidebar]=useState(true);
@@ -260,7 +262,7 @@ export default function App() {
       </div>)}{!currentSessions.length&&<div className="session-empty">创建第一个会话开始工作</div>}</div><button className="sidebar-settings" aria-label="设置" onClick={()=>setSettingsOpen(true)}><Icon name="settings"/>设置</button>
     </aside>
     {sidebar&&<ResizeHandle className="sidebar-resize" name="调整会话侧栏宽度" value={sidebarWidth} min={180} max={400} onChange={value=>setLayout(old=>({...old,sidebarWidth:value}))}/>}
-    <main className="main"><header className="conversation-heading"><div className="conversation-title"><h2>{activeSession?.name||project?.name||'临时会话'}</h2><p><Icon name="folder"/><span>{workspaceKey||'无需选择项目即可开始'}</span></p></div><div className="heading-actions">{sessionId&&mode==='swarm'&&currentPlugins.includes('swarm')&&<TeammateRoster key={sessionId} rootSessionId={sessionId} compact selectedMemberId={activeMember||undefined} onBack={returnToRoot}/>}<span className="session-status" style={activeMember?{display:'none'}:undefined}>{navigating?'正在打开会话':running?'正在工作':'准备就绪'}</span></div></header>
+    <main className="main"><header className="conversation-heading"><div className="conversation-title"><h2>{activeSession?.name||project?.name||'临时会话'}</h2><p><Icon name="folder"/><span>{workspaceKey||'无需选择项目即可开始'}</span></p></div><div className="heading-actions">{sessionId&&mode==='swarm'&&currentPlugins.includes('swarm')&&<TeammateRoster key={sessionId} rootSessionId={sessionId} compact selectedMemberId={activeMember||undefined} onBack={returnToRoot}/>}<SessionStats key={sessionId} stats={toolActive?undefined:composerSnapshot.monitor} contextTarget={contextStatsTarget}/></div></header>
       {notice&&<div className={'notice '+(notice.error?'error':'')} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>}
       {activeSession?.archived&&<div className="notice">当前为归档会话，只读查看。<button onClick={()=>void invoke('session.archive',{id:sessionId,archived:false}).catch(()=>{})}>恢复并继续</button></div>}
       <nav hidden={!!activeMember} className="conversation-pages" role="tablist" aria-label="会话视图">{([['chat','对话'],['trace','轨迹']] as const).map(([id,label])=><button key={id} role="tab" id={'conversation-tab-'+id} aria-controls={'conversation-panel-'+id} aria-selected={conversationPage===id} onClick={()=>setConversationPage(id)}>{label}</button>)}</nav>
@@ -273,7 +275,7 @@ export default function App() {
           onReject={()=>void invoke('plan.reject',{...asObject(state.current!.plan),sessionId}).then(()=>setPlanMode(false)).catch(()=>{})}/></div>}
         </div></div>
       {activeMember&&sessionId&&<TeammateConversation key={sessionId+activeMember} rootSessionId={sessionId} memberId={activeMember} onBack={returnToRoot} report={report} archived={!!activeSession?.archived}/>}
-      <div ref={nativeComposer} hidden={!!activeMember} className={'composer-host '+(toolActive?'floating-host':'')} style={browserTab&&toolActive&&!browserBlocked?{visibility:'hidden'}:undefined}><SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer}/></div>
+      <div ref={nativeComposer} hidden={!!activeMember} className={'composer-host '+(toolActive?'floating-host':'')} style={browserTab&&toolActive&&!browserBlocked?{visibility:'hidden'}:undefined}><SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>
     </main>
     {!fullscreen&&tab&&<ResizeHandle className="workspace-resize" name="调整工作台宽度" value={workspaceWidth} min={300} max={Math.max(400,viewportWidth-(sidebar?sidebarWidth:0)-360)} reverse onChange={value=>setLayout(old=>({...old,workspaceWidth:value}))}/>}
     {(tab||toolActive||sessionView.tabs.length>0)&&<aside className={'workspace '+(fullscreen?'fullscreen-workspace':'')} aria-label="工作台" hidden={fullscreen?!toolActive:!tab}>

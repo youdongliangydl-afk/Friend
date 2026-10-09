@@ -11,5 +11,12 @@ export function cachePercent(hit:number,input:number):string|null{
 }
 export function statsDuration(ms:number){const seconds=ms/1000;if(seconds<60)return `${Math.round(seconds*10)/10}秒`;const whole=Math.round(seconds);return `${Math.floor(whole/60)}分${whole%60}秒`;}
 export function decodeSpeed(tokens:number,ms:number){if(ms<=0)return null;const speed=tokens/(ms/1000);return `${speed>=10?Math.round(speed):Math.round(speed*10)/10} tok/s`;}
-/** DSH stat-dialog: start aligned, 8px above, 12px viewport margin. */
-export function statsPanelPosition(anchor:{left:number;top:number},panel:{width:number;height:number},viewport:{width:number;height:number},topMargin=12){return {left:Math.max(12,Math.min(anchor.left,viewport.width-panel.width-12)),top:Math.max(topMargin,Math.min(anchor.top-8-panel.height,viewport.height-panel.height-12))};}
+/** Header details open below, composer details above; flip when the viewport requires it. */
+export function statsPanelPosition(anchor:{left:number;right?:number;top:number;bottom?:number},panel:{width:number;height:number},viewport:{width:number;height:number},topMargin=12,placement:'above'|'below'='above'){
+ const above=anchor.top-8-panel.height,below=(anchor.bottom??anchor.top)+8;
+ let top=placement==='above'?above:below;
+ if(placement==='above'&&above<topMargin&&below+panel.height<=viewport.height-12)top=below;
+ if(placement==='below'&&below+panel.height>viewport.height-12&&above>=topMargin)top=above;
+ const left=placement==='below'&&anchor.right!==undefined?anchor.right-panel.width:anchor.left;
+ return {left:Math.max(12,Math.min(left,viewport.width-panel.width-12)),top:Math.max(topMargin,Math.min(top,viewport.height-panel.height-12))};
+}
