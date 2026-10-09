@@ -19,6 +19,8 @@ export class SessionMetricRecorder {
   if(event.type==='agent_start'&&!this.retry){this.turnId=randomUUID();this.hasReply=false;}
   if(event.type==='turn_start'){
    if(!this.retry||this.started===undefined){this.stepId=randomUUID();this.started=this.now();this.first=undefined;this.ended=undefined;this.failed=false;}
+   // A retry keeps its logical step, but decoding starts at that attempt's first content.
+   this.first=undefined;
    this.retry=false;return;
   }
   const message=object(event.message||{});

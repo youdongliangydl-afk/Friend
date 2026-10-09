@@ -27,6 +27,18 @@ test('tool names are first tokens, queued input splits turns, and new executions
  recorder.observe({type:'turn_start'});recorder.observe({type:'message_start',message:{role:'user'}});clock=250;const queued=recorder.observe({type:'message_end',message:{role:'assistant'}})!;assert.notEqual(queued.turnId,first.turnId);assert.notEqual(queued.stepId,first.stepId);assert.equal(queued.decodeMs,undefined);
  recorder.observe({type:'agent_start'});recorder.observe({type:'turn_start'});clock=300;const next=recorder.observe({type:'message_end',message:{role:'assistant'}})!;assert.notEqual(next.turnId,queued.turnId);
 });
+test('a retry after partial output excludes backoff and renewed first-token wait from decode TPS',()=>{
+ let clock=0;const recorder=new SessionMetricRecorder(()=>clock);recorder.observe({type:'agent_start'});recorder.observe({type:'turn_start'});
+ clock=100;recorder.observe({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'partial'}});
+ clock=200;const failed=recorder.observe({type:'message_end',message:{role:'assistant',stopReason:'error',usage:{output:20}}})!;
+ recorder.observe({type:'turn_end'});recorder.observe({type:'agent_end',willRetry:true});recorder.observe({type:'auto_retry_start'});
+ clock=1200;recorder.observe({type:'agent_start'});recorder.observe({type:'turn_start'});
+ clock=2200;recorder.observe({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'final response'}});
+ clock=3200;recorder.observe({type:'message_end',message:{role:'assistant',usage:{output:100}}});const final=recorder.observe({type:'turn_end'})!;
+ const stats=projectSessionMonitor([message('failed','assistant'),record({...failed,entryId:'failed'}),message('final','assistant','failed'),record({...final,entryId:'final'})],{tokens:{input:1000,output:120}},undefined);
+ assert.equal(final.stepId,failed.stepId);assert.equal(final.turnId,failed.turnId);assert.deepEqual([stats.turns,stats.steps,stats.llmMs,stats.ttftMs,stats.decodeMs],[1,1,3200,2200,1000]);
+ assert.equal(decodeSpeed(stats.decodeTokens,stats.decodeMs),'100 tok/s');assert.equal(stats.tokens.output,120,'native total retains usage of the failed attempt');
+});
 test('terminal errors and cancelled retry waits close one failed step without inventing decode timing',()=>{
  for(const cancelled of [false,true]){let clock=0;const recorder=new SessionMetricRecorder(()=>clock);recorder.observe({type:'agent_start'});recorder.observe({type:'turn_start'});clock=100;recorder.observe({type:'message_end',message:{role:'assistant',stopReason:'error',usage:{output:0}}});assert.equal(recorder.observe({type:'turn_end'})?.closed,false);
   let closed=recorder.observe({type:'agent_end',willRetry:cancelled})!;if(cancelled){assert.equal(closed.closed,false);recorder.observe({type:'auto_retry_start'});clock=500;closed=recorder.observe({type:'auto_retry_end',success:false})!;}

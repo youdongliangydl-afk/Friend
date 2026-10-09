@@ -25,7 +25,7 @@ export function SessionComposer({value,action,inputRef,recipient}:{value:Compose
         {value.running&&<button className="stop-button" aria-label={recipient?'停止该成员':'停止当前任务'} disabled={!!recipient&&value.archived} onClick={()=>void dispatch({type:'stop'})}>{recipient?'停止该成员':'停止'}</button>}{(!value.running||recipient)&&<button className="send-button" aria-label={recipient?'发送补充':'发送消息'} title="Enter 发送；⌘ Enter 换行" disabled={busy||!value.draft.trim()||!value.ready} onClick={()=>void dispatch({type:'send',text:draft.current})}><Icon name="send"/></button>}
       </div>
     </div>
-    {!value.floating&&<SessionStats key={value.sessionId} stats={value.monitor}/>}
+    {!recipient&&!value.floating&&<SessionStats key={value.sessionId} stats={value.monitor}/>}
   </div>;
 }
 interface OverlayBridge {action(input:ComposerAction):Promise<unknown>;onSnapshot(handler:(value:ComposerSnapshot&{token:string;revision:number})=>void):()=>void}
