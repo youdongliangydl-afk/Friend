@@ -2,7 +2,22 @@
 .project-strip-shell .project-tabs{flex:1;min-width:0;scrollbar-width:none}
 .project-scroll{flex:none;width:25px;padding:4px;font-size:22px}
 .project-tab{transition:background .15s,transform .15s}.project-tab.drop-before{box-shadow:-3px 0 #397961}.project-tab.drop-after{box-shadow:3px 0 #397961}
-.timeline-tool summary{display:flex;align-items:center;gap:8px}.timeline-tool strong{flex:1}
+.timeline-tool summary{display:flex;align-items:center;gap:8px}.timeline-tool strong{flex:none}
+.tool-activity{min-width:0;margin:8px 0 12px;color:#657169;font-size:12px}
+.tool-activity summary{display:flex;align-items:center;gap:8px;min-height:32px;list-style:none;cursor:pointer;border-radius:5px;padding:4px 3px}
+.tool-activity summary::-webkit-details-marker{display:none}
+.tool-activity summary:hover{background:#f3f6f1;color:#324d3d}
+.tool-activity summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.disclosure-chevron{width:6px;height:6px;flex:none;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin:0 5px 0 2px;transition:transform .12s}
+details[open]>summary>.disclosure-chevron{transform:rotate(45deg)}
+.activity-title,.tool-detail{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.activity-title{flex:1}.activity-count{color:#728078;white-space:nowrap;font-size:11px}
+.tool-activity-body{max-height:min(400px,50vh);overflow:auto;scrollbar-gutter:stable;border-left:1px solid #dce4da;margin:4px 0 0 7px;padding:0 8px 0 14px}
+.tool-activity .history-tool,.tool-activity .thinking-block{background:none;border:0;border-radius:0;margin:2px 0;padding:0;color:inherit;font-size:12px}
+.tool-detail{flex:1;color:#728078}.tool-activity .badge{flex:none}.tool-call-body{padding:6px 10px 10px 24px}
+.tool-section-label{font-size:11px;color:#657169;margin:5px 0}.tool-activity .code-view,.activity-thinking pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:none;line-height:1.65;font-size:12px}
+.tool-result-image{display:block;max-width:100%;max-height:280px;object-fit:contain;object-position:left;margin:8px 0;border-radius:8px}
+@media(prefers-reduced-motion:reduce){.disclosure-chevron{transition:none}}
 .expand-workbench{position:absolute;right:48px;top:21px;z-index:2;font-size:11px}.workspace{position:relative!important}
 .workbench-expanded .workspace{grid-area:auto!important;position:absolute!important;left:calc(var(--sidebar-width) + 28px);right:10px;top:68px;bottom:10px;z-index:45;width:auto!important;box-shadow:0 16px 60px #24312630}
 .workbench-expanded.sidebar-hidden .workspace{left:10px}
