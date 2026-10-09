@@ -16,9 +16,9 @@ import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
 import { RecordStore,projectIdentity,digest } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
-async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean}={}){
+async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm'}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
- const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_TEMPORARY_WRITE_ROOT:options.temporary?directory:undefined,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_STATUS:options.status,FRIEND_PI_PERMISSION_MODE:options.permissionMode,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined,FRIEND_PI_SUPERVISED:options.supervised?'1':undefined}});
+ const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_TEMPORARY_WRITE_ROOT:options.temporary?directory:undefined,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_MODE:options.executionMode,FRIEND_PI_STATUS:options.status,FRIEND_PI_PERMISSION_MODE:options.permissionMode,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined,FRIEND_PI_SUPERVISED:options.supervised?'1':undefined}});
  let readyResolve:(value:Message)=>void=()=>{};let readyReject:(error:Error)=>void=()=>{};let stderr='';
  const ready=new Promise<Message>((resolveResult,reject)=>{readyResolve=resolveResult;readyReject=reject;});
  child.stderr?.on('data',bytes=>{stderr+=String(bytes);});
@@ -109,11 +109,11 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
 });
 
 test('cold Goal resume restores only its owned integrated Swarm authority without replay',{timeout:30000},async()=>{
- for(const scenario of ['owned','foreign-only','later-run']){
+ for(const scenario of ['owned','foreign-only','later-run','policy-run']){
   const directory=mkdtempSync(join(tmpdir(),'friend-pi-cold-goal-')),dataDir=join(directory,'data'),manager=SessionManager.create(directory,join(dataDir,'sessions'));
   const sessionId=manager.getSessionId(),projectId=projectIdentity(directory),goalId=randomUUID(),sourceRunId='original-run',at=new Date(Date.now()-10000).toISOString(),text='QA_COLD_AUTHORITY';
   manager.appendMessage({role:'user',content:text,timestamp:Date.now()-10000});
-  const entryId=manager.getLeafId();manager.appendCustomEntry('friend-pi.input.v1',{entryId,textEnd:text.length,hash:digest(text),runId:scenario==='later-run'?'later-run':sourceRunId});manager.appendThinkingLevelChange('off');
+  const entryId=manager.getLeafId();manager.appendCustomEntry('friend-pi.input.v1',{entryId,textEnd:text.length,hash:digest(text),runId:scenario==='later-run'?'later-run':scenario==='policy-run'?'earlier-single-run':sourceRunId});if(scenario==='policy-run')manager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId:sourceRunId,mode:'swarm',planMode:false,requiresSwarm:true});manager.appendThinkingLevelChange('off');
   const goals=new RecordStore('goal-journal',dataDir);goals.put(`focus:${sessionId}`,goalId,null);goals.put(`goal:${projectId}:${goalId}`,{id:goalId,projectId,sessionId,origin:'user',sourceRunId,objective:text,mode:'swarm',status:'stopped',revision:1,progress:'Retained integrated evidence',nextAction:'Read retained evidence',tokens:0,usageAvailable:true,safeCheckpoint:false,generation:0,createdAt:at,updatedAt:at},null);goals.close();
   const store=new RecordStore('swarm',dataDir),graph=(owned:boolean)=>({id:randomUUID(),projectId,sessionId,projectDir:directory,goal:'retained fixture evidence',goalId:owned?goalId:'foreign-goal',runId:owned?sourceRunId:'foreign-run',status:owned?'integrated':'paused',createdAt:at,updatedAt:at,tasks:[],attempts:[],checks:[],maxWorkers:1,reworkRound:0});
   for(const item of [graph(false),...(scenario==='foreign-only'?[]:[graph(true)])])store.put(`graph:${projectId}:${item.id}`,item,null);store.close();
@@ -125,7 +125,7 @@ test('cold Goal resume restores only its owned integrated Swarm authority withou
    const before=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};
    await f.request('provider.save',{provider:'cold-goal-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('configure',{executionMode:'swarm'});await f.request('runtime',{action:'goal.resume'});await f.wait(()=>modelStarted);
    await f.request('runtime',{action:'goal.update',input:{continuation:{kind:'wait',taskId:'future-task'}}});release();await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
-   const after=await f.request('state') as {lifecycleStatus:string;runtime:{goal:{status:string}}};assert.equal(after.lifecycleStatus,scenario==='owned'?'completed':'failed');assert.equal(after.runtime.goal.status,scenario==='owned'?'waiting':'paused');
+   const after=await f.request('state') as {lifecycleStatus:string;runtime:{goal:{status:string}}};assert.equal(after.lifecycleStatus,['owned','policy-run'].includes(scenario)?'completed':'failed');assert.equal(after.runtime.goal.status,['owned','policy-run'].includes(scenario)?'waiting':'paused');
    assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,before.graphs,'cold authority restoration cannot create, start or change retained graphs');
   }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
  }
@@ -420,6 +420,20 @@ test('stopping a pending service terminal cancels its desktop admission promptly
  }finally{await f.close();}
 });
 
+
+test('mode switches and member discussions preserve the frozen root run authority across cold reopen',{timeout:45000},async()=>{
+ let f=await start();try{
+  await f.request('configure',{executionMode:'swarm'});const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{goal:'retained member',tasks:[{id:'reader',title:'Reader',prompt:'Read only',mode:'read',writeScopes:[]}]}}) as {id:string;tasks:{memberId:string}[]};
+  await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(e.event.data.data).includes('"status":"integrated"')));const memberId=graph.tasks[0].memberId;
+  for(const text of ['First Single result','Second Single result']){const settled=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length;await f.request('send',{text,mode:'single'});await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length>settled);assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');}
+  await f.request('configure',{executionMode:'swarm'});const settled=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length;
+  await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'frozen-warm',body:'Explain retained evidence; no new work'}});await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled').length>settled);await f.wait(()=>f.events.slice(-5).some(e=>e.event?.type==='state'&&e.event.data.isRunning===false));
+  const before=await f.request('state') as {sessionFile:string;modelId:string;lifecycleStatus:string;runId:string};assert.equal(before.lifecycleStatus,'completed');const receipts=readFileSync(before.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(entry=>entry.customType==='friend-pi.run.policy.v1');assert.equal(receipts.at(-1).data.runId,before.runId);assert.equal(receipts.at(-1).data.requiresSwarm,false);
+  const directory=f.directory;await f.close(true);const history=readFileSync(before.sessionFile,'utf8');f=await start({directory,sessionFile:before.sessionFile,modelId:before.modelId,status:'completed',executionMode:'swarm'});assert.equal(readFileSync(before.sessionFile,'utf8'),history);assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
+  const offset=f.events.length;await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'frozen-cold',body:'QA_HOLD'}});await f.wait(()=>f.events.slice(offset).some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(e.event.data.data).includes('"state":"running"')));
+  const busy=await f.request('state') as {isRunning:boolean;lifecycleStatus:string};assert.equal(busy.isRunning,true);assert.equal(busy.lifecycleStatus,'completed','an independent member discussion cannot replace the delivered root status');await f.request('plugin',{plugin:'swarm',action:'member.interrupt',input:{memberId}});await f.wait(()=>f.events.slice(-5).some(e=>e.event?.type==='state'&&e.event.data.isRunning===false));assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');
+ }finally{await f.close();}
+});
 
 test('persistent member GUI bridge displays native history, wakes read-only discussion, and preserves integrated delivery on stop',{timeout:45000},async()=>{
  const f=await start();
