@@ -14,6 +14,7 @@ export class RuntimeController {
  readonly goals:GoalLedger;readonly tasks:TaskLedger;readonly jobs:ProcessJobs;readonly store:RecordStore;
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
  private disposed=false;private draining=false;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
+ private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
   this.goals=new GoalLedger(dataDir);this.tasks=new TaskLedger(dataDir);this.store=new RecordStore('runtime-activity',dataDir);
   this.jobs=new ProcessJobs(dataDir,job=>this.jobFinished(job),(event,data)=>this.hooks.publish(event,data));
@@ -108,9 +109,26 @@ export class RuntimeController {
  teamResult(data:JsonObject){const id=String(data.attemptId||data.graphId);if(this.wakeEvents.has(id))return;const owner=this.store.get<{generation:number;runId?:string;goalId?:string}>(`attempt-owner:${this.nativeContext?.sessionManager.getSessionId()}:${id}`)?.value;if(!owner||owner.generation!==this.generation()||owner.runId!==data.runId)return;this.wakeEvents.add(id);this.enqueue(`team:${id}`,`Team 成员成果已返回。请用 friend_team result 查询实际成果；写入仍需检查、独立复核并由主 Agent 决定整合。`,{generation:owner.generation,runId:owner.runId,goalId:owner.goalId});}
  observeSwarm(data:JsonObject){
   const ctx=this.context(),goal=this.goals.current(ctx);for(const graph of Array.isArray(data.graphs)?data.graphs.map(object):[]){if(graph.sessionId!==ctx.sessionId||graph.audit===true)continue;
+   const id=String(graph.id),previous=this.swarmStatuses.get(id);this.swarmStatuses.set(id,String(graph.status));
    for(const attempt of Array.isArray(graph.attempts)?graph.attempts.map(object):[]){const key=`attempt-owner:${ctx.sessionId}:${String(attempt.id)}`;if(!this.store.get(key)&&attempt.status==='running')this.store.put(key,{generation:this.generation(),runId:graph.runId,goalId:goal?.id});}
    if(!goal||graph.audit===true||graph.sessionId!==ctx.sessionId||(graph.goalId!==undefined?graph.goalId!==goal.id:graph.runId!==goal.sourceRunId))continue;
    if(Array.isArray(graph.attempts))for(const attempt of graph.attempts.map(object))if(attempt.mode==='write')this.goals.noteWrite(ctx,`member:${String(attempt.id)}`);this.tasks.syncExecution(graph,ctx,goal.id,this.goals.current(ctx)?.writeEpoch||0);
+   if(graph.status==='integrated'&&previous&&['running','awaiting_review','ready'].includes(previous)){
+    const generation=this.generation();
+    // The host updates its busy flags after this observer. Admit only after that stack settles.
+    setImmediate(()=>{
+     if(this.disposed||generation!==this.generation())return;
+     const current=this.currentGoal(),native=this.context();
+     if(!current||current.id!==goal.id||current.generation!==generation||!['active','waiting'].includes(current.status)||graph.runId!==current.sourceRunId||native.runId!==current.sourceRunId)return;
+     const tasks=(Array.isArray(graph.tasks)?graph.tasks:[]).map(object),waitIds=new Set([id,...tasks.flatMap(task=>[String(task.id),String(task.logicalStepId||`${id}:${task.id}`)])]);
+     for(const task of this.tasks.list(native,current.id))if(waitIds.has(task.logicalStepId))waitIds.add(task.id);
+     if(current.status==='waiting'&&!waitIds.has(String(current.waitFor)))return;
+     if(current.tokenBudget!==undefined&&(!current.usageAvailable||current.tokens>=current.tokenBudget))return;
+     if(current.status==='waiting')this.goals.update({progress:current.progress,nextAction:current.nextAction},native);
+     const version=digest({integration:graph.integration,tasks:tasks.map(task=>[task.id,task.currentAttempt,task.resultRevision])});
+     this.enqueue(`swarm:${current.id}:${id}:${generation}:${version}`,`Swarm 任务图 ${id} 已通过检查与独立复核并整合。请用 friend_swarm snapshot 读取实际成果，继续目标的验证与收尾；不要重放已完成成员。`,{generation,runId:current.sourceRunId,goalId:current.id});
+    });
+   }
   }
  }
  enqueue(id:string,message:string,options:{generation?:number;runId?:string;goalId?:string}={}){const added=this.coordinator?.enqueue(id,message,options)||false;if(added)void this.drain();return added;}

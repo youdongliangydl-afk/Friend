@@ -292,6 +292,40 @@ test('completed Team goal followed by Swarm workflow releases navigation and adm
   }finally{await f.close();}
 });
 test('goal completion uses Single self checks and Team independent native reviewer',{timeout:30000},async()=>{for(const mode of ['single','team']){const f=await start();try{await f.request('configure',{executionMode:mode});await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}});await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const snap=await f.request('runtime',{action:'snapshot'}) as {goal:{status:string;audit:{independent?:boolean}}};assert.equal(snap.goal.status,'completed');const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;attempts:unknown[];reviewAttempts?:unknown[]}[]};if(mode==='single')assert.equal(graphs.graphs.length,0);else{assert.ok(graphs.graphs.some(graph=>graph.audit===true&&graph.reviewAttempts?.length===1));assert.equal(snap.goal.audit.independent,true);}assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');}finally{await f.close();}}});
+test('native Swarm completion automatically continues a waiting Goal without polling or replaying members',{timeout:30000},async()=>{
+ let waited=false,releaseMembers!:()=>void;const membersReady=new Promise<void>(done=>{releaseMembers=done;});let creates=0;const trace:unknown[]=[];
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const input=JSON.parse(raw),messages=input.messages as {role:string;content:string;name?:string}[],names=(input.tools||[]).map((tool:any)=>tool.function.name);
+  const tools=messages.filter(message=>message.role==='tool').flatMap(message=>{try{return [JSON.parse(message.content)];}catch{return [];}});let call:{name:string;input:unknown}|undefined,text='Actual read-only member evidence';
+  if(names.includes('swarm_review_result')){if(!messages.some(message=>message.role==='tool'))call={name:'swarm_review_result',input:{approved:true,findings:'Independent loopback reviewer inspected both read outcomes'}};}
+  else if(names.includes('friend_swarm')){
+   const user=messages.findLastIndex(message=>message.role==='user'),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
+   if(latest.includes('Swarm 任务图')&&latest.includes('已通过检查')){
+    const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
+    if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
+    else if(goal.status!=='completed')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
+   }else{
+    const graph=tools.find(tool=>tool.status==='created');
+    if(!graph){creates++;call={name:'friend_swarm',input:{action:'create',input:{goal:'Read two independent sources',tasks:[{id:'left',title:'Left reader',prompt:'Inspect left source',mode:'read',dependencies:[]},{id:'right',title:'Right reader',prompt:'Inspect right source',mode:'read',dependencies:[]}],maxWorkers:2}}};}
+    else if(!tools.some(tool=>tool.id===graph.id&&tool.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
+    else if(!tools.some(tool=>tool.status==='waiting'))call={name:'friend_goal',input:{action:'update',input:{progress:'Both members started; waiting for left',continuation:{kind:'wait',taskId:'left'}}}};
+    else{waited=true;setTimeout(releaseMembers,100);text='Waiting for the native completion event';}
+   }
+  }else await membersReady;
+  res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:text};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'loopback',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('provider.save',{provider:'swarm-wake-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('configure',{executionMode:'swarm'});
+  await f.request('runtime',{action:'goal.create',input:{objective:'Coordinate two controlled read-only members and finish after independent review'}});
+  await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal:{status:string}}};assert.equal(state.runtime.goal.status,'completed');assert.equal(waited,true);assert.equal(creates,1);
+  const snap=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;status:string;attempts:unknown[]}[]};const graph=snap.graphs.find(graph=>!graph.audit)!;assert.equal(graph.status,'integrated');assert.equal(graph.attempts.length,2);
+  const wakes=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(entry=>entry.customType==='friend-pi.runtime-wake'&&String(entry.data.eventId).startsWith('swarm:'));assert.equal(wakes.length,1);
+ }catch(error){const state=await f.request('state') as any,snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as any;console.error(JSON.stringify({waited,creates,trace,goal:state.runtime?.goal,unknown:state.runtime?.unknownActivities,wakes:state.runtime?.pendingWakes,graphs:snapshot.graphs.map((graph:any)=>({id:graph.id,status:graph.status,error:graph.error,tasks:graph.tasks.map((task:any)=>({id:task.id,status:task.status})),reviews:graph.reviews})),notices:f.events.filter(event=>event.event?.type==='notice').slice(-3)}));throw error;
+ }finally{releaseMembers();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
 test('goal pause and stop terminate foreground work while preserving their distinct durable states',{timeout:30000},async()=>{
   const f=await start();try{
     await f.request('runtime',{action:'goal.create',input:{objective:'QA_SLOW 只读流式目标'}});
