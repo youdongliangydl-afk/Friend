@@ -166,6 +166,18 @@ async function temporary(f:ReturnType<typeof fixture>){
  assert.ok(record);const cwd=record.workspaceDir,manager=SessionManager.create(cwd,path.join(f.dataDir,'sessions'));manager.appendMessage({role:'user',content:'temporary-native-history',timestamp:Date.now()});
  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});await pending;return {record:f.api.store.get('session:'+record.id).value,child,manager};
 }
+test('legacy collaboration defaults lazily enable Swarm at allocation without changing Expert, Memory or saved preferences',async()=>{
+ for(const mode of ['team','swarm'])for(const enabled of [[],['expert'],['memory'],['expert','memory']]){
+  const f=fixture();try{
+   const before={...f.api.store.get('preferences').value,defaultMode:mode,defaultPlugins:enabled,defaultPermissionMode:'ask',defaultPlanMode:true};f.api.store.put('preferences',before);
+   let state:any,failure:unknown;const pending=f.api.handle('session.new',{projectId:'fixture'}).then((value:any)=>{state=value;},(error:unknown)=>{failure=error;});await f.flush();assert.ifError(failure);
+   const child=f.children.at(-1);assert.ok(child,'the real session.new handler reaches SDK allocation');const effective=JSON.parse(child.options.env.FRIEND_PI_PLUGINS);assert.deepEqual(effective,[...enabled,'swarm']);assert.equal(child.options.env.FRIEND_PI_MODE,mode);
+   const manager=SessionManager.create(f.project,path.join(f.dataDir,'sessions'));manager.appendMessage({role:'user',content:'legacy preference allocation',timestamp:Date.now()});
+   child.state={isRunning:false,lifecycleStatus:'idle',sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),plugins:effective,executionMode:mode,permissionMode:'ask',planMode:true,thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});await pending;assert.ifError(failure);
+   const record=f.api.store.get('session:'+state.createdSessionId).value;assert.deepEqual(Array.from(record.plugins),[...enabled,'swarm']);assert.equal(record.executionMode,mode);assert.equal(record.permissionMode,'ask');assert.equal(record.planMode,true);assert.deepEqual(JSON.parse(JSON.stringify(f.api.store.get('preferences').value)),before);
+  }finally{f.cleanup();}
+ }
+});
 test('temporary workspaces are isolated, recoverable and compatible with file APIs',async()=>{
  const f=fixture();try{const a=await temporary(f),b=await temporary(f);assert.notEqual(a.record.workspaceDir,b.record.workspaceDir);assert.equal(a.record.projectId,'');assert.deepEqual(JSON.parse(JSON.stringify(a.record.workspace)),{kind:'temporary',sessionId:a.record.id});assert.equal(a.child.options.cwd,a.record.workspaceDir);assert.equal(a.child.options.env.FRIEND_PI_PROJECT,a.record.workspaceDir);
  fs.writeFileSync(path.join(a.record.workspaceDir,'中文.md'),'临时正文');assert.equal((await f.api.handle('file.read',{workspace:a.record.workspace,path:'中文.md',edit:true})).content,'临时正文');assert.equal(f.api.store.list('project:').length,1);assert.equal((await f.api.handle('file.read',{projectId:'fixture',path:(fs.writeFileSync(path.join(f.project,'legacy.txt'),'old'),'legacy.txt')})).content,'old');

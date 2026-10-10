@@ -299,7 +299,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const projectId=typeof input.projectId==='string'?input.projectId:'',defaults=preferences(projectId||undefined);
     if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
     const chosenPermission=input.permissionMode===undefined?(defaults.defaultPermissionMode||'auto'):parsePermissionMode(input.permissionMode);
-    if(defaults.defaultMode!=='single'&&!defaults.defaultPlugins.includes('swarm'))throw new Error('默认 Swarm 配置需要启用对应插件，请在设置中修正');
+    if(defaults.defaultMode!=='single'&&!defaults.defaultPlugins.includes('swarm'))defaults.defaultPlugins=[...defaults.defaultPlugins,'swarm'];
     const selectedId=typeof input.modelId==='string'&&input.modelId?input.modelId:defaults.defaultModelId||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.ready)?.id;
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
     const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id);
