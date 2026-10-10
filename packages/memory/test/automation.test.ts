@@ -89,7 +89,7 @@ test('current goal reminders cannot append sources or increment an active canoni
 test('an invalid model quote rolls back normalized records and job IDs together before a safe retry',async()=>{
   const f=setup();const c=new MemoryController();const clock=Date.now;try{
     f.items.splice(1);f.items[0].text='本项目规则：数据库必须使用 SQLite，必须保留 UTF-8 中文字段。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'非法提案',content:'数据库使用 SQLite',kind:'fact',sourceEntryIds:['u1'],sourceQuotes:{u1:'原史没有这一句'}}]});await c.settled(f.ctx);const job=peekLearningJob(f.dir)!;
-    const failed=await c.executeLearningJob(job.id,f.ctx);assert.equal(failed.job?.state,'queued');assert.equal(failed.job?.attempts,1);assert.deepEqual(failed.job?.memoryIds,[]);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
+    await c.executeLearningJob(job.id,f.ctx);const failed=await c.executeLearningJob(job.id,f.ctx);assert.equal(failed.job?.state,'queued');assert.equal(failed.job?.attempts,1);assert.deepEqual(failed.job?.memoryIds,[]);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);assert.equal((c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
     Date.now=()=>clock()+10000;f.ctx.complete=async()=>JSON.stringify({memories:[]});await stages(c,f.ctx);const finished=(c.snapshot(f.ctx).learning as {jobs:{state:string;memoryIds:string[]}[]}).jobs[0];assert.equal(finished.state,'completed');assert.equal(finished.memoryIds.length,2);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[]).length,2);
   }finally{Date.now=clock;await c.dispose();f.close();}
 });
@@ -224,7 +224,7 @@ test('durable deletion tombstone alone protects search/select/recall before the 
     const registry=new RecordStore('sessions',f.dir);registry.put('tombstone:s',{deletedAt:new Date().toISOString()});registry.close();
     assert.deepEqual(c.search({query:'SQLite'},f.ctx).map(record=>record.id),[multi.id]);assert.deepEqual((c.select({query:'SQLite'},f.ctx) as {records:MemoryRecord[]}).records.map(record=>record.id),[multi.id]);
     assert.equal((await c.dispatch('read',{id:single.id},f.ctx) as MemoryRecord).enabled,false);assert.equal((await c.dispatch('read',{id:multi.id},f.ctx) as MemoryRecord).sources.length,1);
-    f.items[1].text='检查SQLite';const recall=c.recall(f.ctx)!;assert.ok(!recall.receipt.records.some(record=>record.id===single.id));assert.equal(recall.receipt.records[0].sources[0].sessionId,'other');
+    f.items.push({id:'query-deleted',parentId:'u2',type:'message',role:'user',timestamp:new Date().toISOString(),text:'检查SQLite'});const recall=c.recall(f.ctx)!;assert.ok(!recall.receipt.records.some(record=>record.id===single.id));assert.equal(recall.receipt.records[0].sources[0].sessionId,'other');
     await c.dispatch('source.deleted',{sessionId:'s'},f.ctx);assert.equal((await c.dispatch('read',{id:single.id},f.ctx) as MemoryRecord).status,'invalidated');
   }finally{await c.dispose();f.close();}
 });

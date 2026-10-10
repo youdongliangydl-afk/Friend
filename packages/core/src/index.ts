@@ -8,6 +8,9 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { SessionManager, getAgentDir, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
+import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCapabilityError,restrictedSourceItem,readRegisteredArtifact,type ArtifactRef,type EvidenceReceipt,type LearningLeaseToken} from './capability-services.js';
+export * from './capability-services.js';
+export * from './collaboration-services.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
@@ -25,20 +28,29 @@ export interface HostPolicy {
   modelId?:string; thinkingLevel?:string; goalId?:string;executionStopped?:boolean;executionWaitReason?:string;permissionMode?:PermissionMode;temporaryWriteRoot?:string;
 }
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
-export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string }
+export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string;toolName?:string;sourceKind?:string }
 export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
+export interface TrustedPluginContext {runId:string;memberId?:string;taskId?:string;findJournalEntry(operationId:string):{entryId:string;customType:string;data:unknown}|undefined}
 export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
   dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
-  signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string; isIdle(): boolean;
-  executionMode?:ExecutionMode; policy?:HostPolicy; availableModels?:{id:string;thinkingLevels:string[]}[];
+  signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string;taskId?:string;memberId?:string; isIdle(): boolean;
+  learningModel?:{modelId:string;thinkingLevel:string};
+  learning?:{budgetId:string;sourceRunId:string;lease:LearningLeaseToken;canAdmit():boolean};
+  hostOperations?:{prepare(input:JsonObject):Promise<JsonObject>;dispatch(input:JsonObject):Promise<JsonObject>;reconcile(input:JsonObject):Promise<JsonObject>};
+  executionMode?:ExecutionMode; policy?:HostPolicy;availableTools?:string[]; availableModels?:{id:string;thinkingLevels:string[]}[];
   approvePermission?(request:PermissionRequest):Promise<boolean>;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
-  complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
+  complete(prompt: string, options?: { signal?: AbortSignal; maxTokens?: number;callId?:string;budgetId?:string;stage?:string;operationId?:string;onUsage?(receipt:{callId:string;tokens?:number}):void }): Promise<string>;
+  observedArtifacts?():{artifact:ArtifactRef;receipt:EvidenceReceipt}[];
+  readArtifact?(ref:ArtifactRef,options?:{observationReceiptId?:string;cursor?:number;maxChars?:number}):Promise<{artifact:ArtifactRef;text:string;fullLength:number;visibleRanges:[number,number][];nextCursor?:number;receipt?:EvidenceReceipt}>;
+  readCheck?(ref:{checkId:string;version:number;hash:string;taskId:string;producerRunId:string;artifacts:ArtifactRef[]}):unknown;
+  findJournalEntry?(operationId:string):{entryId:string;customType:string;data:unknown}|undefined;
   applyModel?(modelId:string,thinkingLevel?:string):Promise<void>;
   request(plugin: string, action: string, input?: JsonObject, timeoutMs?: number): Promise<unknown>;
+  requestWithContext?(plugin:string,action:string,input:JsonObject,context:TrustedPluginContext,timeoutMs?:number):Promise<unknown>;
   emit(event: string, data: unknown): void; notify(message: string, level?: 'info'|'warning'|'error'): void;
-  appendEntry(type: string, data: unknown): void;
+  appendEntry(type: string, data: unknown): unknown;
 }
 export interface PluginController {
   dispatch(action: string, input: JsonObject, context: PluginContext): unknown | Promise<unknown>;
@@ -76,7 +88,8 @@ export class RecordStore {
   constructor(readonly namespace: string, readonly dataDir = dataDirectory()) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dataDir, 'plugins.sqlite'));
-    this.db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS documents(namespace TEXT NOT NULL,key TEXT NOT NULL,revision INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(namespace,key))');
+    this.db.function('friend_pi_writer_version',{deterministic:true},()=>3);
+    this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON');if(this.db.prepare('PRAGMA journal_mode').get()?.journal_mode!=='wal')this.db.exec('PRAGMA journal_mode=WAL');if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").get())this.db.exec('CREATE TABLE documents(namespace TEXT NOT NULL,key TEXT NOT NULL,revision INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(namespace,key))');
   }
   get<T>(key: string): StoredDocument<T> | undefined {
     const row = this.db.prepare('SELECT key,revision,json FROM documents WHERE namespace=? AND key=?').get(this.namespace,key);
@@ -119,8 +132,14 @@ export function historyItems(entries: readonly unknown[]): HistoryItem[] {
   return entries.map(raw => {
     const entry = object(raw); const message = entry.message && typeof entry.message === 'object' ? object(entry.message) : undefined;
     const value=message?visibleText(message.content):entry.type==='compaction'||entry.type==='branch_summary'?String(entry.summary||''):entry.type==='custom_message'?visibleText(entry.content):'';const boundary=boundaries.get(String(entry.id));const userText=boundary&&digest(value.slice(0,boundary.textEnd))===boundary.hash?value.slice(0,boundary.textEnd):undefined;
-    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: automatic.get(String(entry.id))===digest(value)?'custom':message?.role ? String(message.role) : undefined, text:value,userText };
+    return { id: String(entry.id), parentId: entry.parentId ? String(entry.parentId) : null, type: String(entry.type), timestamp: String(entry.timestamp || ''), role: automatic.get(String(entry.id))===digest(value)?'custom':message?.role ? String(message.role) : undefined, text:value,userText,...(typeof message?.toolName==='string'?{toolName:message.toolName}:{}) };
   });
+}
+/** A capability's own tool output or managed view is derived evidence, not an independent Pi fact. */
+export function isDerivedCapabilityInput(item:HistoryItem):boolean {
+ if(['friend_memory','friend_expert'].includes(item.toolName||'')||['memory-projection','expert-projection'].includes(item.sourceKind||''))return true;
+ if(item.role!=='toolResult')return false;
+ return /# (?:Memory \(read-only\)|Project memories)/u.test(item.text)||/- ID: [a-f0-9-]{36}[\s\S]*- (?:Revision|Version): \d+[\s\S]*- (?:Hash|Scope):/u.test(item.text)||/^---\s*\nid: [^\n]+\nversion: \d+\nhash: [a-f0-9]{64}\nproject:/u.test(item.text);
 }
 /** Source offsets use UTF-16, matching Pi's JavaScript text. Old whole-entry refs remain readable. */
 export function readSourceSpan(item:HistoryItem,ref:SourceRef):string {
@@ -136,6 +155,12 @@ export function sourceFactRefs(item:HistoryItem,sessionId:string):SourceRef[] {
   return result;
 }
 export function isSessionDeleted(dataDir:string,sessionId:string):boolean {const store=new RecordStore('sessions',dataDir);try{return !!store.get(`tombstone:${sessionId}`);}finally{store.close();}}
+/** Host-only metadata registration. Resolve the real Pi header before advertising a child history. */
+export function registerSourceSession(input:{sessionId:string;path:string;projectDir:string;nativeCwd?:string},dataDir=dataDirectory()):void {
+ const path=realpathSync(input.path),projectDir=realpathSync(input.projectDir),header=object(JSON.parse(readFileSync(path,'utf8').split('\n',1)[0]));
+ if(header.type!=='session'||header.id!==input.sessionId||typeof header.cwd!=='string'||realpathSync(header.cwd)!==realpathSync(input.nativeCwd||projectDir))throw new CapabilityError('SOURCE_UNAVAILABLE','成员原生会话身份不匹配');
+ const registry=new RecordStore('sessions',dataDir);try{if(registry.get(`tombstone:${input.sessionId}`))throw new CapabilityError('SOURCE_UNAVAILABLE','成员会话已删除');const previous=registry.get<{path:string;projectDir:string}>(input.sessionId)?.value;if(previous&&(previous.path!==path||realpathSync(previous.projectDir)!==projectDir))throw new CapabilityError('VERSION_CONFLICT','原生会话登记与现有身份不匹配');if(!previous)registry.put(input.sessionId,{path,projectDir},null);}finally{registry.close();}
+}
 export function learningHostAvailable(dataDir:string):boolean {
   const store=new RecordStore('runtime',dataDir);try{const host=store.get<{pid:number;expiresAt:number}>('learning-host')?.value;if(!host||host.expiresAt<Date.now())return false;try{process.kill(host.pid,0);return true;}catch{return false;}}finally{store.close();}
 }
@@ -143,10 +168,10 @@ const REQUEST = 'friend-pi:v1:request';
 const RESPONSE = 'friend-pi:v1:response';
 interface PluginPending {resolve(value:unknown):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}
 const pluginRouters=new WeakMap<Bus,{pending:Map<string,PluginPending>;off():void}>();
-export function requestPlugin(bus:Bus,plugin:string,action:string,input:JsonObject={},timeoutMs=120000,origin:'user'|'plugin'='plugin'):Promise<unknown>{
+export function requestPlugin(bus:Bus,plugin:string,action:string,input:JsonObject={},timeoutMs=120000,origin:'user'|'plugin'='plugin',trustedContext?:TrustedPluginContext):Promise<unknown>{
  let router=pluginRouters.get(bus);
- if(!router){const pending=new Map<string,PluginPending>();const off=bus.on(RESPONSE,raw=>{if(!raw||typeof raw!=='object')return;const response=object(raw),call=pending.get(String(response.id));if(!call)return;pending.delete(String(response.id));clearTimeout(call.timer);if(!pending.size){off();pluginRouters.delete(bus);}response.error?call.reject(new Error(String(response.error))):call.resolve(response.result);});router={pending,off};pluginRouters.set(bus,router);}
- const active=router,id=randomUUID();return new Promise((resolveResult,reject)=>{const release=()=>{active.pending.delete(id);if(!active.pending.size){active.off();pluginRouters.delete(bus);}};const timer=setTimeout(()=>{release();reject(new Error(`${plugin} 不可用或操作超时`));},timeoutMs);active.pending.set(id,{resolve:resolveResult,reject,timer});try{bus.emit(REQUEST,{v:1,id,plugin,action,input,origin});}catch(error){clearTimeout(timer);release();reject(error instanceof Error?error:new Error(String(error)));}});
+ if(!router){const pending=new Map<string,PluginPending>();const off=bus.on(RESPONSE,raw=>{if(!raw||typeof raw!=='object')return;const response=object(raw),call=pending.get(String(response.id));if(!call)return;pending.delete(String(response.id));clearTimeout(call.timer);if(!pending.size){off();pluginRouters.delete(bus);}response.error?call.reject(new CapabilityError(typeof response.code==='string'?response.code as import('./capability-services.js').ErrorCode:'CAPABILITY_UNAVAILABLE',String(response.error),response.details as JsonObject|undefined)):call.resolve(response.result);});router={pending,off};pluginRouters.set(bus,router);}
+ const active=router,id=randomUUID();return new Promise((resolveResult,reject)=>{const release=()=>{active.pending.delete(id);if(!active.pending.size){active.off();pluginRouters.delete(bus);}};const timer=setTimeout(()=>{release();reject(new CapabilityError('CAPABILITY_UNAVAILABLE',`${plugin} 不可用或操作超时`));},timeoutMs);active.pending.set(id,{resolve:resolveResult,reject,timer});try{bus.emit(REQUEST,{v:1,id,plugin,action,input,origin,...(trustedContext?{trustedContext}:{})});}catch(error){clearTimeout(timer);release();reject(error instanceof Error?error:new Error(String(error)));}});
 }
 export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent'): PluginContext {
   const model = ctx.model;
@@ -159,12 +184,13 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   pi.events?.emit('friend-pi:v1:policy',{v:1,sessionId,reply:(value:HostPolicy)=>{policy=value;}});
   const availableModels=(ctx.modelRegistry?.getAvailable?.()||[]).filter(item=>process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'||savedModelIds(dataDir).includes(`${item.provider}/${item.id}`)).map(item=>({id:`${item.provider}/${item.id}`,thinkingLevels:getSupportedThinkingLevels(item)}));
   if (sessionFile) {
-    const registry = new RecordStore('sessions',dataDir); registry.put(sessionId,{path: sessionFile,projectDir:ctx.cwd}); registry.close();
+    const registry = new RecordStore('sessions',dataDir);try{const old=registry.get<{path:string;projectDir:string}>(sessionId)?.value;if(old?.path!==sessionFile||old?.projectDir!==ctx.cwd)registry.put(sessionId,{path:sessionFile,projectDir:ctx.cwd});}finally{registry.close();}
   }
+  let learningModel:PluginContext['learningModel'];const preferences=new RecordStore('desktop',dataDir);try{const global=preferences.get<JsonObject>('preferences')?.value||{},local=preferences.get<JsonObject>(`preferences:${projectIdentity(ctx.cwd)}`)?.value||{},background=local.backgroundModelId??global.backgroundModelId;if(typeof background==='string'&&background){const target=availableModels.find(item=>item.id===background);learningModel={modelId:background,thinkingLevel:target?.thinkingLevels.includes(thinkingLevel)?thinkingLevel:'off'};}}finally{preferences.close();}
   return {
     origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
     modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,runId:process.env.FRIEND_PI_RUN_ID,
-    policy,executionMode:policy?.executionMode,availableModels,
+    policy,executionMode:policy?.executionMode,availableTools:pi.getAllTools?.().map(tool=>tool.name)||[],availableModels,learningModel,
     applyModel:async(modelId,level)=>{
       if(!policy?.canSwitchRole||policy.unsettledTools)throw new Error('型号切换未到宿主安全阶段');
       const slash=modelId.indexOf('/'),target=ctx.modelRegistry.find(modelId.slice(0,slash),modelId.slice(slash+1));
@@ -174,25 +200,32 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       if(!await pi.setModel(target))throw new Error('角色型号切换失败');if(level)pi.setThinkingLevel(level as never);
     },
     isIdle:() => ctx.isIdle(), history:() => historyItems(ctx.sessionManager.getBranch()),
+    observedArtifacts:()=>{const store=new RecordStore('artifacts',dataDir);try{return new SourcePolicy(store).observations({projectId:projectIdentity(ctx.cwd),sessionId,runId:policy?.runId||process.env.FRIEND_PI_RUN_ID});}finally{store.close();}},
+    readArtifact:async(ref,options)=>{const store=new RecordStore('artifacts',dataDir);try{return await readRegisteredArtifact(store,projectIdentity(ctx.cwd),ref,options);}finally{store.close();}},
+    readCheck:ref=>{const store=new RecordStore('checks',dataDir);try{return new SourcePolicy(store).readCheck(ref,projectIdentity(ctx.cwd));}finally{store.close();}},
     readSource: source => {
       if(isSessionDeleted(dataDir,source.sessionId))throw new Error('来源会话已删除');
-      let entries: readonly unknown[];
+      let entries: readonly unknown[];let crossProject=false;
+      const authority=new RecordStore('source-policy',dataDir);try{new SourcePolicy(authority).assertSource(source);}finally{authority.close();}
       if (source.sessionId === sessionId) entries = ctx.sessionManager.getEntries();
       else {
         const registry = new RecordStore('sessions',dataDir); const saved = registry.get<{path:string;projectDir:string}>(source.sessionId); registry.close();
-        let personalSource=false;if(saved&&projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd)){const memories=new RecordStore('memory',dataDir);try{if(memories.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_records'").get())personalSource=(origin==='user'&&memories.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_versions'").get()?memories.db.prepare("SELECT json FROM memory_versions WHERE json_extract(json,'$.scope')='personal'").all():memories.db.prepare("SELECT json FROM memory_records WHERE scope='personal' AND status='active' AND enabled=1").all()).some(row=>{const record=JSON.parse(String(row.json));return Array.isArray(record.sources)&&record.sources.some((ref:SourceRef)=>ref.sessionId===source.sessionId&&ref.entryId===source.entryId&&ref.start===source.start&&ref.end===source.end&&ref.hash===source.hash);});}finally{memories.close();}}
+        let personalSource=false;if(saved&&projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd)){const authority=new RecordStore('source-policy',dataDir);try{personalSource=new SourcePolicy(authority).canReadPersonalSource(source);}finally{authority.close();}}
         if (!saved || !personalSource&&projectIdentity(saved.value.projectDir) !== projectIdentity(ctx.cwd) || !existsSync(saved.value.path)) throw new Error('来源不存在或不属于当前项目及有效个人记忆');
-        entries = SessionManager.open(saved.value.path).getEntries();
+        crossProject=projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd);entries = SessionManager.open(saved.value.path).getEntries();
       }
-      const item = historyItems(entries).find(entry => entry.id === source.entryId); if (!item) throw new Error('来源已不可用');readSourceSpan(item,source); return item;
+      const item = historyItems(entries).find(entry => entry.id === source.entryId); if (!item) throw new Error('来源已不可用');readSourceSpan(item,source); return crossProject?restrictedSourceItem(item,source):item;
     },
     complete:async (prompt, options = {}) => {
-      if (!model) throw new Error('请先配置模型');
-      let executionModel=model;
+      if (!model) throw new Error('请先配置模型');let executionModel=model;
       if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){let verifying=desktopVerificationRuntimes.get(ctx.modelRegistry);if(!verifying){verifying=(async()=>{const runtime=await ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false});if(process.env.FRIEND_PI_TEST_PROVIDER==='1')await installFixtureProvider(runtime);return runtime;})();desktopVerificationRuntimes.set(ctx.modelRegistry,verifying);}executionModel=await requireReadyModel(await verifying,dataDir,`${model.provider}/${model.id}`);await ctx.modelRegistry.refresh({allowNetwork:false});}
-      const result = await ctx.modelRegistry.complete(executionModel, {messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]}, {signal: options.signal, maxTokens:options.maxTokens || 2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
-      if (result.stopReason === 'error' || result.stopReason === 'aborted') throw new Error(result.errorMessage || '模型调用未完成');
-      return visibleText(result.content);
+      const callId=options.callId||randomUUID(),operationId=options.operationId||callId;let accounted=false,observed=false;const usageStore=options.budgetId?new RecordStore('runtime',dataDir):undefined;let budget:LearningBudget|undefined;
+      const account=(tokens?:number)=>{if(accounted)return;accounted=true;options.onUsage?.({callId,tokens});if(!options.budgetId)pi.events?.emit('friend-pi:v1:event',{pluginEvent:'runtime.model-usage',sessionId,data:{runId:policy?.runId||process.env.FRIEND_PI_RUN_ID,callId,tokens}});};
+      try{
+        if(usageStore&&options.budgetId){const candidate=new LearningBudget(usageStore);try{candidate.read(options.budgetId);budget=candidate;}catch(error){if(!options.onUsage)throw error;}if(budget){const call=budget.begin({budgetId:options.budgetId,operationId,callId,stage:options.stage,promptHash:digest(prompt)});if(call.result!==undefined)return call.result;}}
+        let result;try{result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens:options.maxTokens||2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});observed=true;const tokens=modelTokenUsage(result.usage);if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,result:visibleText(result.content),tokens,state:result.stopReason==='aborted'?'unknown':result.stopReason==='error'?'failed':'complete'});account(tokens);}catch(error){if(!observed&&budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,state:'unknown'});account();throw error;}
+        if(result.stopReason==='error'||result.stopReason==='aborted')throw new Error(result.errorMessage||'模型调用未完成');return visibleText(result.content);
+      }finally{usageStore?.close();}
     },
     approvePermission:async request=>{
       if(ctx.signal?.aborted)return false;
@@ -203,9 +236,11 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       pi.appendEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision:policy?.revision});return approved;
     },
     request:(plugin,action,input,timeout) => requestPlugin(pi.events,plugin,action,input,timeout),
+    requestWithContext:(plugin,action,input,trusted,timeout)=>{if(typeof trusted.findJournalEntry!=='function'||!trusted.runId)throw new CapabilityError('PERMISSION_DENIED','成员续接缺少可信原史观察器');return requestPlugin(pi.events,plugin,action,input,timeout,'plugin',trusted);},
     emit:(event,data) => pi.events.emit('friend-pi:v1:event',{pluginEvent:event,sessionId,data}),
     notify:(message,level='info') => ctx.ui.notify(message,level),
-    appendEntry:(type,data) => pi.appendEntry(type,data),
+    appendEntry:(type,data) => {pi.appendEntry(type,data);const entry=ctx.sessionManager.getEntries().at(-1);return entry?.type==='custom'&&entry.customType===type?entry.id:undefined;},
+    findJournalEntry:operationId=>{const entries=ctx.sessionManager.getEntries();for(const entry of [...entries].reverse())if(entry.type==='custom'&&entry.data&&typeof entry.data==='object'&&'operationId' in entry.data&&entry.data.operationId===operationId)return {entryId:entry.id,customType:entry.customType,data:entry.data};return undefined;},
   };
 }
 
@@ -214,8 +249,8 @@ export interface PluginRegistrationOptions {toolDescription?:string;actionEnum?:
 export function registerPlugin(pi: ExtensionAPI, name: string, controller: PluginController, description: string, options:PluginRegistrationOptions={}): void {
   if(options.actionEnum&&!options.actionEnum.length)throw new Error('插件动作枚举不能为空');
   let current: ExtensionContext | undefined;
-  const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent') => {
-    const context = makeContext(pi,ctx,origin); const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
+  const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent',trusted?:TrustedPluginContext) => {
+    const base = makeContext(pi,ctx,origin);const context:PluginContext=trusted?{...base,runId:trusted.runId,memberId:trusted.memberId,taskId:trusted.taskId,findJournalEntry:trusted.findJournalEntry}:base; const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
     if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
@@ -224,8 +259,8 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
     if (!raw || typeof raw !== 'object') return;
     const request = object(raw); if (request.v !== 1 || request.plugin !== name) return;
     void (async () => {
-      try { if (!current) throw new Error('会话尚未就绪'); const result = await call(text(request.action),object(request.input || {}),current,request.origin === 'user' ? 'user' : 'plugin'); pi.events.emit(RESPONSE,{id:request.id,result}); }
-      catch (error) { pi.events.emit(RESPONSE,{id:request.id,error:error instanceof Error ? error.message : String(error)}); }
+      try { if (!current) throw new Error('会话尚未就绪'); const override=request.trustedContext;let trusted:TrustedPluginContext|undefined;if(override!==undefined){if(request.origin!=='plugin'||!override||typeof override!=='object'||typeof (override as TrustedPluginContext).findJournalEntry!=='function')throw new CapabilityError('PERMISSION_DENIED','不接受序列化或模型构造的成员上下文');const value=override as TrustedPluginContext;trusted={runId:text(value.runId),memberId:value.memberId===undefined?undefined:text(value.memberId),taskId:value.taskId===undefined?undefined:text(value.taskId),findJournalEntry:value.findJournalEntry};}const result = await call(text(request.action),object(request.input || {}),current,request.origin === 'user' ? 'user' : 'plugin',trusted); pi.events.emit(RESPONSE,{id:request.id,result}); }
+      catch (error) { pi.events.emit(RESPONSE,{id:request.id,...normalizeCapabilityError(error)}); }
     })();
   });
   pi.registerTool({

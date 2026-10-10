@@ -12,7 +12,7 @@ import {createRequire} from 'node:module';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode} from '../packages/core/src/index.js';
+import {RecordStore,SourcePolicy, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode} from '../packages/core/src/index.js';
 import * as modelReadiness from '../apps/desktop/src/model-readiness.js';
 import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
@@ -45,7 +45,7 @@ harness = harness.replace('throw new Error(`Unrecognized production dependency: 
 harness = harness.replace('setBrowserHost:value=>{browserHost=value;},startWorker', 'setWindow:value=>{window=value;},state,attention,publishState,selectCurrent,setBrowserHost:value=>{browserHost=value;},startWorker');
 harness = harness.replace('return {directory,project,dataDir,modelRuntime,api,children,', 'return {notifications,directory,project,dataDir,modelRuntime,api,children,');
 const scope: Record<string, unknown> = {console, Buffer, URL, queueMicrotask, assert, fs, path, tmpdir, EventEmitter, randomUUID, fileURLToPath, vm, transformSync, SessionManager,
-  RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView, sessionNavigation, sessionOrder,
+  RecordStore, SourcePolicy, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView, sessionNavigation, sessionOrder,
   attachmentInput, materialReferences, documentReader, AttentionRegistry, nodeRequire: createRequire(import.meta.url)};
 vm.runInNewContext(transformSync(harness + '\nglobalThis.navigationFixture=fixture;', {loader: 'ts', format: 'cjs', target: 'node24'}).code, scope);
 const fixture = scope.navigationFixture as () => any;

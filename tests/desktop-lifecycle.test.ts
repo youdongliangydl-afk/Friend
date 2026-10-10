@@ -14,7 +14,7 @@ import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode} from '../packages/core/src/index.js';
+import {SourcePolicy,RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode} from '../packages/core/src/index.js';
 import * as modelReadiness from '../apps/desktop/src/model-readiness.js';
 import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
@@ -51,7 +51,7 @@ function fixture(){
       if(specifier==='node:child_process')return {fork,execFile(){}};
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
-      if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode};
+      if(specifier==='@friend-pi/core')return {SourcePolicy,RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode};
       if(specifier==='./session-view.js')return sessionView;
       if(specifier==='./session-navigation.js')return sessionNavigation;
       if(specifier==='./session-order.js')return sessionOrder;

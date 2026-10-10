@@ -1,5 +1,5 @@
 import {Type} from 'typebox';
-import {RecordStore,ContinuationCoordinator,TaskLedger,GoalLedger,makeContext,object,text,digest,type PluginContext,type JsonObject,type GoalRecord,type ExecutionMode,type WakeFrame} from '@friend-pi/core';
+import {RecordStore,RuntimeCapabilityServices,normalizeCapabilityError,ContinuationCoordinator,TaskLedger,GoalLedger,makeContext,object,text,digest,type PluginContext,type JsonObject,type GoalRecord,type ExecutionMode,type WakeFrame} from '@friend-pi/core';
 import type {ExtensionAPI,ExtensionContext,ExtensionFactory} from '@earendil-works/pi-coding-agent';
 import {ProcessJobs,type ProcessJob} from './process-jobs.js';
 
@@ -12,12 +12,12 @@ interface Activity {sessionId:string;id:string;tool:string;sideEffect:boolean;st
 const reading=new Set(['read','grep','find','ls']);
 const queries=new Set(['snapshot','list','read','status','result','logs','history.search','history.read','history.around','role.snapshot','role.read','role.versions']);
 export class RuntimeController {
- readonly goals:GoalLedger;readonly tasks:TaskLedger;readonly jobs:ProcessJobs;readonly store:RecordStore;
+ readonly capabilities:RuntimeCapabilityServices;readonly goals:GoalLedger;readonly tasks:TaskLedger;readonly jobs:ProcessJobs;readonly store:RecordStore;
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
  private disposed=false;private draining=false;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
  private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
-  this.goals=new GoalLedger(dataDir);this.tasks=new TaskLedger(dataDir);this.store=new RecordStore('runtime-activity',dataDir);
+  this.capabilities=new RuntimeCapabilityServices(dataDir);this.goals=new GoalLedger(dataDir);this.tasks=new TaskLedger(dataDir);this.store=new RecordStore('runtime-activity',dataDir);
   this.jobs=new ProcessJobs(dataDir,job=>this.jobFinished(job),(event,data)=>this.hooks.publish(event,data));
  }
  context(origin:PluginContext['origin']='plugin'){
@@ -39,7 +39,7 @@ export class RuntimeController {
   });
   const off=pi.events.on('friend-pi:v1:request',raw=>{
    if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.v!==1||request.plugin!=='runtime')return;
-   void(async()=>{try{const ctx=this.context(request.origin==='user'?'user':'plugin');const result=await this.dispatch(text(request.action),object(request.input||{}),ctx);pi.events.emit('friend-pi:v1:response',{id:request.id,result});}catch(error){pi.events.emit('friend-pi:v1:response',{id:request.id,error:String(error instanceof Error?error.message:error)});}})();
+   void(async()=>{try{const ctx=this.context(request.origin==='user'?'user':'plugin');const result=await this.dispatch(text(request.action),object(request.input||{}),ctx);pi.events.emit('friend-pi:v1:response',{id:request.id,result});}catch(error){pi.events.emit('friend-pi:v1:response',{id:request.id,...normalizeCapabilityError(error)});}})();
   });
   for(const [name,prefix,description] of [
    ['friend_goal','goal','长期目标。create input={objective,nextAction?,tokenBudget?}；Agent仅在当前已授权执行中可自设。update {progress,nextAction?,continuation?:{kind:"wait",taskId}}；read/list/pause/stop/resume/complete。写入完成需要实际客观检查；Team/Swarm最终独立审核；Single不另派审核Agent。默认无自动轮数上限。'],
@@ -62,16 +62,19 @@ export class RuntimeController {
   const ctx=this.context();const sideEffect=['write','edit','bash'].includes(tool)||tool==='friend_jobs';this.store.put(`activity:${ctx.sessionId}:${id}`,{sessionId:ctx.sessionId,id,tool,sideEffect,status:'running',runId:ctx.runId} satisfies Activity);if(sideEffect)this.goals.noteWrite(ctx,id);this.goals.admit(ctx);
  }
  endTool(id:string){const ctx=this.context();const key=`activity:${ctx.sessionId}:${id}`,row=this.store.get<Activity>(key);if(row)this.store.put(key,{...row.value,status:'settled'});void this.drain();}
- account(tokens:number|undefined,eventId?:string,usageRunId=this.hooks.runId()){const ctx=this.context(),goal=this.goals.current(ctx);if(!goal||goal.sourceRunId!==usageRunId)return;if(eventId){const key=`usage:${ctx.sessionId}:${eventId}`;if(this.store.get(key))return;this.store.put(key,true,null);}this.goals.account(ctx,tokens);}
+ account(tokens:number|undefined,eventId?:string,usageRunId=this.hooks.runId()){const ctx=this.context(),goal=this.goals.list(ctx).find(item=>item.sessionId===ctx.sessionId&&item.sourceRunId===usageRunId);if(!goal)return;if(eventId){const key=`usage:${ctx.sessionId}:${eventId}`;if(this.store.get(key))return;this.store.put(key,true,null);}this.goals.account(ctx,tokens,goal.id);}
  async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown>{
   if(action==='recovery.confirm'){if(ctx.origin!=='user'||input.confirmUnknown!==true)throw new Error('未知现场需用户检查后明确确认');const evidence=text(input.evidence,'检查说明',16000);for(const id of Array.isArray(input.activityIds)?input.activityIds:[]){const key=`activity:${ctx.sessionId}:${text(id)}`,row=this.store.get<Activity>(key);if(!row||row.value.status!=='unknown')throw new Error('未知活动版本已变化');this.store.put(key,{...row.value,status:'settled',recovery:{evidence,at:new Date().toISOString(),origin:'user'}});}for(const id of Array.isArray(input.jobIds)?input.jobIds:[])this.jobs.confirmUnknown(text(id),evidence,ctx);ctx.appendEntry('friend-pi.recovery.confirmed',{v:1,evidence,activityIds:input.activityIds,jobIds:input.jobIds});return this.snapshot(ctx);}
   const dot=action.indexOf('.'),area=action.slice(0,dot),operation=action.slice(dot+1);
   const read=queries.has(operation)||['repair.count'].includes(operation);
   if(ctx.policy?.planMode&&!read&&!(area==='goal'&&['create','update','pause','stop'].includes(operation))&&!(area==='task'&&operation==='create'))throw new Error('计划模式只允许查询与草稿元数据，不能执行');
+  if(area==='resource'||area==='budget')return this.capabilities.dispatch(action,input,ctx,this.goals.current(ctx));
   if(area==='jobs')return this.jobs.dispatch(operation,input,ctx,this.generation());
   if(area==='task'){
    const focused=this.goals.current(ctx),goal=focused&&['active','waiting','verifying'].includes(focused.status)?focused:undefined;
+   if(operation==='identity')return this.tasks.resolveIdentity(input,ctx,goal?.id);
    if(ctx.origin==='agent'&&['start','verify','fail','resolveUnknown'].includes(operation)){const target=this.tasks.read(text(input.id),ctx);if(target.goalId?target.goalId!==goal?.id||goal.sourceRunId!==ctx.runId:target.runId!==ctx.runId)throw new Error('步骤不属于当前执行，不能修改其他任务');}
+   if(operation==='repair.claimBatch')return this.tasks.claimRepairBatch(input,ctx,goal?.id);
    if(operation==='repair.claim')return this.tasks.claimRepair(input,ctx,goal?.id);
    if(operation==='create')return this.tasks.create(input,ctx,goal?.id);
    if(operation==='list'||operation==='snapshot')return this.tasks.list(ctx);
@@ -89,6 +92,7 @@ export class RuntimeController {
    if(operation==='update'){if(ctx.origin==='agent'){const focused=this.goals.current(ctx);if(!focused||focused.sourceRunId!==ctx.runId||input.goalId&&input.goalId!==focused.id)throw new Error('目标不属于当前执行');}return this.goals.update(input,ctx);}
    if(operation==='pause'||operation==='stop'){this.coordinator?.invalidate();this.goals.setState(operation==='pause'?'paused':'stopped',ctx,typeof input.reason==='string'?input.reason:'显式停止');this.tasks.stop(ctx);await this.jobs.stopRun(ctx,ctx.runId);await this.hooks.haltExecution?.(ctx.origin);return this.snapshot(ctx);}
    if(operation==='resume'){if(this.unknownActivities().length||this.jobs.hasUnknown(ctx))throw new Error('请先检查并确认未知现场，再接续目标');this.coordinator?.invalidate();const goal=this.goals.resume(input,ctx,this.generation());this.enqueue(`resume:${goal.id}:${goal.revision}`,`继续目标：${goal.objective}。依据现有成果推进。`,{goalId:goal.id});return goal;}
+   if(operation==='accept')return this.goals.accept(input,ctx,this.tasks,this.safeObjects());
    if(operation==='complete')return this.goals.finish(ctx,this.tasks,goal=>this.auditGoal(goal,ctx),this.safeObjects());
    throw new Error('未知目标操作');
   }
@@ -162,8 +166,8 @@ export class RuntimeController {
    if(this.bound()&&(admitted||binding!==this.bindingEpoch)&&this.coordinator!.pending().some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()))&&this.nativeContext!.isIdle()&&!this.hooks.planMode())setImmediate(()=>void this.drain());
   }
  }
- private eligible(frame:WakeFrame,goal:GoalRecord|undefined){if(frame.goalId)return goal?.id===frame.goalId&&['active','waiting'].includes(goal.status);return !frame.runId||frame.runId===this.hooks.runId();}
+ private eligible(frame:WakeFrame,goal:GoalRecord|undefined){if(goal?.waitFor==='user-acceptance')return false;if(frame.goalId)return goal?.id===frame.goalId&&['active','waiting'].includes(goal.status);return !frame.runId||frame.runId===this.hooks.runId();}
  async stop(){this.coordinator?.invalidate();const ctx=this.context();this.goals.setState('stopped',ctx,'用户停止当前任务');this.tasks.stop(ctx);await this.jobs.stopRun(ctx,ctx.runId);}
  beforeQuit(){const ctx=this.context();this.goals.checkpoint(ctx,this.nativeContext?.isIdle()===true&&this.safeObjects());}
- dispose(){this.disposed=true;this.bindingEpoch++;this.nativeContext=undefined;this.pi=undefined;this.jobs.dispose();this.goals.dispose();this.tasks.dispose();this.coordinator?.dispose();this.store.close();}
+ dispose(){this.disposed=true;this.bindingEpoch++;this.nativeContext=undefined;this.pi=undefined;this.jobs.dispose();this.capabilities.dispose();this.goals.dispose();this.tasks.dispose();this.coordinator?.dispose();this.store.close();}
 }

@@ -94,14 +94,17 @@ export function blockedByFrozenRole(role:FrozenRole|undefined,toolName:string,ar
     const action=args&&typeof args==='object'&&!Array.isArray(args)?(args as JsonObject).action:undefined;
     return !(readMetadataActions.has(String(action))||role.id==='planner'&&toolName==='friend_plan'&&action==='submit');
   }
-  if(toolName==='bash')return !role.effectiveWriteScopes.includes('.');
+  return blockedByWriteScopes(role.effectiveWriteScopes,toolName,args,projectDir);
+}
+export function blockedByWriteScopes(scopes:readonly string[],toolName:string,args?:unknown,projectDir?:string):boolean {
+  if(toolName==='bash')return !scopes.includes('.');
   if(toolName!=='write'&&toolName!=='edit')return false;
   if(!projectDir||!args||typeof args!=='object'||Array.isArray(args))return true;
   const raw=(args as JsonObject).path;if(typeof raw!=='string'||!raw.trim())return true;
   try {
     const root=realpathSync(projectDir),target=actualTarget(resolve(root,raw));
     if(!within(root,target))return true;
-    return !role.effectiveWriteScopes.some(scope=>{const allowed=resolve(root,scope);return within(root,actualTarget(allowed))&&within(allowed,target);});
+    return !scopes.some(scope=>{const allowed=resolve(root,scope);return within(root,actualTarget(allowed))&&within(allowed,target);});
   }catch{return true;}
 }
 export function assertRoleDelivery(role:FrozenRole,value:unknown):JsonObject {

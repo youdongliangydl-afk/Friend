@@ -20,3 +20,5 @@ export function validateMemberDelivery(role:JsonObject|undefined,summary:string)
     throw new Error(`角色交付字段 ${key} 类型不符合合同`);
   }
 }
+
+export function memberPrompt(start:{expert?:unknown;prompt:string;frozen?:unknown}):string {const expert=start.expert&&typeof start.expert==='object'?start.expert as JsonObject:undefined;return `${roleInstructions(memberRole(expert))}\n${start.frozen&&Array.isArray(expert?.selectedIds)&&expert.selectedIds.length?'':expert?.prompt||''}\n${start.prompt}`;}

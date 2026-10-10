@@ -24,7 +24,7 @@ GUI、`friend_swarm` 工具和 `/swarm` 命令调用同一 `SwarmController`。�
 /swarm shared.write {"graphId":"...","name":"接口约定","content":"...","expectedRevision":0}
 ```
 
-`create` 不带 tasks 时由配置好的模型提出任务图；模型不会被用来伪造完成状态。任务领取使用 SQLite 原子事务；成果版本绑定 attempt。默认并发 4，最多 16；非 Git 写入串行。未提交的 Git 改动会阻止 Swarm 写入，仍可使用 Single 或只读 Swarm。
+`create` 不带 tasks 时由配置好的模型提出任务图；模型不会被用来伪造完成状态。任务领取使用 SQLite 原子事务；成果版本绑定 attempt。默认并发 4，最多 16；累计最多 64 个逻辑节点。非 Git 写入在独立暂存目录并行，应用目标时使用跨聊天资源租约和启动摘要。未提交的 Git 改动会阻止 Swarm 写入，仍可使用 Single 或只读 Swarm。
 
 首次启动从宿主公开 Pi API 继承当前模型与思考等级；明确的启动参数可覆盖。
 实际成员和独立复核沿用该冻结快照，停止后的显式接续不会把已有尝试
@@ -42,7 +42,7 @@ Git 写入成员使用独立 worktree；依赖成果通过明确的提交应用�
 
 复核拒绝使用 `taskIds` 归因到成果；仅这些任务及其下游依赖返工，其他 completed 成果保留。没有有效归因则暂停。原始 `Task.prompt/originalPrompt` 不改写，返工要求进入 `requirementVersions`，尝试绑定采用版本；达到两轮自动上限后要调整方法。用户通过 `rework {graphId,taskIds,reason,prompts?,revision?,confirmUnknown?}` 在安全边界显式调整，不能由模型替用户确认未知副作用。
 
-共享保存成功提交后才发布 `swarm.shared.changed {v,graphId,name,revision,digest}`，订阅通知失败不撤销已保存内容。历史内容可用 `shared.readVersion {graphId,name,revision}` 回查。竞争保存仍会拒绝旧版本覆盖；带已读 `baseDigest`（及可选 baseRevision/operationId）时，控制器自动三方合并无重叠行修改。成员工具自动保留读取的版本与摘要。软文本重叠最多调用/重试两次合并模型，必须保留三方来源、共同内容和独立修改；涉及同一约束/接口、来源不全、无法判断、取消或连续竞争则保留 `shared.conflicts` 材料并拒绝保存。模型思考期间不持锁，不生成冲突覆盖，不自动重放外部工具。当前采用提交后通知及恢复重查，没有持久 outbox 的必达承诺。
+共享保存成功提交后才发布 `swarm.shared.changed {v,graphId,name,revision,digest}`，订阅通知失败不撤销已保存内容。历史内容可用 `shared.readVersion {graphId,name,revision}` 回查。竞争保存仍会拒绝旧版本覆盖；带已读 `baseDigest`（及可选 baseRevision/operationId）时，控制器自动三方合并无重叠行修改。成员工具自动保留读取的版本与摘要。软文本重叠最多调用/重试两次合并模型，必须保留三方来源、共同内容和独立修改；涉及同一约束/接口、来源不全、无法判断、取消或连续竞争则保留 `shared.conflicts` 材料并拒绝保存。模型思考期间不持锁，不生成冲突覆盖，不自动重放外部工具。关键产物、验证、预算和操作通知使用持久 outbox；通知失败后按同一 eventId 补投，snapshot 始终从 SQLite 对账。
 
 安装 Expert 时，图启动冻结目录与选择；每个成员实际采用的 id/version/hash/Skill 摘要记录在其原生 JSONL 和 `Attempt.expertAdoptions`。明确无效专家会在成员启动前报错，不能悄悄退回基础角色。Expert 缺席时保留明确的 unavailable 基础角色；成员不加载整个 Expert 插件，按需采用通过版本化受限请求交给 Expert 控制器，范围只按交集收紧。
 
@@ -68,3 +68,40 @@ Git 写入成员使用独立 worktree；依赖成果通过明确的提交应用�
 成员 v2 进程使用稳定消息 ID、SQLite 接收端 inbox 和 Pi 条目身份去重。原生会话由 Pi 保存；后续任务用公开 `SessionManager.open` 恢复，写任务仍独立冻结权限/工作树。独立复核始终创建全新会话。旧图继续使用 v1，旧投递记录不提升为 v2 收件证明。
 
 DeepSeek 源码适配范围与 MIT 全文见 SOURCES.md、DEEPSEEK-LICENSE。
+
+
+## 通用合同与验证（schema 3）
+
+新任务图保存 `contract`、冻结执行摘要、来源/能力版本围栏、预算和累计修复账；Pi 继续独占模型循环与 JSONL。任务状态、验证状态和实际应用分别呈现。`operationId` 为 mutation 业务幂等键；同键同意图返回原回执，同键新意图返回 `VERSION_CONFLICT`。`expectedRevision` 是图 CAS；共享材料的 `expectedRevision` 是该材料 CAS。
+
+- `V0`：低风险只读或暂存草稿，核对来源和结构，不暗派 reviewer。
+- `V1`：代码、文件和数据写入，真实客观检查后使用全新只读 reviewer。
+- `V2`：高风险交付，另有全新 verifier 和声明的宿主目标 oracle；作者、reviewer、verifier 会话不同。
+
+检查支持 `file.exists`、`file.hash`、`json.schema`、`csv.contract`、`source.coverage` 和宿主受控 `command + argv`。JSON schema 使用已声明的类型/字段/数组/枚举子集，不支持的关键字在准入时拒绝，不能忽略后声称通过。语义评审标记 `modelJudged`；它不能替代实际检查结果。
+
+```json
+{
+  "operationId": "create-report-1",
+  "goal": "生成报告",
+  "tasks": [{"id":"report","title":"报告","prompt":"生成 report.json","mode":"write","dependencies":[],"writeScopes":["report.json"]}],
+  "contract": {
+    "risk":"medium", "verification":"V1",
+    "artifacts":[{"id":"report","kind":"file","target":"report.json","taskId":"report","required":true}],
+    "checks":[{"id":"report-format","kind":"json.schema","target":"report.json","args":{"schema":{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}}}]
+  },
+  "budget": {"tokenLimit": 12000}
+}
+```
+
+非 Git 成员工作区位于受管数据目录 `swarm-workspaces/<project>/<graph>/artifacts/<attempt>`，不能直接覆盖目标项目。所有有效产物组合成另一候选目录进行检查和独立评审；Team 仅返回 ready，主控明确 integrate 后应用。每个文件保存启动 hash、备份、新 digest 和应用日志；单文件原子替换，多文件逐项可恢复，不宣称目录事务原子。候选/目标漂移时保留现场。`artifact.list/read` 可回查不可变版本，`snapshot.operations` 也显示文件应用的 unknown。
+
+外部写入先 `operation.prepare`，由可信宿主 adapter 校验目标、payload 和授权；真正 dispatch 不注册为成员模型工具，也不把 `origin:'plugin'` 当发送 authority。未配置 adapter 返回 `CAPABILITY_UNAVAILABLE`。派发后断连/超时保留原 key 并进入 unknown；只读 reconcile 唯一匹配原操作且具备成功回执和目标读回时才确认，不能换 key 自动重试。过期未知资源只有宿主可信回执 authority 才能解除；默认未配置时继续阻断。
+
+`budget.read` 返回真实 native entry/call ID 去重账、预留与未知用量；没有默认货币额度。规划、共享合并、成员和独立复核均归入同父任务。用量不可得时保留 unknown，显式限额下停止新调用；在途请求可能有有限超额，不能宣称硬 token 截断。图最多 2 波返工，逻辑步骤最多 2 轮；同一失败证据且产物和输入无变化时提前暂停。
+
+Memory 缺席时无需加载它；启用时完整选择正文及 conditions 进入成员请求才登记精确版本依赖。Expert 采用 intent → 成员原生 journal/fsync → canonical confirm，确认后正文才进入模型；显式选择在首次 provider 请求前完成同一过程。来源/记忆/Skill 撤回会使旧成果失效，提交与整合仍在同 SQLite 短事务围栏复核。成员 `provisioning` 只有与首条真实原生任务 entry 对账后才转 running。
+
+受管 `swarm-views/<project>/<session>` 是只读 Markdown 投影，带 graph revision/hash manifest，可重建，不读取为新指令或业务状态。任务/共享材料检索使用 SQLite FTS5 和确定性中文词元，无 embedding 模型。迁移前使用 SQLite 快照，失败事务回滚并保留原记录；不重写 Pi 历史。升级表和 namespace 使用最小 writer 版本围栏，旧连接没有版本函数时只能读取，不能写入新 UNKNOWN 状态；本地反例模拟旧 writer，不能冒充完整旧二进制验收。旧 v1/v2 fixture 和新 schema3 证据等级分别保留。
+
+本地 focused tests 覆盖 fake provider、真实 Pi + 本地 HTTP fixture、SQLite 并发/迁移/故障注入。商业模型质量、外部授权测试资源、打包客户端 Computer Use 和最终整合验收由集成会话另行执行，不能以这些本地测试替代。
