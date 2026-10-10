@@ -1,3 +1,9 @@
+import {createDocumentReader} from './document-reader.js';
+const documentReader=createDocumentReader();
+import {createExternalCapabilities} from './external-capabilities.js';
+const documentAttachments=new Map<string,string>();
+import {captureDocumentInput,validateCapturedInput} from './attachment-input.js';
+import {documentTools} from './document-tools.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync,existsSync,readFileSync,realpathSync,openSync,closeSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
@@ -7,7 +13,7 @@ import { shellEnvironment,dataDirectory,object,text,visibleText,historyItems,req
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
-import {MessageQueue,captureInput,type InputPayload,type QueuedInput} from './message-queue.js';
+import {MessageQueue,type InputPayload,type QueuedInput} from './message-queue.js';
 import {TODO_TYPE,SIDECHAT_TYPE,todoItems,projectTodo,ownedEntries,stableForkLeaf} from './task-todo.js';
 import {projectMessages,projectTeammateMessages,projectTraceSystems,traceJSON} from './message-projection.js';
 import {RunChangesTracker,projectRunChanges,RUN_CHANGES_TYPE} from './run-changes.js';
@@ -28,11 +34,12 @@ let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGI
 let changeTracker:RunChangesTracker|undefined;let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let runRequiresSwarm:boolean|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let permissionMode:PermissionMode=process.env.FRIEND_PI_PERMISSION_MODE?parsePermissionMode(process.env.FRIEND_PI_PERMISSION_MODE):'auto';let executionMode:ExecutionMode=['team','swarm'].includes(process.env.FRIEND_PI_MODE||'')?process.env.FRIEND_PI_MODE as ExecutionMode:'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;let permissionEpoch=0;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>;terminalRequestId?:string}>();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;let teammateRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
+const external=createExternalCapabilities({dataDir,cwd,confirm:request=>approvePermission(request),publish:()=>{if(session&&!disposed)publish('state',current());}});
 const services=new RuntimeController(dataDir,{admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed)publish('state',current());},busy:()=>swarmBusy(),mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:async frame=>{await new Promise<void>(done=>setImmediate(done));if(stopping||disposed||frame.generation!==services.generation()||frame.goalId&&services.currentGoal()?.status!=='active'&&services.currentGoal()?.status!=='waiting')return;const wakeEpoch=queueEpoch;await ensureModelReady();const input:PendingInput={id:randomUUID(),text:frame.message,combinedLength:frame.message.length,combinedHash:digest(frame.message),imageHash:imageIdentity([]),expectsStart:true,automatic:true,memberContinuation:frame.id.startsWith('member-request:'),runId};pendingInputs.push(input);session.sessionManager.appendCustomEntry('friend-pi.runtime-wake',{v:1,eventId:frame.id,generation:frame.generation,goalId:frame.goalId});try{await session.prompt(frame.message,{expandPromptTemplates:false,preflightResult:()=>{if(stopping||disposed||wakeEpoch!==queueEpoch||frame.generation!==services.generation())throw new Error('接续已取消');}});}finally{const position=pendingInputs.indexOf(input);if(position>=0)pendingInputs.splice(position,1);}},prepareWake:async frame=>{const wakeGeneration=services.generation();if(memberBudgetWait())throw new Error(memberBudgetWait());if(disposed||stopping)throw new Error('执行已停止');if(!runId){runId=frame.runId||randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();captureRunPolicy(frame.id.startsWith('member-request:')?false:undefined);}const goal=services.currentGoal();if(frame.id.startsWith('resume:')&&goal)captureRunPolicy(goal.mode==='swarm'&&!planMode);await changeTracker?.ensure(runId);if(stopping||disposed||wakeGeneration!==services.generation())throw new Error('接续已取消');foregroundOpen=true;cancelRequested=false;lifecycleStatus='running';policyRevision++;await applyAssignedRole();await ensureModelReady();}});
 function runtimeState(){try{return services.snapshot();}catch{return undefined;}}
 function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runId);}catch{return false;}}
 async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
-interface PendingInput {queueId?:string;id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;preflightStarted?:boolean;automatic?:boolean;memberContinuation?:boolean;nativeMessage?:unknown;runId?:string}
+interface PendingInput {attachmentMetadata?:Record<string,unknown>[];queueId?:string;id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;preflightStarted?:boolean;automatic?:boolean;memberContinuation?:boolean;nativeMessage?:unknown;runId?:string}
 const pendingInputs:PendingInput[]=[];let startedInputId:string|undefined;let stopping=false;
 let inputQueue:MessageQueue;let queueDriving=false;let queueEpoch=0;let queueResumeAuthorised=false;let queueRestoring:Promise<boolean>|undefined;
 interface GoalSuspension {id:string;revision:number;sourceRunId?:string;objective:string;mode:ExecutionMode;planMode:boolean;modelId:string;thinkingLevel:ThinkingLevel}
@@ -98,7 +105,7 @@ function imageIdentity(images:readonly unknown[]){return digest(JSON.stringify(i
 function output(message:unknown,flushed?:()=>void){if(process.connected){if(flushed)process.send?.(message,flushed);else process.send?.(message);}else flushed?.();}
 function publish(type:string,data:unknown){if(type==='state'&&!object(data).isRunning&&!disposed&&!['active','waiting','verifying'].includes(services.currentGoal()?.status||''))void changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000,terminalRequestId?:string):Promise<unknown>{
-  const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer,terminalRequestId});publish('dialog',{id,kind,title,...input});});
+  const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer,terminalRequestId});publish('dialog',{id,kind,title,...input,expiresAt:Date.now()+timeout});});
 }
 const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']);
 const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
@@ -107,7 +114,7 @@ function rootExecutionBusy(){return swarmRunning||auditRunning||workflowRunning|
 function swarmBusy(){return rootExecutionBusy()||teammateRunning;}
 function captureRunPolicy(requiresSwarm=executionMode==='swarm'&&!planMode){runRequiresSwarm=requiresSwarm;session.sessionManager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId,mode:executionMode,planMode,requiresSwarm});}
 let missingModelId:string|undefined;
-function current(){const entries=session.sessionManager.getBranch(),owned=ownedEntries(entries),sdkStats=session.getSessionStats(),context=sdkStats.contextUsage;return {todo:projectTodo(entries,runId),queue:queueState(),sideDraft:inputQueue?.store.get<InputPayload>(`draft:${session.sessionId}`)?.value,monitor:projectSessionMonitor(session.sessionManager.getEntries(),sdkStats,context),sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(owned),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context,sessionFile:session.sessionFile,runId};}
+function current(){const entries=session.sessionManager.getBranch(),owned=ownedEntries(entries),sdkStats=session.getSessionStats(),context=sdkStats.contextUsage;return {todo:projectTodo(entries,runId),queue:queueState(),sideDraft:inputQueue?.store.get<InputPayload>(`draft:${session.sessionId}`)?.value,monitor:projectSessionMonitor(session.sessionManager.getEntries(),sdkStats,context),sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(owned),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert|attachments)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context,sessionFile:session.sessionFile,runId};}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=runRequiresSwarm===true&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
@@ -174,9 +181,9 @@ function guard():ExtensionFactory{return pi=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
     if(planMode){
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
-      if(event.toolName!=='friend_todo'&&!['read','ls','find','grep'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
+      if(event.toolName!=='friend_todo'&&!['read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
-    const request=toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
+    const request=(event.toolName.startsWith('mcp__')||['web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
     if(request&&!await approvePermission(request))return {block:true,reason:'用户未批准该操作'};
     await changeTracker?.captureTool(event.toolName,input).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));
   });
@@ -204,6 +211,7 @@ async function bind(){
   await session.bindExtensions({uiContext:ui,mode:'rpc',abortHandler:()=>void session.abort(),shutdownHandler:()=>void shutdown(),onError:error=>publish('notice',{level:'error',message:error.error})});
 }
 async function initialize(){
+  process.env.PI_CODING_AGENT_DIR=agentDir;
   initTheme('light',false);
   runtime=await createProviderRuntime(dataDir);
   let model=process.env.FRIEND_PI_TEST_PROVIDER==='1'?await installFixtureProvider(runtime):undefined;
@@ -211,11 +219,12 @@ async function initialize(){
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
   guardDesktopModelRequests(runtime,dataDir);
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard(),services.extension(),services.jobs.extension()]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
   await loader.reload({resolveProjectTrust:async()=>true});
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
   if(priorFile){if(!existsSync(priorFile))throw new Error('原始会话历史缺失，未创建替代历史');const raw=readFileSync(priorFile,'utf8');if(!raw.trim())throw new Error('原始历史为空，不能恢复');const entries=raw.trim().split('\n').map(line=>JSON.parse(line));if(entries[0]?.type!=='session'||typeof entries[0].id!=='string')throw new Error('原始历史头部无效，未创建替代历史');const known=new Set<string>();for(const entry of entries.slice(1)){if(!entry||typeof entry.type!=='string'||typeof entry.id!=='string'||!entry.id||known.has(entry.id)||typeof entry.timestamp!=='string'||!Number.isFinite(Date.parse(entry.timestamp))||entry.parentId!==null&&(typeof entry.parentId!=='string'||!known.has(entry.parentId))||entry.type==='message'&&(!entry.message||typeof entry.message.role!=='string'))throw new Error('原始历史条目损坏，索引保留，未创建替代历史');known.add(entry.id);}}
   const manager=priorFile?SessionManager.open(priorFile):SessionManager.create(cwd,join(dataDir,'sessions'));
+  for(const entry of manager.getBranch())if(entry.type==='custom'&&entry.customType==='friend-pi.attachments.v1'&&object(entry.data).stage==='started')for(const raw of Array.isArray(object(entry.data).attachments)?object(entry.data).attachments as unknown[]:[]){const item=object(raw);if(typeof item.path==='string'&&typeof item.hash==='string')documentAttachments.set(item.path,item.hash);}
   if(!priorFile){const file=manager.getSessionFile();if(!file)throw new Error('新会话原史路径不可用');closeSync(openSync(file,'wx',0o600));manager.setSessionFile(file);}
   if(!priorFile)manager.appendCustomEntry('friend-pi.session.created',{v:1,desktopId:process.env.FRIEND_PI_DESKTOP_SESSION_ID,createdAt:new Date().toISOString()});
   if(process.env.FRIEND_PI_PI_SESSION_ID&&manager.getSessionId()!==process.env.FRIEND_PI_PI_SESSION_ID)throw new Error('原始历史会话身份不匹配');
@@ -251,7 +260,7 @@ async function initialize(){
       const input=started||pendingInputs.find(input=>!input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(nativeText)&&input.imageHash===imageIdentity(typeof nativeMessage.content==='string'?[]:nativeMessage.content.filter(part=>part.type==='image')));
       if(input&&(input.preflightStarted||digest(nativeText.slice(0,input.combinedLength))===input.combinedHash))input.nativeMessage=nativeMessage;
     }
-    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position],nativeText=visibleText(nativeMessage.content),exact=digest(nativeText.slice(0,input.text.length))===digest(input.text);if(!exact&&!input.preflightStarted)return;const deliveredText=exact?input.text:nativeText;session.sessionManager.appendCustomEntry(input.automatic?'friend-pi.runtime-wake.input':'friend-pi.input.v1',{entryId:entry.id,textEnd:deliveredText.length,hash:digest(deliveredText),runId:input.runId,...(input.queueId?{queueId:input.queueId}:{})});if(input.queueId)inputQueue.delivered(input.queueId,input.runId);pendingInputs.splice(position,1);publish('state',current());});}
+    if(event.type==='message_end'&&event.message.role==='user'){const nativeMessage=event.message;queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getBranch().find(e=>e.type==='message'&&e.message===nativeMessage);const position=pendingInputs.findIndex(input=>input.nativeMessage===nativeMessage);if(!entry||position<0)return;const input=pendingInputs[position],nativeText=visibleText(nativeMessage.content),exact=digest(nativeText.slice(0,input.text.length))===digest(input.text);if(!exact&&!input.preflightStarted)return;const deliveredText=exact?input.text:nativeText;session.sessionManager.appendCustomEntry(input.automatic?'friend-pi.runtime-wake.input':'friend-pi.input.v1',{entryId:entry.id,textEnd:deliveredText.length,hash:digest(deliveredText),runId:input.runId,...(input.queueId?{queueId:input.queueId}:{})});if(input.attachmentMetadata?.length){const matched=digest(nativeText.slice(0,input.combinedLength))===input.combinedHash&&input.imageHash===imageIdentity(typeof nativeMessage.content==='string'?[]:nativeMessage.content.filter(part=>part.type==='image'));session.sessionManager.appendCustomEntry('friend-pi.attachments.v1',{v:1,runId:input.runId,stage:matched?'started':'unverified',entryId:entry.id,attachments:input.attachmentMetadata});}if(input.queueId)inputQueue.delivered(input.queueId,input.runId);pendingInputs.splice(position,1);publish('state',current());});}
     if(event.type==='agent_settled'&&!disposed){
       settledRunId=runId;lifecycleStatus=settledStatus();
       foregroundOpen=rootExecutionBusy();
@@ -329,6 +338,8 @@ async function initialize(){
 }
 
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
+  if(method==='external.call'||method==='runtime'&&input.action==='external.call'){const args=object(input.input||{}),action=method==='external.call'?String(input.action):String(args.action);if(['snapshot','mcp.status'].includes(action)&&(!session.isIdle||swarmBusy()||stopping))return external.snapshot();if(!['snapshot','mcp.status'].includes(action)&&(!session.isIdle||swarmBusy()||stopping))throw new Error('请等待当前会话执行结束，再配置或测试外部能力');return external.call(action,object(method==='external.call'?input.input:args.input));}
+  if(method==='reference.commands'){const query=String(input.query||'').toLowerCase();return {items:[...session.extensionRunner.getRegisteredCommands().map(command=>({id:'command:'+command.name,label:command.name+' · '+command.description,kind:'命令',insert:'/'+command.name})),...session.resourceLoader.getSkills().skills.map(skill=>({id:'skill:'+skill.name,label:skill.name+' · '+skill.description,kind:'Skill',insert:'/skill:'+skill.name}))].filter(item=>item.label.toLowerCase().includes(query)).slice(0,60)};}
   if(disposed&&method!=='shutdown')throw new Error('会话已结束');
   if(session&&isSessionDeleted(dataDir,session.sessionId)&&method!=='shutdown')throw new Error('会话已删除');
   if(method==='send'&&!input.queueId){queueEpoch++;cancelQueueResume();}
@@ -341,7 +352,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       const intentId=typeof input.intentId==='string'?text(input.intentId,'消息提交标识',80):undefined,identity=digest({text:input.text,attachments:Array.isArray(input.attachments)?input.attachments.map(raw=>object(raw).path):[],mode:input.mode,planMode:input.planMode});
       if(intentId&&inputQueue.accepted(intentId,identity))return queueState();
       if(input.fromSideDraft===true)await handle('draft.update',input);
-      const payload=input.fromSideDraft===true?inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value:captureInput(input);if(!payload)throw new Error('侧边草稿不存在');
+      const payload=input.fromSideDraft===true?inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value:await captureDocumentInput(input,documentReader.read);if(!payload)throw new Error('侧边草稿不存在');
       if(payload.attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');
       inputQueue.store.transaction(()=>{inputQueue.add(payload,intentId,identity);if(input.fromSideDraft===true)inputQueue.store.remove(`draft:${session.sessionId}`);});
     }
@@ -378,13 +389,29 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='draft.install'){
     const payload=object(input.payload),transferId=typeof payload.id==='string'?payload.id:undefined,key=`draft:${session.sessionId}`,receipt=transferId?`draft-install:${session.sessionId}:${transferId}`:undefined,hash=digest({text:payload.text,attachments:payload.attachments,mode:payload.mode,planMode:payload.planMode}),installed=receipt?inputQueue.store.get<{hash:string}>(receipt)?.value:undefined;
     if(installed&&installed.hash!==hash)throw new Error('侧边草稿交接内容已变化');
-    if(!installed)inputQueue.store.transaction(()=>{if(!inputQueue.store.get(key))inputQueue.store.put(key,{...payload,submissionId:randomUUID()});if(receipt)inputQueue.store.put(receipt,{hash});});return current();
+    if(!installed)inputQueue.store.transaction(()=>{if(!inputQueue.store.get(key)){validateCapturedInput(payload as unknown as InputPayload);inputQueue.store.put(key,{...payload,submissionId:randomUUID()});}if(receipt)inputQueue.store.put(receipt,{hash});});return current();
   }
   if(method==='draft.read')return inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value||null;
-  if(method==='draft.update'){const key=`draft:${session.sessionId}`,old=inputQueue.store.get<InputPayload>(key)?.value;if(!old)throw new Error('侧边草稿不存在');if(typeof input.removePath==='string')inputQueue.store.put(key,{...old,attachments:old.attachments.filter(a=>a.path!==input.removePath)});else{if(typeof input.text!=='string'||Buffer.byteLength(input.text)>128*1024)throw new Error('草稿内容无效');let attachments=old.attachments;if(Array.isArray(input.attachments)){const paths=input.attachments.map(raw=>text(object(raw).path)),added=paths.filter(path=>!old.attachments.some(a=>a.path===path));attachments=[...old.attachments.filter(a=>paths.includes(a.path)),...(added.length?captureInput({text:'',attachments:added.map(path=>({path}))}).attachments:[])];}if(input.mode!==undefined&&!['single','team','swarm'].includes(String(input.mode)))throw new Error('协作方式无效');inputQueue.store.put(key,{...old,text:input.text,attachments,...(input.mode===undefined?{}:{mode:input.mode}),...(input.planMode===undefined?{}:{planMode:input.planMode===true})});}return current();}
+  if(method==='draft.update'){
+    const key=`draft:${session.sessionId}`,old=inputQueue.store.get<InputPayload>(key)?.value;if(!old)throw new Error('侧边草稿不存在');
+    if(typeof input.removePath==='string')inputQueue.store.put(key,{...old,attachments:old.attachments.filter(a=>a.path!==input.removePath)});
+    else{
+      if(typeof input.text!=='string'||Buffer.byteLength(input.text)>128*1024)throw new Error('草稿内容无效');let attachments=old.attachments;
+      if(Array.isArray(input.attachments)){
+        const requested=input.attachments.map(raw=>object(raw)),paths=requested.map(raw=>text(raw.path)),retained=old.attachments.filter(a=>paths.includes(a.path));
+        for(const item of requested){const frozen=retained.find(a=>a.path===item.path);if(frozen&&Object.hasOwn(frozen,'sourceBytes')&&item.hash&&item.hash!==frozen.hash)throw new Error('附件与侧边草稿快照不同，请移除后重新添加');}
+        const added=requested.filter(item=>!old.attachments.some(a=>a.path===item.path));
+        attachments=[...retained,...(added.length?(await captureDocumentInput({text:input.text+retained.map(a=>a.text||'').join(''),attachments:added},documentReader.read)).attachments:[])];
+      }
+      if(input.mode!==undefined&&!['single','team','swarm'].includes(String(input.mode)))throw new Error('协作方式无效');
+      const next={...old,text:input.text,attachments,...(input.mode===undefined?{}:{mode:input.mode as InputPayload['mode']}),...(input.planMode===undefined?{}:{planMode:input.planMode===true})};validateCapturedInput(next);
+      if(digest(inputQueue.store.get(key)?.value??null)!==digest(old))throw new Error('侧边草稿已变化，请重试');inputQueue.store.put(key,next);
+    }return current();
+  }
   if(method==='draft.send'){
     const key=`draft:${session.sessionId}`,payload=inputQueue.store.get<InputPayload&{submissionId?:string}>(key)?.value;
     if(!payload){if(inputQueue.store.get(`draft-consumed:${session.sessionId}`))return current();throw new Error('侧边草稿不存在');}
+    validateCapturedInput(payload);
     const intentId='draft:'+String(payload.submissionId||digest(payload)),identity=digest(payload);
     inputQueue.store.transaction(()=>{if(!inputQueue.accepted(intentId,identity))inputQueue.add(payload,intentId,identity);inputQueue.store.remove(key);inputQueue.store.put(`draft-consumed:${session.sessionId}`,{intentId});});queueChanged();return current();
   }
@@ -406,7 +433,10 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(stopping)throw new Error('正在停止，请等待终止回执');
     if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');
     const queued=typeof input.queueId==='string'?inputQueue.read(input.queueId):undefined;if(queued&&(queued.state!=='dispatching'||queued.runId!==input.runId))throw new Error('排队消息交付身份不匹配');
-    const payload=queued||captureInput(input),prompt=payload.text,attachments=payload.attachments;if(attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');
+    const payload=queued||await captureDocumentInput(input,documentReader.read),prompt=payload.text,attachments=payload.attachments;
+    if(sendEpoch!==queueEpoch||stopping||disposed)throw new Error('消息交付已取消');
+    for(const attachment of attachments)documentAttachments.set(attachment.path,attachment.hash);
+    if(attachments.length)session.sessionManager.appendCustomEntry('friend-pi.attachments.v1',{v:1,runId:typeof input.runId==='string'?input.runId:runId,stage:'prepared',attachments:attachments.map(({text,image,...metadata})=>({...metadata,image:!!image}))});if(attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
     const mode:ExecutionMode=['team','swarm'].includes(String(input.mode))?input.mode as ExecutionMode:'single';if(mode!=='single'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
@@ -424,7 +454,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     await applyAssignedRole();await ensureModelReady();lifecycleStatus='running';
     const images=attachments.flatMap(item=>item.image?[item.image]:[]);
     if(queued&&(input.admissionEpoch!==queueEpoch||stopping))throw new Error('消息交付已取消');
-    const inputRecord:PendingInput={id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
+    const inputRecord:PendingInput={attachmentMetadata:attachments.map(({text,image,...metadata})=>({...metadata,image:!!image})),id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
     if(queued)inputQueue.handoff(queued.id);
     void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
       if(sendEpoch!==queueEpoch||stopping||disposed)throw new Error('消息交付已取消');
@@ -494,7 +524,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   throw new Error(`未知操作：${method}`);
 }
 function publicError(error:unknown):string{return (error instanceof Error?error.message:String(error)).replace(/sk-[A-Za-z0-9_-]{8,}/g,'[密钥已隐藏]');}
-async function shutdown(){if(disposed)return;if(session)services.beforeQuit();cancelTerminalRequests();if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();await changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();inputQueue?.dispose();services.dispose();businessStore.close();bus.clear();}
+async function shutdown(){await external.dispose();if(disposed)return;if(session)services.beforeQuit();cancelTerminalRequests();if(session&&!session.isIdle||swarmBusy())lifecycleStatus='interrupted';disposed=true;for(const pending of dialogs.values()){clearTimeout(pending.timer);pending.resolve(undefined);}dialogs.clear();session?.abortCompaction();await session?.abort();await changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();if(session)await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session?.dispose();inputQueue?.dispose();services.dispose();businessStore.close();bus.clear();}
 process.on('message',raw=>{if(!raw||typeof raw!=='object')return;const request=object(raw);if(request.type==='terminal.waiting'||request.type==='terminal.admitted'){const id=String(request.id),pending=terminalRequests.get(id);if(pending&&(request.type==='terminal.admitted'&&pending.phase!=='admitted'||request.type==='terminal.waiting'&&pending.phase==='transport')){clearTimeout(pending.timer);pending.phase=request.type==='terminal.waiting'?'waiting':'admitted';pending.timer=terminalDeadline(id,pending.phase==='waiting'?125000:25000);}return;}if(request.type==='terminal.response'){const pending=terminalRequests.get(String(request.id));if(pending){pending.cleanup();terminalRequests.delete(String(request.id));request.error?pending.reject(new Error(String(request.error))):pending.resolve(request.result);}return;}if(request.type!=='request')return;void handle(text(request.method),object(request.input||{})).then(result=>{output({type:'response',id:request.id,result},request.method==='shutdown'?()=>process.disconnect?.():undefined);}).catch(error=>output({type:'response',id:request.id,error:publicError(error)}));});
 process.on('disconnect',()=>{void shutdown();});
 async function initializeSupervised(){if(process.env.FRIEND_PI_SUPERVISED==='1')await new Promise<void>(resolveReady=>{const ready=(raw:unknown)=>{if(raw&&typeof raw==='object'&&object(raw).type==='supervisor.ready'){process.off('message',ready);resolveReady();}};process.on('message',ready);output({type:'supervisor.await'});});await initialize();}

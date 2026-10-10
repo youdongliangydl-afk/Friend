@@ -1,7 +1,8 @@
+import {AttentionRegistry,type AttentionOwner} from './session-attention.js';
 import {BrowserHost} from './browser-host.js';
 import {initialView,validateView,mergeViewUpdate,type LayoutMode,type BrowserScope,type SessionViewState} from './session-view.js';
 import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} from './terminal-processes.js';
-import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol } from 'electron';
+import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol,Notification } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
 import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync } from 'node:fs';
 import { join,resolve,dirname,relative,isAbsolute,basename } from 'node:path';
@@ -10,6 +11,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { RecordStore,object,text,projectIdentity,digest,isSessionDeleted,installFixtureProvider,parsePermissionMode,type PermissionMode } from '@friend-pi/core';
+import {importAttachments,inspectAttachment} from './attachment-input.js';
+import {fileReferences,referencePath,sessionReference} from './material-references.js';
+import {readDocument,createDocumentReader,documentManifest,paginateDocument,renderPdfPage} from './document-reader.js';
 import {readRunChange} from './run-changes.js';
 import {fileTree,previewFile,workspaceDiff,projectFile,type DiffScope} from './workspace-files.js';
 import { TerminalBroker } from './terminal-broker.js';
@@ -38,7 +42,9 @@ const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await cr
 function requireActive(){if(shuttingDown)throw new Error('应用正在退出');}
 async function loadProviderMetadata(){const runtime=await getProviderRuntime();requireActive();await runtime.refresh({allowNetwork:false});requireActive();const metadata=await configuredModelMetadata(runtime,dataDir);models=metadata.models;providers=metadata.providers;}
 async function settings(projectId?:string){await loadProviderMetadata();return {preferences:preferences(projectId),globalPreferences:preferences(),projectOverrides:projectId?store.get(`preferences:${projectId}`)?.value:undefined,models,providers,paths:{dataDir},piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
-interface Worker {child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';terminalEpoch?:number;terminalRequests?:Map<string,object>;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
+interface Worker {generation:string;child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';terminalEpoch?:number;terminalRequests?:Map<string,object>;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
+const documentReader=createDocumentReader();
+const attention=new AttentionRegistry();
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let selectedWorkspace:string|undefined;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
 let models:unknown[]=[];let providers:unknown[]=[];
 let learningReady=false;let learning:ChildProcess|undefined;let learningRestarts=0;const learningPending=new Map<string,{resolve:(v:unknown)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
@@ -46,6 +52,8 @@ const ownedChildren=new Map<Worker,Map<number,ProcessIdentity>>();const learning
 function startLearning(){if(shuttingDown||learning)return;processSnapshot();learning=fork(join(root,'apps/desktop/dist/learning-worker.mjs'),[],{execPath:node,cwd:root,detached:process.platform!=='win32',stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_LEARNING_ROLE:'host',FRIEND_PI_DESKTOP_MANAGED:'1'}});const child=learning;child.once('error',()=>{});try{const identity=processSnapshot().get(child.pid!);if(identity)learningOwned.set(identity.pid,identity);else throw new Error('后台宿主身份未能登记');}catch(error){child.kill('SIGKILL');learning=undefined;throw error;}learningReady=false;child.on('message',raw=>{if(!raw||typeof raw!=='object')return;const message=object(raw);if(message.type==='ready'){learningReady=true;child.emit('friend-ready');}else if(message.type==='response'){const pending=learningPending.get(String(message.id));if(pending){clearTimeout(pending.timer);learningPending.delete(String(message.id));message.error?pending.reject(new Error(String(message.error))):pending.resolve(message.result);}}else if(message.type==='event')publish('plugin',message.data);else if(message.type==='notice')publish('notice',message.data);else if(message.type==='state')publish('learning',message.data);});child.stderr?.on('data',bytes=>{const value=String(bytes);if(!value.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:value.replace(/sk-[A-Za-z0-9_-]{8,}/g,'[隐藏]').slice(0,1000)});});child.on('exit',()=>{if(learning===child){learning=undefined;learningReady=false;}for(const pending of learningPending.values()){clearTimeout(pending.timer);pending.reject(new Error('后台学习进程已退出，进度保留'));}learningPending.clear();if(!shuttingDown&&learningRestarts++<3)setTimeout(startLearning,1000*learningRestarts);});child.on('error',()=>publish('notice',{level:'warning',message:'后台学习未启动，队列已保留'}));}
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.changes.read','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
+allowed.add('attention.dismiss');
+for(const method of ['attachment.import','attachment.inspect','reference.list','document.read','document.section','document.pdf.page','external.call'])allowed.add(method);
 allowed.add('link.open');allowed.add('model.test');
 for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload','composer.sync'])allowed.add(method);
 for(const method of ['project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
@@ -59,19 +67,21 @@ function idleRecord(input:Record<string,unknown>){const id=text(input.id),record
 async function chooseAfterArchive(projectId:string){const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];selectCurrent(undefined);store.remove('current');if(recent){try{await startWorker(recent);selectCurrent(recent.id);store.put('current',recent.id);}catch{publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}}
 function records(){return store.list<SessionRecord>('session:').map(row=>row.value);}
 function projects(){return orderedProjects(store.list<Project>('project:').map(row=>row.value),store.get<string[]>('project-order')?.value||[]);}
-function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {projects:projects(),sessions:records(),current:worker?{...worker.state,pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,ui:viewContext(worker.record.id).ui,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(worker?.record.projectId||selectedWorkspace),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
+let stateRevision=0,navigationGeneration=0;
+function attentionOwner(worker:Worker):AttentionOwner{return {sessionId:worker.record.id,generation:worker.generation,runId:typeof worker.state.runId==='string'?worker.state.runId:undefined};}
+function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {revision:++stateRevision,activities:attention.snapshot(),projects:projects(),sessions:records(),current:worker?{...worker.state,dialogs:attention.snapshot().filter(activity=>activity.sessionId===worker.record.id&&activity.kind==='dialog').map(activity=>({...activity.dialog,expiresAt:activity.expiresAt})),pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,ui:viewContext(worker.record.id).ui,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(worker?.record.projectId||selectedWorkspace),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
 function sideState(worker:Worker){return {...state(),current:{...worker.state,sessionId:worker.record.id,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}};}
 let browserHost:BrowserHost|undefined;
 function selectCurrent(id:string|undefined){if(id!==currentId)browserHost?.hide();currentId=id;}
 function viewContext(id:string){const record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不存在');return {id,workspacePath:sessionWorkspace(store,record).path,ui:store.get<SessionViewState>('session-ui:'+id)?.value||initialView()};}
 function saveView(id:string,ui:SessionViewState){viewContext(id);const next=validateView(ui);store.put('session-ui:'+id,next);publish('view',next,id);return next;}
 function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.isDestroyed())window.webContents.send('friend-pi:event',{type,data,sessionId});}
-function publishState(){if(!shuttingDown)publish('state',state());}
+function publishState(){if(shuttingDown)return;attention.setView({sessionId:currentId,foreground:!!window&&!window.isDestroyed()&&window.isVisible()&&window.isFocused()});publish('state',state());for(const note of attention.takeNotifications()){if(!Notification?.isSupported?.())continue;const notification=new Notification({title:note.title,body:note.body,silent:true});notification.on('click',()=>{window?.show();window?.focus();publish('navigation.request',{id:note.sessionId});});notification.show();}}
 function persist(record:SessionRecord){if(storeClosed)throw new Error('应用已经退出');if(store.get(`deleting:${record.id}`))return;store.put(`session:${record.id}`,record);}
 function persistWorker(worker:Worker){worker.record.archived=store.get<SessionRecord>(`session:${worker.record.id}`)?.value.archived||false;const s=worker.state;worker.record.updatedAt=new Date().toISOString();if(typeof s.sessionFile==='string')worker.record.path=s.sessionFile;if(typeof s.sessionId==='string')worker.record.piSessionId=s.sessionId;if(typeof s.lifecycleStatus==='string')worker.record.status=s.lifecycleStatus;if(typeof s.modelId==='string')worker.record.modelId=s.modelId;if(typeof s.thinkingLevel==='string')worker.record.thinkingLevel=s.thinkingLevel;if(typeof s.executionMode==='string')worker.record.executionMode=s.executionMode;if(typeof s.planMode==='boolean')worker.record.planMode=s.planMode;if(typeof s.permissionMode==='string')worker.record.permissionMode=parsePermissionMode(s.permissionMode);persist(worker.record);}
 function retireWorker(worker:Worker,error:Error,interrupted=false):void {worker.terminalRequests?.clear();
   if(worker.phase==='stopping'||worker.phase==='exited')return;
-  worker.phase='stopping';clearTimeout(worker.startupTimer);worker.rejectReady(error);
+  worker.phase='stopping';if(interrupted)attention.observeState(attentionOwner(worker),{runId:typeof worker.state.runId==='string'?worker.state.runId:undefined,lifecycleStatus:'interrupted',isRunning:false});attention.retire(attentionOwner(worker));clearTimeout(worker.startupTimer);worker.rejectReady(error);
   for(const pending of worker.pending.values()){clearTimeout(pending.timer);pending.reject(error);}worker.pending.clear();
   // An earlier process may exit after the user has explicitly reopened this session.
   // Only its own cache entry and dialogs may be removed; the replacement owns its record.
@@ -117,7 +127,7 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   const child=fork(join(root,'apps/desktop/dist/sdk-worker.mjs'),[],{execPath:node,cwd:project.path,detached:groupOwned,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,PATH:`${dirname(node)}:${process.env.PATH||''}`,FRIEND_PI_ROOT:root,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_PROJECT:project.path,FRIEND_PI_TEMPORARY_WRITE_ROOT:record.workspace?.kind==='temporary'?project.path:undefined,FRIEND_PI_AGENT_DIR:join(dataDir,'pi'),FRIEND_PI_MEMBER_WORKER:join(root,'packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:record.path,FRIEND_PI_PI_SESSION_ID:record.piSessionId,FRIEND_PI_DESKTOP_SESSION_ID:record.id,FRIEND_PI_LEARNING_ROLE:'producer',FRIEND_PI_DESKTOP_MANAGED:'1',FRIEND_PI_SUPERVISED:'1',FRIEND_PI_CONTEXT_MODE:preferences(record.projectId).contextMode,FRIEND_PI_MODEL:record.modelId,FRIEND_PI_STATUS:record.status,FRIEND_PI_PLAN_MODE:record.planMode?'1':'0',FRIEND_PI_PERMISSION_MODE:record.permissionMode||'auto',FRIEND_PI_MODE:record.executionMode,FRIEND_PI_PLUGINS:record.plugins?JSON.stringify(record.plugins):undefined}});
   // The renderer initializes its draft and execution controls from this first snapshot.
   // Keep the persisted configuration visible while native Pi history is loading.
-  const worker:Worker={child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,permissionMode:record.permissionMode||'auto',executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);liveWorkers.add(worker);let supervisedReady=false;
+  const worker:Worker={generation:randomUUID(),child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,permissionMode:record.permissionMode||'auto',executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);attention.register(record.id,worker.generation);liveWorkers.add(worker);let supervisedReady=false;
   worker.startupTimer=setTimeout(()=>{
     const error=new Error('Pi 初始化超时；请检查系统文件访问授权，重新打开会话后显式继续');
     retireWorker(worker,error,true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown)publishState();
@@ -150,8 +160,8 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
       })().catch(error=>{if(child.connected)child.send({type:'terminal.response',id:message.id,error:String(error instanceof Error?error.message:error)});}).finally(()=>{if(requests.get(requestId)===ticket)requests.delete(requestId);});
     }else if(message.type==='fatal'){retireWorker(worker,new Error(String(message.error)),true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown){publish('notice',{level:'error',message:message.error},record.id);publishState();}}
     else if(message.type==='event'){
-      const event=object(message.event);if(event.type==='state'){worker.state=object(event.data);persistWorker(worker);const next=pendingConfigurations.get(worker.record.id);if(next&&!worker.state.isRunning){pendingConfigurations.delete(worker.record.id);void request(worker,'configure',next).then(raw=>{worker.state=object(raw);worker.record.plugins=next.plugins;persistWorker(worker);publishState();}).catch(error=>publish('notice',{level:'error',message:String(error)},worker.record.id));}publish('sidechat.state',sideState(worker),record.id);publishState();}
-      else {if(event.type==='dialog'){const data=object(event.data);dialogOwners.set(String(data.id),record.id);}if(event.type==='dialog.closed')dialogOwners.delete(String(object(event.data).id));publish(String(event.type),event.data,record.id);}
+      const event=object(message.event);if(event.type==='state'){worker.state=object(event.data);attention.observeState(attentionOwner(worker),worker.state);persistWorker(worker);const next=pendingConfigurations.get(worker.record.id);if(next&&!worker.state.isRunning){pendingConfigurations.delete(worker.record.id);void request(worker,'configure',next).then(raw=>{worker.state=object(raw);worker.record.plugins=next.plugins;persistWorker(worker);publishState();}).catch(error=>publish('notice',{level:'error',message:String(error)},worker.record.id));}publish('sidechat.state',sideState(worker),record.id);publishState();}
+      else {if(event.type==='dialog'){const data=object(event.data);dialogOwners.set(String(data.id),record.id);attention.captureDialog({...attentionOwner(worker),runId:typeof event.runId==='string'?event.runId:attentionOwner(worker).runId},data);}if(event.type==='dialog.closed'){dialogOwners.delete(String(object(event.data).id));attention.closeDialog(attentionOwner(worker),String(object(event.data).id));}publish(String(event.type),event.data,record.id);if(event.type==='dialog'||event.type==='dialog.closed')publishState();}
     }
   });
   child.stderr?.on('data',bytes=>{if(worker.phase==='stopping'||worker.phase==='exited')return;const message=String(bytes);if(!message.includes('ExperimentalWarning'))publish('notice',{level:'warning',message:message.slice(0,1000)},record.id);});
@@ -261,6 +271,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     store.put('project-order',validateProjectOrder(projects(),input.ids));publishState();return state();
   }
   if(method==='session.new'){
+    const navigation=++navigationGeneration;
     const projectId=typeof input.projectId==='string'?input.projectId:'',defaults=preferences(projectId||undefined);
     if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
     const chosenPermission=input.permissionMode===undefined?(defaults.defaultPermissionMode||'auto'):parsePermissionMode(input.permissionMode);
@@ -269,9 +280,10 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
     const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id);
     const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels.find(level=>level===defaults.defaultThinkingLevel)||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels[0]||'off',plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode,permissionMode:chosenPermission};
-    store.put('session-ui:'+id,initialView(defaults));persist(record);selectCurrent(record.id);store.put('current',currentId);await startWorker(record);publishState();return state();
+    store.put('session-ui:'+id,initialView(defaults));persist(record);await startWorker(record);if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',currentId);}publishState();return {...state(),createdSessionId:id};
   }
   if(method==='project.select'){
+    ++navigationGeneration;
     const projectId=typeof input.projectId==='string'?input.projectId:'';if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
     selectedWorkspace=projectId||undefined;
     const recent=records().filter(record=>record.projectId===projectId&&!record.archived).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -279,11 +291,24 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     selectCurrent(undefined);store.remove('current');publishState();return state();
   }
   if(method==='session.open'){
-    const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();selectCurrent(id);store.put('current',id);publishState();return state();
+    const navigation=++navigationGeneration,id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();if(navigation===navigationGeneration){selectCurrent(id);store.put('current',id);}publishState();return state();
   }
   if(method==='session.rename'){
     const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker){worker.record.name=record.name;await request(worker,'rename',{name:record.name});}publishState();return state();
   }
+  if(method==='attention.dismiss'){attention.dismiss(text(input.id));publishState();return {ok:true};}
+  if(method==='attachment.import')return importAttachments(dataDir,input.files);
+  if(method==='attachment.inspect')return inspectAttachment(text(input.path),documentReader.read);
+  if(method==='reference.list'){
+    const record=store.get<SessionRecord>('session:'+String(input.sessionId||currentId||''))?.value;
+    const query=typeof input.query==='string'?input.query:'';
+    if(input.type==='/'){if(!record)return {items:pluginNames.map(name=>({id:'command:'+name,label:name,kind:'命令',insert:'/'+name})).filter(item=>item.label.includes(query.toLowerCase()))};const worker=await startWorker(record);return request(worker,'reference.commands',{query});}
+    const workspace=record?sessionWorkspace(store,record):undefined;
+    const files=workspace?fileReferences(workspace.path,query):{items:[],truncated:false};
+    const sessions=record?records().filter(row=>row.id!==record.id&&row.projectId===record.projectId&&row.name.toLowerCase().includes(query.toLowerCase())).slice(0,15).map(row=>({id:row.id,label:row.name,kind:'会话',insert:`@[${row.name.replace(/[\[\]]/g,'')}](friend-session:${row.id})` })):[];
+    return {items:[...files.items,...sessions],truncated:files.truncated};
+  }
+  if(method.startsWith('document.')){const workspace=resolveWorkspaceInput(input),path=projectFile(workspace.path,text(input.path));if(method==='document.pdf.page'){const result=await renderPdfPage(path,Number(input.pageIndex)||0);if(input.expectedHash&&result.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return result;}const doc=await documentReader.read(path);if(input.expectedHash&&doc.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return method==='document.read'?documentManifest(doc):paginateDocument(doc,{sectionId:typeof input.sectionId==='string'?input.sectionId:undefined,offset:Number(input.offset)||0,limit:Number(input.limit)||32000,rowOffset:Number(input.rowOffset)||0,maxRows:Number(input.maxRows)||40});}
   if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加附件',properties:['openFile','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
   if(method==='file.preview.revoke'){revokeHtmlPreview(text(input.token));return {revoked:true};}
   if(['file.search','file.read','file.tree','file.open','file.write','file.preview','git.diff'].includes(method)){
@@ -296,8 +321,10 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(method==='file.open'){await shell.openPath(projectFile(workspace.path,text(input.path)));return {ok:true};}
     const scope=String(input.scope||'workspace');if(!['workspace','unstaged','staged','run'].includes(scope))throw new Error('Diff 范围无效');return await workspaceDiff(workspace.path,workspace.id,dataDir,scope as DiffScope,typeof input.runId==='string'?input.runId:workers.get(currentId||'')?.state.runId as string|undefined);
   }
-  if(method==='dialog.respond'){const owner=dialogOwners.get(text(input.id));if(!owner)throw new Error('交互已失效');dialogOwners.delete(String(input.id));const worker=workers.get(owner);if(!worker)throw new Error('运行时已结束');return await request(worker,'dialog.respond',input);}
+  if(method==='dialog.respond'){const id=text(input.id),owner=dialogOwners.get(id);if(!owner)throw new Error('交互已失效');const worker=workers.get(owner);if(!worker||!attention.getDialog(attentionOwner(worker),id))throw new Error('交互已过期或运行时已结束');const response=await request(worker,'dialog.respond',input);attention.closeDialog(attentionOwner(worker),id);dialogOwners.delete(id);publishState();return response;}
   const worker=await target(input);
+  if(method==='session.queue'&&input.action==='add'&&typeof input.text==='string'){let body=input.text;for(const match of input.text.matchAll(/@\[[^\]]*\]\(friend-session:([A-Za-z0-9-]+)\)/g)){const referenced=store.get<SessionRecord>('session:'+match[1])?.value;if(!referenced?.path||referenced.projectId!==worker.record.projectId)throw new Error('引用会话不可用或不属于当前项目');body+='\n'+sessionReference(referenced.path,referenced.name);}input={...input,text:body};}
+  if(method==='external.call')return request(worker,'external.call',input);
   if(method==='session.queue'){
     if(worker.record.archived)throw new Error('归档会话只读');
     if(input.action==='sidechat'){
@@ -332,7 +359,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.sidechat.draft'){worker.state=object(await request(worker,'draft.update',{text:input.text,removePath:input.removePath,attachments:input.attachments,mode:input.mode,planMode:input.planMode}));return sideState(worker);}
   if(method==='session.sidechat.send'){if(worker.record.archived)throw new Error('归档会话只读');await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));const result=await request(worker,'draft.send',{});worker.state=object(await request(worker,'state'));publishState();return result;}
   if(method==='session.send'){
-    if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));const nextRun=worker.state.isRunning?String(worker.state.runId):randomUUID();const response=await request(worker,'send',{...input,runId:nextRun});if(worker.record.name==='新会话'){worker.record.name=text(input.text).slice(0,48);persist(worker.record);}worker.state=object(await request(worker,'state'));publishState();return response;
+    if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));const nextRun=worker.state.isRunning?String(worker.state.runId):randomUUID();let body=typeof input.text==='string'?input.text:'';for(const match of body.matchAll(/@\[[^\]]*\]\(friend-session:([A-Za-z0-9-]+)\)/g)){const referenced=store.get<SessionRecord>('session:'+match[1])?.value;if(!referenced?.path||referenced.projectId!==worker.record.projectId)throw new Error('引用会话不可用或不属于当前项目');body+='\n'+sessionReference(referenced.path,referenced.name);}const response=await request(worker,'send',{...input,text:body,runId:nextRun});if(worker.record.name==='新会话'){worker.record.name=(typeof input.text==='string'&&input.text.trim()?input.text:String(object(Array.isArray(input.attachments)?input.attachments[0]:{}).name||'附件任务')).slice(0,48);persist(worker.record);}worker.state=object(await request(worker,'state'));publishState();return response;
   }
   if(method.startsWith('plan.')){if(method!=='plan.read'&&worker.record.archived)throw new Error('请先恢复归档会话');const nextRun=randomUUID();if(method==='plan.approve'){await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));}const result=await request(worker,method,{...input,runId:nextRun});worker.state=object(await request(worker,'state'));persistWorker(worker);publishState();return result;}
   if(method==='session.stop'){worker.terminalEpoch=(worker.terminalEpoch||0)+1;try{worker.state=object(await request(worker,'stop',input));}finally{await terminalBroker.stopAgentServices(terminalContext(worker.record,'user'));}publishState();return state();}
@@ -357,8 +384,11 @@ else {
     window=new BrowserWindow({title:clientName,titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},width:Number.isInteger(qaWidth)&&qaWidth>=680?qaWidth:1320,height:Number.isInteger(qaHeight)&&qaHeight>=550?qaHeight:860,minWidth:680,minHeight:550,backgroundColor:'#f7f8fb',webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
     browserHost=new BrowserHost(window,root,viewContext,saveView,publish);
     ipcMain.handle('friend-composer:ready',async event=>{requireActive();if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');return browserHost.readyOverlay();});
+    ipcMain.handle('friend-composer:request',async(event,method:string,raw:unknown)=>{requireActive();if(!browserHost?.acceptsOverlay(event)||!['reference.list','attachment.inspect','attachment.import'].includes(method))throw new Error('输入框操作来源无效');const input=object(raw);if(input.sessionId!==currentId)throw new Error('会话已切换');return handle(method,input);});
     ipcMain.handle('friend-composer:action',async(event,raw:unknown)=>{requireActive();if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');const input=object(raw);if(input.sessionId!==currentId)throw new Error('会话已切换');browserHost.overlayAction(input);return {ok:true};});
+    for(const event of ['focus','blur','show','hide'] as const)window.on(event as 'focus',()=>publishState());
     window.on('close',event=>{if(!shuttingDown){event.preventDefault();window.hide();}});
+    const attentionSweep=setInterval(()=>{if(attention.expire())publishState();},1000);attentionSweep.unref();
     Menu.setApplicationMenu(Menu.buildFromTemplate([{label:clientName,submenu:[{role:'about'},{type:'separator'},{role:'quit'}]},{label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'显示',submenu:[{role:'reload'},{role:'toggleDevTools'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'}]}]));
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));window.webContents.on('will-navigate',event=>event.preventDefault());
     ipcMain.handle('friend-pi:request',async(event,method:unknown,raw:unknown)=>{

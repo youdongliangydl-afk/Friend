@@ -1,3 +1,8 @@
+import './activity-center.css';
+import './composer-materials.css';
+import './document-preview.css';
+import './capabilities.css';
+import './deliverables.css';
 import { createRoot } from 'react-dom/client';
 import App from './App.js';
 import {ComposerSurface} from './SessionComposer.js';

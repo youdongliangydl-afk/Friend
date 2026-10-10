@@ -4,7 +4,7 @@ import {PiDialog} from './PiDialog.js';
 import type {DialogRequest} from './types.js';
 import {Conversation} from './Conversation.js';
 import {SessionComposer,type ComposerSnapshot,type ComposerAction} from './SessionComposer.js';
-import {asObject,asList,errorText,type AppState,type Message} from './types.js';
+import {asObject,asList,errorText,type AppState,type Message,type JsonObject} from './types.js';
 import {piLiveMessage,updateToolRun,type ToolRun} from './timeline.js';
 export function SideChat({id,onClose,onOpen,onSettings,report}:{id:string;onClose():void;onOpen(id:string):void;onSettings():void;report(message:string,error?:boolean):void}){
  const [dialogs,setDialogs]=useState<DialogRequest[]>([]),[state,setState]=useState<AppState|null>(null),[draft,setDraft]=useState(''),[attachments,setAttachments]=useState<{path:string}[]>([]),[planMode,setPlanMode]=useState(false),[mode,setMode]=useState<'single'|'team'|'swarm'>('single');
@@ -20,7 +20,7 @@ export function SideChat({id,onClose,onOpen,onSettings,report}:{id:string;onClos
    try{
     if(state?.current?.isRunning||state?.current?.queue?.items.length||!!state?.current?.sideDraft||hasQueueIntent(id,{text:body,attachments:files,mode,planMode})){const payload={text:body,attachments:files,mode,planMode},intent=queueIntent(id,payload);await window.friendPi.request('session.queue',{sessionId:id,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state?.current?.sideDraft});acknowledgeQueueIntent(intent);}
     else await window.friendPi.request('session.send',{sessionId:id,text:body,attachments:files,mode,planMode});
-    const nextBody=draftRef.current===body?'':draftRef.current,nextFiles=JSON.stringify(attachmentRef.current)===JSON.stringify(files)?[]:attachmentRef.current;
+    const nextBody=draftRef.current===body?'':draftRef.current,nextFiles=JSON.stringify(attachmentRef.current.map(item=>item.path))===JSON.stringify(files.map(item=>item.path))?[]:attachmentRef.current;
     draftRef.current=nextBody;attachmentRef.current=nextFiles;setDraft(nextBody);setAttachments(nextFiles);saveDraft(nextBody,nextFiles);await refresh();
    }catch(error){report(errorText(error),true);}finally{lock.current=false;setSending(false);}return;
   }
@@ -29,7 +29,10 @@ export function SideChat({id,onClose,onOpen,onSettings,report}:{id:string;onClos
    else if(input.type==='queueUi')setQueueUi(asObject(input.value));
    else if(input.type==='queue'){const result=await window.friendPi.request('session.queue',{sessionId:id,...asObject(input.value)});if(asObject(input.value).action==='sidechat')onOpen(String(asObject(result).sessionId));await refresh();}
    else if(input.type==='stop'){await window.friendPi.request('session.stop',{sessionId:id});await refresh();}
+   else if(input.type==='files'){const files=asList<{path:string}>(await window.friendPi.request('attachment.import',{sessionId:id,files:input.value}));const next=[...new Map([...attachmentRef.current,...files].map(file=>[file.path,file])).values()];attachmentRef.current=next;setAttachments(next);saveDraft(undefined,next);}
+   else if(input.type==='reference'){const candidate=asObject(input.value);if(candidate.kind==='文件'&&typeof candidate.path==='string'){const next=[...new Map([...attachmentRef.current,{path:candidate.path}].map(file=>[file.path,file])).values()];attachmentRef.current=next;setAttachments(next);saveDraft(undefined,next);}}
    else if(input.type==='attach'){const picked=asList<{path:string}>(await window.friendPi.request('file.pick'));const files=[...new Map([...attachmentRef.current,...picked].map(file=>[file.path,{path:file.path}])).values()];attachmentRef.current=files;setAttachments(files);saveDraft(undefined,files);}
+   else if(input.type==='attachmentChecked'){const item=asObject(input.value);const next=attachmentRef.current.map(attachment=>attachment.path===item.path?{...attachment,hash:String(item.hash)}:attachment);attachmentRef.current=next;setAttachments(next);saveDraft(undefined,next);}
    else if(input.type==='removeAttachment'){const files=attachmentRef.current.filter(file=>file.path!==input.value);attachmentRef.current=files;setAttachments(files);saveDraft(undefined,files);}
    else if(input.type==='plan'){setPlanMode(input.value===true);localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify({text:draftRef.current,attachments:attachmentRef.current,mode,planMode:input.value===true}));}
    else if(input.type==='mode'||input.type==='permission'||input.type==='model'){
@@ -40,5 +43,5 @@ export function SideChat({id,onClose,onOpen,onSettings,report}:{id:string;onClos
   }catch(error){report(errorText(error),true);}
  };
  const current=state?.current,value:ComposerSnapshot|undefined=current&&state?{sessionId:id,epoch:0,draft,attachments,running:current.isRunning,sending,navigating:false,archived:false,planMode,permissionMode:current.permissionMode||'auto',permissionExplicit:true,mode,plugins:current.plugins,models:state.models,modelId:current.modelId,thinkingLevel:current.thinkingLevel,thinkingLevels:current.thinkingLevels||['off'],ready:!!state.models.find(model=>model.id===current.modelId)?.ready,floating:false,collapsed:false,status:'侧边聊天',queue:current.queue,queueUi}:undefined;
- return <section className="side-chat" aria-label="侧边聊天"><header><div><strong>侧边聊天</strong><small>继承已提交上下文 · 独立执行</small></div><button aria-label="关闭侧边聊天" onClick={onClose}>×</button></header><div className="side-chat-history" ref={historyRef} onScroll={e=>{const element=e.currentTarget;following.current=element.scrollHeight-element.scrollTop-element.clientHeight<100;}}>{current?<Conversation messages={current.messages} live={live} tools={tools} running={current.isRunning} readingKey={id}/>:<p>正在打开侧边聊天…</p>}</div>{value&&<SessionComposer value={value} action={action}/>} {dialogs[0]&&<PiDialog key={dialogs[0].id} dialog={dialogs[0]} respond={input=>{const dialogId=dialogs[0].id;void window.friendPi.request('dialog.respond',{id:dialogId,...input}).then(()=>setDialogs(old=>old.filter(row=>row.id!==dialogId))).catch(e=>report(errorText(e),true));}}/>}</section>;
+ return <section className="side-chat" aria-label="侧边聊天"><header><div><strong>侧边聊天</strong><small>继承已提交上下文 · 独立执行</small></div><button aria-label="关闭侧边聊天" onClick={onClose}>×</button></header><div className="side-chat-history" ref={historyRef} onScroll={e=>{const element=e.currentTarget;following.current=element.scrollHeight-element.scrollTop-element.clientHeight<100;}}>{current?<Conversation receipts={asList<JsonObject>(current.receipts)} messages={current.messages} live={live} tools={tools} running={current.isRunning} readingKey={id}/>:<p>正在打开侧边聊天…</p>}</div>{value&&<SessionComposer value={value} action={action}/>} {dialogs[0]&&<PiDialog key={dialogs[0].id} dialog={dialogs[0]} respond={input=>{const dialogId=dialogs[0].id;void window.friendPi.request('dialog.respond',{id:dialogId,...input}).then(()=>setDialogs(old=>old.filter(row=>row.id!==dialogId))).catch(e=>report(errorText(e),true));}}/>}</section>;
 }

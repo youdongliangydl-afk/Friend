@@ -1,3 +1,4 @@
+import {DocumentPreview} from './DocumentPreview.js';
 import { useEffect, useRef, useState } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, StateEffect } from '@codemirror/state';
@@ -151,16 +152,16 @@ export function FileWorkspace({ workspace, workspaceKey, cache, material, report
       <button aria-label={'关闭文件 ' + doc.path} onClick={() => doc.content !== doc.original ? setCloseDoc(doc) : remove(doc)}>×</button></div>)}</div>
       {selected ? <><div className="file-caption">{selected.path}</div><div className="editor-actions">
         {selected.editable && <button disabled={saving || selected.content === selected.original} onClick={() => void save(selected)}>{saving ? '保存中…' : '保存 ⌘S'}</button>}
-        {['markdown', 'image'].includes(selected.kind) || /\.html?$/.test(selected.path) ? <button aria-pressed={state.preview} onClick={() => { state.preview = !state.preview; update(); }}>{state.preview ? '源码' : '预览'}</button> : null}
+        {['markdown', 'image'].includes(selected.kind) ||  /\.(html?|csv)$/i.test(selected.path) ? <button aria-pressed={state.preview} onClick={() => { state.preview = !state.preview; update(); }}>{state.preview ? '源码' : '预览'}</button> : null}
         {!selected.virtual && <button onClick={() => void window.friendPi.request('file.open', { workspace, path: selected.path }).catch(error => report(String(error), true))}>系统打开</button>}
       </div>{selected.changedOutside && <div className="notice">文件已在外部修改，保存前会核对版本。</div>}
-        <div className="document-surface">{selected.kind === 'image' ? <img src={String(selected.dataUrl)} alt={selected.path}/> :
+        <div className="document-surface">{(/\.(pdf|docx|pptx|xlsx)$/i.test(selected.path)||/\.csv$/i.test(selected.path)&&(state.preview||!selected.editable)) ? <DocumentPreview key={workspaceKey+selected.path} workspace={workspace} path={selected.path} report={report}/> : selected.kind === 'image' ? <img src={String(selected.dataUrl)} alt={selected.path}/> :
           state.preview && /\.html?$/.test(selected.path) ? <HtmlPreview doc={selected} workspace={workspace} report={report}/> :
           (state.preview || !selected.editable) && selected.kind === 'markdown' ? <Markdown text={selected.content} basePath={selected.virtual?undefined:selected.path} workspace={workspace}/> :
           selected.editable ? <CodeEditor doc={selected} onChange={update} onSave={() => void save(selected)} line={location?.path===selected.path?location.line:undefined}/> :
           selected.content ? <pre>{selected.content}</pre> : <Empty title={String(selected.reason || '此格式请使用系统应用打开')}/>}</div>
         {typeof selected.nextOffset==='number'&&<button onClick={()=>void window.friendPi.request('file.read',{workspace,path:selected.path,offset:selected.nextOffset}).then(raw=>{const result=asObject(raw);selected.content+=String(result.content||'');selected.original=selected.content;selected.nextOffset=result.nextOffset;update();}).catch(error=>report(String(error),true))}>读取下一段</button>}
-        <button className="add-file-context" onClick={() => window.dispatchEvent(new CustomEvent('friend-pi:add-material', { detail: { text: selected.virtual ? selected.content : '参考文件：' + selected.path } }))}>添加到输入框</button>
+        <button className="add-file-context" onClick={() => window.dispatchEvent(new CustomEvent('friend-pi:add-material', { detail: {workspaceKey,path:selected.virtual?undefined:selected.path,text: selected.virtual ? selected.content : '参考文件：' + selected.path } }))}>添加到输入框</button>
       </> : <Empty title="选择文件开始编辑或预览"/>}
     </div></div>
     {closeDoc && <Modal title="文件尚未保存" onClose={() => setCloseDoc(null)}><p>{closeDoc.path}</p><div className="button-row"><button onClick={() => setCloseDoc(null)}>取消</button><button onClick={() => remove(closeDoc)}>放弃修改并关闭</button><button className="primary" disabled={saving} onClick={() => void save(closeDoc).then(saved => { if (saved&&mounted.current&&closeIntent.current===closeDoc&&closeDoc.content===closeDoc.original) remove(closeDoc); })}>保存并关闭</button></div></Modal>}

@@ -19,6 +19,10 @@ import * as fileEditor from '../apps/desktop/src/file-editor.js';
 import * as htmlPreview from '../apps/desktop/src/html-preview.js';
 import * as workspace from '../apps/desktop/src/workspace-files.js';
 import * as runChanges from '../apps/desktop/src/run-changes.js';
+import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
+import * as attachmentInput from '../apps/desktop/src/attachment-input.js';
+import * as materialReferences from '../apps/desktop/src/material-references.js';
+import * as documentReader from '../apps/desktop/src/document-reader.js';
 
 const root=path.resolve('.');
 const mainSource=fs.readFileSync(path.join(root,'apps/desktop/src/main.ts'),'utf8');
@@ -50,6 +54,10 @@ function fixture(){
       if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./run-changes.js')return runChanges;
+      if(specifier==='./session-attention.js')return {AttentionRegistry:class extends AttentionRegistry {constructor(){super({now:()=>now});}}};
+      if(specifier==='./attachment-input.js')return attachmentInput;
+      if(specifier==='./material-references.js')return materialReferences;
+      if(specifier==='./document-reader.js')return documentReader;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
