@@ -312,6 +312,14 @@ test('a direct instruction quote with an ASCII anchor cannot authorize an unquot
  }finally{await f.close();}
 });
 
+test('the real extraction prompt requests literal fact sentences with complete boundaries and separate metadata',async()=>{
+ const f=fixture();try{
+  const source='本验收项目的订单数据库实际使用 PostgreSQL。仅测试环境适用，生产环境不使用，回滚演练除外。',content=source.replace('。仅','。\n仅');f.items[0].text=source;let calls=0;
+  f.ctx.complete=async prompt=>{calls++;const boundary=prompt.lastIndexOf('\n'),instructions=prompt.slice(0,boundary),material=JSON.parse(prompt.slice(boundary+1));assert.match(instructions,/kind=fact 的 content 必须逐字复制 sourceQuotes 中的完整事实句/u);assert.match(instructions,/按原文顺序用换行连接逐字原句，保留全部否定、范围、时间和例外/u);assert.match(instructions,/title、subject 独立填写为元数据，不在 content 添加元数据说明、来源描述、语气或范围壳/u);assert.match(instructions,/experience\/preference.*不受 fact 的逐字 content 限制/u);assert.equal(material[0].text,source);return JSON.stringify({memories:[{title:'订单数据库',content,kind:'fact',subject:'orders.database.engine',conditions:['仅测试环境适用','生产环境不使用','回滚演练除外'],sourceEntryIds:['user1'],sourceQuotes:{user1:source}}]});};
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const record=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(calls,1);assert.equal(record.status,'active');assert.equal(record.content,content);assert.equal(record.hash,digest(content));assert.deepEqual(record.conditions,['仅测试环境适用','生产环境不使用','回滚演练除外']);assert.equal(readSourceSpan(f.ctx.readSource(record.sources[0]),record.sources[0]),source);assert.equal(record.sources[0].hash,digest(source));
+ }finally{await f.close();}
+});
+
 test('an exact whole-entry model quote retains both business fact and subject and isolates the actual orders conflict',async()=>{
  const f=fixture();try{
   const firstSource='项目事实：本验收项目的订单数据库实际使用 SQLite。主题标识：orders.database.engine。只回复已收到，不调用工具。',firstQuote=firstSource.slice(0,56),firstContent='本验收项目的订单数据库实际使用 SQLite。';f.items[0].id='orders-first';f.items[0].text=firstSource;
