@@ -102,6 +102,8 @@ DeepSeek 源码适配范围与 MIT 全文见 SOURCES.md、DEEPSEEK-LICENSE。
 
 Memory 缺席时无需加载它；启用时完整选择正文及 conditions 进入成员请求才登记精确版本依赖。Expert 采用 intent → 成员原生 journal/fsync → canonical confirm，确认后正文才进入模型；显式选择在首次 provider 请求前完成同一过程。来源/记忆/Skill 撤回会使旧成果失效，提交与整合仍在同 SQLite 短事务围栏复核。成员 `provisioning` 只有与首条真实原生任务 entry 对账后才转 running。
 
+成员 trial 以当前尝试的原生 user entry 摘要及 graph 作用域预占额度。真实 Bash 的结构化退出码生成最小原生检查 journal；父端核对受管会话、当前尝试/代次、原 toolResult 摘要和 canonical 采用后登记 `CheckRef`，不使用模型文字或全图检查代替成员证据。`attempt.nativeChecks` 可回查精确来源，`trialObservation` 区分已观察与待证据。整组检查仅在成员实际结束后交 Expert 结算；取消、未知退出、无结构化退出码和被守卫拦截的命令保持等待，旧尝试/旧版本不能推进新结果。
+
 受管 `swarm-views/<project>/<session>` 是只读 Markdown 投影，带 graph revision/hash manifest，可重建，不读取为新指令或业务状态。任务/共享材料检索使用 SQLite FTS5 和确定性中文词元，无 embedding 模型。迁移前使用 SQLite 快照，失败事务回滚并保留原记录；不重写 Pi 历史。升级表和 namespace 使用最小 writer 版本围栏，旧连接没有版本函数时只能读取，不能写入新 UNKNOWN 状态；本地反例模拟旧 writer，不能冒充完整旧二进制验收。旧 v1/v2 fixture 和新 schema3 证据等级分别保留。
 
 本地 focused tests 覆盖 fake provider、真实 Pi + 本地 HTTP fixture、SQLite 并发/迁移/故障注入。商业模型质量、外部授权测试资源、打包客户端 Computer Use 和最终整合验收由集成会话另行执行，不能以这些本地测试替代。

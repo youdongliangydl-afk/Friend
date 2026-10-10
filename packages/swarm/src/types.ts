@@ -1,4 +1,4 @@
-import type {SourceRef,ArtifactRef,CapabilityDependency,EvidenceReceipt,SourceFence,ErrorCode,PermissionMode} from '@friend-pi/core';
+import type {SourceRef,ArtifactRef,CapabilityDependency,EvidenceReceipt,SourceFence,ErrorCode,PermissionMode,CheckRef} from '@friend-pi/core';
 export type GraphStatus = 'created'|'running'|'stopping'|'paused'|'completed'|'awaiting_review'|'ready'|'integrated'|'failed'|'stopped';
 export type TaskStatus = 'pending'|'running'|'completed'|'skipped'|'unknown'|'blocked'|'cancelled';
 export interface Check { command: string; args: string[] }
@@ -12,6 +12,7 @@ export interface Task {
   originalPrompt?:string; requirementVersions?:{version:number;prompt:string;reason?:string;automatic?:boolean;at:string}[];
 }
 export interface Attempt {
+  nativeChecks?:CheckRef[];trialTerminalOutcome?:'completed'|'failed'|'cancelled'|'unknown';trialObservation?:{key:string;outcome:'completed'|'failed'|'cancelled'|'unknown';status:'observed'|'waiting';attempts?:number;retryAt?:number;error?:string;result?:unknown};
   childCreationStarted?:boolean;exitReceipt?:StopObject;reservationsReleased?:boolean;startPromptDigest?:string;frozen?:FrozenExecution;sourceFence?:SourceFence;resourceReservationId?:string;budgetReservationId?:string;targetBaselines?:Record<string,string>;inputBaselines?:Record<string,string>;dependencyResults?:{taskId:string;resultRevision:number;commit?:string;artifactDigest?:string}[];
   memberId?: string; generation?: number; retainedFrom?:string;
   id: string; taskId: string; number: number; resultRevision: number; status: 'running'|'completed'|'failed'|'unknown';
@@ -68,6 +69,7 @@ export type MemberOutput = ({memberId?:string;generation?:number;attemptId?:stri
   | {v:1|2;type:'received';messageId:string}
   | {v:1|2;type:'context';messageId:string;nativeEntryId:string}
   | {v:1|2;type:'usage';entryId:string;tokens?:number}
+  | {v:1|2;type:'native.check';entryId:string;operationId:string}
   | {v:1|2;type:'request';requestId:string;action:'lease.check'|'send'|'shared.read'|'shared.write'|'expert.adopt'|'expert.confirm';input:Record<string,unknown>}
   | {v:1|2;type:'expert.adopted';adoption:unknown;toolScope?:string[]}
   | {v:1|2;type:'confirm';requestId:string;title:string;message:string}));

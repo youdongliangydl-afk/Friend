@@ -30,11 +30,11 @@ export interface HostPolicy {
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string;toolName?:string;sourceKind?:string }
 export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
-export interface TrustedPluginContext {runId:string;memberId?:string;taskId?:string;findJournalEntry(operationId:string):{entryId:string;customType:string;data:unknown}|undefined}
+export interface TrustedPluginContext {runId:string;memberId?:string;taskId?:string;taskScope?:string;inputHash?:string;findJournalEntry(operationId:string):{entryId:string;customType:string;data:unknown}|undefined}
 export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
   dataDir: string; agentDir?: string; projectDir: string; projectId: string; sessionId: string; sessionFile?: string;
-  signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string;taskId?:string;memberId?:string; isIdle(): boolean;
+  signal?: AbortSignal; modelId?: string; thinkingLevel?: string;runId?:string;taskId?:string;memberId?:string;taskScope?:string;inputHash?:string; isIdle(): boolean;
   learningModel?:{modelId:string;thinkingLevel:string};
   learning?:{budgetId:string;sourceRunId:string;lease:LearningLeaseToken;canAdmit():boolean};
   hostOperations?:{prepare(input:JsonObject):Promise<JsonObject>;dispatch(input:JsonObject):Promise<JsonObject>;reconcile(input:JsonObject):Promise<JsonObject>};
@@ -256,7 +256,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   if(options.actionEnum&&!options.actionEnum.length)throw new Error('插件动作枚举不能为空');
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent',trusted?:TrustedPluginContext) => {
-    const base = makeContext(pi,ctx,origin);const context:PluginContext=trusted?{...base,runId:trusted.runId,memberId:trusted.memberId,taskId:trusted.taskId,findJournalEntry:trusted.findJournalEntry}:base; const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
+    const base = makeContext(pi,ctx,origin);const context:PluginContext=trusted?{...base,runId:trusted.runId,memberId:trusted.memberId,taskId:trusted.taskId,taskScope:trusted.taskScope,inputHash:trusted.inputHash,findJournalEntry:trusted.findJournalEntry}:base; const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
     if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
@@ -265,7 +265,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
     if (!raw || typeof raw !== 'object') return;
     const request = object(raw); if (request.v !== 1 || request.plugin !== name) return;
     void (async () => {
-      try { if (!current) throw new Error('会话尚未就绪'); const override=request.trustedContext;let trusted:TrustedPluginContext|undefined;if(override!==undefined){if(request.origin!=='plugin'||!override||typeof override!=='object'||typeof (override as TrustedPluginContext).findJournalEntry!=='function')throw new CapabilityError('PERMISSION_DENIED','不接受序列化或模型构造的成员上下文');const value=override as TrustedPluginContext;trusted={runId:text(value.runId),memberId:value.memberId===undefined?undefined:text(value.memberId),taskId:value.taskId===undefined?undefined:text(value.taskId),findJournalEntry:value.findJournalEntry};}const result = await call(text(request.action),object(request.input || {}),current,request.origin === 'user' ? 'user' : 'plugin',trusted); pi.events.emit(RESPONSE,{id:request.id,result}); }
+      try { if (!current) throw new Error('会话尚未就绪'); const override=request.trustedContext;let trusted:TrustedPluginContext|undefined;if(override!==undefined){if(request.origin!=='plugin'||!override||typeof override!=='object'||typeof (override as TrustedPluginContext).findJournalEntry!=='function')throw new CapabilityError('PERMISSION_DENIED','不接受序列化或模型构造的成员上下文');const value=override as TrustedPluginContext;if([value.inputHash,value.taskScope].some(hash=>hash!==undefined&&(typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash))))throw new CapabilityError('VALIDATION_ERROR','可信成员输入或任务范围摘要无效');trusted={runId:text(value.runId),memberId:value.memberId===undefined?undefined:text(value.memberId),taskId:value.taskId===undefined?undefined:text(value.taskId),taskScope:value.taskScope,inputHash:value.inputHash,findJournalEntry:value.findJournalEntry};}const result = await call(text(request.action),object(request.input || {}),current,request.origin === 'user' ? 'user' : 'plugin',trusted); pi.events.emit(RESPONSE,{id:request.id,result}); }
       catch (error) { pi.events.emit(RESPONSE,{id:request.id,...normalizeCapabilityError(error)}); }
     })();
   });
