@@ -33,6 +33,8 @@
 - 归档、删除后的自动选择及原史重定位沿用导航代次，迟到启动不会覆盖用户后续选择。
 - MCP 注册前脱敏描述、参数说明及命名空间说明；参数结构包含凭证时拒绝公开，保留参数语义。进度和最终结果按内容值脱敏，保留原生内容结构。
 - 原生 MCP 资源工具也检查服务停用/移除和配置变化，临时会话统一走一次 MCP 审批。
+- 文档工具在当前章节尚有续页时只返回 `nextOffset`；本节读完后才提供 `nextSectionId`，避免跳过中间正文。
+- 已启用 MCP 配置动态变化后，模型请求须等待本次重连完成，确保首轮工具清单包含已就绪服务。
 
 格式依据：[Microsoft altChunk](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.altchunk?view=openxml-3.0.1)、[Microsoft ST_Xstring](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oe376/bd0aa042-434a-4ca7-b25f-4e1fd25a954d)。
 
@@ -52,6 +54,8 @@ node scripts/package-desktop.mjs --require-clean --no-zip --app-name <唯一应�
 最终固定提交的测试日志、候选/制品摘要、安装包路径统一记录在开发工作树 `.artifacts/ux-materials-tools/handoff.json`。整套测试覆盖真实 Pi SDK 与本地假供应商、MCP 协议、原生 JSONL 输入和工具结果；假供应商通过不等于真实模型验收。
 
 开发候选交接时尚未完成 Computer Use、真实模型和真实 Brave 搜索验收。集成会话独立记录最终候选的测试、制品和客户端证据；不以源码或静态渲染代替实际验收。按用户更新的规则，可以使用共享桌面和控制通道，但应用名称、Bundle ID、数据目录及实际进程/窗口必须明确绑定。Brave 未配置时，验收明确提示不可用的行为。
+
+最终集成证据保存在 `.artifacts/integration-ux-materials/`。曾失败的模型旅程保留原始审核结果；后续修复在新候选、新旅程上复验，不将补读或旧候选截图算入原旅程成功。
 
 ## 集成验收步骤
 
