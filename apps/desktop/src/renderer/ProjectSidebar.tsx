@@ -1,6 +1,18 @@
 import {useEffect,useRef,useState,type KeyboardEvent} from 'react';
 import {Icon} from './Icons.js';
 import type {AppState,SessionSummary} from './types.js';
+import type {AttentionActivity} from '../session-attention.js';
+
+export function sidebarSessions(sessions:SessionSummary[],activities:Pick<AttentionActivity,'sessionId'|'kind'|'unseen'>[]):SessionSummary[]{
+  return sessions.map(session=>{
+    const attention=activities.filter(item=>item.sessionId===session.id);
+    if(attention.some(item=>item.kind==='dialog'))return {...session,status:'awaiting_user'};
+    const result=attention.find(item=>item.unseen&&(item.kind==='completed'||item.kind==='failed'));
+    if(result&&!['running','rebuilding','stopping'].includes(session.status||''))return {...session,status:'unread_'+result.kind};
+    return session;
+  });
+}
+
 
 export function reorderIds(ids:string[],source:string,target:string,after=false) {
   if(source===target||!ids.includes(source)||!ids.includes(target))return ids;
@@ -16,7 +28,7 @@ export interface ProjectSidebarProps {
   onMenu(session:SessionSummary,position:{x:number;y:number}):void;
   onOpenProject():void;onReorder(ids:string[]):void|Promise<unknown>;
 }
-const statuses:Record<string,string>={idle:'准备就绪',running:'正在执行',awaiting_review:'等待复核',rebuilding:'整理上下文',stopping:'正在停止',completed:'本轮已结束',failed:'执行失败',interrupted:'已中断',stopped:'已停止',paused:'已暂停'};
+const statuses:Record<string,string>={awaiting_user:'等待你处理',unread_completed:'有新回复',unread_failed:'任务失败，尚未查看',idle:'准备就绪',running:'正在执行',awaiting_review:'等待复核',rebuilding:'整理上下文',stopping:'正在停止',completed:'本轮已结束',failed:'执行失败',interrupted:'已中断',stopped:'已停止',paused:'已暂停'};
 
 export function ProjectSidebar({projects,sessions,selectedProject='',selectedSession,query='',archived=false,disabled=false,onProject,onSession,onMenu,onOpenProject,onReorder}:ProjectSidebarProps) {
   const [menu,setMenu]=useState<string>(),[pending,setPending]=useState(false),[error,setError]=useState('');

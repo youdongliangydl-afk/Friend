@@ -5,7 +5,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
-import {ProjectSidebar,reorderIds,type ProjectSidebarProps} from '../apps/desktop/src/renderer/ProjectSidebar.js';
+import {ProjectSidebar,reorderIds,sidebarSessions,type ProjectSidebarProps} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 
 const projects=[{id:'b',name:'设计项目',path:'/design'},{id:'a',name:'开发项目',path:'/code'},{id:'empty',name:'空项目',path:'/empty'}];
 const sessions=[
@@ -92,4 +92,10 @@ test('only a project header drag can reorder projects and keeps chat actions sep
   const heading=group.props.children[0];let prevented=false;
   heading.props.onDrop({dataTransfer:transfer,clientY:140,currentTarget:{getBoundingClientRect:()=>({top:100,height:30})},preventDefault(){prevented=true;}});
   assert.equal(prevented,true);assert.equal(transfer.effectAllowed,'move');assert.deepEqual(f.calls,[{type:'reorder',value:['a','empty','b']}]);
+});
+
+test('sidebar attention shows approval before running and unread results without mutating sessions',()=>{
+ const original=sessions.map(session=>({...session})),projected=sidebarSessions(original,[{sessionId:'recent',kind:'dialog',unseen:false},{sessionId:'old',kind:'completed',unseen:true},{sessionId:'design',kind:'failed',unseen:true},{sessionId:'deleted',kind:'dialog',unseen:false}]);
+ assert.equal(projected.find(session=>session.id==='recent')?.status,'awaiting_user');assert.equal(projected.find(session=>session.id==='old')?.status,'unread_completed');assert.equal(projected.find(session=>session.id==='design')?.status,'unread_failed');assert.equal(original.find(session=>session.id==='recent')?.status,'running');
+ assert.equal(sidebarSessions(original,[{sessionId:'recent',kind:'completed',unseen:true}]).find(session=>session.id==='recent')?.status,'running');
 });

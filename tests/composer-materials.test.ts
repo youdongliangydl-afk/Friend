@@ -115,3 +115,15 @@ test('the actual BrowserHost overlay action admits material events only for the 
   assert.equal(emitted.length, 3); assert.ok(emitted.every(args => args[0] === 'composer.action' && args[2] === 'owner'));
   assert.throws(() => scope.action.call(host, {type: 'arbitrary-tool', sessionId: 'owner', token: 'bound-token'}), /操作无效/);
 });
+
+test('manual sidebar navigation reopens deferred approval after admission and keeps it deferred during submission',async()=>{
+ const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
+ for(const name of ['openSession','selectProject']){
+  const marker='  const '+name+'=async',offset=source.indexOf(marker),end=source.indexOf('\n',offset);assert.ok(offset>=0&&end>offset);
+  const callback=source.slice(offset,end),deferred=new Set(['pending-approval']),calls:any[]=[];
+  const context:any={navigating:false,sending:true,allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:deferred},stateRef:{current:{current:{dialogs:[{id:'pending-approval'}]}}},setDialogs(value:any){context.restored=value;},setNavigating(){},setSelectedProject(){},setMaterial(){},invoke:async(method:string)=>{calls.push({method,deferred:deferred.size});}};
+  vm.createContext(context);context.useCallback=(callback:any)=>callback;const restore=between(source,'  const restoreDialogs=','  useEffect(()=>{if(sessionView.active');vm.runInContext(stripTypeScriptTypes(restore+callback+'\nglobalThis.navigate='+name+';'),context);
+  await context.navigate('target');assert.equal(deferred.size,1);assert.equal(calls.length,0);
+  context.sending=false;await context.navigate('target');assert.equal(deferred.size,0);assert.equal(calls.length,1);assert.equal(calls[0].deferred,0);assert.equal(context.navigationEpoch.current,1);assert.equal(context.restored[0].id,'pending-approval');
+ }
+});

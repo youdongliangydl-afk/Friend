@@ -1,5 +1,5 @@
 import {CapabilitiesPanel} from './CapabilitiesPanel.js';
-import {ProjectSidebar} from './ProjectSidebar.js';
+import {ProjectSidebar,sidebarSessions} from './ProjectSidebar.js';
 import {queueIntent,acknowledgeQueueIntent,hasQueueIntent} from './queue-intent.js';
 import {PiDialog} from './PiDialog.js';
 import {permissionOptions} from './composer-permissions.js';
@@ -124,6 +124,8 @@ export default function App() {
   const running=Boolean(state.current?.isRunning||localRunning||swarmRunning),messages=state.current?.messages||[],currentPlugins=state.current?.plugins||plugins;
   useEffect(()=>{if(state.current)setSelectedProject(state.current.projectId);},[state.current?.sessionId,state.current?.projectId]);
   const report=useCallback((message:string,error=false)=>setNotice({message,error}),[]);
+  const restoreDialogs=useCallback(()=>{deferredDialogs.current.clear();setDialogs(stateRef.current.current?.dialogs||[]);},[]);
+  useEffect(()=>{if(sessionView.active==='conversation')restoreDialogs();},[sessionId,sessionView.active,restoreDialogs]);
   const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);},[]);
   const refresh=useCallback(async()=>{const next=await window.friendPi.request<AppState>('app.state');applyState(next);return next;},[applyState]);
   const invoke=useCallback(async(method:string,input:JsonObject={})=>{try{const result=await window.friendPi.request(method,input);await refresh();return result;}catch(error){report(errorText(error),true);throw error;}},[refresh,report]);
@@ -195,9 +197,9 @@ export default function App() {
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
     finally{sendLock.current=false;setSending(false);setSubmissionRevision(old=>old+1);}
   };
-  const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});restoreDialogs();setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   const openProject=async()=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke('project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};
-  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   useEffect(()=>{if(!requestedSession||navigating||sending||sendLock.current||allocationLock.current)return;const id=requestedSession;setRequestedSession(undefined);deferredDialogs.current.clear();void openSession(id);},[requestedSession,navigating,sending,submissionRevision]);
   useEffect(()=>{const keys=(event:KeyboardEvent)=>{if(document.querySelector(':popover-open')||[...document.querySelectorAll<HTMLElement>('[role="dialog"]')].some(node=>node.getClientRects().length>0))return;if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='n'){event.preventDefault();void newSession();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setSidebar(true);searchInput.current?.focus();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='t'){event.preventDefault();void openNewView();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='w'){event.preventDefault();void closeView(sessionView.active);}if(event.ctrlKey&&event.key===String.fromCharCode(96)){event.preventDefault();void showTerminal();}};window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);});
   const ensureUiSession=async()=>{
@@ -263,13 +265,13 @@ export default function App() {
   useEffect(()=>window.friendPi.onEvent(event=>{if(event.sessionId!==stateRef.current.current?.sessionId)return;if(String(event.type)==='browser.shortcut'){const key=String(asObject(event.data).key);if(key==='t')void openNewView();else if(key==='w')void closeView(viewRef.current.active);else if(key==='n')void newSession();else if(key==='k'){setSidebar(true);searchInput.current?.focus();}else if(key==='l')document.querySelector<HTMLInputElement>('[aria-label="网页地址"]')?.focus();}}));
   const sidebarWidth=Math.max(180,Math.min(layout.sidebarWidth,400));
   return <div className={'app friend-layout session-fullscreen '+(sidebar?'':'sidebar-hidden ')+(toolActive?'full-tool-active ':'')} style={{'--sidebar-width':sidebarWidth+'px'} as React.CSSProperties}>
-    <header className="topbar project-topbar"><SessionTabs view={sessionView} onSelect={id=>void writeView({...viewRef.current,active:id})} onClose={id=>void closeView(id)} onNew={()=>void openNewView()}/>
+    <header className="topbar project-topbar"><SessionTabs view={sessionView} onSelect={id=>{if(id==='conversation')restoreDialogs();void writeView({...viewRef.current,active:id});}} onClose={id=>void closeView(id)} onNew={()=>void openNewView()}/>
       <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label="内嵌终端" aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}>⌁</button><button aria-label={sidebar?'收起会话侧栏':'展开会话侧栏'} onClick={()=>{const next=!sidebar;setSidebar(next);if(sessionId)void writeView({...viewRef.current,sidebar:next});}}><Icon name="sidebar"/></button></div>
     </header>
     <aside className="sidebar" aria-label="项目与会话">
       <div className="sidebar-new"><button className="new-chat" disabled={navigating||sending} onClick={()=>void newSession()}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button className="history-button" aria-label="查看归档会话" aria-pressed={historyOpen} onClick={()=>setHistoryOpen(v=>!v)}><Icon name="history"/></button></div>
       <label className="session-search"><Icon name="search"/><input ref={searchInput} aria-label="搜索项目与会话" placeholder="搜索项目与会话…" value={sessionSearch} onChange={event=>setSessionSearch(event.target.value)}/></label>
-      <ProjectSidebar projects={state.projects} sessions={state.sessions} selectedProject={projectId||''} selectedSession={sessionId} query={sessionSearch} archived={historyOpen} disabled={navigating||sending} onProject={id=>void selectProject(id)} onSession={id=>void openSession(id)} onMenu={(item,position)=>setMenu({...item,...position})} onOpenProject={()=>void openProject()} onReorder={ids=>invoke('project.reorder',{ids})}/>
+      <ProjectSidebar projects={state.projects} sessions={sidebarSessions(state.sessions,state.activities||[])} selectedProject={projectId||''} selectedSession={sessionId} query={sessionSearch} archived={historyOpen} disabled={navigating||sending} onProject={id=>void selectProject(id)} onSession={id=>void openSession(id)} onMenu={(item,position)=>setMenu({...item,...position})} onOpenProject={()=>void openProject()} onReorder={ids=>invoke('project.reorder',{ids})}/>
       <button className="sidebar-settings" aria-label="设置" onClick={()=>setSettingsOpen(true)}><Icon name="settings"/>设置</button>
     </aside>
     {sidebar&&<ResizeHandle className="sidebar-resize" name="调整会话侧栏宽度" value={sidebarWidth} min={180} max={400} onChange={value=>setLayout(old=>({...old,sidebarWidth:value}))}/>}
@@ -285,7 +287,7 @@ export default function App() {
           onRevise={()=>{setDraft('请修改上述计划：');composer.current?.focus();}}
           onReject={()=>void invoke('plan.reject',{...asObject(state.current!.plan),sessionId}).then(()=>{if(stateRef.current.current?.sessionId===sessionId)setPlanMode(false);}).catch(()=>{})}/></div>}
         </div></div>
-      {activeMember&&sessionId&&<TeammateConversation key={sessionId+activeMember} rootSessionId={sessionId} memberId={activeMember} onBack={returnToRoot} report={report} archived={!!activeSession?.archived}/>}
+      {!toolActive&&activeMember&&sessionId&&<TeammateConversation key={sessionId+activeMember} rootSessionId={sessionId} memberId={activeMember} onBack={returnToRoot} report={report} archived={!!activeSession?.archived}/>}
       {!toolActive&&conversationPage==='chat'&&<div hidden={!!activeMember} className="composer-host"><SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>}
     </main>
     {sessionView.tabs.length>0&&<aside className="workspace fullscreen-workspace" aria-label="工作空间" hidden={!toolActive}>

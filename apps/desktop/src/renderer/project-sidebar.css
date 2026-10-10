@@ -37,3 +37,5 @@
 .project-sidebar button:disabled{opacity:.4;cursor:default}
 .project-sidebar-error{margin:3px 8px 7px;color:#a0564e;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 @media(hover:none){.project-sidebar .project-sidebar-more{opacity:1}}
+
+.project-sidebar-status.status-awaiting_user{background:#b79b61}.project-sidebar-status.status-unread_completed{background:#7189b7}.project-sidebar-status.status-unread_failed{background:#bf786c}
