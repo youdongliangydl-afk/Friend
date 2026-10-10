@@ -11,3 +11,10 @@ export function closeViewTab(view:SessionViewState,id:string):SessionViewState {
   const tabs=view.tabs.filter(t=>t.id!==id);
   return {...view,tabs,active:view.active===id?(tabs[Math.max(0,index-1)]?.id||'conversation'):view.active};
 }
+
+/** Expert presentation is temporarily hidden; old saved tool tabs must not leave an empty active page. */
+export function visibleSessionView(view:SessionViewState):SessionViewState {
+  const tabs=view.tabs.filter(tab=>tab.kind!=='tool'||tab.page!=='expert');
+  if(tabs.length===view.tabs.length)return view;
+  return {...view,tabs,active:tabs.some(tab=>tab.id===view.active)||view.active==='conversation'?view.active:'conversation'};
+}

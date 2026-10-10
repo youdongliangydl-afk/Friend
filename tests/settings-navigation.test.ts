@@ -22,7 +22,7 @@ function text(value:any):string {return typeof value==='string'||typeof value===
 function plain<T>(value:T):T {return JSON.parse(JSON.stringify(value));}
 
 /** Execute the production component, retaining real callbacks and asynchronous effects. */
-function fixture(page:'general'|'expert'|'extensions'='expert') {
+function fixture(page:'general'|'extensions'='general') {
   let cursor=0;const slots:any[]=[],effects:(()=>void)[]=[],requests:{method:string;input:Record<string,unknown>;resolve(value:unknown):void;reject(error:Error):void}[]=[],reports:string[]=[];
   const same=(before:unknown[]|undefined,after:unknown[]|undefined)=>!!before&&!!after&&before.length===after.length&&before.every((value,index)=>Object.is(value,after[index]));
   const hooks={
@@ -92,11 +92,15 @@ test('Expert toggle submits only its plugin change and keeps unsaved model draft
   on.resolve(settings());await f.flush();assert.equal(f.capability().checked,true);assert.equal(f.field('默认模型').value,'fixture/draft');
 });
 
-test('Settings extensions render only external capabilities and Expert settings only expose its switch',async()=>{
+test('Settings retain only General Expert switch and external Extensions capabilities',async()=>{
   const f=fixture('extensions');f.render();f.get().resolve(settings());await f.flush();
   const html=renderToStaticMarkup(f.render());assert.match(html,/外部能力设置/);assert.match(html,/连接你的工具服务/);
   assert.doesNotMatch(html,/Swarm|上下文高级诊断|专家库与版本管理|专家库|方法候选/);
-  f.props.page='expert';const tree=f.render();const expertPage=nodes(tree).find(node=>node.type==='div'&&node.props.hidden===false&&nodes(node.props.children).some(child=>child.type==='input'&&child.props.role==='switch'&&text(node).includes('启用 Expert')));
-  assert.ok(expertPage);assert.equal(nodes(expertPage.props.children).filter(node=>node.type==='input').length,1);
-  assert.doesNotMatch(renderToStaticMarkup(expertPage as any),/专家库|Skill|后台验证|Swarm|高级诊断/);
+  const nav=nodes(f.render()).find(node=>node.type==='nav')!;
+  assert.equal(text(nav),'常规模型记忆扩展');
+  f.props.page='general';const tree=f.render();const general=nodes(tree).find(node=>node.type==='div'&&'data-settings-general' in node.props)!;
+  assert.equal(general.props.hidden,false);
+  const expertRows=nodes(general).filter(node=>node.type==='label'&&text(node)==='启用 Expert');
+  assert.equal(expertRows.length,1);assert.equal(nodes(expertRows[0]).filter(node=>node.type==='input'&&node.props.role==='switch').length,1);
+  assert.doesNotMatch(renderToStaticMarkup(general as any),/专家库|擅长领域|Skill|后台验证|Swarm|高级诊断|Expert 页面/);
 });
