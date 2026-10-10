@@ -29,7 +29,7 @@ export function validateView(raw: unknown): SessionViewState {
     return {id:tab.id,kind:tab.kind};
   });
   if(v.active!=='conversation'&&!ids.has(v.active))throw new Error('选中的标签不存在');
-  if(v.normalPage!==undefined&&v.normalPage!==null&&v.normalPage!=='browser'&&!Object.hasOwn(toolNames,v.normalPage)||v.normalTerminal!==undefined&&typeof v.normalTerminal!=='boolean')throw new Error('普通布局状态无效');
+  if(v.normalPage!==undefined&&v.normalPage!==null&&v.normalPage!=='browser'&&!Object.hasOwn(toolNames,v.normalPage)||v.normalTerminal!==undefined&&typeof v.normalTerminal!=='boolean')throw new Error('会话界面状态无效');
   let active=v.active;
   if(v.mode==='standard'){
     const restoreTool=(page:ToolPage)=>{

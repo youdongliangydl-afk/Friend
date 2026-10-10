@@ -36,7 +36,7 @@ export class MessageQueue {
  failed(id:string){const item=this.snapshot().items.find(item=>item.id===id);if(item?.state==='dispatching'&&!item.submitted)this.change(id,item.revision,row=>({...row,state:'queued',runId:undefined}));else if(item&&item.state!=='queued')this.unknown(id);this.pause(true);}
  unknown(id:string){const item=this.snapshot().items.find(item=>item.id===id);if(item)this.change(id,item.revision,row=>({...row,state:'unknown'}));this.pause(true);}
  moving(id:string,revision:number,targetId:string,leafId?:string){const existing=this.read(id);if(existing.targetId===targetId&&['moving','unknown'].includes(existing.state))return existing;this.change(id,revision,item=>{if(item.state!=='queued')throw new Error('消息当前不能移出');return {...item,state:'moving',targetId,leafId};});return this.read(id);}
- moved(id:string,targetId:string){const item=this.read(id);if(!['moving','unknown'].includes(item.state)||item.targetId!==targetId)throw new Error('侧边草稿交接身份不匹配');return this.change(id,item.revision,()=>null);}
- release(id:string,targetId:string){const item=this.read(id);if(item.state!=='moving'||item.targetId!==targetId)throw new Error('侧边草稿交接身份已变化');return this.change(id,item.revision,row=>({...row,state:'queued',targetId:undefined}));}
+ moved(id:string,targetId:string){const item=this.read(id);if(!['moving','unknown'].includes(item.state)||item.targetId!==targetId)throw new Error('分支草稿交接身份不匹配');return this.change(id,item.revision,()=>null);}
+ release(id:string,targetId:string){const item=this.read(id);if(item.state!=='moving'||item.targetId!==targetId)throw new Error('分支草稿交接身份已变化');return this.change(id,item.revision,row=>({...row,state:'queued',targetId:undefined}));}
  dispose(){this.store.close();}
 }

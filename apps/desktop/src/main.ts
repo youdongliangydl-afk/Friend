@@ -332,7 +332,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       let transfer=store.get<{id:string;phase:'preparing'|'prepared'|'saved';workspace?:{workspace:WorkspaceRef;workspaceDir?:string}}>(transferKey)?.value;
       const id=transfer?.id||randomUUID();
       if(transfer?.phase==='saved'){
-        const record=store.get<SessionRecord>('session:'+id)?.value;if(!record)throw new Error('侧边会话已移除');
+        const record=store.get<SessionRecord>('session:'+id)?.value;if(!record)throw new Error('分支会话已移除');
         const child=await startWorker(record);await request(worker,'queue',{action:'move.commit',id:input.id,targetId:id});publishState();return {sessionId:id,state:sideState(child)};
       }
       // A lost IPC reply must retry the same destination and native fork.
@@ -344,7 +344,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
         if(!record){
           const projectId=worker.record.projectId,workspace=transfer.workspace||(projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id));
           transfer={...transfer,workspace};store.put(transferKey,transfer);
-          record={...worker.record,...workspace,id,name:String(payload.text||'侧边聊天').slice(0,48),path:undefined,piSessionId:undefined,archived:false,status:'idle',updatedAt:new Date().toISOString()};
+          record={...worker.record,...workspace,id,name:String(payload.text||'分支会话').slice(0,48),path:undefined,piSessionId:undefined,archived:false,status:'idle',updatedAt:new Date().toISOString()};
           const cwd=sessionWorkspace(store,record).path,forked=object(await request(worker,'sidechat.fork',{targetId:id,cwd,sessionDir:join(dataDir,'sessions'),leafId:payload.leafId}));record.path=text(forked.path);record.piSessionId=text(forked.piSessionId);
           persist(record);store.put('session-ui:'+id,initialView(preferences(projectId)));
         }

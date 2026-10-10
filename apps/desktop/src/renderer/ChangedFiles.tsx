@@ -13,7 +13,7 @@ export function ChangedFiles({summary,sessionId,cache,workspacePath}:{summary:Ru
   <div><strong>{summary.unavailable?'本轮改动统计不可用':single?'已改动 '+single.path:summary.files.length?`已改动 ${summary.files.length} 个文件`:'本轮没有文件变化'}</strong>
    <small>{summary.status==='completed'?'执行结束':summary.status==='stopped'?'已停止，保留已有变化':'执行未完成，保留已有变化'}</small></div>
   {!summary.unavailable&&!!summary.files.length&&(single?counts(single):<span className="change-counts"><span className="added">+{additions}</span><span className="removed">−{deletions}</span></span>)}
-  <span className="change-review-hint">在侧边栏预览</span>
+  {!summary.unavailable&&!!summary.files.length&&<span className="change-review-hint">查看 Diff</span>}
  </button>;
  return <section ref={cardRef} className="run-changes" aria-label="本轮改动文件">
   {single?<ChangePreview cardRef={cardRef} cache={diffCache} coordinates={coordinates(0)} path={displayPath(single.path)} anchor={header}/>:header}<span id={description} hidden>{single?displayPath(single.path):undefined}</span>

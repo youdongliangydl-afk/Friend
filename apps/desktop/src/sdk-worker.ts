@@ -352,7 +352,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       const intentId=typeof input.intentId==='string'?text(input.intentId,'消息提交标识',80):undefined,identity=digest({text:input.text,attachments:Array.isArray(input.attachments)?input.attachments.map(raw=>object(raw).path):[],mode:input.mode,planMode:input.planMode});
       if(intentId&&inputQueue.accepted(intentId,identity))return queueState();
       if(input.fromSideDraft===true)await handle('draft.update',input);
-      const payload=input.fromSideDraft===true?inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value:await captureDocumentInput(input,documentReader.read);if(!payload)throw new Error('侧边草稿不存在');
+      const payload=input.fromSideDraft===true?inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value:await captureDocumentInput(input,documentReader.read);if(!payload)throw new Error('分支草稿不存在');
       if(payload.attachments.some(item=>item.image)&&!session.model?.input.includes('image'))throw new Error('当前型号不支持图片');
       inputQueue.store.transaction(()=>{inputQueue.add(payload,intentId,identity);if(input.fromSideDraft===true)inputQueue.store.remove(`draft:${session.sessionId}`);});
     }
@@ -369,7 +369,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
       try{await handle('send',{queueId:item.id,admissionEpoch:queueEpoch,runId:item.runId,inputMode:'steer',mode:item.mode,planMode:item.planMode});}catch(error){inputQueue.failed(item.id);throw error;}
     }
     else if(action==='move.prepare'){const leaf=stableForkLeaf(session.sessionManager.getBranch());if(!leaf)throw new Error('尚无可继承的上下文');return inputQueue.moving(id,revision,text(input.targetId),leaf);}
-    else if(action==='move.inspect'){const item=inputQueue.read(id);if(item.targetId!==input.targetId||!['moving','unknown'].includes(item.state))throw new Error('侧聊交接身份不匹配');return item;}
+    else if(action==='move.inspect'){const item=inputQueue.read(id);if(item.targetId!==input.targetId||!['moving','unknown'].includes(item.state))throw new Error('分支会话交接身份不匹配');return item;}
     else if(action==='move.failed'){const item=inputQueue.snapshot().items.find(row=>row.id===id);if(item&&item.targetId===input.targetId&&['moving','unknown'].includes(item.state))inputQueue.unknown(id);}
     else if(action==='move.commit'){if(inputQueue.snapshot().items.some(item=>item.id===id))inputQueue.moved(id,text(input.targetId));}
     else if(action==='move.cancel')inputQueue.release(id,text(input.targetId));
@@ -380,37 +380,37 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const leafId=typeof input.leafId==='string'?input.leafId:stableForkLeaf(session.sessionManager.getBranch()),file=session.sessionFile;if(!leafId||!file)throw new Error('尚无可继承的已提交上下文');
     const key=typeof input.targetId==='string'?`sidechat-fork:${session.sessionId}:${input.targetId}`:undefined,identity={leafId,cwd:text(input.cwd),sessionDir:text(input.sessionDir)};
     const saved=key?inputQueue.store.get<{identity:typeof identity;result:{path:string;piSessionId:string}}>(key)?.value:undefined;
-    if(saved){if(digest(saved.identity)!==digest(identity))throw new Error('侧聊分叉身份已变化');return saved.result;}
+    if(saved){if(digest(saved.identity)!==digest(identity))throw new Error('分支会话分叉身份已变化');return saved.result;}
     const childManager=SessionManager.open(file,identity.sessionDir,identity.cwd);
-    const path=childManager.createBranchedSession(leafId);if(!path)throw new Error('无法创建侧边会话');
+    const path=childManager.createBranchedSession(leafId);if(!path)throw new Error('无法创建分支会话');
     childManager.appendCustomEntry(SIDECHAT_TYPE,{v:1,sourceSessionId:session.sessionId,leafId});
     const result={path,piSessionId:childManager.getSessionId()};if(key)inputQueue.store.put(key,{identity,result});return result;
   }
   if(method==='draft.install'){
     const payload=object(input.payload),transferId=typeof payload.id==='string'?payload.id:undefined,key=`draft:${session.sessionId}`,receipt=transferId?`draft-install:${session.sessionId}:${transferId}`:undefined,hash=digest({text:payload.text,attachments:payload.attachments,mode:payload.mode,planMode:payload.planMode}),installed=receipt?inputQueue.store.get<{hash:string}>(receipt)?.value:undefined;
-    if(installed&&installed.hash!==hash)throw new Error('侧边草稿交接内容已变化');
+    if(installed&&installed.hash!==hash)throw new Error('分支草稿交接内容已变化');
     if(!installed)inputQueue.store.transaction(()=>{if(!inputQueue.store.get(key)){validateCapturedInput(payload as unknown as InputPayload);inputQueue.store.put(key,{...payload,submissionId:randomUUID()});}if(receipt)inputQueue.store.put(receipt,{hash});});return current();
   }
   if(method==='draft.read')return inputQueue.store.get<InputPayload>(`draft:${session.sessionId}`)?.value||null;
   if(method==='draft.update'){
-    const key=`draft:${session.sessionId}`,old=inputQueue.store.get<InputPayload>(key)?.value;if(!old)throw new Error('侧边草稿不存在');
+    const key=`draft:${session.sessionId}`,old=inputQueue.store.get<InputPayload>(key)?.value;if(!old)throw new Error('分支草稿不存在');
     if(typeof input.removePath==='string')inputQueue.store.put(key,{...old,attachments:old.attachments.filter(a=>a.path!==input.removePath)});
     else{
       if(typeof input.text!=='string'||Buffer.byteLength(input.text)>128*1024)throw new Error('草稿内容无效');let attachments=old.attachments;
       if(Array.isArray(input.attachments)){
         const requested=input.attachments.map(raw=>object(raw)),paths=requested.map(raw=>text(raw.path)),retained=old.attachments.filter(a=>paths.includes(a.path));
-        for(const item of requested){const frozen=retained.find(a=>a.path===item.path);if(frozen&&Object.hasOwn(frozen,'sourceBytes')&&item.hash&&item.hash!==frozen.hash)throw new Error('附件与侧边草稿快照不同，请移除后重新添加');}
+        for(const item of requested){const frozen=retained.find(a=>a.path===item.path);if(frozen&&Object.hasOwn(frozen,'sourceBytes')&&item.hash&&item.hash!==frozen.hash)throw new Error('附件与分支草稿快照不同，请移除后重新添加');}
         const added=requested.filter(item=>!old.attachments.some(a=>a.path===item.path));
         attachments=[...retained,...(added.length?(await captureDocumentInput({text:input.text+retained.map(a=>a.text||'').join(''),attachments:added},documentReader.read)).attachments:[])];
       }
       if(input.mode!==undefined&&!['single','team','swarm'].includes(String(input.mode)))throw new Error('协作方式无效');
       const next={...old,text:input.text,attachments,...(input.mode===undefined?{}:{mode:input.mode as InputPayload['mode']}),...(input.planMode===undefined?{}:{planMode:input.planMode===true})};validateCapturedInput(next);
-      if(digest(inputQueue.store.get(key)?.value??null)!==digest(old))throw new Error('侧边草稿已变化，请重试');inputQueue.store.put(key,next);
+      if(digest(inputQueue.store.get(key)?.value??null)!==digest(old))throw new Error('分支草稿已变化，请重试');inputQueue.store.put(key,next);
     }return current();
   }
   if(method==='draft.send'){
     const key=`draft:${session.sessionId}`,payload=inputQueue.store.get<InputPayload&{submissionId?:string}>(key)?.value;
-    if(!payload){if(inputQueue.store.get(`draft-consumed:${session.sessionId}`))return current();throw new Error('侧边草稿不存在');}
+    if(!payload){if(inputQueue.store.get(`draft-consumed:${session.sessionId}`))return current();throw new Error('分支草稿不存在');}
     validateCapturedInput(payload);
     const intentId='draft:'+String(payload.submissionId||digest(payload)),identity=digest(payload);
     inputQueue.store.transaction(()=>{if(!inputQueue.accepted(intentId,identity))inputQueue.add(payload,intentId,identity);inputQueue.store.remove(key);inputQueue.store.put(`draft-consumed:${session.sessionId}`,{intentId});});queueChanged();return current();
