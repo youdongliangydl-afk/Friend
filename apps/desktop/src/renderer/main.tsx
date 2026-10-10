@@ -1,3 +1,6 @@
+import './document-preview.css';
+import './capabilities.css';
+import './deliverables.css';
 import { createRoot } from 'react-dom/client';
 import App from './App.js';
 import {ComposerSurface} from './SessionComposer.js';
@@ -9,7 +12,9 @@ import './model-settings.css';
 import './session-fullscreen.css';
 import './session-trace.css';
 import './session-stats.css';
-import './task-info.css';
+import './queue-messages.css';
+import './composer-materials.css';
+import './project-sidebar.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

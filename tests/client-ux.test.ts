@@ -1,3 +1,5 @@
+import {SessionTabs} from '../apps/desktop/src/renderer/SessionTabs.js';
+import {initialView} from '../apps/desktop/src/session-view.js';
 import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,7 +8,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {composerKeyAction,insertNewline} from '../apps/desktop/src/renderer/composer-keys.js';
 import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
-import {reorderIds} from '../apps/desktop/src/renderer/ProjectStrip.js';
+import {reorderIds} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 import {materialPath} from '../apps/desktop/src/renderer/material-links.js';
 import type {Message} from '../apps/desktop/src/renderer/types.js';
 const assistant:Message={id:'a',role:'assistant',text:'beforeafter',parts:[{type:'text',text:'before'},{type:'thinking',thinking:'why'},{type:'toolCall',id:'one',name:'read',arguments:{path:'a'}},{type:'text',text:'after'}]};
@@ -40,12 +42,14 @@ test('material links preserve absolute paths and resolve Unicode relative links 
 
 test('terminal protocol replies remain responses after copy/modifier intent; actual data uses user input',async()=>{const {terminalDataAction}=await import('../apps/desktop/src/renderer/terminal-input.js');for(const reply of ['\x1b[1;2R','\x1b[0n','\x1b[I','\x1b[O'])for(const intent of [false,true])assert.equal(terminalDataAction(reply,intent),'response');assert.equal(terminalDataAction('text',true),'input');assert.equal(terminalDataAction('text',false),'ignore');assert.deepEqual(materialPath('README.md:20'),{path:'README.md',line:20});});
 
-test('floating composer exposes only attachment and send controls, retaining full controls in conversation',()=>{const snapshot:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'hello',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:true,collapsed:false,status:'准备就绪'};const floating=renderToStaticMarkup(React.createElement(SessionComposer,{value:snapshot,action:async()=>{}}));assert.match(floating,/添加附件/);assert.match(floating,/发送消息/);assert.doesNotMatch(floating,/计划模式|Agent 协作方式|配置模型|关键操作确认|权限策略/);const full=renderToStaticMarkup(React.createElement(SessionComposer,{value:{...snapshot,floating:false},action:async()=>{}}));assert.match(full,/权限策略：安全自动/);assert.match(full,/计划模式/);assert.match(full,/Agent 协作方式/);});
+test('conversation composer keeps attachment, permission, plan, collaboration and send controls in one shell',()=>{const snapshot:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'hello',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'准备就绪'};const html=renderToStaticMarkup(React.createElement(SessionComposer,{value:snapshot,action:async()=>{}}));for(const label of ['添加附件','发送消息','权限策略：安全自动','计划模式','Agent 协作方式'])assert.ok(html.includes(label));});
 test('composer locks its draft during submission but permits queue input during execution',()=>{
  const value:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'A',attachments:[],running:true,sending:true,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:true,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'执行中'};
- for(const floating of [false,true])for(const sending of [false,true]){
-  const html=renderToStaticMarkup(React.createElement(SessionComposer,{value:{...value,floating,sending},action:async()=>{}}));
+ for(const sending of [false,true]){
+  const html=renderToStaticMarkup(React.createElement(SessionComposer,{value:{...value,sending},action:async()=>{}}));
   const textarea=html.match(/<textarea[^>]*>/)?.[0]||'';
   assert.equal(textarea.includes('disabled'),sending);
  }
 });
+
+test('conversation tab has a fixed title while tool and web tabs keep their own titles',()=>{const html=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),tabs:[{id:'web',kind:'browser',title:'Example Domain',url:'https://example.com/'}]},onSelect(){},onClose(){},onNew(){}}));assert.match(html,/>会话<\/span>/);assert.match(html,/>Example Domain<\/span>/);});

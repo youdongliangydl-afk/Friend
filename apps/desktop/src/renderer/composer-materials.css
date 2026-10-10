@@ -1,0 +1,47 @@
+.composer-input{position:relative;min-width:0}.composer-input textarea{width:100%;box-sizing:border-box}.composer-references{position:absolute;z-index:40;bottom:100%;left:0;right:0;max-height:280px;overflow:auto;padding:6px;background:var(--panel,#fff);border:1px solid var(--line,#c8d9c8);border-radius:10px;box-shadow:0 8px 26px #26342720}.composer-references button{display:flex;gap:10px;text-align:left;width:100%;padding:9px;border:0;border-radius:6px;background:transparent;color:inherit}.composer-references button[aria-selected=true]{background:#e7f0e4}.composer-references small{color:#627763;flex:none}.composer-references span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.material-error{color:#9c332d;font-size:12px}.composer-input p{margin:4px 8px;font-size:12px}
+
+.composer .attachment-list{align-items:flex-start;gap:8px;padding:4px 12px 8px;max-height:210px;overflow:auto}
+.attachment-item{position:relative;flex:0 1 280px;min-width:0;max-width:100%;border:1px solid #e1e7e2;border-radius:11px;background:#f8faf8;color:#34453b}
+.attachment-item:has(details[open]){flex-basis:380px}
+.attachment-status{margin:0;min-width:0}
+.attachment-status>summary{display:flex;align-items:center;gap:9px;min-height:58px;box-sizing:border-box;padding:9px 35px 9px 10px;margin:0;list-style:none;color:inherit;cursor:pointer;border-radius:10px}
+.attachment-status>summary::-webkit-details-marker{display:none}
+.attachment-status>summary:hover{background:#f0f4f1}
+.attachment-status[open]>summary{margin:0;border-radius:10px 10px 0 0}
+.attachment-file-icon{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;flex:none;width:34px;height:38px;border:1px solid #dfe7e1;border-radius:7px;background:#fff;color:#52705f}
+.attachment-file-icon>span{font-size:8px;font-weight:650;line-height:1.2;letter-spacing:.3px}
+.attachment-file-meta{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.attachment-file-title{display:flex;align-items:center;gap:8px;min-width:0}
+.attachment-file-meta strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600;line-height:1.35;color:#34453b}
+.attachment-file-state{display:flex;align-items:center;gap:5px;min-width:0;font-size:11px;line-height:1.4;color:#68776e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attachment-file-state>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-warning-count{flex:none;color:#87652f;font-size:10px;white-space:nowrap}
+.attachment-chevron{flex:none;color:#839087;transition:transform .12s}
+.attachment-status[open] .attachment-chevron{transform:rotate(180deg)}
+.attachment-status[data-state=error] .attachment-file-state{color:#a24239}
+.attachment-status[data-state=error] .attachment-file-icon{color:#a24239;background:#fff8f6;border-color:#efdcd6}
+.attachment-details{border-top:1px solid #e5ebe6;padding:10px 12px;max-height:170px;overflow:auto;color:#68776e;font-size:11px;line-height:1.65;overflow-wrap:anywhere}
+.attachment-details p{margin:0 0 7px}
+.attachment-details ul{margin:0 0 7px;padding-left:15px}
+.attachment-details li+li{margin-top:4px}
+.attachment-details .attachment-error{color:#a24239}
+.attachment-list .attachment-recheck{padding:4px 0;font-size:11px;font-weight:500;color:#39745e;text-align:left;border-radius:4px}
+.attachment-list .attachment-recheck:hover{background:transparent;text-decoration:underline}
+.attachment-list .attachment-remove{position:absolute;top:7px;right:5px;display:grid;place-items:center;width:26px;height:26px;padding:0;border-radius:6px;color:#87958c}
+.attachment-list .attachment-remove:hover{background:#e8eeea;color:#3c5143}
+.attachment-spinner{width:9px;height:9px;flex:none;border:1.5px solid #d5dfd8;border-top-color:#52705f;border-radius:50%;animation:attachment-spin .8s linear infinite}
+@keyframes attachment-spin{to{transform:rotate(360deg)}}
+@container (max-width:450px){.attachment-item{flex-basis:100%}.attachment-item:has(details[open]){flex-basis:100%}}
+@media(prefers-reduced-motion:reduce){.attachment-spinner{animation:none}}
+
+/* Text and controls share one shell; this also covers the input wrapper. */
+.friend-layout .composer .composer-input>textarea{display:block;min-height:96px;max-height:32vh;border:0;border-radius:0;padding:16px 16px 6px;background:transparent;outline:none;box-shadow:none;resize:none;line-height:1.6}
+.friend-layout .composer-toolbar{gap:6px;padding:8px 10px 10px;flex-wrap:wrap;background:transparent;border:0}
+.friend-layout .composer-model-group{min-width:0;max-width:340px;flex:1 1 160px}
+.friend-layout .composer-model-controls{min-width:0;max-width:100%;flex:0 1 auto}
+.friend-layout .model-picker-trigger{min-width:0;max-width:100%}
+.friend-layout .member-toolbar{justify-content:flex-end}
+.friend-layout .floating-composer .composer-input>textarea{min-height:68px;padding:8px 4px 4px}
+.friend-layout .floating-composer .composer-toolbar{flex-wrap:nowrap;padding:8px 0 0}
+.floating-composer.composer-wrap{overflow:visible}
+@container (max-width:700px){.friend-layout .agent-mode-control button,.friend-layout .agent-mode-control button.selected{width:34px;min-width:34px}.friend-layout .agent-mode-control button.selected span{display:none}.friend-layout .agent-mode-thumb{width:34px;left:3px;top:3px;bottom:3px}.friend-layout .agent-mode-control[data-mode=team] .agent-mode-thumb{transform:translateX(36px)}.friend-layout .agent-mode-control[data-mode=swarm] .agent-mode-thumb{transform:translateX(72px)}.friend-layout .agent-mode-control{padding:3px}}

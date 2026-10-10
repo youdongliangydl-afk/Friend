@@ -19,6 +19,10 @@ import * as fileEditor from '../apps/desktop/src/file-editor.js';
 import * as htmlPreview from '../apps/desktop/src/html-preview.js';
 import * as workspace from '../apps/desktop/src/workspace-files.js';
 import * as runChanges from '../apps/desktop/src/run-changes.js';
+import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
+import * as attachmentInput from '../apps/desktop/src/attachment-input.js';
+import * as materialReferences from '../apps/desktop/src/material-references.js';
+import * as documentReader from '../apps/desktop/src/document-reader.js';
 
 const root=path.resolve('.');
 const mainSource=fs.readFileSync(path.join(root,'apps/desktop/src/main.ts'),'utf8');
@@ -50,6 +54,10 @@ function fixture(){
       if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./run-changes.js')return runChanges;
+      if(specifier==='./session-attention.js')return {AttentionRegistry:class extends AttentionRegistry {constructor(){super({now:()=>now});}}};
+      if(specifier==='./attachment-input.js')return attachmentInput;
+      if(specifier==='./material-references.js')return materialReferences;
+      if(specifier==='./document-reader.js')return documentReader;
       if(specifier==='./workspaces.js')return workspaceRefs;
       if(specifier==='./file-editor.js')return fileEditor;
       if(specifier==='./html-preview.js')return htmlPreview;
@@ -199,7 +207,30 @@ test('temporary terminal startup rechecks the directory after a delayed host bec
  const f=fixture();try{const a=await temporary(f);let release!:()=>void;const gate=new Promise<void>(done=>release=done);f.control.terminalGate=()=>gate;a.child.state.permissionEpoch=1;a.child.emit('message',{type:'terminal.request',id:'root-drift',method:'create',input:{command:'fixture service'}});await f.flush();fs.renameSync(a.record.workspaceDir,a.record.workspaceDir+'-old');fs.symlinkSync(f.project,a.record.workspaceDir);release();await f.flush();await f.flush();assert.equal(f.control.terminalRequests.includes('create'),false);assert.match(a.child.commands.find((m:any)=>m.type==='terminal.response'&&m.id==='root-drift').error,/目录已变化/);
  }finally{f.cleanup();}
 });
- test('session view state is isolated from Pi history and defaults only initialize new sessions',async()=>{const f=fixture();try{const a=f.record('ui-a'),b=f.record('ui-b'),before=fs.readFileSync(a.path,'utf8');const legacy=await f.api.handle('session.ui.get',{sessionId:a.id});assert.equal(legacy.mode,'standard');const next={...legacy,mode:'fullscreen',browserScope:'session',tabs:[{id:'diff-ui',kind:'tool',page:'diff'}],active:'diff-ui'};await f.api.handle('session.ui.update',{sessionId:a.id,ui:next});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');assert.equal(fs.readFileSync(a.path,'utf8'),before);assert.equal(f.api.store.get('session-ui:'+a.id).value.browserScope,'session');await f.api.handle('settings.update',{defaultLayoutMode:'fullscreen',defaultBrowserScope:'project'});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'standard');await assert.rejects(f.api.handle('session.ui.update',{sessionId:a.id,ui:{...next,tabs:[{id:'web-ui',kind:'browser',url:'https://example.com'}],active:'missing'}}),/不存在/);}finally{f.cleanup();}});
+test('session view state stays separate from Pi history and layout is always fullscreen',async()=>{
+ const f=fixture();try{
+  const a=f.record('ui-a'),b=f.record('ui-b'),before=fs.readFileSync(a.path,'utf8');
+  const current=await f.api.handle('session.ui.get',{sessionId:a.id});assert.equal(current.mode,'fullscreen');
+  const next={...current,browserScope:'session',tabs:[{id:'diff-ui',kind:'tool',page:'diff'}],active:'diff-ui'};
+  await f.api.handle('session.ui.update',{sessionId:a.id,ui:next});assert.equal((await f.api.handle('session.ui.get',{sessionId:b.id})).mode,'fullscreen');
+  assert.equal(fs.readFileSync(a.path,'utf8'),before);assert.equal(f.api.store.get('session-ui:'+a.id).value.browserScope,'session');
+  await f.api.handle('settings.update',{defaultLayoutMode:'standard',defaultBrowserScope:'project'});
+  assert.equal((await f.api.handle('settings.get',{})).preferences.defaultLayoutMode,'fullscreen');assert.equal((await f.api.handle('session.ui.get',{sessionId:a.id})).browserScope,'session');
+  await assert.rejects(f.api.handle('session.ui.update',{sessionId:a.id,ui:{...next,tabs:[{id:'web-ui',kind:'browser',url:'https://example.com'}],active:'missing'}}),/不存在/);
+ }finally{f.cleanup();}
+});
+test('opening old UI records migrates panels and global/project layout preferences idempotently',async()=>{
+ const f=fixture();try{
+  const a=f.record('legacy-ui'),before=fs.readFileSync(a.path,'utf8');
+  f.api.store.put('preferences',{defaultLayoutMode:'standard'});f.api.store.put('preferences:'+a.projectId,{defaultLayoutMode:'standard',defaultBrowserScope:'project'});
+  const old={version:1,mode:'standard',browserScope:'session',sidebar:false,composerCollapsed:true,tabs:[{id:'web-old',kind:'browser',url:'https://example.com/form'}],active:'web-old',normalPage:'browser',normalTerminal:true};
+  f.api.store.put('session-ui:'+a.id,old);
+  const ui=await f.api.handle('session.ui.get',{sessionId:a.id});assert.equal(ui.mode,'fullscreen');assert.equal(ui.active,'web-old');assert.equal(ui.tabs.length,2);assert.equal(ui.sidebar,false);assert.equal(ui.composerCollapsed,true);assert.equal(ui.browserScope,'session');
+  assert.equal(JSON.stringify(f.api.store.get('session-ui:'+a.id).value),JSON.stringify(ui));assert.equal(JSON.stringify(await f.api.handle('session.ui.get',{sessionId:a.id})),JSON.stringify(ui));
+  const settings=await f.api.handle('settings.get',{projectId:a.projectId});assert.equal(settings.preferences.defaultLayoutMode,'fullscreen');assert.equal(settings.globalPreferences.defaultLayoutMode,'fullscreen');
+  await f.api.handle('session.ui.update',{sessionId:a.id,base:old,ui:{...old,sidebar:true}});assert.equal((await f.api.handle('session.ui.get',{sessionId:a.id})).mode,'fullscreen');assert.equal(fs.readFileSync(a.path,'utf8'),before);
+ }finally{f.cleanup();}
+});
 
 
 test('failed host cleanup retains the browser controller; successful retry destroys it once',async()=>{

@@ -11,10 +11,17 @@ test('pending renderer updates preserve concurrent popup creation and self-close
   const after=mergeViewUpdate(closed,prior,{...prior,composerCollapsed:true});assert.equal(after.active,'web');assert.equal(after.tabs.length,1);
   const explicit=mergeViewUpdate(prior,base,{...base,tabs:[],active:'conversation'});assert.deepEqual(explicit.tabs.map(t=>t.id),['popup']);assert.equal(explicit.active,'conversation');
 });
-test('legacy layout remains standard; new session defaults and normal panel snapshot round trip',()=>{
-  assert.equal(initialView().mode,'standard');const view=initialView({defaultLayoutMode:'fullscreen',defaultBrowserScope:'project'});
-  assert.deepEqual(validateView({...view,normalPage:'diff',normalTerminal:true}),{...view,normalPage:'diff',normalTerminal:true});
-  assert.equal(view.browserScope,'project');
+test('all new sessions use fullscreen even with an old standard preference',()=>{
+  assert.equal(initialView().mode,'fullscreen');const view=initialView({defaultLayoutMode:'standard',defaultBrowserScope:'project'});
+  assert.equal(view.mode,'fullscreen');assert.equal(view.browserScope,'project');
+});
+test('legacy panels migrate once, retaining browser identity and login scope',()=>{
+  const old={...initialView(),mode:'standard',normalPage:'diff',normalTerminal:true,sidebar:false,tabs:[{id:'legacy-diff',kind:'browser',url:'https://example.com/form'}],active:'legacy-diff'};
+  const view=validateView(old);assert.equal(view.mode,'fullscreen');assert.equal(view.active,'legacy-diff-1');assert.equal(view.sidebar,false);
+  assert.deepEqual(view.tabs.map(tab=>tab.id),['legacy-diff','legacy-terminal','legacy-diff-1']);assert.deepEqual(validateView(view),view);
+  assert.ok(!Object.hasOwn(view,'normalPage'));assert.ok(!Object.hasOwn(view,'normalTerminal'));
+  const browser=validateView({...old,normalPage:'browser',browserScope:'session'});assert.equal(browser.active,'legacy-diff');assert.equal(browser.browserScope,'session');assert.equal(browser.tabs[0].url,'https://example.com/form');
+  const singleton=validateView({...old,normalPage:'terminal',tabs:[{id:'existing-terminal',kind:'tool',page:'terminal'}],active:'conversation'});assert.equal(singleton.tabs.length,1);assert.equal(singleton.active,'existing-terminal');
 });
 test('tool launcher consumes blank tab, focuses a singleton and closes without closing conversation',()=>{
   let view=addNewTab(initialView());view=openTool(view,'diff');const id=view.active;assert.equal(view.tabs.length,1);

@@ -1,3 +1,6 @@
+import {AttachmentDelivery} from './AttachmentDelivery.js';
+import type {JsonObject} from './types.js';
+import {Deliverables} from './Deliverables.js';
 import { useState } from 'react';
 import { Markdown } from './ui.js';
 import { messageAnchor } from './TurnIndex.js';
@@ -8,9 +11,9 @@ import type { Message } from './types.js';
 import type { RunChangesSummary } from '../run-changes.js';
 import type { ChangeDiffCache } from './change-review.js';
 import { ChangedFiles } from './ChangedFiles.js';
-export function Conversation({ messages, live, tools, running, initialExpanded, readingKey, changes=[], sessionId, changeCache, workspacePath }: {
+export function Conversation({ messages, live, tools, running, initialExpanded, readingKey, changes=[], sessionId, changeCache, workspacePath,receipts=[] }: {
   messages: Message[]; live: Message | null; tools: ToolRun[]; running: boolean; initialExpanded?: Record<string, boolean>; readingKey?: string;
-  changes?: RunChangesSummary[]; sessionId?: string; changeCache?: ChangeDiffCache; workspacePath?: string;
+  changes?: RunChangesSummary[]; sessionId?: string; changeCache?: ChangeDiffCache; workspacePath?: string;receipts?:JsonObject[];
 }) {
   const expansionKey = readingKey ? 'friend-pi.tool-expanded:' + readingKey : undefined;
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
@@ -33,8 +36,8 @@ export function Conversation({ messages, live, tools, running, initialExpanded, 
       {message.parts.map((part, index) => part.kind === 'text' ? <Markdown key={index} text={part.text}/> :
         part.kind === 'image' ? <img className="message-image" key={index} src={'data:' + part.mimeType + ';base64,' + part.data} alt="原始消息附件"/> :
         <ToolActivity key={part.id} group={part} thinking={!!message.live && running && index === message.parts.length - 1} expanded={expanded} onToggle={toggle} readingKey={readingKey}/>)}
-      {changes.filter(summary => anchors.get(summary.runId) === message.id).map(summary => <ChangedFiles key={summary.runId} summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/>)}
-    </article>)}{changes.filter(summary => !anchors.has(summary.runId)).map(summary => <ChangedFiles key={summary.runId} summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/>)}
-    {running && !live && <div className="working-indicator"><span/><span/><span/>正在处理任务</div>}
+      {changes.filter(summary => anchors.get(summary.runId) === message.id).map(summary => <div key={summary.runId}><ChangedFiles summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/><Deliverables summary={summary} sessionId={sessionId} workspacePath={workspacePath}/></div>)}
+    </article>)}{changes.filter(summary => !anchors.has(summary.runId)).map(summary => <div key={summary.runId}><ChangedFiles summary={summary} sessionId={sessionId} cache={changeCache} workspacePath={workspacePath}/><Deliverables summary={summary} sessionId={sessionId} workspacePath={workspacePath}/></div>)}
+    <AttachmentDelivery receipts={receipts}/>{running && !live && <div className="working-indicator"><span/><span/><span/>正在处理任务</div>}
   </div>;
 }
