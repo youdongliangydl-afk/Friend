@@ -149,6 +149,25 @@ test('a late close from a retired SDK cannot clear the replacement worker pendin
   } finally {f.cleanup();}
 });
 
+test('background collaboration receives General plugin changes at idle without moving selection or losing its approval',async()=>{
+ const f=fixture();try{
+  f.api.store.put('preferences',{...f.api.store.get('preferences').value,defaultMode:'swarm',defaultPlugins:[]});
+  const a=f.record('settings-background'),b=f.record('settings-selected'),childA=await f.ready(a),childB=await f.ready(b);
+  emitState(childA,{executionMode:'team',isRunning:true,lifecycleStatus:'running',runId:'settings-run'});emitState(childB,{executionMode:'single'});
+  emitDialog(childA,'settings-approval','settings-run',10000);await f.api.handle('session.open',{id:b.id});
+  const before=childA.commands.length,navigation=JSON.stringify(f.api.state().navigation);await f.api.handle('settings.update',{defaultPlugins:['expert']});
+  assert.equal(f.api.state().current.sessionId,b.id);assert.equal(JSON.stringify(f.api.state().navigation),navigation);
+  assert.equal(childA.commands.slice(before).some((message:any)=>message.method==='configure'),false);
+  assert.ok(f.api.state().activities.some((activity:any)=>activity.sessionId===a.id&&activity.kind==='dialog'&&activity.dialog.id==='settings-approval'));
+  await f.api.handle('dialog.respond',{id:'settings-approval',confirmed:true});assert.equal(childA.commands.filter((message:any)=>message.method==='dialog.respond').length,1);assert.equal(childB.commands.some((message:any)=>message.method==='dialog.respond'),false);
+  emitState(childA,{isRunning:false,lifecycleStatus:'idle'});await f.flush();
+  const configured=childA.commands.slice(before).filter((message:any)=>message.method==='configure');assert.equal(configured.length,1);assert.deepEqual(Array.from(configured[0].input.plugins),['expert','swarm']);
+  assert.deepEqual(Array.from(childB.commands.findLast((message:any)=>message.method==='configure').input.plugins),['expert']);
+  assert.deepEqual(Array.from(f.api.store.get('session:'+a.id).value.plugins),['expert','swarm']);assert.deepEqual(Array.from(f.api.store.get('preferences').value.defaultPlugins),['expert']);
+  assert.equal(f.api.state().current.sessionId,b.id);assert.equal(JSON.stringify(f.api.state().navigation),navigation);
+ }finally{f.cleanup();}
+});
+
 test('expired approval snapshots cannot dispatch a late permission response', async () => {
   const f = fixture();
   try {

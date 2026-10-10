@@ -369,6 +369,21 @@ test('artifact-only learning reads only observed text and records exact artifact
  }finally{await f.close();}
 });
 
+test('artifact publication supports each Chinese fact only with its own exact quoted range',async()=>{
+ const f=fixture();try{
+  f.items.splice(0);const prefix='未观察的前言。\n',first='甲仓库保存合同原件。',second='乙仓库保存审计副本。',visible=first+'\n'+second,body=prefix+visible+'\n未观察的尾页。',start=prefix.length,end=start+visible.length,path=join(f.dir,'chinese-artifact-quotes.txt');writeFileSync(path,body);
+  const artifact:ArtifactRef={artifactId:'chinese-quotes',version:1,sha256:digest(body),mediaType:'text/plain',ranges:[{unit:'utf16',value:`${start}:${end}`}]},observer={kind:'foreground' as const,runId:'foreground-1'};
+  const receipt:EvidenceReceipt={v:1,receiptId:'chinese-quotes-visible',projectId:'p',sessionId:'s',runId:observer.runId,stage:'tool-read',sources:[],artifacts:[artifact],dependencies:[],observer,contentHash:digest(visible),fullLength:body.length,visibleRanges:[[start,end]],at:new Date().toISOString()};
+  const host=new RecordStore('host',f.dir);new SourcePolicy(host).registerArtifact({ref:artifact,projectId:'p',path,observations:[receipt],valid:true});host.close();f.ctx.observedArtifacts=()=>[{artifact,receipt}];
+  f.ctx.readArtifact=async(ref,options={})=>{const begin=options.cursor||0,stop=Math.min(end,begin+(options.maxChars||8000));return {artifact:ref,text:body.slice(begin,stop),fullLength:body.length,visibleRanges:[[begin,stop]],receipt};};
+  let calls=0;f.ctx.complete=async prompt=>{calls++;const material=JSON.parse(prompt.slice(prompt.lastIndexOf('\n')+1));assert.equal(material.length,1);assert.equal(material[0].text,visible);const id=material[0].id;return JSON.stringify({memories:[{title:'错配引文',content:second,kind:'fact',sourceEntryIds:[id],sourceQuotes:{[id]:first}},{title:'自身引文',content:first,kind:'fact',sourceEntryIds:[id],sourceQuotes:{[id]:first}}]});};
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx),records=[...snapshot.memories as MemoryRecord[],...snapshot.candidates as MemoryRecord[]],mismatch=records.find(record=>record.title==='错配引文')!,supported=records.find(record=>record.title==='自身引文')!;
+  assert.equal(calls,1);assert.equal(records.length,2);assert.equal(mismatch.status,'candidate');assert.match(mismatch.invalidatedReason||'',/来源片段不能完整支持事实正文/);assert.equal(supported.status,'active');
+  for(const record of records){assert.equal(record.sources.length,0);assert.equal(record.evidence!.length,1);const evidence=record.evidence![0];assert.equal(evidence.kind,'artifact');assert.deepEqual(evidence.visibleRanges,[[start,start+first.length]]);assert.equal(evidence.sentSliceHash,digest(first));}
+  assert.deepEqual(f.c.search({query:'乙仓库'},f.ctx),[]);assert.equal(f.c.search({query:'甲仓库'},f.ctx)[0]?.id,supported.id);
+ }finally{await f.close();}
+});
+
 test('parser-only saved artifacts and images without text never become automatic facts (10-12)',async()=>{
  const f=fixture();try{
   f.items.splice(0);const body='image bytes',path=join(f.dir,'image.bin');writeFileSync(path,body);const artifact:ArtifactRef={artifactId:'image',version:1,sha256:digest(body),mediaType:'image/png',ranges:[{unit:'bytes',value:'0:11'}]};const parser={kind:'parser' as const,runId:'parser'};

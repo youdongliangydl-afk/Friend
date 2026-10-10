@@ -178,6 +178,41 @@ test('legacy collaboration defaults lazily enable Swarm at allocation without ch
   }finally{f.cleanup();}
  }
 });
+test('General Expert changes can save legacy collaboration defaults without persisting its runtime dependency',async()=>{
+ for(const mode of ['team','swarm']){
+  const f=fixture();try{
+   f.api.store.put('preferences',{...f.api.store.get('preferences').value,defaultMode:mode,defaultPlugins:[]});
+   const settings=await f.api.handle('settings.update',{defaultPlugins:['expert']});
+   assert.deepEqual(Array.from(settings.preferences.defaultPlugins),['expert']);assert.equal(settings.preferences.defaultMode,mode);
+   const pending=f.api.handle('session.new',{projectId:'fixture'});await f.flush();const child=f.children.at(-1);assert.ok(child);
+   assert.deepEqual(JSON.parse(child.options.env.FRIEND_PI_PLUGINS),['expert','swarm']);assert.equal(child.options.env.FRIEND_PI_MODE,mode);
+   const manager=SessionManager.create(f.project,path.join(f.dataDir,'sessions'));
+   child.state={isRunning:false,lifecycleStatus:'idle',sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),plugins:['expert','swarm'],executionMode:mode,thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});
+   const created=await pending;assert.deepEqual(Array.from(f.api.store.get('session:'+created.createdSessionId).value.plugins),['expert','swarm']);
+   assert.deepEqual(Array.from(f.api.store.get('preferences').value.defaultPlugins),['expert']);
+  }finally{f.cleanup();}
+ }
+});
+test('General plugin changes keep idle and deferred Team/Swarm dependencies tied to runtime mode',async()=>{
+ for(const mode of ['team','swarm'])for(const busy of [false,true]){
+  const f=fixture();try{
+   f.api.store.put('preferences',{...f.api.store.get('preferences').value,defaultMode:'single',defaultPlugins:[]});
+   const record=f.record('runtime-'+mode+'-'+busy),child=await f.ready(record);
+   child.state={...child.state,executionMode:mode,isRunning:busy,lifecycleStatus:busy?'running':'idle'};child.emit('message',{type:'event',event:{type:'state',data:child.state}});
+   const send=child.send;child.send=(message:any,callback?:Function)=>{if(message.method==='configure'&&message.input.plugins){assert.ok(message.input.plugins.includes('swarm'),'the production handler must retain the active collaboration dependency');child.state={...child.state,plugins:[...message.input.plugins]};}return send(message,callback);};
+   const before=child.commands.length;await f.api.handle('settings.update',{defaultPlugins:['expert']});
+   assert.deepEqual(Array.from(f.api.store.get('preferences').value.defaultPlugins),['expert']);
+   if(busy){
+    assert.equal(child.commands.slice(before).some((message:any)=>message.method==='configure'),false,'settings wait for idle');
+    child.state={...child.state,isRunning:false,lifecycleStatus:'stopping'};child.emit('message',{type:'event',event:{type:'state',data:child.state}});await f.flush();
+    assert.equal(child.commands.slice(before).some((message:any)=>message.method==='configure'),false,'stopping is still a busy boundary');
+    child.state={...child.state,lifecycleStatus:'idle'};child.emit('message',{type:'event',event:{type:'state',data:child.state}});await f.flush();
+   }
+   const configured=child.commands.slice(before).filter((message:any)=>message.method==='configure');assert.equal(configured.length,1);assert.deepEqual(Array.from(configured[0].input.plugins),['expert','swarm']);
+   const saved=f.api.store.get('session:'+record.id).value;assert.equal(saved.executionMode,mode);assert.deepEqual(Array.from(saved.plugins),['expert','swarm']);assert.deepEqual(Array.from(child.state.plugins),['expert','swarm']);
+  }finally{f.cleanup();}
+ }
+});
 test('temporary workspaces are isolated, recoverable and compatible with file APIs',async()=>{
  const f=fixture();try{const a=await temporary(f),b=await temporary(f);assert.notEqual(a.record.workspaceDir,b.record.workspaceDir);assert.equal(a.record.projectId,'');assert.deepEqual(JSON.parse(JSON.stringify(a.record.workspace)),{kind:'temporary',sessionId:a.record.id});assert.equal(a.child.options.cwd,a.record.workspaceDir);assert.equal(a.child.options.env.FRIEND_PI_PROJECT,a.record.workspaceDir);
  fs.writeFileSync(path.join(a.record.workspaceDir,'中文.md'),'临时正文');assert.equal((await f.api.handle('file.read',{workspace:a.record.workspace,path:'中文.md',edit:true})).content,'临时正文');assert.equal(f.api.store.list('project:').length,1);assert.equal((await f.api.handle('file.read',{projectId:'fixture',path:(fs.writeFileSync(path.join(f.project,'legacy.txt'),'old'),'legacy.txt')})).content,'old');

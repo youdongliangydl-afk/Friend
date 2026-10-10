@@ -813,12 +813,23 @@ export class MemoryController implements PluginController {
       this.store!.transaction(()=>{ensure();for(const id of job.memoryIds){let record=this.get(id,ctx);if(record.status!=='candidate'||record.kind==='method')continue;
         const conflicts=this.records(ctx).filter(active=>active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
         const supporting=record.evidence?.length?record.evidence.filter(e=>e.kind==='pi'&&e.relation!=='contradicts').map(e=>(e as Extract<MemoryEvidence,{kind:'pi'}>).source):record.sources;const sourced=supporting.map(source=>({source,item:ctx.readSource(source)}));const userSources=sourced.filter(({item,source})=>{const typed=typedUserText(item);return item.role==='user'&&typed!==undefined&&(source.end??item.text.length)<=typed.length&&!taskOrQuotedCue.test(userEvidenceContext(item,source))&&!/(?:不要|别|不用|不必).{0,8}(?:记住|保存|学习)|do not remember|don't remember/iu.test(typed);});
-        const artifactOriginals=[...artifactAvailable.values()].filter(item=>record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===item.artifact.artifactId)).map(item=>item.text);
+        const artifactOriginals=(record.evidence||[]).flatMap(e=>{
+          if(e.kind!=='artifact'||e.relation==='contradicts'||e.observer.kind==='parser'||!e.visibleRanges?.length||!this.artifactEvidenceAvailable(e,ctx))return [];
+          const material=[...artifactAvailable.values()].filter(item=>item.artifact.artifactId===e.artifact.artifactId&&item.artifact.version===e.artifact.version&&item.artifact.sha256===e.artifact.sha256&&item.receipt.receiptId===e.observationReceiptId);
+          const quotes=e.visibleRanges.map(([start,end])=>{
+            if(!Number.isInteger(start)||!Number.isInteger(end)||start<0||start>=end)return undefined;
+            const item=material.find(item=>item.ranges[0][0]<=start&&end<=item.ranges[0][1]);
+            return item?.text.slice(start-item.ranges[0][0],end-item.ranges[0][0]);
+          });
+          // Only this record's exact cited bytes support publication, not other observed facts.
+          if(quotes.some(quote=>quote===undefined)||e.sentSliceHash&&digest(quotes.join(''))!==e.sentSliceHash)return [];
+          return [quotes.join('\n')];
+        });
         const originals=[...sourced.map(({item,source})=>readSourceSpan(item,source)),...artifactOriginals].join('\n');
         const significant=record.content.match(/[A-Za-z][A-Za-z0-9_.-]{2,}|\b\d+(?:\.\d+)+\b/g)||[];const literalsSupported=significant.every(token=>normalize(originals).includes(normalize(token)));
         const factSupported=record.kind!=='fact'||factSourceSupported(record.content,[...userSources.map(({item,source})=>readSourceSpan(item,source)),...artifactOriginals].join('\n'));
         const preferenceSupported=record.kind!=='preference'||userSources.some(({item,source})=>stablePreferenceCue.test(readSourceSpan(item,source)))||new Set(userSources.map(({source})=>source.entryId)).size>=2;
-        const artifactSupported=record.kind!=='preference'&&(record.evidence||[]).some(e=>e.kind==='artifact'&&e.relation!=='contradicts'&&e.observer.kind!=='parser'&&artifactAvailable.size>0);
+        const artifactSupported=record.kind!=='preference'&&artifactOriginals.length>0;
         const authoritative=preferenceSupported&&literalsSupported&&factSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text)));
         if(authoritative&&conflicts.length)for(const conflict of conflicts)this.write({...conflict,revision:conflict.revision+1,conflictIds:[...new Set([...conflict.conflictIds||[],record.id])],updatedAt:now()},ctx,conflict.revision);
         const status=authoritative&&!conflicts.length?'active':'candidate';
