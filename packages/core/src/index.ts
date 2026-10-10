@@ -45,6 +45,7 @@ export interface PluginContext {
   observedArtifacts?():{artifact:ArtifactRef;receipt:EvidenceReceipt}[];
   readArtifact?(ref:ArtifactRef,options?:{observationReceiptId?:string;cursor?:number;maxChars?:number}):Promise<{artifact:ArtifactRef;text:string;fullLength:number;visibleRanges:[number,number][];nextCursor?:number;receipt?:EvidenceReceipt}>;
   readCheck?(ref:{checkId:string;version:number;hash:string;taskId:string;producerRunId:string;artifacts:ArtifactRef[]}):unknown;
+  captureCheckAttribution?(runId?:string):TrialCheckAttribution|undefined;
   findJournalEntry?(operationId:string):{entryId:string;customType:string;data:unknown}|undefined;
   applyModel?(modelId:string,thinkingLevel?:string):Promise<void>;
   request(plugin: string, action: string, input?: JsonObject, timeoutMs?: number): Promise<unknown>;
@@ -173,7 +174,18 @@ export function requestPlugin(bus:Bus,plugin:string,action:string,input:JsonObje
  if(!router){const pending=new Map<string,PluginPending>();const off=bus.on(RESPONSE,raw=>{if(!raw||typeof raw!=='object')return;const response=object(raw),call=pending.get(String(response.id));if(!call)return;pending.delete(String(response.id));clearTimeout(call.timer);if(!pending.size){off();pluginRouters.delete(bus);}response.error?call.reject(new CapabilityError(typeof response.code==='string'?response.code as import('./capability-services.js').ErrorCode:'CAPABILITY_UNAVAILABLE',String(response.error),response.details as JsonObject|undefined)):call.resolve(response.result);});router={pending,off};pluginRouters.set(bus,router);}
  const active=router,id=randomUUID();return new Promise((resolveResult,reject)=>{const release=()=>{active.pending.delete(id);if(!active.pending.size){active.off();pluginRouters.delete(bus);}};const timer=setTimeout(()=>{release();reject(new CapabilityError('CAPABILITY_UNAVAILABLE',`${plugin} 不可用或操作超时`));},timeoutMs);active.pending.set(id,{resolve:resolveResult,reject,timer});try{bus.emit(REQUEST,{v:1,id,plugin,action,input,origin,...(trustedContext?{trustedContext}:{})});}catch(error){clearTimeout(timer);release();reject(error instanceof Error?error:new Error(String(error)));}});
 }
-export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent'): PluginContext {
+export interface TrialCheckAttribution {v:1;decisionEntryId:string;adoptions:{operationId:string;journalEntryId:string;skillsHash:string}[]}
+/** A tool decision cannot gain credit from a method adopted later in the same assistant batch. */
+export function trialCheckAttribution(entries:readonly unknown[],runId:string,decisionEntryId:string):TrialCheckAttribution|undefined {
+  const rows=entries.map(object),decision=rows.findIndex(entry=>entry.id===decisionEntryId);if(decision<0)return;
+  const adoptions=rows.slice(0,decision).flatMap(entry=>{
+    if(entry.type!=='custom'||entry.customType!=='friend-pi.expert.adoption')return [];
+    const data=object(entry.data);if(data.runId!==runId||typeof data.operationId!=='string'||!Array.isArray(data.skills)||!data.skills.some(raw=>object(raw).statusAtFreeze==='trial'))return [];
+    return [{operationId:data.operationId,journalEntryId:String(entry.id),skillsHash:digest(data.skills)}];
+  });
+  return {v:1,decisionEntryId,adoptions};
+}
+export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent',toolCallId?:string): PluginContext {
   const model = ctx.model;
   const thinkingLevel = pi.getThinkingLevel();
   const agentDir = agentDirectory();
@@ -200,6 +212,14 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       if(!await pi.setModel(target))throw new Error('角色型号切换失败');if(level)pi.setThinkingLevel(level as never);
     },
     isIdle:() => ctx.isIdle(), history:() => historyItems(ctx.sessionManager.getBranch()),
+    captureCheckAttribution:(trustedRunId)=>{
+      const nativeRun=ctx.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.expert.run');
+      const observedRun=trustedRunId||policy?.runId||process.env.FRIEND_PI_RUN_ID||(nativeRun?.type==='custom'?String(object(nativeRun.data).runId||''):undefined)||sessionId;
+      if(origin==='user')pi.appendEntry('friend-pi.check-decision.v1',{v:1,runId:observedRun,origin:'user'});
+      const entries=ctx.sessionManager.getBranch();
+      const decision=origin==='user'?entries.findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.check-decision.v1'&&object(entry.data).runId===observedRun):entries.findLast(entry=>entry.type==='message'&&entry.message.role==='assistant'&&(!toolCallId||Array.isArray(entry.message.content)&&entry.message.content.some(part=>part.type==='toolCall'&&part.id===toolCallId)));
+      return decision?trialCheckAttribution(entries,observedRun,decision.id):undefined;
+    },
     observedArtifacts:()=>{const store=new RecordStore('artifacts',dataDir);try{return new SourcePolicy(store).observations({projectId:projectIdentity(ctx.cwd),sessionId,runId:policy?.runId||process.env.FRIEND_PI_RUN_ID});}finally{store.close();}},
     readArtifact:async(ref,options)=>{const store=new RecordStore('artifacts',dataDir);try{return await readRegisteredArtifact(store,projectIdentity(ctx.cwd),ref,options);}finally{store.close();}},
     readCheck:ref=>{const store=new RecordStore('checks',dataDir);try{return new SourcePolicy(store).readCheck(ref,projectIdentity(ctx.cwd));}finally{store.close();}},
@@ -219,17 +239,17 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
     complete:async (prompt, options = {}) => {
       if (!model) throw new Error('请先配置模型');let executionModel=model;
       if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){let verifying=desktopVerificationRuntimes.get(ctx.modelRegistry);if(!verifying){verifying=(async()=>{const runtime=await ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false});if(process.env.FRIEND_PI_TEST_PROVIDER==='1')await installFixtureProvider(runtime);return runtime;})();desktopVerificationRuntimes.set(ctx.modelRegistry,verifying);}executionModel=await requireReadyModel(await verifying,dataDir,`${model.provider}/${model.id}`);await ctx.modelRegistry.refresh({allowNetwork:false});}
-      const callId=options.callId||randomUUID(),operationId=options.operationId||callId;let accounted=false,observed=false;const usageStore=options.budgetId?new RecordStore('runtime',dataDir):undefined;let budget:LearningBudget|undefined;
+      const callId=options.callId||randomUUID(),operationId=options.operationId||callId;let accounted=false,observed=false;let incompleteResponse:CapabilityError|undefined;const usageStore=options.budgetId?new RecordStore('runtime',dataDir):undefined;let budget:LearningBudget|undefined;
       const account=(tokens?:number)=>{if(accounted)return;accounted=true;options.onUsage?.({callId,tokens});if(!options.budgetId)pi.events?.emit('friend-pi:v1:event',{pluginEvent:'runtime.model-usage',sessionId,data:{runId:policy?.runId||process.env.FRIEND_PI_RUN_ID,callId,tokens}});};
       try{
         if(usageStore&&options.budgetId){const candidate=new LearningBudget(usageStore);try{candidate.read(options.budgetId);budget=candidate;}catch(error){if(!options.onUsage)throw error;}if(budget){const call=budget.begin({budgetId:options.budgetId,operationId,callId,stage:options.stage,promptHash:digest(prompt)});if(call.result!==undefined)return call.result;}}
         const unknown=()=>new CapabilityError('OPERATION_UNKNOWN','已发出的模型调用未确认完成，禁止重放',{callId,operationId});
         let result;try{
-          result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens:options.maxTokens||2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
-          observed=true;const tokens=modelTokenUsage(result.usage),incomplete=result.stopReason==='aborted'||result.stopReason==='error';
-          if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,...(!incomplete?{result:visibleText(result.content)}:{}),tokens,state:incomplete?'unknown':'complete'});account(tokens);
-          if(incomplete)throw unknown();
-        }catch{if(!observed)try{if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,state:'unknown'});}catch{/* Keep the durable dispatched receipt. */}try{account();}catch{/* Accounting callbacks cannot permit a second dispatch. */}throw unknown();}
+          const maxTokens=options.maxTokens||2048;result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
+          observed=true;const tokens=modelTokenUsage(result.usage),incomplete=result.stopReason==='aborted'||result.stopReason==='error',limited=result.stopReason==='length',responseMetadata={received:!incomplete,complete:!incomplete&&!limited,stopReason:result.stopReason,maxTokens,usage:result.usage};
+          if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,...(!incomplete?{result:visibleText(result.content)}:{}),tokens,state:incomplete?'unknown':limited?'failed':'complete',response:responseMetadata});account(tokens);
+          if(incomplete)throw unknown();if(limited){incompleteResponse=new CapabilityError('VALIDATION_ERROR','模型响应已接收但达到输出上限，结果不完整',{callId,operationId,response:responseMetadata});throw incompleteResponse;}
+        }catch(error){if(incompleteResponse&&error===incompleteResponse)throw error;if(!observed)try{if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,state:'unknown'});}catch{/* Keep the durable dispatched receipt. */}try{account();}catch{/* Accounting callbacks cannot permit a second dispatch. */}throw unknown();}
         return visibleText(result.content);
       }finally{usageStore?.close();}
     },

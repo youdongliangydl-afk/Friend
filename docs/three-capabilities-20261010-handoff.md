@@ -38,7 +38,7 @@
 - 15 个种子 Skill、元数据目录、不可变版本/head CAS、只读投影、编辑/停用/回滚与旧记录迁移。
 - 主任务与成员冻结采用、显式选择、角色/工具/写入权限统一取交集；原生 journal 对账后才返回采用正文。独立原生 Pi 以真实工具目录和当前项目范围作为宿主边界，Skill 限制继续收窄。
 - 从任务 trace 独立学习；取消/未知结果不变成成功经验，无客观成功证据则等待证据。
-- trial 上限三次；真实 TaskLedger 检查、原生 Pi Bash 或 Swarm 成员原生 Bash 检查结果触发可信反馈，绑定采用版本、每轮 run/member/task 与 CheckRef，跨任务/旧版本不能影响当前试用；同逻辑任务新一轮失败仍反馈到同版试用，额度与成功次数按图作用域中的逻辑任务/实际输入去重。成员输入摘要来自当前 attempt 的原生用户条目并核对冻结提示；不以父会话原史或模型字段替代。相同内容的补充证据不重置版本、额度或冻结状态。独立 train/validation/hidden release、严格优于 baseline 且关键检查通过才晋升。
+- trial 上限三次；真实 TaskLedger 检查、原生 Pi Bash 或 Swarm 成员原生 Bash 检查结果触发可信反馈，绑定采用版本、每轮 run/member/task 与 CheckRef，跨任务/旧版本不能影响当前试用；主控、成员及桌面 TaskLedger 检查在实际 assistant 决策或用户主动验证开始前冻结 canonical 采用集合，后采用的方法不能获取旧检查信用；缺任一最终采用记录时整组保持等待，不筛掉失败检查；同逻辑任务新一轮失败仍反馈到同版试用，额度与成功次数按图作用域中的逻辑任务/实际输入去重。成员输入摘要来自当前 attempt 的原生用户条目并核对冻结提示；不以父会话原史或模型字段替代。相同内容的补充证据不重置版本、额度或冻结状态。独立 train/validation/hidden release、严格优于 baseline 且关键检查通过才晋升。
 - 同一项目 Skill 的成长版本保留限制，重复内容不重新获得试用额度；自动提取仅提供可变项目基线。捏造/内置基线作为坏提议最多三次独立计量重试，真实并发仍拒绝覆盖；未知调用不重放。
 - 原生 Pi 只装 Expert 亦可独立学习，不依赖桌面或 Memory 常驻单例。
 
@@ -46,7 +46,7 @@
 
 - 公共 SourcePolicy 原子提交围栏、精确个人来源授权、ArtifactRef/CheckRef/依赖、共享串行 learning lease 和独立调用预算。
 - 后台使用入队时冻结型号；前台工作阻止新后台准入，已发请求可并行完成。Memory/Expert 公平轮转。
-- 暂停/退出/进程被杀、HTTP 断连或派发后账本写入失败的未知调用保留账本并返回 OPERATION_UNKNOWN；手动恢复与重启均不得换 operationId 自动重发。已确认阶段可复用。
+- 暂停/退出/进程被杀、HTTP 断连或派发后账本写入失败的未知调用保留账本并返回 OPERATION_UNKNOWN；手动恢复与重启均不得换 operationId 自动重发。已确认阶段可复用。调用收据保存实际 stopReason、请求 maxTokens 与 SDK 返回的 usage；length 明确记为已收到但不完整的失败响应，保留原结果/用量且不按 UNKNOWN 重放，禁止发布半截 JSON。
 - 附件注册不可变原始字节快照；保持旧冻结输入/侧分支队列行为。
 - parser/saved、selected、Pi `context_with_system` 的 injected-to-context 分开记录。上下文钩子收据不等于最终网络载荷、模型理解或答案正确。
 - Single 长期目标的写入成果通过客观检查后等待用户验收，不另派 reviewer；验收绑定候选摘要、任务/目标版本及当前代码内容。暂停后显式接续清除旧绑定并要求新的客观检查；普通 Pi 执行终态仍不等于验证通过。
@@ -54,7 +54,7 @@
 
 ## 本地验证与边界
 
-旧候选 bb811761 与 05f9865 的后续审查反例已作废其可集成结论；旧日志和真实模型结果单独保留，不作为新候选证据。正式日志和计数以固定候选证据清单为准。focused 覆盖 Memory/被动 Topic、Expert native-only、Swarm、公共宿主、实际 built worker 与 localhost HTTP/SSE 进程生命周期。
+旧候选 bb811761、05f9865 与 b48d8eec 的后续审查反例已作废其可集成结论；旧日志和真实模型结果单独保留，不作为新候选证据。正式日志和计数以固定候选证据清单为准。focused 覆盖 Memory/被动 Topic、Expert native-only、Swarm、公共宿主、实际 built worker 与 localhost HTTP/SSE 进程生命周期。
 
 重点反例包括：来源撤回与迟到响应、片段越界读取、个人来源扩大、失败/UNKNOWN 重复计量、资源过期持久 UNKNOWN、换图不重置修复、Single 候选变化拒验收、前台不抢占后台请求、后台未知请求重启不重放、冻结附件原文件缺失仍保持原输入。
 

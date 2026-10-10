@@ -45,3 +45,20 @@ test('post-dispatch persistence failure keeps the original dispatched call and t
   await assert.rejects(makeContext(pi,native).complete('source',options),{code:'OPERATION_UNKNOWN'});assert.equal(dispatches,1);assert.equal(budgets.read(budget.budgetId).calls,1);
  }finally{LearningBudget.prototype.finish=finish;store.close();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(dir,{recursive:true,force:true});}
 });
+
+
+test('received length-limited model output retains response metadata and refuses replay as a known incomplete result',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'friend-pi-native-length-')),prior=process.env.FRIEND_PI_DATA_DIR;process.env.FRIEND_PI_DATA_DIR=dir;
+ const store=new RecordStore('runtime',dir),budgets=new LearningBudget(store);let dispatches=0;
+ try{
+  const budget=budgets.create({projectId:'project',sourceRunId:'run',maxCalls:3});
+  const pi={getThinkingLevel:()=> 'off',appendEntry:()=>{}} as unknown as ExtensionAPI;
+  const usage={input:3,output:5,cacheRead:0,cacheWrite:0,totalTokens:8,reasoningTokens:2};
+  const native={cwd:dir,model:{provider:'fixture',id:'proof'},sessionManager:SessionManager.inMemory(dir),isIdle:()=>true,ui:{notify:()=>{}},modelRegistry:{complete:async()=>{dispatches++;return {content:[{type:'text',text:'{"memories":[{"content":"unfinished'}],stopReason:'length',usage};}}} as unknown as ExtensionContext;
+  const options={budgetId:budget.budgetId,operationId:'extract:0',maxTokens:123};
+  await assert.rejects(makeContext(pi,native).complete('source',options),{code:'VALIDATION_ERROR'});
+  const call=budgets.readCall(budget.budgetId,'extract:0')!;assert.equal(call.state,'failed');assert.deepEqual(call.response,{received:true,complete:false,stopReason:'length',maxTokens:123,usage});assert.equal(call.result,'{"memories":[{"content":"unfinished');assert.equal(call.tokens,8);
+  await assert.rejects(makeContext(pi,native).complete('source',options),{code:'VALIDATION_ERROR'});assert.equal(dispatches,1);assert.equal(budgets.read(budget.budgetId).calls,1);assert.equal(budgets.read(budget.budgetId).usageUnknown,false);
+  assert.throws(()=>budgets.finish({budgetId:budget.budgetId,operationId:'extract:0',callId:call.callId,state:'failed',response:{...call.response,complete:true}}),{code:'VERSION_CONFLICT'});
+ }finally{store.close();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(dir,{recursive:true,force:true});}
+});

@@ -18,7 +18,7 @@ const delay=(ms:number)=>new Promise<void>(done=>setTimeout(done,ms));
 async function until(predicate:()=>boolean,label:string,ms=10000){const end=Date.now()+ms;while(!predicate()){if(Date.now()>=end)throw new Error(`Timeout: ${label}`);await delay(25);}}
 
 /** Actual built entry points, public IPC, isolated SQLite and a loopback HTTP provider. */
-async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'=()=>false){
+async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'|'length'=()=>false){
   const directory=mkdtempSync(join(tmpdir(),'friend-pi-learning-host-')),dataDir=join(directory,'state');
   const calls:Call[]=[],children:Awaited<ReturnType<typeof worker>>[]=[];let active=0,activeLearning=0,maxActive=0,maxLearning=0;
   const server=createServer(async(req,res)=>{
@@ -39,6 +39,7 @@ async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'=()=
       res.on('close',()=>{call.closed=true;active--;if(stage!=='foreground')activeLearning--;});
       const behavior=hold(stage,index);
       if(behavior==='disconnect'){res.destroy();return;}
+      if(behavior==='length'){call.ended=true;sendSse(res,'{"memories":[{"content":"unfinished',calls.indexOf(call),'length');return;}
       res.writeHead(200,{'Content-Type':'text/event-stream'});res.flushHeaders();
       if(!behavior){await delay(35);call.release();}
     }catch(error){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:String(error)}}));}
@@ -66,8 +67,9 @@ async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'=()=
   return {directory,dataDir,calls,jobs,memories,modelCall,enqueue,startHost,startForeground,close,get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
 }
 
-function sendSse(res:ServerResponse,text:string,id:number){
-  for(const choice of [{delta:{role:'assistant',content:text},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:`completion-${id}`,object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+function sendSse(res:ServerResponse,text:string,id:number,reason='stop'){
+  for(const choice of [{delta:{role:'assistant',content:text},finish_reason:null},{delta:{},finish_reason:reason}])res.write(`data: ${JSON.stringify({id:`completion-${id}`,object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+  if(reason==='length')res.write(`data: ${JSON.stringify({id:`completion-${id}`,object:'chat.completion.chunk',created:1,model:'fixture',choices:[],usage:{prompt_tokens:7,completion_tokens:5,total_tokens:12,completion_tokens_details:{reasoning_tokens:2}}})}\n\n`);
   res.end('data: [DONE]\n\n');
 }
 
@@ -159,4 +161,14 @@ test('shutdown persists an interrupted extraction and the next host reports unkn
     const pending=f.jobs().find(job=>job.id===source.jobId)!;assert.equal(pending.state,'operation_unknown');assert.equal(pending.stage,'extract');assert.equal(pending.attempts,0);assert.equal(pending.owner,undefined);assert.equal(f.modelCall(pending)?.state,'unknown');
     const next=await f.startHost();await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='operation_unknown','next launch reconciles original unknown call');await delay(1000);assert.equal(f.calls.filter(call=>call.stage==='extract').length,1);assert.equal(f.memories().filter(record=>record.status==='active').length,0);assert.equal(f.jobs().find(job=>job.id===source.jobId)?.attempts,0);await next.stop();
   }finally{await f.close();}
+});
+
+
+test('actual length-limited HTTP response is recorded as received incomplete and never publishes partial JSON',{timeout:45000},async()=>{
+ const f=await fixture(stage=>stage==='extract'?'length':false);try{
+  const source=await f.enqueue('length-limited'),host=await f.startHost();
+  await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='failed','known incomplete extraction fails visibly');
+  const job=f.jobs().find(job=>job.id===source.jobId)!,call=f.modelCall(job)!;assert.equal(call.state,'failed');assert.equal(call.response?.received,true);assert.equal(call.response?.complete,false);assert.equal(call.response?.stopReason,'length');assert.equal(typeof call.response?.maxTokens,'number');assert.ok(call.response?.usage);assert.equal(f.memories().filter(record=>record.status==='active').length,0);
+  const count=f.calls.length;assert.ok(count>0&&count<=3);await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,count,'received incomplete calls are not replayed on restart');await restarted.stop();
+ }finally{await f.close();}
 });

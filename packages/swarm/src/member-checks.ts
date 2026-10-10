@@ -46,7 +46,7 @@ export function readMemberChecks(entries:unknown[],graph:Graph,attempt:Attempt,s
   }
   if(complete&&confirmed.some(a=>!data.adoptions.some(d=>d.operationId===a.operationId&&d.journalEntryId===a.journalEntryId)))throw new CapabilityError('OPERATION_UNKNOWN','部分检查早于后续采用，整组试运行证据保持等待');
   const ref:CheckRef={checkId:`swarm-native:${sessionId}:${data.toolEntryId}`,version:1,hash:data.toolResultHash,taskId:attempt.taskId,producerRunId:attempt.id,artifacts:[]};
-  checks.push({ref,projectId:graph.projectId,passed:data.exitCode===0,output:{exitCode:data.exitCode,toolCallId:data.toolCallId,outputHash:data.outputHash,receiptEntryId:String(entry.id)},sources:[{sessionId,entryId:data.toolEntryId,hash:data.outputHash}]});
+  checks.push({ref,projectId:graph.projectId,passed:data.exitCode===0,output:{exitCode:data.exitCode,toolCallId:data.toolCallId,outputHash:data.outputHash,receiptEntryId:String(entry.id),trialAttribution:{v:1,decisionEntryId:String(rows[callIndex].id),adoptions:data.adoptions.map(adoption=>({...adoption}))}},sources:[{sessionId,entryId:data.toolEntryId,hash:data.outputHash}]});
  }
  return checks;
 }

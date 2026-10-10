@@ -80,6 +80,7 @@ export class TaskLedger {
  start(id:string,ctx:PluginContext){const task=this.read(id,ctx);if(['blocked','unknown','completed'].includes(task.status))throw new Error('步骤当前不可直接重启');return this.put({...task,status:'running'},ctx);}
  async verify(id:string,input:JsonObject,ctx:PluginContext,run:(check:AcceptanceCheck)=>Promise<Omit<CheckEvidence,'at'|'hash'>>,writeEpoch=0){
   const task=this.read(id,ctx);if(['unknown','stopped','blocked'].includes(task.status))throw new Error('步骤需先处理阻塞或未知现场');
+  const trialAttribution=ctx.captureCheckAttribution?.(ctx.runId);
   this.put({...task,status:'running'},ctx);
   const codeBefore=projectCodeVersion(ctx.projectDir,ctx.dataDir);const evidence:CheckEvidence[]=[];
   for(const check of task.checks){const actual=await run(check);const item={...actual,at:now(),hash:digest(actual)};evidence.push(item);if(actual.exitCode!==0)break;}
@@ -89,7 +90,7 @@ export class TaskLedger {
   const sources=Array.isArray(input.sources)?input.sources:task.sources;
   for(const source of sources)ctx.readSource(source as Parameters<PluginContext['readSource']>[0]);
   if(task.checks.length===0&&!result&&!sources.length)throw new Error('需要实际成果说明或来源证据，不能仅声明完成');
-  const registerChecks=(latest:TaskRecord)=>{const checkRefs=evidence.map((item,index)=>({checkId:`${task.id}:${index}`,version:latest.revision+1,hash:digest({evidence:item,codeVersion:codeAfter,taskId:task.id,version:latest.revision+1}),taskId:task.id,producerRunId:ctx.runId||ctx.sessionId,artifacts:[]} satisfies CheckRef));for(const [index,ref] of checkRefs.entries())new SourcePolicy(this.store).registerCheck({ref,projectId:ctx.projectId,passed:evidence[index].exitCode===0,output:{...evidence[index],codeVersion:codeAfter,writeEpoch},sources:sources as Parameters<PluginContext['readSource']>[0][]});return checkRefs;};
+  const registerChecks=(latest:TaskRecord)=>{const checkRefs=evidence.map((item,index)=>({checkId:`${task.id}:${index}`,version:latest.revision+1,hash:digest({evidence:item,codeVersion:codeAfter,taskId:task.id,version:latest.revision+1,trialAttribution}),taskId:task.id,producerRunId:ctx.runId||ctx.sessionId,artifacts:[]} satisfies CheckRef));for(const [index,ref] of checkRefs.entries())new SourcePolicy(this.store).registerCheck({ref,projectId:ctx.projectId,passed:evidence[index].exitCode===0,output:{...evidence[index],codeVersion:codeAfter,writeEpoch,...(trialAttribution?{trialAttribution}:{})},sources:sources as Parameters<PluginContext['readSource']>[0][]});return checkRefs;};
   if(evidence.some(item=>item.exitCode!==0))return this.store.transaction(()=>{
    const latest=this.read(id,ctx),repair=this.claimRepair({logicalStepId:task.logicalStepId},ctx,task.goalId),checkRefs=registerChecks(latest);
    return this.put({...latest,evidence,result,sources,checkRefs,repairCount:repair.count,status:repair.allowed?'repair':'blocked',error:repair.allowed?'检查未通过，请定向修复后重新验证':'已达两轮修复上限，步骤及其依赖保持阻塞'},ctx);
