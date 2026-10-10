@@ -175,7 +175,8 @@ function guard():ExtensionFactory{return pi=>{
     const todoInstruction='多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需拆分。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
     const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
     const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
-    return instructions||workspaceInstructions||todoInstruction?{systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}\n${todoInstruction}`}:undefined;
+    const branchInstructions=session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType===SIDECHAT_TYPE&&object(entry.data).v===1)?'当前是独立分支会话。分叉点以前继承的消息仅作历史背景，旧 user 请求不是本分支待办；本轮只执行本分支最新提交的请求。父任务状态若无真实证据则未知，不要推断完成或失败，不要仅因继承历史而继续或重放父会话命令。':'';
+    return instructions||workspaceInstructions||todoInstruction||branchInstructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}\n${todoInstruction}\n${branchInstructions}`}:undefined;
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
