@@ -169,6 +169,8 @@ test('actual length-limited HTTP response is recorded as received incomplete and
   const source=await f.enqueue('length-limited'),host=await f.startHost();
   await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='failed','known incomplete extraction fails visibly');
   const job=f.jobs().find(job=>job.id===source.jobId)!,call=f.modelCall(job)!;assert.equal(call.state,'failed');assert.equal(call.response?.received,true);assert.equal(call.response?.complete,false);assert.equal(call.response?.stopReason,'length');assert.equal(typeof call.response?.maxTokens,'number');assert.ok(call.response?.usage);assert.equal(f.memories().filter(record=>record.status==='active').length,0);
-  const count=f.calls.length;assert.ok(count>0&&count<=3);await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,count,'received incomplete calls are not replayed on restart');await restarted.stop();
+  assert.equal(job.attempts,0);assert.equal(job.nextAttemptAt,undefined);assert.deepEqual(job.pendingRanges,job.sourceRanges||job.sources);
+  const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}
+  const count=f.calls.length;assert.equal(count,1,'confirmed length stops the scheduler without a new operation');await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,1,'received incomplete calls are not replayed on restart');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'failed');await restarted.stop();
  }finally{await f.close();}
 });

@@ -46,7 +46,7 @@
 
 - 公共 SourcePolicy 原子提交围栏、精确个人来源授权、ArtifactRef/CheckRef/依赖、共享串行 learning lease 和独立调用预算。
 - 后台使用入队时冻结型号；前台工作阻止新后台准入，已发请求可并行完成。Memory/Expert 公平轮转。
-- 暂停/退出/进程被杀、HTTP 断连或派发后账本写入失败的未知调用保留账本并返回 OPERATION_UNKNOWN；手动恢复与重启均不得换 operationId 自动重发。已确认阶段可复用。调用收据保存实际 stopReason、请求 maxTokens 与 SDK 返回的 usage；length 明确记为已收到但不完整的失败响应，保留原结果/用量且不按 UNKNOWN 重放，禁止发布半截 JSON。
+- 暂停/退出/进程被杀、HTTP 断连或派发后账本写入失败的未知调用保留账本并返回 OPERATION_UNKNOWN；手动恢复与重启均不得换 operationId 自动重发。已确认阶段可复用。调用收据保存实际 stopReason、请求 maxTokens 与 SDK 返回的 usage；length 明确记为已收到但不完整的失败响应，保留原结果/用量，Memory 与 Expert 停止该学习作业、保留未覆盖范围且不推进 cursor；唤醒与重启不能换 operationId 重试或采用半截 JSON。普通格式错误仍按原三次上限处理。
 - 附件注册不可变原始字节快照；保持旧冻结输入/侧分支队列行为。
 - parser/saved、selected、Pi `context_with_system` 的 injected-to-context 分开记录。上下文钩子收据不等于最终网络载荷、模型理解或答案正确。
 - Single 长期目标的写入成果通过客观检查后等待用户验收，不另派 reviewer；验收绑定候选摘要、任务/目标版本及当前代码内容。暂停后显式接续清除旧绑定并要求新的客观检查；普通 Pi 执行终态仍不等于验证通过。
@@ -54,7 +54,7 @@
 
 ## 本地验证与边界
 
-旧候选 bb811761、05f9865 与 b48d8eec 的后续审查反例已作废其可集成结论；旧日志和真实模型结果单独保留，不作为新候选证据。正式日志和计数以固定候选证据清单为准。focused 覆盖 Memory/被动 Topic、Expert native-only、Swarm、公共宿主、实际 built worker 与 localhost HTTP/SSE 进程生命周期。
+旧候选 bb811761、05f9865、b48d8eec 与 10272d5a 的后续审查反例已作废其可集成结论；旧日志和真实模型结果单独保留，不作为新候选证据。正式日志和计数以固定候选证据清单为准。focused 覆盖 Memory/被动 Topic、Expert native-only、Swarm、公共宿主、实际 built worker 与 localhost HTTP/SSE 进程生命周期。
 
 重点反例包括：来源撤回与迟到响应、片段越界读取、个人来源扩大、失败/UNKNOWN 重复计量、资源过期持久 UNKNOWN、换图不重置修复、Single 候选变化拒验收、前台不抢占后台请求、后台未知请求重启不重放、冻结附件原文件缺失仍保持原输入。
 

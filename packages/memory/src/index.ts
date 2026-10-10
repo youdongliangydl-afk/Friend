@@ -715,12 +715,15 @@ export class MemoryController implements PluginController {
         if(job.state==='completed'){job.coveredRanges=job.pendingRanges?.length||job.pendingArtifacts?.length?[]:job.sourceRanges||job.sources;job.coveredArtifacts=job.pendingRanges?.length||job.pendingArtifacts?.length?[]:job.observedArtifacts?.map(item=>({artifact:item.artifact,ranges:item.ranges}));this.writeJob(job);const key=`cursor:${ctx.projectId}:${job.sessionId}`;const previous=this.store!.get<{entryIds:string[]}>(key);this.store!.put(key,{entryIds:[...new Set([...(previous?.value.entryIds||[]),...job.sources.map(source=>source.entryId)])]},previous?.revision??null);}
       });
     }catch(error){
+      const response=(error as {details?:{response?:{stopReason?:string;received?:boolean;complete?:boolean}}})?.details?.response;
+      const lengthLimited=response?.stopReason==='length'&&response.received===true&&response.complete===false;
       const reason=redactMemorySecrets(errorMessage(error));const unknown=(error as {code?:string})?.code==='OPERATION_UNKNOWN'||/OPERATION_UNKNOWN|结果未知|operation unknown/i.test(reason);const interrupted=(error as {code?:string})?.code==='CAPABILITY_UNAVAILABLE'&&/等待前台|暂停状态/.test(reason)||abort.signal.aborted||/版本已变化|已暂停|宿主已关闭|租约/.test(reason);
       const sourceMissing=(error as {code?:string})?.code==='SOURCE_UNAVAILABLE'||/来源会话已删除|来源.*不存在|来源已不可用|来源原文已变化/.test(reason);const configuration=/请先配置|未配置|配置.*缺失|模型不可用|缺少.*模型|API.?key|authentication|unauthorized|401|credential|model.*(?:missing|unavailable)/i.test(reason);
       const saved=this.store?.db.prepare('SELECT json FROM memory_jobs WHERE id=?').get(job.id);const current=saved?JSON.parse(String(saved.json)) as LearningJob:undefined;
       if(current?.owner?.token===job.owner?.token){
-        if(!interrupted&&!configuration&&!sourceMissing&&!unknown){job.attempts++;if(job.stage==='validate'){job.stage='extract';job.proposals=undefined;}}
-        job.state=unknown?'operation_unknown':sourceMissing?'invalidated':configuration?'waiting_configuration':job.attempts>=3?'failed':'queued';job.error=reason;job.owner=undefined;job.updatedAt=now();job.nextAttemptAt=interrupted?undefined:new Date(Date.now()+[1000,5000,30000][Math.min(2,Math.max(0,job.attempts-1))]).toISOString();this.writeJob(job);
+        if(!interrupted&&!configuration&&!sourceMissing&&!unknown&&!lengthLimited){job.attempts++;if(job.stage==='validate'){job.stage='extract';job.proposals=undefined;}}
+        if(lengthLimited){job.pendingRanges=job.sourceRanges||job.sources;job.pendingArtifacts=job.observedArtifacts;}
+        job.state=lengthLimited?'failed':unknown?'operation_unknown':sourceMissing?'invalidated':configuration?'waiting_configuration':job.attempts>=3?'failed':'queued';job.error=lengthLimited?'length 输出上限导致响应不完整；未覆盖范围保留，停止自动重试，不采用部分结果。':reason;job.owner=undefined;job.updatedAt=now();job.nextAttemptAt=interrupted||lengthLimited?undefined:new Date(Date.now()+[1000,5000,30000][Math.min(2,Math.max(0,job.attempts-1))]).toISOString();this.writeJob(job);
       }
     }finally{clearInterval(heartbeat);options.signal?.removeEventListener('abort',cancel);this.background=undefined;this.runningJob=undefined;this.activeLease=undefined;if(ownedLease&&this.store)releaseLearningLease(this.store,ownedLease);finish();}
     const saved=this.store?.db.prepare('SELECT json FROM memory_jobs WHERE id=?').get(job.id);const settled=saved?JSON.parse(String(saved.json)) as LearningJob:job;

@@ -113,6 +113,33 @@ test('unknown remote learning result is durable and cannot be replayed by retry 
  }finally{await f.close();}
 });
 
+test('confirmed length-limited extraction fails once without covering sources, publishing or replaying after restart',async()=>{
+ const f=fixture(),operations:string[]=[];let cold:MemoryController|undefined;try{
+  f.ctx.complete=async(_prompt,options)=>{operations.push(options!.operationId!);throw new CapabilityError('VALIDATION_ERROR','已接收不完整响应',{response:{stopReason:'length',received:true,complete:false}});};
+  await f.c.settled(f.ctx);const job=peekLearningJob(f.dir)!,result=await f.c.executeLearningJob(job.id,f.ctx);
+  assert.equal(result.job?.state,'failed');assert.equal(result.job?.attempts,0);assert.equal(result.job?.stage,'extract');assert.equal(result.job?.operationId,job.operationId);assert.equal(result.job?.nextAttemptAt,undefined);assert.match(result.job?.error||'',/length.*不完整/);
+  assert.deepEqual(result.job?.coveredRanges,[]);assert.deepEqual(result.job?.pendingRanges,job.sourceRanges);assert.deepEqual(result.job?.memoryIds,[]);assert.equal(result.job?.proposals,undefined);assert.equal(result.job?.modelOperations?.length,1);assert.equal(peekLearningJob(f.dir),undefined);
+  const store=new RecordStore('memory',f.dir);try{assert.equal(store.get('cursor:p:s'),undefined);}finally{store.close();}assert.deepEqual(f.c.snapshot(f.ctx).memories,[]);
+  await f.c.dispose();cold=new MemoryController();await cold.settled(f.ctx);await drain(cold,f.ctx);assert.equal(operations.length,1);const saved=((cold.snapshot(f.ctx).learning as any).jobs as LearningJob[]);assert.equal(saved.length,1);assert.equal(saved[0].state,'failed');assert.deepEqual(saved[0].pendingRanges,job.sourceRanges);assert.deepEqual(cold.snapshot(f.ctx).memories,[]);
+ }finally{await cold?.dispose();await f.close();}
+});
+
+test('ordinary extract schema failures still receive at most three attempts with distinct operations',async()=>{
+ const f=fixture(),originalNow=Date.now,operations:string[]=[];let time=originalNow();Date.now=()=>time;
+ try{f.ctx.complete=async(_prompt,options)=>{operations.push(options!.operationId!);return '{"unexpected":true}';};await f.c.settled(f.ctx);const first=peekLearningJob(f.dir)!;
+  for(let attempt=1;attempt<=3;attempt++){const result=await f.c.executeLearningJob(first.id,f.ctx);assert.equal(result.job?.attempts,attempt);assert.equal(result.job?.state,attempt===3?'failed':'queued');time+=31000;}
+  await drain(f.c,f.ctx);assert.equal(operations.length,3);assert.equal(new Set(operations).size,3);assert.equal(peekLearningJob(f.dir),undefined);assert.deepEqual(f.c.snapshot(f.ctx).memories,[]);
+ }finally{Date.now=originalNow;await f.close();}
+});
+
+test('length-limited artifact-only extraction retains the observed unread ranges without partial publication',async()=>{
+ const f=fixture();let calls=0;try{f.items.splice(0);const body='Observed artifact fact: SQLite uses WAL.',path=join(f.dir,'length-artifact.txt');writeFileSync(path,body);
+  const artifact:ArtifactRef={artifactId:'length-artifact',version:1,sha256:digest(body),mediaType:'text/plain',ranges:[{unit:'utf16',value:`0:${body.length}`}]},receipt:EvidenceReceipt={v:1,receiptId:'length-observation',projectId:'p',sessionId:'s',runId:'foreground-1',stage:'tool-read',sources:[],artifacts:[artifact],dependencies:[],observer:{kind:'foreground',runId:'foreground-1'},contentHash:digest(body),visibleRanges:[[0,body.length]],at:new Date().toISOString()};
+  const host=new RecordStore('host',f.dir);new SourcePolicy(host).registerArtifact({ref:artifact,projectId:'p',path,observations:[receipt],valid:true});host.close();f.ctx.observedArtifacts=()=>[{artifact,receipt}];f.ctx.readArtifact=async ref=>({artifact:ref,text:body,fullLength:body.length,visibleRanges:[[0,body.length]],receipt});f.ctx.complete=async()=>{calls++;throw new CapabilityError('VALIDATION_ERROR','已确认输出截断',{response:{stopReason:'length',received:true,complete:false}});};
+  await f.c.settled(f.ctx);const job=peekLearningJob(f.dir)!,result=await f.c.executeLearningJob(job.id,f.ctx);assert.equal(result.job?.state,'failed');assert.deepEqual(result.job?.pendingArtifacts,job.observedArtifacts);assert.deepEqual(result.job?.coveredArtifacts,undefined);assert.deepEqual(result.job?.coveredRanges,[]);assert.deepEqual(result.job?.memoryIds,[]);assert.equal(peekLearningJob(f.dir),undefined);await f.c.settled(f.ctx);await drain(f.c,f.ctx);assert.equal(calls,1);assert.deepEqual(f.c.snapshot(f.ctx).memories,[]);
+ }finally{await f.close();}
+});
+
 test('source policy fences a late response even with Memory absent when policy changed (16-17)',async()=>{
  const f=fixture();let release!:(value:string)=>void,started!:()=>void;const began=new Promise<void>(r=>started=r);try{
   f.ctx.complete=async()=>{started();return new Promise<string>(r=>release=r);};await f.c.settled(f.ctx);const job=peekLearningJob(f.dir)!;const running=f.c.executeLearningJob(job.id,f.ctx);await began;
