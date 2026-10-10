@@ -1,6 +1,6 @@
 [hidden]{display:none!important}
-.session-tabs-shell{display:flex;align-items:center;min-width:0;flex:1;gap:6px;-webkit-app-region:no-drag}
-.session-tabs{display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:thin}
+.session-tabs-shell{display:flex;align-items:center;min-width:0;flex:1;gap:6px;-webkit-app-region:drag;user-select:none}
+.session-tabs{display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-app-region:no-drag}
 .view-tab{display:flex;align-items:center;flex:0 0 220px;width:220px;max-width:240px;border-radius:8px;border:1px solid transparent;color:#627567}
 .view-tab.selected{background:#fff;border-color:#d4dfcf;color:#306e5b;box-shadow:0 2px 5px #24463208}
 .view-tab button{border:0;background:none;padding:8px;color:inherit;display:flex;align-items:center;gap:7px;min-width:0;font-size:12px}
@@ -38,3 +38,5 @@
 .new-project-button{display:grid;place-items:center;width:36px;flex:none;padding:7px;border-radius:9px;background:#e4ede8;border:1px solid #d5e3da;color:#56836d}
 .new-project-button:hover{background:#d6e6dc;color:#32684d}
 @media(max-width:760px){.workspace-tabs-bar{grid-column:2;gap:4px}.trajectory-workspace{padding-inline:14px}}
+
+.session-tabs::-webkit-scrollbar{display:none;width:0;height:0}

@@ -27,11 +27,11 @@ export interface ProjectSidebarProps {
   selectedProject?:string;selectedSession?:string;query?:string;archived?:boolean;disabled?:boolean;
   onProject(id:string):void;onSession(id:string):void;onNewSession(id:string):void;
   onMenu(session:SessionSummary,position:{x:number;y:number},moves?:SessionMoves):void;
-  onOpenProject():void;onReorder(ids:string[]):void|Promise<unknown>;
+  onReorder(ids:string[]):void|Promise<unknown>;
   onReorderSessions(projectId:string,ids:string[]):void|Promise<unknown>;onToggleArchive?():void;
 }
 const statuses:Record<string,string>={awaiting_user:'等待你处理',unread_completed:'有新回复',unread_failed:'任务失败，尚未查看',idle:'准备就绪',running:'正在执行',awaiting_review:'等待复核',rebuilding:'整理上下文',stopping:'正在停止',completed:'本轮已结束',failed:'执行失败',interrupted:'已中断',stopped:'已停止',paused:'已暂停'};
-export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProject='',selectedSession,query='',archived=false,disabled=false,onProject,onSession,onNewSession,onMenu,onOpenProject,onReorder,onReorderSessions,onToggleArchive}:ProjectSidebarProps) {
+export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProject='',selectedSession,query='',archived=false,disabled=false,onProject,onSession,onNewSession,onMenu,onReorder,onReorderSessions,onToggleArchive}:ProjectSidebarProps) {
   const [menu,setMenu]=useState<string>(),[pending,setPending]=useState(false),[error,setError]=useState('');
   const [drop,setDrop]=useState<{kind:'project'|'session';id:string;after:boolean}>();
   const menuRoot=useRef<HTMLDivElement>(null),menuTrigger=useRef<HTMLButtonElement|null>(null),reordering=useRef(false);
@@ -100,6 +100,5 @@ export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProjec
       </section>;
     })}</div>
     {error&&<p className="project-sidebar-error" role="alert">{error}</p>}
-    <button type="button" className="project-sidebar-open" disabled={locked} onClick={onOpenProject}><Icon name="folder" size={16}/><span>打开项目</span></button>
   </nav>;
 }

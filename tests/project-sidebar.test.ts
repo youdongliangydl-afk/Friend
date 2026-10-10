@@ -17,7 +17,7 @@ const sessions=[
   {id:'archived',projectId:'a',name:'归档聊天',path:'/archive.jsonl',updatedAt:'2026-10-11T00:00:00Z',archived:true},
 ];
 function render(overrides:Partial<ProjectSidebarProps>={}) {
-  return renderToStaticMarkup(React.createElement(ProjectSidebar,{projects,sessions,onProject(){},onSession(){},onMenu(){},onOpenProject(){},onReorder(){},onNewSession(){},onReorderSessions(){},...overrides}));
+  return renderToStaticMarkup(React.createElement(ProjectSidebar,{projects,sessions,onProject(){},onSession(){},onMenu(){},onReorder(){},onNewSession(){},onReorderSessions(){},...overrides}));
 }
 
 test('sidebar keeps project order, groups every project, and sorts nested chats by recency',()=>{
@@ -41,7 +41,7 @@ test('global search matches project names or chat names and archive filtering ap
   const archive=render({archived:true});assert.match(archive,/title="归档聊天"/);assert.doesNotMatch(archive,/title="新聊天"|title="临时分析"/);
 });
 
-test('disabled navigation also disables project menus, chat menus and opening a project',()=>{
+test('disabled navigation also disables project and chat menus',()=>{
   const html=render({disabled:true});
   const buttons=html.match(/<button\b[^>]*>/g)||[];assert.ok(buttons.length>10);assert.ok(buttons.every(button=>button.includes('disabled=""')));
   assert.match(html,/aria-label="聊天 新聊天 的更多操作" aria-haspopup="menu"/);
@@ -63,7 +63,7 @@ function interactive(overrides:Partial<ProjectSidebarProps>={}) {
   const jsx=(type:unknown,props:any)=>({type,props}),context:any={module:{exports:{}},require(name:string){if(name==='react')return hooks;if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};if(name==='./Icons.js')return {Icon(){}};if(name==='../session-order.js')return {orderedSessions};throw Error(name);}};
   const source=readFileSync('apps/desktop/src/renderer/ProjectSidebar.tsx','utf8');
   vm.runInNewContext(transformSync(source,{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code,context);
-  const props:ProjectSidebarProps={projects,sessions,onProject:id=>calls.push({type:'project',value:id}),onSession:id=>calls.push({type:'session',value:id}),onMenu:(session,position)=>calls.push({type:'menu',value:{id:session.id,position:{...position}}}),onNewSession:id=>calls.push({type:'new',value:id}),onReorderSessions:(projectId,ids)=>{calls.push({type:'session-reorder',value:{projectId,ids:Array.from(ids)}});},onOpenProject:()=>calls.push({type:'open',value:true}),onReorder:ids=>{calls.push({type:'reorder',value:Array.from(ids)});},...overrides};
+  const props:ProjectSidebarProps={projects,sessions,onProject:id=>calls.push({type:'project',value:id}),onSession:id=>calls.push({type:'session',value:id}),onMenu:(session,position)=>calls.push({type:'menu',value:{id:session.id,position:{...position}}}),onNewSession:id=>calls.push({type:'new',value:id}),onReorderSessions:(projectId,ids)=>{calls.push({type:'session-reorder',value:{projectId,ids:Array.from(ids)}});},onReorder:ids=>{calls.push({type:'reorder',value:Array.from(ids)});},...overrides};
   const render=()=>{cursor=0;return context.module.exports.ProjectSidebar(props);};
   const nodes=(root:any):any[]=>!root?[]:Array.isArray(root)?root.flatMap(nodes):typeof root==='object'?[root,...nodes(root.props?.children)]:[];
   const find=(match:(props:any)=>boolean)=>{const node=nodes(render()).find(node=>node.type==='button'&&match(node.props));assert.ok(node,'requested control exists');return node.props;};

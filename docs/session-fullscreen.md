@@ -33,3 +33,10 @@ BrowserHost 管理 WebContentsView。访客与弹窗强制关闭 Node，开启�
 集成目标为“客户端优化”会话 `01a1195b-80f8-7ec2-92c1-4851a8bc0c3f`。该会话同时修改 main、App、types、布局和权限；合并时保留其执行权限控制，并将完整输入设置接入共享 SessionComposer/ComposerSnapshot/动作分发。浮动输入区按用户最新要求保持简洁。
 
 测试输出、候选身份、制品摘要和客户端旅程在工作树 `.artifacts/fullscreen-qa/`；最终打包清单在 `.artifacts/mac/delivery-manifest.json`。开发阶段截图与旅程不冒充合并后的 Acceptance。集成会话必须对合并后的单一候选重新构建、记录哈希并复验。
+
+## 2026-10-10 窗口与标签交互调整
+
+- 顶栏标签保持触控板横向滚动、鼠标滚轮和键盘导航，隐藏滚动条；工具入口和标签采用相同的独立 SVG 图标。
+- 侧栏顶部文件夹打开现有项目，底部重复入口移除。
+- 标题栏、侧栏边缘、会话标题空白与空会话背景使用 Electron 原生拖窗区域；按钮、输入、可滚动列表和正文保持正常操作。系统已开启三指拖移时沿用原生行为，不更改系统设置。
+- 新 UI 候选须以唯一 App/bundle/dataDir 重新执行 Computer Use；旧 UI1425 证据不作为新候选验收。

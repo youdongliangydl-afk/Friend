@@ -1,5 +1,5 @@
-import {SessionTabs} from '../apps/desktop/src/renderer/SessionTabs.js';
-import {initialView} from '../apps/desktop/src/session-view.js';
+import {SessionTabs,NewTabPage} from '../apps/desktop/src/renderer/SessionTabs.js';
+import {initialView,toolNames,type ToolPage} from '../apps/desktop/src/session-view.js';
 import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,3 +53,16 @@ test('composer locks its draft during submission but permits queue input during 
 });
 
 test('conversation tab has a fixed title while tool and web tabs keep their own titles',()=>{const html=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),tabs:[{id:'web',kind:'browser',title:'Example Domain',url:'https://example.com/'}]},onSelect(){},onClose(){},onNew(){}}));assert.match(html,/>会话<\/span>/);assert.match(html,/>Example Domain<\/span>/);});
+
+
+test('tool tiles and their session tabs use the same distinct accessible vector icons',()=>{
+ const page=renderToStaticMarkup(React.createElement(NewTabPage,{onTool(){},onNavigate:async()=>{}}));
+ const icons=new Set<string>();
+ for(const [id,title] of Object.entries(toolNames)){
+  const tile=page.match(new RegExp('<button[^>]*>(<svg[\\s\\S]*?</svg>)<span>'+title+'</span>'));
+  assert.ok(tile,'tool tile exists: '+title);const svg=tile[1].slice(tile[1].lastIndexOf('<svg'));assert.match(svg,/aria-hidden="true"/);assert.ok(!icons.has(svg),'each tool has its own icon');icons.add(svg);
+  const tab=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),active:id,tabs:[{id,kind:'tool',page:id as ToolPage}]},onSelect(){},onClose(){},onNew(){}}));
+  const paths=[...svg.matchAll(/<path d="([^"]+)"/g)].map(match=>match[1]);for(const path of paths)assert.ok(tab.includes('d="'+path+'"'));
+ }
+ assert.equal(icons.size,Object.keys(toolNames).length);
+});

@@ -2,7 +2,7 @@
 .friend-layout{--header-height:46px;--sidebar-width:244px;background:#f3f5f1;padding:0 6px 6px;gap:3px;grid-template-columns:var(--sidebar-width) 5px minmax(320px,1fr);grid-template-rows:var(--header-height) minmax(0,1fr);grid-template-areas:"header header header" "sidebar side-resize main"}
 .friend-layout.sidebar-hidden{grid-template-columns:minmax(320px,1fr);grid-template-areas:"header" "main"}
 .friend-layout .project-topbar{grid-area:header;display:grid;grid-template-columns:var(--sidebar-width) 5px minmax(0,1fr);height:var(--header-height);padding:0;gap:3px;align-items:center;background:transparent;border-bottom:1px solid #dfe7df;z-index:80;min-width:0;-webkit-app-region:drag}
-.project-topbar button,.project-topbar nav,.project-topbar [role=toolbar],.project-topbar button *,.conversation-heading button,.conversation-heading button *{-webkit-app-region:no-drag!important}
+.project-topbar button,.project-topbar [role=toolbar],.project-topbar button *,.conversation-heading button,.conversation-heading button *{-webkit-app-region:no-drag!important}
 .ui-icon{display:inline-block;vertical-align:middle;flex:none;pointer-events:none}
 .module-controls{display:flex;align-items:center;gap:3px;flex:none}
 .module-controls button{display:flex;align-items:center;justify-content:center;width:33px;height:33px;padding:6px;background:transparent;color:#819086;border-color:transparent;border-radius:8px;position:relative}
@@ -136,3 +136,7 @@
 
 .composer-permissions{display:contents}.permission-control{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:4px 7px;border:1px solid transparent;border-radius:9px;background:transparent;color:#749865;white-space:nowrap;font-size:11px;flex:none}.permission-control:hover{background:#eef4e7}.permission-control.all-permissions{color:#b87842}.control-chevron{font-size:12px;line-height:1}.permission-menu{position:fixed;inset:auto;margin:0;width:315px;max-width:calc(100vw - 24px);padding:7px;border:1px solid #d9e4d4;border-radius:12px;background:#fff;box-shadow:0 10px 35px #1d342225;color:#41573d}.permission-menu button{display:grid;grid-template-columns:18px minmax(0,1fr) 14px;align-items:center;gap:10px;width:100%;min-height:46px;padding:9px;border:0;border-radius:8px;background:transparent;text-align:left;color:inherit}.permission-menu button[aria-checked=true]{background:#edf5e8;color:#467747}.permission-menu button:hover{background:#f2f6ef}.permission-menu strong{display:block;font-size:12px;font-weight:600}.permission-menu small{display:block;font-size:11px;line-height:1.5;margin-top:3px;color:#7a8c76}.permission-menu button:focus-visible{outline:2px solid #68987c;outline-offset:-2px}
 @container (max-width:700px){.permission-control>span:not(.control-chevron){display:none}.permission-control{padding-inline:3px}}
+
+/* Native window drag is limited to chrome and empty surfaces; content keeps normal pointer input. */
+.friend-layout .sidebar,.conversation-heading,.conversation-empty{-webkit-app-region:drag}
+.sidebar button,.sidebar input,.session-search,.project-sidebar-title,.project-sidebar-groups,.project-sidebar-error,.conversation-title,.heading-actions,.conversation-empty .welcome>*,.conversation-empty .empty{-webkit-app-region:no-drag}
