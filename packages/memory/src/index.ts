@@ -1087,7 +1087,15 @@ export class MemoryController implements PluginController {
 
 const extension: ExtensionFactory = (pi: ExtensionAPI) => {
   const controller = new MemoryController();
-  registerPlugin(pi,'memory',controller,'有来源、可纠正和遗忘的项目记忆');
+  registerPlugin(pi,'memory',controller,'有来源、可纠正和遗忘的项目记忆',{toolDescription:`读取有来源的项目记忆与个人偏好。调用格式为 {"action":"动作名","input":{...}}，模型只使用以下真实读取动作：
+- search：搜索当前有效记忆。最小 input {"query":"关键词"}，可加 limit（1–100）、scope（project/personal）、match（all/any/adaptive）。
+- directory：读取目录。最小 input {}，可加 {"query":"关键词"}；返回 id、revision、hash、适用条件及 readRef，目录可见不等于正文已读。
+- select：按目标召回完整语义正文。最小 input {"query":"当前目标"}，可加 limit（最多12）、budget（字符数或 {"directory":1500,"body":3500}）；返回 records 正文、directory 目录及 omitted 未读项。超预算正文不会被截断，需另行分页读取。
+- read：读取指定记忆。最小 input {"id":"从检索结果取得的ID"}；可加 revision 或 source:true 核对版本和原始来源。
+- read.range：分页读取正文。最小 input {"id":"从检索结果取得的ID","revision":1}，revision 必须复制实际版本；可加 cursor:0、maxChars:8000。按 nextCursor 继续，保留适用条件，bodyComplete:false 表示尚未读完。
+- source.read：读取精确来源片段。最小 input {"source":{"sessionId":"实际来源会话","entryId":"实际来源条目","start":0,"end":10,"hash":"实际片段摘要"}}；source 必须原样复制记忆返回的来源引用，勿编造范围或摘要。可加 cursor:0、maxChars:8000。产物来源则传 {"artifact":实际ArtifactRef,"observationReceiptId":"实际观察收据ID"}，按返回 nextCursor 分页。
+- learning.status：只读核对后台状态，最小 input {}，可加 jobId。
+写入、更正、确认、停用、遗忘和手动学习由用户界面控制；不要猜测或尝试 create/write/add/remember/save 等写入动作。用户说“请记住”时，真实对话来源在本轮结束后按后台开关及模型配置进入独立来源学习，无需模型调用写入动作。用户请求、queued、candidate 或任务 completed 均不证明记忆已采用；只有实际读到 status:active、enabled:true 且来源有效的记录，才可称为当前已采用。`});
   pi.on('session_start',(_event,ctx)=>controller.restoreUsage(ctx.sessionManager.getBranch(),makeContext(pi,ctx)));
   pi.on('before_agent_start',(_event,ctx)=>controller.beginRun(makeContext(pi,ctx)));
   pi.on('context',(_event,ctx)=>{const recall=controller.recall(makeContext(pi,ctx));if(recall)return {messages:[{role:'custom' as const,customType:'friend-pi:memory-recall:v1',content:recall.content,display:false,timestamp:Date.now()},..._event.messages]};});
