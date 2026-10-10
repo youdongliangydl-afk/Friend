@@ -135,6 +135,26 @@ test('read_document limits model output to one text range, keeps hidden sheet co
     await tool.execute('read',{path:external});writeFileSync(external,'changed after preflight');await assert.rejects(tool.execute('read',{path:external}),/已经变化/);await assert.rejects(tool.execute('read',{path:outside.file('not-added.txt','not authorized')}),/只能读取/);const controller=new AbortController();controller.abort();await assert.rejects(tool.execute('read',{path:'all.xlsx'},controller.signal),/取消/);
   }finally{f.close();outside.close();}
 });
+test('read_document exposes the next section only after the current section is fully paged',async()=>{
+  const f=fixture();try{const path=f.file('all.xlsx',workbook()),original=await readDocument(path),joined=new Map<string,string>();let tool:any;
+    documentTools(f.root,new Map())({registerTool:(registered:unknown)=>{tool=registered;}} as any);
+    let request:{path:string;sectionId?:string;offset?:number;limit:number}={path:'all.xlsx',limit:9};
+    while(true){const response=JSON.parse((await tool.execute('read',request)).content[0].text),page=response.page;
+      joined.set(page.sectionId,(joined.get(page.sectionId)||'')+page.text);
+      if(page.nextOffset!==undefined){
+        assert.ok(page.nextOffset>page.offset);assert.equal(Object.hasOwn(response,'nextSectionId'),false,'an unfinished section must not offer another section');
+        request={...request,sectionId:page.sectionId,offset:page.nextOffset};
+      }else{
+        const index=original.sections.findIndex(section=>section.id===page.sectionId),next=original.sections[index+1]?.id;
+        assert.equal(response.nextSectionId,next);
+        if(!next){assert.equal(Object.hasOwn(response,'nextSectionId'),false);break;}
+        request={...request,sectionId:next,offset:0};
+      }
+    }
+    assert.deepEqual([...joined.keys()],original.sections.map(section=>section.id));
+    for(const section of original.sections)assert.equal(joined.get(section.id),section.text);
+  }finally{f.close();}
+});
 test('legacy frozen attachment hashes authorize unchanged bytes without weakening changed-source rejection',async()=>{
   const f=fixture(),outside=fixture();try{const path=outside.file('legacy.txt','original legacy bytes'),old=captureInput({text:'read',attachments:[{path}]}).attachments[0];let tool:any;
     documentTools(f.root,new Map([[realpathSync(path),old.hash]]))({registerTool:(registered:unknown)=>{tool=registered;}} as any);
