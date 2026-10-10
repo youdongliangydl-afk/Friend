@@ -13,10 +13,10 @@
 .project-sidebar-project[draggable=true]{cursor:grab}
 .project-sidebar-project[draggable=true]:active{cursor:grabbing}
 .project-sidebar-project:hover,.project-sidebar-open:hover{background:#eceef0;color:#25282d}
-.project-sidebar-chats{list-style:none;margin:1px 0 0;padding:0 0 0 21px}
-.project-sidebar-chat{display:flex;align-items:center;gap:7px;min-height:34px;min-width:0;margin:1px 0;border-radius:6px;padding:0 4px 0 0}
+.project-sidebar-chats{list-style:none;margin:1px 0 0;padding:0}
+.project-sidebar-chat{display:flex;align-items:center;gap:7px;min-height:34px;min-width:0;margin:1px 0;border-radius:6px;padding:0 4px 0 28px}
 .project-sidebar-chat:hover{background:#edeef0}
-.project-sidebar-chat.is-selected{background:#e4e6e9}
+.project-sidebar-chat.is-selected{background:#ebedef}
 .project-sidebar-session{display:flex;align-items:center;flex:1;min-height:34px;min-width:0;border:0;border-radius:6px;background:transparent;padding:7px 7px;color:#50535a;font-size:12px;text-align:left;font-weight:400}
 .project-sidebar-session:hover{background:transparent;color:#24272c}
 .project-sidebar-session>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

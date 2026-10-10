@@ -1,4 +1,3 @@
-import './activity-center.css';
 import './document-preview.css';
 import './capabilities.css';
 import './deliverables.css';
@@ -13,7 +12,7 @@ import './model-settings.css';
 import './session-fullscreen.css';
 import './session-trace.css';
 import './session-stats.css';
-import './task-info.css';
+import './queue-messages.css';
 import './composer-materials.css';
 import './project-sidebar.css';
 

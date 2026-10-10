@@ -1,9 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import React from 'react';
-import {renderToStaticMarkup} from 'react-dom/server';
 import {AttentionRegistry, type AttentionOwner} from '../apps/desktop/src/session-attention.js';
-import {ActivityCenter} from '../apps/desktop/src/renderer/ActivityCenter.js';
 
 const a: AttentionOwner = {sessionId: 'session-a', generation: 'worker-a', runId: 'run-a'};
 const b: AttentionOwner = {sessionId: 'session-b', generation: 'worker-b', runId: 'run-b'};
@@ -190,26 +187,4 @@ test('an initial history snapshot does not clear a live pending dialog captured 
   registry.observeState({...a, runId: 'restored-history'}, {runId: 'restored-history', lifecycleStatus: 'completed'});
   assert.ok(registry.getDialog(a, request.id));
   assert.equal(registry.snapshot()[0].runId, a.runId);
-});
-
-test('activity center shows cross-project attention, running and unread results with navigation-only actions', () => {
-  const {registry} = fixture();
-  registry.captureDialog(a, request); registry.observeState(b, {isRunning: true}); registry.observeState(b, {lifecycleStatus: 'failed'});
-  const html = renderToStaticMarkup(React.createElement(ActivityCenter, {activities: registry.snapshot(), sessions: [
-    {id: a.sessionId, name: '材料分析', projectId: 'p1', projectName: '研究项目', status: 'running'},
-    {id: b.sessionId, name: '服务检查', projectId: 'p2', projectName: '开发项目', status: 'failed'},
-    {id: 'session-c', name: '另外的工作', status: 'running'},
-  ], onOpen() {}, onDismiss() {}}));
-  for (const label of ['需要你处理', '未读结果', '正在执行', '研究项目', '开发项目', '另外的工作', '前往处理', '已读']) assert.ok(html.includes(label), label);
-  assert.match(html, /aria-label="打开 材料分析 处理请求"/);
-  assert.doesNotMatch(html, /允许此操作|确认修改文件.*确认修改文件|修改项目文件？/);
-  assert.equal(html.match(/打开执行中的 材料分析/g), null);
-});
-
-test('activity center omits deleted sessions and disables actions during a navigation request', () => {
-  const {registry} = fixture(); registry.captureDialog(a, request);
-  const html = renderToStaticMarkup(React.createElement(ActivityCenter, {activities: registry.snapshot(), sessions: [{id: a.sessionId, name: '材料分析'}], pending: true, onOpen() {}, onDismiss() {}}));
-  assert.match(html, /<button disabled=""/);
-  const empty = renderToStaticMarkup(React.createElement(ActivityCenter, {activities: registry.snapshot(), sessions: [], onOpen() {}, onDismiss() {}}));
-  assert.match(empty, /当前没有待处理任务/); assert.doesNotMatch(empty, /前往处理/);
 });

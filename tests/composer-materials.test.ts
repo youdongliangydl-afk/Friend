@@ -107,11 +107,11 @@ test('the actual BrowserHost overlay action admits material events only for the 
   const method = between(source, '  overlayAction(raw:', '  private watchDownloads').replace('overlayAction(', 'function overlayAction(');
   const emitted: any[] = [], host = {overlayToken: 'bound-token', overlayOwner: 'owner', emit: (...args: any[]) => emitted.push(args)};
   const scope: any = {}; vm.createContext(scope); vm.runInContext(stripTypeScriptTypes(method + '\nglobalThis.action=overlayAction;'), scope);
-  for (const type of ['files', 'reference', 'referenceSpace', 'attachmentChecked']) {
+  for (const type of ['files', 'reference', 'attachmentChecked']) {
     scope.action.call(host, {type, sessionId: 'owner', token: 'bound-token', epoch: 1, value: {path: '/material'}});
     assert.throws(() => scope.action.call(host, {type, sessionId: 'old-owner', token: 'bound-token'}), /所属会话/);
     assert.throws(() => scope.action.call(host, {type, sessionId: 'owner', token: 'old-token'}), /所属会话/);
   }
-  assert.equal(emitted.length, 4); assert.ok(emitted.every(args => args[0] === 'composer.action' && args[2] === 'owner'));
+  assert.equal(emitted.length, 3); assert.ok(emitted.every(args => args[0] === 'composer.action' && args[2] === 'owner'));
   assert.throws(() => scope.action.call(host, {type: 'arbitrary-tool', sessionId: 'owner', token: 'bound-token'}), /操作无效/);
 });

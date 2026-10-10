@@ -55,7 +55,7 @@ const allowed=new Set(['app.state','settings.get','settings.update','project.ope
 allowed.add('attention.dismiss');
 for(const method of ['attachment.import','attachment.inspect','reference.list','document.read','document.section','document.pdf.page','external.call'])allowed.add(method);
 allowed.add('link.open');allowed.add('model.test');
-for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload','composer.sync'])allowed.add(method);
+for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload'])allowed.add(method);
 for(const method of ['project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
 for(const method of ['session.queue','session.sidechat.read','session.sidechat.draft','session.sidechat.send'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
@@ -210,14 +210,13 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     next={...next,tabs:next.tabs.map(t=>{const current=live.find(e=>e.id===t.id);return t.kind==='browser'&&current?{...t,url:current.url,title:current.title}:t;})};
     saveView(id,next);browserHost?.reconcile(id,next,prior.browserScope!==next.browserScope);return next;
   }
-  if(method.startsWith('browser.')||method==='composer.sync'){
+  if(method.startsWith('browser.')){
     const id=text(input.sessionId);viewContext(id);if(id!==currentId)throw new Error('会话已切换');if(!browserHost)throw new Error('浏览器尚未就绪');
     if(method==='browser.list')return browserHost.snapshot(id);
     if(method==='browser.present'){browserHost.present(id,text(input.tabId||'none'),input.bounds as Electron.Rectangle|undefined);return {ok:true};}
     if(method==='browser.navigate'){await browserHost.navigate(id,text(input.tabId),text(input.url));return browserHost.snapshot(id);}
     if(method==='browser.action'){browserHost.action(id,text(input.tabId),text(input.action));return {ok:true};}
     if(method==='browser.cancelDownload'){browserHost.cancelDownload(id,text(input.id));return {ok:true};}
-    if(method==='composer.sync'){browserHost.syncComposer(id,object(input.snapshot),input.bounds as Electron.Rectangle|undefined);return {ok:true};}
   }
 
   requireActive();

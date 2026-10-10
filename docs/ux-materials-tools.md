@@ -6,9 +6,9 @@
 
 | 范围 | 用户入口与行为 | 主要代码 |
 | --- | --- | --- |
-| 材料输入 | 主会话、侧聊和浮动输入框支持拖入文件、粘贴图片、`@` 文件/目录/同项目会话引用、`/` 命令和 Skill 补全 | `ComposerInput.tsx`、`attachment-input.ts`、`material-references.ts` |
+| 材料输入 | 主会话和独立分支会话支持拖入文件、粘贴图片、`@` 文件/目录/同项目会话引用、`/` 命令和 Skill 补全 | `ComposerInput.tsx`、`attachment-input.ts`、`material-references.ts` |
 | 附件可读性 | 每份附件独立显示解析范围、警告及输入方式。较小正文直接纳入原生用户消息；较大正文提供文件说明，通过 `read_document` 分节读取。原生实际用户消息匹配后记录 started 回执，扩展转换后不能核实的范围标记 unverified | `document-reader.ts`、`document-tools.ts`、`AttachmentDelivery.tsx` |
-| 长任务自由导航 | 运行中可切换项目、会话和新建会话。任务中心汇总执行中、等待处理及未读结果；系统通知点击请求导航，提交完成后再切换。迟到响应、过期批准和旧浮动输入框动作有身份校验 | `session-attention.ts`、`ActivityCenter.tsx`、`main.ts`、`App.tsx` |
+| 长任务自由导航 | 运行中可切换项目、会话和新建会话。左侧会话列表展示执行状态；系统通知点击请求导航，提交完成后再切换。迟到响应、过期批准和旧输入框动作有身份校验 | `session-attention.ts`、`ProjectSidebar.tsx`、`main.ts`、`App.tsx` |
 | 外部能力 | 设置 → 扩展中维护 MCP stdio/Streamable HTTP 配置，连接测试、工具清单及失败诊断。GUI 与原生模型工具使用同一控制器。提供 `web_fetch`，以及显式配置 Brave Key 后的 `web_search` | `external-capabilities.ts`、`external-capabilities-network.ts`、`CapabilitiesPanel.tsx` |
 | 文件交付 | 本轮非代码改动生成成果卡，支持查看和系统打开。文件工作区提供 PDF 页面位图、Office 内容结构、Excel 工作表/隐藏表/单元格及 CSV 预览；CSV 仍可切回源码编辑 | `Deliverables.tsx`、`DocumentPreview.tsx`、`FileWorkspace.tsx` |
 
@@ -57,8 +57,8 @@ node scripts/package-desktop.mjs --require-clean --no-zip --app-name <唯一应�
 
 1. 在集成会话自己的工作树接收固定候选；若候选或主分支变化，重新运行完整本地检查并重新打包。保留其他会话工作，依赖/锁文件/共享脚本仅由集成会话处理。
 2. 在可用桌面和控制通道上，使用唯一应用名称、Bundle Identifier 及数据目录。记录候选提交、Pi SHA、制品 Hash、App 路径、实际进程和窗口身份。
-3. 使用明确配置的真实模型：拖入小 DOCX+含隐藏表 XLSX，核对解析状态和实际模型可见原文；再发送超内联预算的材料，核对真实 `read_document` 分页、隐藏表尾部及工具记录。测试图片粘贴、错误文件、Hash 变化、Stop 解析中、侧聊增量和浮动输入框。
-4. 启动长任务后切换项目、新建/切换会话，验证任务继续运行、原会话草稿隔离；从任务中心/系统通知返回，核对完成/失败/等待批准/过期批准，提交期通知不能跳走。
+3. 使用明确配置的真实模型：拖入小 DOCX+含隐藏表 XLSX，核对解析状态和实际模型可见原文；再发送超内联预算的材料，核对真实 `read_document` 分页、隐藏表尾部及工具记录。测试图片粘贴、错误文件、Hash 变化、Stop 解析中、分支会话增量；切到工具页无输入框，返回会话草稿仍保留。
+4. 启动长任务后切换项目、新建/切换会话，验证任务继续运行、原会话草稿隔离；从会话列表/系统通知返回，核对完成/失败/等待批准/过期批准，提交期通知不能跳走。
 5. 在设置中添加真实可用 MCP，测试成功/失败、工具列表、明确批准/拒绝及会话切换；验证真实模型调用 `web_fetch`。配置用户授权的 Brave Key 后验证 `web_search`。
 6. 让模型生成 PDF/DOCX/PPTX/XLSX/CSV，核对成果卡、全部工作表/分页、预览与系统打开。CSV 修改后应保留源码编辑流程。
 7. 保存实际操作步骤、关键截图和源/制品绑定信息。全部验收通过后仅由集成会话创建 PR、合入远端 main，并核对远端结果；在此之前不标记项目完成。
