@@ -97,7 +97,7 @@ export function createExternalCapabilities(options:Options){
   function snapshot():ExternalCapabilitiesSnapshot {
     return {v:1,revision:settings.revision,servers:settings.servers.map(server=>{
       const config=server.config,status=statuses.get(server.name),namespace=`mcp__${server.name.replaceAll('-','_')}`;
-      const tools=[...definitions.values()].filter(tool=>tool.namespace?.name===namespace).map(tool=>({name:tool.name,label:redact(tool.label),description:redact(tool.description),parameters:tool.parameters,readOnly:tool.annotations?.readOnlyHint===true,available:config.enabled===true&&tool.exposure!=='hidden'}));
+      const tools=[...definitions.values()].filter(tool=>tool.namespace?.name===namespace).map(tool=>({name:tool.name,label:redact(tool.label),description:redact(tool.description),parameters:tool.parameters,readOnly:tool.annotations?.readOnlyHint===true,available:config.enabled===true&&status?.state==='connected'&&tool.exposure!=='hidden'}));
       const url='url' in config?new URL(config.url):undefined;if(url)for(const key of url.searchParams.keys())url.searchParams.set(key,'[已隐藏]');
       return {name:server.name,type:'url' in config?'http':'stdio',enabled:config.enabled===true,...('url' in config?{url:url!.href,urlRedacted:!!url!.search}:{command:redact(config.command),args:config.args?.map(redact),cwd:config.cwd}),envNames:'command' in config?Object.keys(config.env||{}):[],headerNames:'url' in config?Object.keys(config.headers||{}):[],state:config.enabled===true?status?.state||'unchecked':'disabled',diagnostic:status?.diagnostic?redact(status.diagnostic):undefined,testedAt:status?.testedAt,tools};
     }),web:{provider:'brave',enabled:settings.web.enabled,configured:!!settings.web.apiKey,fetchAvailable:true,source:braveSource,...webTest}};
@@ -111,6 +111,25 @@ export function createExternalCapabilities(options:Options){
     for(const {name,config} of settings.servers){const identity=JSON.stringify(config);if(registered.get(name)!==identity){pi.registerMcpServer(name,config);registered.set(name,identity);statuses.set(name,{state:config.enabled===true?'connecting':'disabled'});}}
   }
   function refresh(){settings=load();sync();return snapshot();}
+  async function waitForConnections(signal?:AbortSignal){
+    const timeout=Math.min(65_000,(Math.max(1,...settings.servers.filter(server=>server.config.enabled).map(server=>server.config.timeout||10))+5)*1000);
+    const deadline=AbortSignal.timeout(timeout),stop=AbortSignal.any([shutdown.signal,deadline,...signal?[signal]:[]]);
+    let abort=()=>{};
+    const interrupted=new Promise<never>((_resolve,reject)=>{abort=()=>reject(new Error(deadline.aborted?'等待 MCP 连接超时，请检查服务后重试':'MCP 连接等待已取消'));stop.addEventListener('abort',abort,{once:true});if(stop.aborted)abort();});
+    let connecting=false;
+    try{
+      do{
+        await Promise.race([Promise.all([...connectionChanges]),interrupted]);stop.throwIfAborted();check();
+        await Promise.race([readStatus(),interrupted]);stop.throwIfAborted();
+        // Another controller may replace the configuration while these connections settle.
+        refresh();
+        connecting=settings.servers.some(server=>server.config.enabled&&['connecting','unchecked'].includes(statuses.get(server.name)?.state||'unchecked'));
+        if(connecting&&!connectionChanges.size)await Promise.race([delay(100),interrupted]);
+      }while(connectionChanges.size||connecting);
+      const unavailable=settings.servers.filter(server=>server.config.enabled&&statuses.get(server.name)?.state!=='connected');
+      if(unavailable.length)throw new Error('MCP 服务未就绪：'+unavailable.map(server=>`${server.name}（${statuses.get(server.name)?.state||'unchecked'}）`).join('、'));
+    }finally{stop.removeEventListener('abort',abort);}
+  }
   function mutate(input:Json,change:(latest:Stored)=>void){
     check();mkdirSync(options.dataDir,{recursive:true,mode:0o700});const lock=path+'.lock';let handle:number;
     try{handle=openSync(lock,'wx',0o600);}catch{throw new Error('另一会话正在保存配置，请刷新后重试');}
@@ -173,7 +192,10 @@ export function createExternalCapabilities(options:Options){
   }
   const extensionFactory:ExtensionFactory=api=>{
     pi=api;registered.clear();definitions.clear();if(shutdown.signal.aborted)shutdown=new AbortController();
-    api.on('before_agent_start',()=>{refresh();});
+    api.on('before_agent_start',async(_event,ctx)=>{
+      try{refresh();await waitForConnections(ctx.signal);}
+      catch(error){const message='MCP 服务暂不可用：'+publicError(error).message;ctx.ui.notify(message,'warning');return {message:{customType:'friend-pi.mcp.unavailable',content:message,display:false}};}
+    });
     const cleanContext=<T extends ExtensionContext>(ctx:T):T=>({...ctx,ui:{...ctx.ui,notify:(message:string,level?:'info'|'warning'|'error')=>ctx.ui.notify(redact(message),level)}});
     const proxy=new Proxy(api,{get(target,key){
       if(key==='on')return (event:string,handler:(event:unknown,ctx:ExtensionContext)=>unknown)=>Reflect.apply(target.on,target,[event,(data:unknown,ctx:ExtensionContext)=>{const result=handler(data,cleanContext(ctx));if(event==='mcp_servers_change'&&result instanceof Promise){connectionChanges.add(result);void result.finally(()=>connectionChanges.delete(result)).catch(()=>{});}return result;}]);
@@ -197,9 +219,10 @@ export function createExternalCapabilities(options:Options){
       const namespace=definitions.get(event.toolName)?.namespace?.name,serverName=resource?(event.input as Json).server:undefined;
       const selected=()=>settings.servers.filter(server=>resource?(serverName===undefined?server.config.enabled:server.name===serverName):namespace===`mcp__${server.name.replaceAll('-','_')}`);
       const servers=selected();if(!servers.length||servers.some(server=>!server.config.enabled)||definitions.get(event.toolName)?.exposure==='hidden')return {block:true,reason:'MCP 服务已停用或移除'};
+      if(servers.some(server=>statuses.get(server.name)?.state!=='connected'))return {block:true,reason:'MCP 服务尚未连接，当前工具不可用'};
       const identity=JSON.stringify(servers),message=redact(event.toolName+'\n'+JSON.stringify(event.input).slice(0,8000));
       const approved=options.confirm?await options.confirm({operation:'调用 MCP 工具',message,autoEligible:false}):ctx.hasUI?await ctx.ui.confirm('调用 MCP 工具',message):false;
-      refresh();await Promise.allSettled([...connectionChanges]);if(disposed||!approved||definitions.get(event.toolName)?.namespace?.name!==namespace||definitions.get(event.toolName)?.exposure==='hidden'||JSON.stringify(selected())!==identity)return {block:true,reason:'MCP 工具未获批准或配置已变化'};
+      refresh();await Promise.allSettled([...connectionChanges]);if(disposed||!approved||selected().some(server=>statuses.get(server.name)?.state!=='connected')||definitions.get(event.toolName)?.namespace?.name!==namespace||definitions.get(event.toolName)?.exposure==='hidden'||JSON.stringify(selected())!==identity)return {block:true,reason:'MCP 工具未获批准或配置已变化'};
     });
     api.on('session_shutdown',()=>{context=undefined;shutdown.abort();});
     for(const [name,label,description,parameters,execute] of [

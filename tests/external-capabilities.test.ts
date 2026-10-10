@@ -7,6 +7,7 @@ import {createServer,request as httpRequest,type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {createAgentSession,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager,initTheme} from '@earendil-works/pi-coding-agent';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
+import {getCurrentTools} from '@earendil-works/pi-ai';
 import {createExternalCapabilities} from '../apps/desktop/src/external-capabilities.js';
 import {isPublicAddress,publicWebUrl,readPublicText,webpageText,type ExternalNetwork} from '../apps/desktop/src/external-capabilities-network.js';
 
@@ -92,6 +93,67 @@ async function sessionFor(dir:string,external:ReturnType<typeof createExternalCa
   await session.bindExtensions({mode:'rpc'});
   return {session,fixture,async close(){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});await external.dispose();session.dispose();if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;}};
 }
+const reconnectFixture=`import {createInterface} from 'node:readline';import {appendFileSync} from 'node:fs';
+const version=process.argv[2],delay=Number(process.argv[3]||0);
+createInterface({input:process.stdin}).on('line',async line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};
+if(m.method==='initialize'){appendFileSync(process.env.LOG,version+'\\n');if(version==='never')return;await new Promise(done=>setTimeout(done,delay));result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'reconnect',version:'1'}};}
+if(m.method==='tools/list')result={tools:[{name:'echo',description:'Fixture '+version,inputSchema:{type:'object',properties:{version:{type:'string',const:version}}}}]};
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`;
+async function waitForInitialization(log:string,version:string){
+  const deadline=Date.now()+3000;while(!existsSync(log)||!readFileSync(log,'utf8').split('\n').includes(version)){if(Date.now()>deadline)throw new Error('fixture initialization did not start: '+version);await new Promise(done=>setTimeout(done,10));}
+}
+test('the first model request waits for a replaced stdio schema and a second configuration arriving during reconnect',{timeout:15000},async()=>{
+  for(const replaceAgain of [false,true]){
+    const dir=temp(),file=join(dir,'reconnect.mjs'),log=join(dir,'initialize.log');writeFileSync(file,reconnectFixture);
+    const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true}),other=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+    await external.call('mcp.save',{name:'fixture',type:'stdio',command:process.execPath,args:[file,'old'],env:{LOG:log},enabled:true});const harness=await sessionFor(dir,external);
+    try{
+      assert.equal((await external.call('mcp.test',{name:'fixture'}) as {ok:boolean}).ok,true);
+      harness.fixture.setResponses([fauxAssistantMessage('startup gate consumed')]);await harness.session.prompt('warmup');
+      await other.call('mcp.save',{name:'fixture',args:[file,'replacement','200']});
+      const requests:Array<ReturnType<typeof getCurrentTools>>=[];harness.fixture.setResponses([context=>{requests.push(getCurrentTools(context.messages));return fauxAssistantMessage('done');}]);
+      const sending=harness.session.prompt('use the newly configured stdio tool');
+      if(replaceAgain){await waitForInitialization(log,'replacement');await other.call('mcp.save',{name:'fixture',args:[file,'latest','100']});}
+      await sending;assert.equal(requests.length,1);
+      const tool=requests[0].find(tool=>tool.name==='mcp__fixture__echo');assert.ok(tool,'the first provider request must contain the replacement tool');
+      const expected=replaceAgain?'latest':'replacement';assert.equal(tool.description,'Fixture '+expected);assert.equal((tool.parameters as {properties:{version:{const:string}}}).properties.version.const,expected);
+      assert.equal(external.snapshot().servers[0].state,'connected');assert.equal(external.snapshot().servers[0].tools[0].available,true);
+    }finally{await other.dispose();await harness.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
+test('failed or cancelled MCP reconnects report unavailability while ordinary chat remains usable',{timeout:15000},async()=>{
+  for(const cancel of [false,true]){
+    const dir=temp(),file=join(dir,'reconnect.mjs'),log=join(dir,'initialize.log');writeFileSync(file,reconnectFixture);
+    const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true}),other=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+    await external.call('mcp.save',{name:'fixture',type:'stdio',command:process.execPath,args:[file,'old'],env:{LOG:log},enabled:true});const harness=await sessionFor(dir,external);
+    try{
+      assert.equal((await external.call('mcp.test',{name:'fixture'}) as {ok:boolean}).ok,true);
+      harness.fixture.setResponses([fauxAssistantMessage('startup gate consumed')]);await harness.session.prompt('warmup');
+      await other.call('mcp.save',{name:'fixture',args:[file,'never'],timeout:cancel?10:1});
+      let requests=0;harness.fixture.setResponses([context=>{requests++;assert.ok(JSON.stringify(context).includes('MCP 服务暂不可用'));assert.equal(getCurrentTools(context.messages).some(tool=>tool.name==='mcp__fixture__echo'),false);return fauxAssistantMessage('ordinary chat completed');}]);
+      const began=Date.now(),sending=harness.session.prompt('ordinary chat while MCP is unavailable');
+      if(cancel){await waitForInitialization(log,'never');await external.dispose();}
+      await sending;assert.equal(requests,1);assert.ok(Date.now()-began<5000,'failure or cancellation must not leave the prompt waiting');
+      const last=harness.session.messages.at(-1);assert.ok(last?.role==='assistant'&&JSON.stringify(last.content).includes('ordinary chat completed'));
+      if(!cancel){assert.equal(external.snapshot().servers[0].state,'failed');assert.ok(external.snapshot().servers[0].tools.every(tool=>!tool.available));}
+    }finally{await other.dispose();await harness.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
+test('a configuration changed during reconnect cannot extend the prompt deadline or expose a connecting tool',{timeout:12000},async()=>{
+  const dir=temp(),file=join(dir,'reconnect.mjs'),log=join(dir,'initialize.log');writeFileSync(file,reconnectFixture);
+  const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true}),other=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+  await external.call('mcp.save',{name:'fixture',type:'stdio',command:process.execPath,args:[file,'old'],env:{LOG:log},enabled:true});const harness=await sessionFor(dir,external);
+  try{
+    assert.equal((await external.call('mcp.test',{name:'fixture'}) as {ok:boolean}).ok,true);
+    harness.fixture.setResponses([fauxAssistantMessage('startup gate consumed')]);await harness.session.prompt('warmup');
+    await other.call('mcp.save',{name:'fixture',args:[file,'replacement','200'],timeout:1});
+    let requests=0;harness.fixture.setResponses([context=>{requests++;assert.ok(JSON.stringify(context).includes('等待 MCP 连接超时'));assert.equal(getCurrentTools(context.messages).some(tool=>tool.name==='mcp__fixture__echo'),false);return fauxAssistantMessage('ordinary chat completed');}]);
+    const began=Date.now(),sending=harness.session.prompt('ordinary chat during bounded reconnect');
+    await waitForInitialization(log,'replacement');await other.call('mcp.save',{name:'fixture',args:[file,'never'],timeout:60});
+    await sending;assert.equal(requests,1);assert.ok(Date.now()-began>=5800&&Date.now()-began<8500);
+    const state=external.snapshot().servers[0];assert.equal(state.state,'connecting');assert.ok(state.tools.every(tool=>!tool.available));
+  }finally{await other.dispose();await harness.close();rmSync(dir,{recursive:true,force:true});}
+});
 const secretFixture=`import {createInterface} from 'node:readline';
 createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;const secret=process.env.TOKEN;let result={};
 if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'private-fixture',version:'1'},instructions:'private instructions '+secret};
