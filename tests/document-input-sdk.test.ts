@@ -28,6 +28,10 @@ async function start(options:{directory?:string;sessionFile?:string;modelId?:str
   return {directory,dataDir,events,child,initial,request,wait,close};
 }
 type Worker=Awaited<ReturnType<typeof start>>;
+test('native Skill command completion accepts the explicit skill prefix',{timeout:30000},async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'friend-skill-reference-')),skill=join(directory,'.pi/skills/acceptance-summary');mkdirSync(skill,{recursive:true});writeFileSync(join(skill,'SKILL.md'),'---\nname: acceptance-summary\ndescription: Summarize synthetic markers.\n---\nList markers.\n');const worker=await start({directory});
+  try{const result=await worker.request('reference.commands',{query:'skill:acceptance'});assert.ok(result.items.some((item:any)=>item.insert==='/skill:acceptance-summary'));}finally{await worker.close();}
+});
 function eventCount(worker:Worker,type:string){return worker.events.filter(message=>message.event?.type==='pi'&&message.event.data?.type===type).length;}
 function providerEvents(worker:Worker){return worker.events.filter(message=>message.event?.type==='pi'&&/^provider.*request/.test(String(message.event.data?.type))).length;}
 async function sendSettled(worker:Worker,input:Record<string,unknown>){const before=eventCount(worker,'agent_settled'),receipt=await worker.request('send',input);await worker.wait(()=>eventCount(worker,'agent_settled')>before);return {receipt,state:await worker.request('state')};}

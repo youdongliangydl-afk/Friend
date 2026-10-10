@@ -304,9 +304,9 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const record=store.get<SessionRecord>('session:'+String(input.sessionId||currentId||''))?.value;
     const query=typeof input.query==='string'?input.query:'';
     if(input.type==='/'){if(!record)return {items:pluginNames.map(name=>({id:'command:'+name,label:name,kind:'命令',insert:'/'+name})).filter(item=>item.label.includes(query.toLowerCase()))};const worker=await startWorker(record);return request(worker,'reference.commands',{query});}
-    const workspace=record?sessionWorkspace(store,record):undefined;
+    const projectId=record?.projectId??selectedWorkspace,workspace=record?sessionWorkspace(store,record):projectId?store.get<Project>('project:'+projectId)?.value:undefined;
     const files=workspace?fileReferences(workspace.path,query):{items:[],truncated:false};
-    const sessions=record?records().filter(row=>row.id!==record.id&&row.projectId===record.projectId&&row.name.toLowerCase().includes(query.toLowerCase())).slice(0,15).map(row=>({id:row.id,label:row.name,kind:'会话',insert:`@[${row.name.replace(/[\[\]]/g,'')}](friend-session:${row.id})` })):[];
+    const sessions=projectId!==undefined?records().filter(row=>row.id!==record?.id&&row.projectId===projectId&&row.name.toLowerCase().includes(query.toLowerCase())).slice(0,15).map(row=>({id:row.id,label:row.name,kind:'会话',insert:`@[${row.name.replace(/[\[\]]/g,'')}](friend-session:${row.id})` })):[];
     return {items:[...files.items,...sessions],truncated:files.truncated};
   }
   if(method.startsWith('document.')){const workspace=resolveWorkspaceInput(input),path=projectFile(workspace.path,text(input.path));if(method==='document.pdf.page'){const result=await renderPdfPage(path,Number(input.pageIndex)||0);if(input.expectedHash&&result.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return result;}const doc=await documentReader.read(path);if(input.expectedHash&&doc.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return method==='document.read'?documentManifest(doc):paginateDocument(doc,{sectionId:typeof input.sectionId==='string'?input.sectionId:undefined,offset:Number(input.offset)||0,limit:Number(input.limit)||32000,rowOffset:Number(input.rowOffset)||0,maxRows:Number(input.maxRows)||40});}

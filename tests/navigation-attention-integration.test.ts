@@ -66,6 +66,11 @@ function windowFixture(f: any) {
   const window = {isDestroyed: () => false, isVisible: () => true, isFocused: () => false, show() {}, focus() {}, webContents: {send(_channel: string, event: unknown) {events.push(event);}}};
   f.api.setWindow(window); return {events, window};
 }
+test('a selected project provides file references before creating its first session',async()=>{
+  const f=fixture();try{fs.writeFileSync(path.join(f.project,'pending-material.csv'),'name,value\na,1\n');await f.api.handle('project.select',{projectId:'fixture'});
+    const result=await f.api.handle('reference.list',{sessionId:'',type:'@',query:'pending-material'});assert.equal(result.items.length,1);assert.equal(result.items[0].path,fs.realpathSync(path.join(f.project,'pending-material.csv')));assert.equal(f.api.workers.size,0);
+  }finally{f.cleanup();}
+});
 
 test('late session.open readiness cannot replace a later selected ready session', async () => {
   const f = fixture();

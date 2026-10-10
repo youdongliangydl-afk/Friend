@@ -60,6 +60,10 @@ test('XLSX decodes escaped strings once across shared, inline and formula cached
   })));const cells=result.sections[0].rows![0].cells;assert.equal(cells[0].value,'line1\rline2 literal _x000D_');assert.equal(cells[1].value,'😀 _x0041_');assert.equal(cells[2].cachedValue,'A\nB');
   }finally{f.close();}
 });
+test('an empty numeric formula cache is missing while an empty string cache remains valid',async()=>{
+  const f=fixture();try{const result=await readDocument(f.file('empty-cache.xlsx',zip({'xl/workbook.xml':'<workbook xmlns:r="r"><sheets><sheet name="data" r:id="s"/></sheets></workbook>','xl/_rels/workbook.xml.rels':rels([['s','worksheets/sheet1.xml']]),'xl/worksheets/sheet1.xml':'<worksheet><sheetData><row><c r="A1"><f>1+2</f><v/></c><c r="B1" t="str"><f>""</f><v/></c></row></sheetData></worksheet>'})));const cells=result.sections[0].rows![0].cells;assert.equal(result.coverage.uncachedFormulaCells,1);assert.equal(cells[0].cachedValue,undefined);assert.match(cells[0].value,/无缓存/);assert.equal(cells[1].cachedValue,'');assert.match(result.warnings.join(' '),/1 个公式没有保存的结果/);
+  }finally{f.close();}
+});
 test('PPTX follows presentation order, reads tables and slide notes, and never fetches external relations',async()=>{
   const f=fixture();try{const result=await readDocument(f.file('deck.pptx',zip({
     'ppt/presentation.xml':'<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="8" r:id="slideB"/><p:sldId id="3" r:id="slideA"/></p:sldIdLst></p:presentation>',

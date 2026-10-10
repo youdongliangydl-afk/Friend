@@ -67,7 +67,7 @@ async function readXlsx(archive:DocumentArchive){
     for(const cell of descendants(data,'c')){
       const ref=attribute(cell,'r');if(!ref)throw new Error('工作表单元格缺少地址，不能证明读取完整');if(refs.has(ref))throw new Error('工作表包含重复单元格 '+ref);refs.add(ref);
       const f=children(cell,'f')[0],v=children(cell,'v')[0],inline=children(cell,'is')[0];if(!f&&!v&&!inline)continue;
-      if(++cells>DOCUMENT_LIMITS.cells)throw new Error('工作簿有效单元格超过 100 万上限');const position=cellPosition(ref),type=attribute(cell,'t'),raw=v?xmlText(v):undefined;let value=raw??'';
+      if(++cells>DOCUMENT_LIMITS.cells)throw new Error('工作簿有效单元格超过 100 万上限');const position=cellPosition(ref),type=attribute(cell,'t'),saved=v?xmlText(v):undefined,raw=f&&saved===''&&type!=='str'?undefined:saved;let value=raw??'';
       if(type==='s'){if(raw===undefined||!/^\d+$/.test(raw)||Number(raw)>=shared.length)throw new Error('工作表共享字符串索引无效');value=shared[Number(raw)];}
       else if(type==='inlineStr')value=inline?unescape(officeText(inline)):'';else if(type==='str')value=unescape(value);else if(type==='b')value=raw==='1'?'TRUE':raw==='0'?'FALSE':raw??'';
       let formula:string|undefined;if(f){formulaCells++;formula=xmlText(f);const sharedId=attribute(f,'si');if(attribute(f,'t')==='shared'&&sharedId){if(formula)sharedFormulas.set(sharedId,formula);else formula=`共享公式 #${sharedId}（主公式：${sharedFormulas.get(sharedId)??'见本工作表主单元格'}；此地址未重算）`;}
