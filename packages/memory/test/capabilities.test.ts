@@ -148,6 +148,61 @@ test('forgotten Memory dependency stays revoked for an optional consumer after r
  }finally{await f.close();}
 });
 
+test('reenabling a source-backed record restores recall and only publishes its new version',async()=>{
+ const f=fixture();let cold:MemoryController|undefined;try{
+  f.items[0].text='数据库使用 SQLite。';const record=await save(f.c,f.ctx,{title:'数据库',content:f.items[0].text,sources:[{sessionId:'s',entryId:'user1'}]}),host=new RecordStore('consumer',f.dir),policy=new SourcePolicy(host);
+  try{
+   const oldFence=policy.capture({projectId:'p',sources:[],dependencies:[{capability:'memory',id:record.id,version:record.revision,hash:record.hash,relation:'derived-from'}]});
+   const disabled=await f.c.dispatch('toggle',{id:record.id,expectedRevision:record.revision,enabled:false},f.ctx) as MemoryRecord;assert.deepEqual(f.c.search({query:'SQLite'},f.ctx),[]);assert.throws(()=>policy.assert(oldFence),{code:'SOURCE_UNAVAILABLE'});
+   await f.c.dispose();cold=new MemoryController();const enabled=await cold.dispatch('toggle',{id:record.id,expectedRevision:disabled.revision,enabled:true},f.ctx) as MemoryRecord;
+   assert.deepEqual(enabled.sources,record.sources);assert.equal(enabled.status,'active');assert.equal(cold.search({query:'SQLite'},f.ctx)[0]?.id,record.id);assert.equal((cold.select({query:'SQLite'},f.ctx).records as MemoryRecord[])[0]?.id,record.id);
+   assert.doesNotThrow(()=>policy.capture({projectId:'p',sources:enabled.sources,dependencies:[{capability:'memory',id:enabled.id,version:enabled.revision,hash:enabled.hash,relation:'derived-from'}]}));assert.throws(()=>policy.assert(oldFence),{code:'SOURCE_UNAVAILABLE'});
+  }finally{host.close();}
+ }finally{await cold?.dispose();await f.close();}
+});
+
+test('reenabling one record cannot lift a shared source forgotten, corrected or disabled by another record',async()=>{
+ for(const action of ['forget','update','toggle'] as const){const f=fixture();try{
+  f.items[0].text='SQLite 数据库写入需要串行。';const sources=[{sessionId:'s',entryId:'user1'}],target=await save(f.c,f.ctx,{content:'SQLite 数据库写入需要串行。',sources}),other=await save(f.c,f.ctx,{content:'SQLite 写入串行检查',sources});
+  const disabled=await f.c.dispatch('toggle',{id:target.id,expectedRevision:target.revision,enabled:false},f.ctx) as MemoryRecord;
+  await f.c.dispatch(action,{id:other.id,expectedRevision:other.revision,...(action==='update'?{content:'新声明：PostgreSQL 写入串行检查'}:action==='toggle'?{enabled:false}:{})},f.ctx);
+  await f.c.dispatch('toggle',{id:target.id,expectedRevision:disabled.revision,enabled:true},f.ctx);assert.ok(!f.c.search({query:'SQLite'},f.ctx).some(record=>record.id===target.id),action);
+ }finally{await f.close();}}
+});
+
+test('legacy disabled markers can be restored but a host source withdrawal cannot be reversed',async()=>{
+ const f=fixture();try{
+  f.items[0].text='SQLite 数据库需要串行写入。';const record=await save(f.c,f.ctx,{content:f.items[0].text,sources:[{sessionId:'s',entryId:'user1'}]}),disabled=await f.c.dispatch('toggle',{id:record.id,expectedRevision:record.revision,enabled:false},f.ctx) as MemoryRecord;
+  const store=new RecordStore('memory',f.dir);try{
+   store.remove(`disabled-record:${record.id}`);store.db.prepare('INSERT INTO memory_suppression VALUES(?,?,?,?,?)').run('p','content',digest(record.content.toLowerCase()),'disabled',new Date().toISOString());
+   for(const source of record.sources){if(source.factId)store.db.prepare('INSERT INTO memory_suppression VALUES(?,?,?,?,?)').run('p','fact',source.factId,'disabled',new Date().toISOString());store.db.prepare('INSERT INTO memory_suppression VALUES(?,?,?,?,?)').run('p','fragment',digest([source.entryId,source.start,source.end,source.hash]),'disabled',new Date().toISOString());store.put(`retired-source:p:${digest(`${source.sessionId}:${source.entryId}:${source.start??''}:${source.end??''}:${source.hash??''}`)}`,{v:1,source,reason:'disabled'});}
+  }finally{store.close();}
+  const enabled=await f.c.dispatch('toggle',{id:record.id,expectedRevision:disabled.revision,enabled:true},f.ctx) as MemoryRecord;assert.equal(f.c.search({query:'SQLite'},f.ctx)[0]?.id,record.id);
+  const again=await f.c.dispatch('toggle',{id:record.id,expectedRevision:enabled.revision,enabled:false},f.ctx) as MemoryRecord,host=new RecordStore('host',f.dir);try{new SourcePolicy(host).invalidate({sources:record.sources,reason:'用户禁止此来源',key:'host-source-withdrawn'});}finally{host.close();}
+  await assert.rejects(f.c.dispatch('toggle',{id:record.id,expectedRevision:again.revision,enabled:true},f.ctx),{code:'SOURCE_UNAVAILABLE'});assert.deepEqual(f.c.search({query:'SQLite'},f.ctx),[]);assert.equal((await f.c.dispatch('read',{id:record.id},f.ctx) as MemoryRecord).enabled,false);
+ }finally{await f.close();}
+});
+
+test('reenabling a personal record restores only its exact cross-project source grant',async()=>{
+ const f=fixture();try{
+  const record=await save(f.c,f.ctx,{content:'用户偏好中文解释',scope:'personal',kind:'preference',sources:[{sessionId:'s',entryId:'user1'}]}),host=new RecordStore('host',f.dir);try{
+   const policy=new SourcePolicy(host),disabled=await f.c.dispatch('toggle',{id:record.id,expectedRevision:record.revision,enabled:false},f.ctx) as MemoryRecord;assert.equal(policy.canReadPersonalSource(record.sources[0]),false);
+   const enabled=await f.c.dispatch('toggle',{id:record.id,expectedRevision:disabled.revision,enabled:true},f.ctx) as MemoryRecord;assert.equal(policy.canReadPersonalSource(enabled.sources[0]),true);assert.equal(policy.canReadPersonalSource({sessionId:'s',entryId:'user1'}),false);assert.equal(f.c.search({query:'中文'},{...f.ctx,projectId:'other'})[0]?.id,record.id);
+   assert.doesNotThrow(()=>policy.capture({projectId:'other',sources:[],dependencies:[{capability:'memory',id:enabled.id,version:enabled.revision,hash:enabled.hash,relation:'derived-from'}]}));
+  }finally{host.close();}
+ }finally{await f.close();}
+});
+
+test('a unique quote in the first of two ranges from one 26k entry publishes with exact source offsets',async()=>{
+ const f=fixture();try{
+  const fact='SQLite uses WAL for this database.';f.items[0].text=fact+'\n'+'填充'.repeat(13000);let calls=0;
+  f.ctx.complete=async prompt=>{calls++;const material=JSON.parse(prompt.slice(prompt.lastIndexOf('\n')+1));assert.equal(material.length,2);assert.ok(material[0].text.includes(fact));assert.ok(!material[1].text.includes(fact));const id=material[0].id;return JSON.stringify({memories:[{title:'数据库日志',content:fact,kind:'fact',sourceEntryIds:[id],sourceQuotes:{[id]:fact}}]});};
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const records=f.c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(records.length,1);assert.equal(records[0].status,'active');assert.equal(records[0].content,fact);assert.equal(calls,1);
+  assert.deepEqual(records[0].sources.map(({factId,...source})=>source),[{sessionId:'s',entryId:'user1',start:0,end:fact.length,hash:digest(fact)}]);assert.equal(readSourceSpan(f.ctx.readSource(records[0].sources[0]),records[0].sources[0]),fact);
+  const jobs=(f.c.snapshot(f.ctx).learning as any).jobs as LearningJob[];assert.equal(jobs[0].state,'completed');assert.equal(jobs[0].coveredRanges!.reduce((sum,source)=>sum+source.end!-source.start!,0),f.items[0].text.length);
+ }finally{await f.close();}
+});
+
 test('ordinary preferences need independent native entries; personal grants expose only exact supported span (08-10)',async()=>{
  const f=fixture();try{
   f.items[0].text='中文解释便于我理解。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user1'],sourceQuotes:{user1:f.items[0].text}}]});

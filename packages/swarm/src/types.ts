@@ -12,7 +12,7 @@ export interface Task {
   originalPrompt?:string; requirementVersions?:{version:number;prompt:string;reason?:string;automatic?:boolean;at:string}[];
 }
 export interface Attempt {
-  startPromptDigest?:string;frozen?:FrozenExecution;sourceFence?:SourceFence;resourceReservationId?:string;budgetReservationId?:string;targetBaselines?:Record<string,string>;dependencyResults?:{taskId:string;resultRevision:number;commit?:string;artifactDigest?:string}[];
+  childCreationStarted?:boolean;exitReceipt?:StopObject;reservationsReleased?:boolean;startPromptDigest?:string;frozen?:FrozenExecution;sourceFence?:SourceFence;resourceReservationId?:string;budgetReservationId?:string;targetBaselines?:Record<string,string>;inputBaselines?:Record<string,string>;dependencyResults?:{taskId:string;resultRevision:number;commit?:string;artifactDigest?:string}[];
   memberId?: string; generation?: number; retainedFrom?:string;
   id: string; taskId: string; number: number; resultRevision: number; status: 'running'|'completed'|'failed'|'unknown';
   cwd: string; mode: 'read'|'write'; ownerPid: number; ownerRuntime: string; startedAt: string; finishedAt?: string;

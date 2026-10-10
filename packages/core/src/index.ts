@@ -223,8 +223,14 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       const account=(tokens?:number)=>{if(accounted)return;accounted=true;options.onUsage?.({callId,tokens});if(!options.budgetId)pi.events?.emit('friend-pi:v1:event',{pluginEvent:'runtime.model-usage',sessionId,data:{runId:policy?.runId||process.env.FRIEND_PI_RUN_ID,callId,tokens}});};
       try{
         if(usageStore&&options.budgetId){const candidate=new LearningBudget(usageStore);try{candidate.read(options.budgetId);budget=candidate;}catch(error){if(!options.onUsage)throw error;}if(budget){const call=budget.begin({budgetId:options.budgetId,operationId,callId,stage:options.stage,promptHash:digest(prompt)});if(call.result!==undefined)return call.result;}}
-        let result;try{result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens:options.maxTokens||2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});observed=true;const tokens=modelTokenUsage(result.usage);if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,result:visibleText(result.content),tokens,state:result.stopReason==='aborted'?'unknown':result.stopReason==='error'?'failed':'complete'});account(tokens);}catch(error){if(!observed&&budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,state:'unknown'});account();throw error;}
-        if(result.stopReason==='error'||result.stopReason==='aborted')throw new Error(result.errorMessage||'模型调用未完成');return visibleText(result.content);
+        const unknown=()=>new CapabilityError('OPERATION_UNKNOWN','已发出的模型调用未确认完成，禁止重放',{callId,operationId});
+        let result;try{
+          result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens:options.maxTokens||2048,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
+          observed=true;const tokens=modelTokenUsage(result.usage),incomplete=result.stopReason==='aborted'||result.stopReason==='error';
+          if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,...(!incomplete?{result:visibleText(result.content)}:{}),tokens,state:incomplete?'unknown':'complete'});account(tokens);
+          if(incomplete)throw unknown();
+        }catch{if(!observed)try{if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,state:'unknown'});}catch{/* Keep the durable dispatched receipt. */}try{account();}catch{/* Accounting callbacks cannot permit a second dispatch. */}throw unknown();}
+        return visibleText(result.content);
       }finally{usageStore?.close();}
     },
     approvePermission:async request=>{

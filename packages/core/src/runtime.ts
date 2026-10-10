@@ -161,7 +161,8 @@ export class GoalLedger {
   if(goal.tokenBudget!==undefined&&goal.tokens>=goal.tokenBudget&&input.tokenBudget===undefined)throw new Error('预算耗尽，请明确增加预算');
   const budget=input.tokenBudget===undefined?goal.tokenBudget:Number(input.tokenBudget);if(budget!==undefined&&(!Number.isSafeInteger(budget)||budget<=goal.tokens))throw new Error('预算须高于已使用令牌');
   if(goal.sessionId!==ctx.sessionId&&this.store.get<string>(`focus:${goal.sessionId}`)?.value===goal.id)this.store.remove(`focus:${goal.sessionId}`);
-  this.store.put(`focus:${ctx.sessionId}`,goal.id);return this.put({...goal,sessionId:ctx.sessionId,mode:ctx.executionMode||goal.mode,generation,status:'active',tokenBudget:budget,safeCheckpoint:false,error:undefined},ctx);
+  const revalidate=goal.waitFor==='user-acceptance';
+  this.store.put(`focus:${ctx.sessionId}`,goal.id);return this.put({...goal,sessionId:ctx.sessionId,mode:ctx.executionMode||goal.mode,generation,status:'active',tokenBudget:budget,safeCheckpoint:false,error:undefined,waitFor:undefined,acceptance:undefined,...(revalidate?{writeEpoch:(goal.writeEpoch||0)+1,cachedAudit:undefined}: {})},ctx);
  }
  restore(ctx:PluginContext,generation:number,safeObjects:boolean){const goal=this.current(ctx);if(goal?.waitFor==='user-acceptance')return false;if(!goal||!['active','waiting'].includes(goal.status))return false;if(!goal.safeCheckpoint||!safeObjects||goal.mode!==(ctx.executionMode||'single')){this.put({...goal,status:'paused',error:'检查点或执行现场未确认安全，未自动重放'},ctx);return false;}this.put({...goal,generation},ctx);return true;}
  async finish(ctx:PluginContext,tasks:TaskLedger,audit:(goal:GoalRecord)=>Promise<{approved:boolean;findings:string;[key:string]:unknown}>,safeObjects:boolean){

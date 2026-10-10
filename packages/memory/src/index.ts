@@ -54,6 +54,7 @@ export interface MemoryUsageReceipt {
   budget:{unit:'characters';limit:number|null;used:number};
 }
 interface FtsResult { id: string; rank: number }
+interface DisabledMemorySuppression {id:string;projectId:string;contentHash:string;sources:SourceRef[];artifacts:{artifact:ArtifactRef;ranges?:[number,number][]}[]}
 
 const KINDS = new Set<MemoryKind>(['fact','experience','preference']);
 const DEFAULT_SETTINGS: LearningSettings = { enabled: true, paused: false };
@@ -378,15 +379,17 @@ export class MemoryController implements PluginController {
     });
   }
   private suppress(record: MemoryRecord, reason: string, ctx: PluginContext): void {
-    const stmt = this.database(ctx).db.prepare('INSERT OR IGNORE INTO memory_suppression(project_id,kind,hash,reason,created_at) VALUES(?,?,?,?,?)');
     const projectId = record.scope === 'personal' ? '*' : record.projectId;
+    if(reason==='disabled'){this.database(ctx).put(`disabled-record:${record.id}`,{id:record.id,projectId,contentHash:digest(normalize(record.content)),sources:this.refineSources(record.sources,record.content,ctx),artifacts:(record.evidence||[]).flatMap(e=>e.kind==='artifact'?[{artifact:e.artifact,ranges:e.visibleRanges}]:[])} satisfies DisabledMemorySuppression);return;}
+    this.database(ctx).remove(`disabled-record:${record.id}`);
+    const stmt = this.database(ctx).db.prepare("INSERT INTO memory_suppression(project_id,kind,hash,reason,created_at) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,hash) DO UPDATE SET reason=CASE WHEN memory_suppression.reason='disabled' THEN excluded.reason ELSE memory_suppression.reason END");
     stmt.run(projectId,'content',digest(normalize(record.content)),reason,now());
     this.retireSources(this.refineSources(record.sources,record.content,ctx),reason,ctx,record.scope==='personal');
     for(const evidence of record.evidence||[])if(evidence.kind==='artifact')this.database(ctx).put(`retired-artifact:${projectId}:${digest([evidence.artifact.sha256,evidence.visibleRanges||evidence.artifact.ranges])}`,{artifact:evidence.artifact,ranges:evidence.visibleRanges,reason,at:now()});
   }
   private retireSources(sources:SourceRef[],reason:string,ctx:PluginContext,personal=false,replacement?:SourceRef):void {
     const store=this.database(ctx),projectId=personal?'*':ctx.projectId;
-    const stmt=store.db.prepare('INSERT OR IGNORE INTO memory_suppression(project_id,kind,hash,reason,created_at) VALUES(?,?,?,?,?)');
+    const stmt=store.db.prepare("INSERT INTO memory_suppression(project_id,kind,hash,reason,created_at) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,hash) DO UPDATE SET reason=CASE WHEN memory_suppression.reason='disabled' THEN excluded.reason ELSE memory_suppression.reason END");
     for (const source of sources) {
       if(source.factId)stmt.run(projectId,'fact',source.factId,reason,now());
       if(source.hash)stmt.run(projectId,'fragment',digest([source.entryId,source.start,source.end,source.hash]),reason,now());
@@ -395,21 +398,42 @@ export class MemoryController implements PluginController {
       else if(source.hash)store.put(`retired-source:${projectId}:${digest(preciseKey(source))}`,{v:1,source:{...source,label:undefined},reason,replacement:replacement?{...replacement,label:undefined}:undefined,at:now()});
     }
   }
+  private disabledSuppressions(ctx:PluginContext):DisabledMemorySuppression[]{return this.database(ctx).list<DisabledMemorySuppression>('disabled-record:').map(row=>row.value).filter(value=>value.projectId==='*'||value.projectId===ctx.projectId);}
+  private retiredSourceMatches(source:SourceRef,old:SourceRef,ctx:PluginContext):boolean {
+    if(old.factId&&old.factId===source.factId)return true;
+    if(old.start===undefined)return sourceKey(old)===sourceKey(source);
+    if(old.entryId!==source.entryId||old.end===undefined||!old.hash)return false;
+    if(source.start!==undefined&&source.end!==undefined&&(source.end<=old.start||old.end<=source.start))return false;
+    // Check the retired bytes before accepting overlap, including across a fork.
+    try{return digest(ctx.readSource(source).text.slice(old.start,old.end))===old.hash;}catch{return false;}
+  }
+  private restoreDisabled(record:MemoryRecord,ctx:PluginContext):void {
+    const store=this.database(ctx),projectId=record.scope==='personal'?'*':record.projectId;store.remove(`disabled-record:${record.id}`);
+    // Older candidates wrote disabled markers without an owner. Remove only
+    // this record's matching, still-disabled markers; retain other owners and
+    // every irreversible reason. New markers always have record ownership.
+    const others=this.records(ctx,true).filter(other=>other.id!==record.id&&!other.enabled&&(other.scope==='personal'?'*':other.projectId)===projectId),remaining=this.disabledSuppressions(ctx).filter(other=>other.projectId===projectId);
+    const contentHash=digest(normalize(record.content));if(!others.some(other=>digest(normalize(other.content))===contentHash)&&!remaining.some(other=>other.contentHash===contentHash))store.db.prepare("DELETE FROM memory_suppression WHERE project_id=? AND kind='content' AND hash=? AND reason='disabled'").run(projectId,contentHash);
+    const otherSources=[...others.flatMap(other=>this.refineSources(other.sources,other.content,ctx)),...remaining.flatMap(other=>other.sources)];
+    for(const source of this.refineSources(record.sources,record.content,ctx)){
+      if(otherSources.some(other=>this.retiredSourceMatches(source,other,ctx)))continue;
+      const remove=(kind:string,hash:string)=>store.db.prepare("DELETE FROM memory_suppression WHERE project_id=? AND kind=? AND hash=? AND reason='disabled'").run(projectId,kind,hash);
+      if(source.factId)remove('fact',source.factId);if(source.hash)remove('fragment',digest([source.entryId,source.start,source.end,source.hash]));remove('source',digest(sourceKey(source)));
+      for(const row of store.list<{source:SourceRef;reason:string}>(`retired-source:${projectId}:`))if(row.value.reason==='disabled'&&preciseKey(row.value.source)===preciseKey(source))store.remove(row.key);
+    }
+    const otherArtifacts=[...others.flatMap(other=>(other.evidence||[]).flatMap(e=>e.kind==='artifact'?[{artifact:e.artifact,ranges:e.visibleRanges}]:[])),...remaining.flatMap(other=>other.artifacts)];
+    for(const evidence of record.evidence||[])if(evidence.kind==='artifact'){const hash=digest([evidence.artifact.sha256,evidence.visibleRanges||evidence.artifact.ranges]);if(otherArtifacts.some(other=>digest([other.artifact.sha256,other.ranges||other.artifact.ranges])===hash))continue;const key=`retired-artifact:${projectId}:${hash}`;if(store.get<{reason:string}>(key)?.value.reason==='disabled')store.remove(key);}
+  }
   private sourceSuppressed(source:SourceRef,ctx:PluginContext):boolean {
     const store=this.database(ctx),stmt=store.db.prepare("SELECT 1 FROM memory_suppression WHERE (project_id=? OR project_id='*') AND kind=? AND hash=? LIMIT 1");
+    if(this.disabledSuppressions(ctx).some(value=>value.sources.some(old=>this.retiredSourceMatches(source,old,ctx))))return true;
     if(stmt.get(ctx.projectId,'source',digest(sourceKey(source)))||source.factId&&stmt.get(ctx.projectId,'fact',source.factId)||source.hash&&stmt.get(ctx.projectId,'fragment',digest([source.entryId,source.start,source.end,source.hash])))return true;
     const retired=[...store.list<{source:SourceRef}>(`retired-source:${ctx.projectId}:`),...store.list<{source:SourceRef}>('retired-source:*:')].map(row=>row.value.source);
-    return retired.some(old=>{
-      if(old.entryId!==source.entryId||old.start===undefined||old.end===undefined||!old.hash)return false;
-      if(source.start!==undefined&&source.end!==undefined&&(source.end<=old.start||old.end<=source.start))return false;
-      // The original fragment hash validates cross-fork identity before overlap
-      // retires a partial quote. An unrelated entry-ID collision is insufficient.
-      try{return digest(ctx.readSource(source).text.slice(old.start,old.end))===old.hash;}catch{return false;}
-    });
+    return retired.some(old=>this.retiredSourceMatches(source,old,ctx));
   }
   private suppressed(content: string, sources: SourceRef[], ctx: PluginContext): boolean {
     const stmt = this.database(ctx).db.prepare("SELECT 1 FROM memory_suppression WHERE (project_id=? OR project_id='*') AND kind=? AND hash=? LIMIT 1");
-    if (stmt.get(ctx.projectId,'content',digest(normalize(content)))) return true;
+    if (stmt.get(ctx.projectId,'content',digest(normalize(content)))||this.disabledSuppressions(ctx).some(value=>value.contentHash===digest(normalize(content)))) return true;
     return sources.some(source => this.sourceSuppressed(source,ctx));
   }
   private refineSources(sources:SourceRef[],content:string,ctx:PluginContext):SourceRef[] {
@@ -577,7 +601,7 @@ export class MemoryController implements PluginController {
     return {records,queryId:found.queryId,epoch:this.epoch(ctx),ruleVersion:RULE_VERSION,budget:{unit:'utf16',limit:budget,used},omitted};
   }
   private artifactSuppressed(evidence:Extract<MemoryEvidence,{kind:'artifact'}>,ctx:PluginContext):boolean {
-    const rows=[...this.database(ctx).list<{artifact:ArtifactRef;ranges?:[number,number][]}>(`retired-artifact:${ctx.projectId}:`),...this.database(ctx).list<{artifact:ArtifactRef;ranges?:[number,number][]}>('retired-artifact:*:')];
+    const rows=[...this.database(ctx).list<{artifact:ArtifactRef;ranges?:[number,number][]}>(`retired-artifact:${ctx.projectId}:`),...this.database(ctx).list<{artifact:ArtifactRef;ranges?:[number,number][]}>('retired-artifact:*:'),...this.disabledSuppressions(ctx).flatMap(value=>value.artifacts.map(artifact=>({value:artifact})))];
     return rows.some(({value})=>value.artifact.sha256===evidence.artifact.sha256&&(value.ranges?.length&&evidence.visibleRanges?.length?value.ranges.some(([a,b])=>evidence.visibleRanges!.some(([start,end])=>a<end&&start<b)):digest(value.artifact.ranges)===digest(evidence.artifact.ranges)));
   }
   private artifactEvidenceAvailable(evidence:Extract<MemoryEvidence,{kind:'artifact'}>,ctx:PluginContext):boolean {
@@ -713,9 +737,9 @@ export class MemoryController implements PluginController {
   private async learnStage(job:LearningJob,ctx:PluginContext,signal:AbortSignal,ensure:()=>void):Promise<void>{
     if(job.stage==='extract'||job.stage==='validate'){
       const artifactAvailable=await this.artifactMaterial(job,ctx);ensure();
-      const items=job.sources.map(source=>({source,item:ctx.readSource(source)})).filter(({item})=>!this.selfMemoryInput(item));const available=new Map(items.map(({source,item})=>[item.id,{source,item}]));
+      const items=job.sources.map(source=>({source,item:ctx.readSource(source)})).filter(({item})=>!this.selfMemoryInput(item));const available=new Map<string,typeof items>();for(const value of items)available.set(value.item.id,[...available.get(value.item.id)||[],value]);
+      const material=items.map(({source,item})=>{let span=readSourceSpan(item,source),typed=typedUserText(item)?.slice(source.start||0,source.end);if(this.sourceSuppressed(source,ctx)){const fragments=sourceFactRefs({...item,userText:undefined},source.sessionId).filter(ref=>!this.sourceSuppressed(ref,ctx)&&(ref.start??0)>=(source.start??0)&&(ref.end??item.text.length)<=(source.end??item.text.length));span=fragments.map(ref=>readSourceSpan(item,ref)).join('\n');const originalTyped=typedUserText(item);typed=originalTyped===undefined?undefined:fragments.filter(ref=>(ref.end??0)<=originalTyped.length).map(ref=>readSourceSpan(item,ref)).join('\n');}return {id:item.id,start:source.start||0,end:source.end??item.text.length,role:item.role,userText:typed,text:span};}).filter(item=>item.text);
       if(job.stage==='extract'){
-        const material=items.map(({source,item})=>{let span=readSourceSpan(item,source),typed=typedUserText(item)?.slice(source.start||0,source.end);if(this.sourceSuppressed(source,ctx)){const fragments=sourceFactRefs({...item,userText:undefined},source.sessionId).filter(ref=>!this.sourceSuppressed(ref,ctx)&&(ref.start??0)>=(source.start??0)&&(ref.end??item.text.length)<=(source.end??item.text.length));span=fragments.map(ref=>readSourceSpan(item,ref)).join('\n');const originalTyped=typedUserText(item);typed=originalTyped===undefined?undefined:fragments.filter(ref=>(ref.end??0)<=originalTyped.length).map(ref=>readSourceSpan(item,ref)).join('\n');}return {id:item.id,start:source.start||0,end:source.end??item.text.length,role:item.role,userText:typed,text:span};}).filter(item=>item.text);
         const artifactInput=[...artifactAvailable].map(([id,item])=>({id,role:'artifact',artifact:item.artifact,observationReceiptId:item.receipt.receiptId,observer:item.receipt.observer,visibleRanges:item.ranges,text:item.text}));
         if(!ctx.learning&&!ctx.isIdle()&&process.env.FRIEND_PI_LEARNING_ROLE!=='producer')throw new CapabilityError('CAPABILITY_UNAVAILABLE','后台等待前台任务结束');
         const callId=randomUUID(),operationId=`${job.operationId}:extract:${job.attempts}:${digest([...material,...artifactInput]).slice(0,24)}`;job.callIds=[...job.callIds||[],callId];job.modelOperations=[...job.modelOperations||[],{operationId,stage:job.stage,callId}];this.writeJob(job);
@@ -735,15 +759,19 @@ export class MemoryController implements PluginController {
         for(const value of proposals.slice(0,12)){
           const proposed=object(value);if(!['fact','experience','preference'].includes(String(proposed.kind)))throw new Error('Reflection 仅允许事实、经验与偏好');
           if(!Array.isArray(proposed.sourceEntryIds)||!proposed.sourceEntryIds.length)throw new Error('Reflection 缺少来源');
-          if(proposed.sourceEntryIds.some(id=>typeof id!=='string'))throw new CapabilityError('VALIDATION_ERROR','sourceEntryIds 必须是字符串数组');const artifactEvidence:MemoryEvidence[]=[];
+          if(proposed.sourceEntryIds.some(id=>typeof id!=='string'))throw new CapabilityError('VALIDATION_ERROR','sourceEntryIds 必须是字符串数组');const artifactEvidence:MemoryEvidence[]=[];let retiredProposal=false;
           const sources=proposed.sourceEntryIds.flatMap(id=>{
             const artifact=artifactAvailable.get(String(id));if(artifact){const quote=proposed.sourceQuotes&&typeof proposed.sourceQuotes==='object'?(proposed.sourceQuotes as Record<string,unknown>)[String(id)]:undefined;if(typeof quote!=='string'||!quote||!artifact.text.includes(quote)||artifact.text.indexOf(quote)!==artifact.text.lastIndexOf(quote))throw new CapabilityError('SOURCE_UNAVAILABLE','产物引文无法在实际观察范围唯一定位');artifactEvidence.push({kind:'artifact',evidenceId:digest([artifact.artifact,artifact.receipt.receiptId,quote]),relation:'supports',observedAt:artifact.receipt.at,visibleRanges:[[artifact.ranges[0][0]+artifact.text.indexOf(quote),artifact.ranges[0][0]+artifact.text.indexOf(quote)+quote.length]],sentSliceHash:digest(quote),artifact:artifact.artifact,observationReceiptId:artifact.receipt.receiptId,observer:artifact.receipt.observer!,visibility:'artifact-range'});return [];}
-            const found=available.get(String(id));if(!found)throw new Error('Reflection 引用未知来源');
+            const ranges=available.get(String(id));if(!ranges?.length)throw new Error('Reflection 引用未知来源');const item=ranges[0].item;
             const quote=proposed.sourceQuotes&&typeof proposed.sourceQuotes==='object'?(proposed.sourceQuotes as Record<string,unknown>)[String(id)]:undefined;
-            if(typeof quote!=='string'){if(found.source.start!==0||found.source.end!==found.item.text.length)throw new CapabilityError('SOURCE_UNAVAILABLE','部分来源提案必须给出精确逐字引文');return found.source;}
-            const start=found.item.text.indexOf(quote);if(start<0||!quote||found.item.text.indexOf(quote,start+1)>=0||start<(found.source.start??0)||start+quote.length>(found.source.end??found.item.text.length))throw new Error('原文片段无法唯一定位');
-            return {sessionId:found.source.sessionId,entryId:found.item.id,start,end:start+quote.length,hash:digest(quote),factId:digest([found.item.id,start,start+quote.length,digest(quote)]).slice(0,32)};
+            if(typeof quote!=='string'){const whole=ranges.find(found=>found.source.start===0&&found.source.end===item.text.length);if(!whole)throw new CapabilityError('SOURCE_UNAVAILABLE','部分来源提案必须给出精确逐字引文');return whole.source;}
+            const start=item.text.indexOf(quote),found=ranges.find(({source})=>start>=(source.start??0)&&start+quote.length<=(source.end??item.text.length));
+            if(start<0||!quote||item.text.indexOf(quote,start+1)>=0||!found)throw new Error('原文片段无法唯一定位');
+            const source={sessionId:found.source.sessionId,entryId:item.id,start,end:start+quote.length,hash:digest(quote),factId:digest([item.id,start,start+quote.length,digest(quote)]).slice(0,32)};
+            if(!material.some(sent=>sent.id===item.id&&sent.start===(found.source.start??0)&&sent.end===(found.source.end??item.text.length)&&sent.text.includes(quote))){if(this.sourceSuppressed(source,ctx)){retiredProposal=true;return [];}throw new CapabilityError('SOURCE_UNAVAILABLE','引文不在实际发送片段中');}
+            return source;
           });
+          if(retiredProposal){discarded++;continue;}
           const proposalContent=text(proposed.content??proposed.text,'记忆内容',50000);const clipped=this.normalizedProposalSources(proposalContent,proposed.kind as MemoryKind,sources,canonical,ctx);
           if(!clipped){normalized++;discarded++;continue;}if(clipped!==sources)normalized++;
           const record=this.save({...proposed,scope:proposed.kind==='preference'?'personal':'project',sources:clipped,...(artifactEvidence.length?{evidence:[...clipped.map(source=>({kind:'pi',source})),...artifactEvidence]}:{})},ctx,true);
@@ -1006,6 +1034,7 @@ export class MemoryController implements PluginController {
           const previous = this.get(input.id,ctx);this.readonlyLegacy(previous); this.expected(input,previous);
           if (typeof input.enabled !== 'boolean') throw new Error('enabled 必须为布尔值');
           if (previous.status === 'invalidated' && input.enabled) throw new Error('派生来源无效，不能重新启用');
+          if(input.enabled)this.restoreDisabled(previous,ctx);
           const status: MemoryStatus = previous.status === 'active' && !input.enabled ? 'inactive' : previous.status === 'inactive' && input.enabled ? 'active' : previous.status;
           const changed = this.write({...previous,revision:previous.revision+1,status,enabled:input.enabled,updatedAt:now()},ctx,previous.revision);
           const ids:string[]=[];

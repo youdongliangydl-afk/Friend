@@ -24,7 +24,7 @@ function makeRunning(controller:SwarmController,graph:Graph,ctx:PluginContext) {
 async function waitFor(check:()=>boolean,timeout=10000) {const start=Date.now();while (!check()) {if (Date.now()-start>timeout) throw new Error('Timed out waiting for Swarm state');await new Promise(resolve=>setTimeout(resolve,10));}}
 function controlled() {
   const starts=new Map<string,MemberStart>();const outputs=new Map<string,(output:MemberOutput)=>void>();const sent:MemberInput[]=[];
-  const launcher:MemberLauncher=(start,output,_exit)=>{starts.set(start.attemptId,start);outputs.set(start.attemptId,output);setTimeout(()=>output({v:1,type:'ready',sessionId:`member-${start.attemptId}`,sessionFile:join(start.sessionDir,'history.jsonl')}),0);return {send:message=>{sent.push(message);},stop:()=>{}};};
+  const launcher:MemberLauncher=(start,output,_exit)=>{starts.set(start.attemptId,start);outputs.set(start.attemptId,output);setTimeout(()=>output({v:1,type:'ready',sessionId:`member-${start.attemptId}`,sessionFile:join(start.sessionDir,'history.jsonl')}),0);return {send:message=>{sent.push(message);},stop:async()=>({id:start.attemptId,kind:'member',status:'terminated'} as const)};};
   return {launcher,starts,outputs,sent};
 }
 
@@ -173,7 +173,7 @@ test('failed independent submission retains Git results and explicit reprepare n
 });
 test('launcher failure retains isolation and never falls back into project root',async()=>{
   const f=fixture(true);const paths:string[]=[];const controller=new SwarmController(start=>{paths.push(start.cwd);throw new Error('worker unavailable');});
-  try {const graph=await controller.dispatch('create',{goal:'isolated failure',tasks:[spec('a','write')]},f.context) as Graph;await controller.dispatch('start',{graphId:graph.id},f.context);await waitFor(()=>snapshot(controller,f.context).graphs[0].status==='paused');const attempt=snapshot(controller,f.context).graphs[0].attempts[0];assert.equal(attempt.status,'failed');assert.notEqual(paths[0],f.project);assert.ok(existsSync(paths[0]));assert.equal(readFileSync(join(f.project,'original.txt'),'utf8'),'original\n');}
+  try {const graph=await controller.dispatch('create',{goal:'isolated failure',tasks:[spec('a','write')]},f.context) as Graph;await controller.dispatch('start',{graphId:graph.id},f.context);await waitFor(()=>snapshot(controller,f.context).graphs[0].status==='paused');const attempt=snapshot(controller,f.context).graphs[0].attempts[0];assert.equal(attempt.status,'unknown','an adapter throw after creation begins has no verified no-child receipt');assert.notEqual(paths[0],f.project);assert.ok(existsSync(paths[0]));assert.equal(readFileSync(join(f.project,'original.txt'),'utf8'),'original\n');}
   finally {await controller.dispose();f.cleanup();}
 });
 test('failed objective check blocks independent review and source integration',async()=>{
