@@ -168,8 +168,17 @@ export function searchTokens(value: string): string[] {
 function factSourceSupported(content:string,quotes:string):boolean {
   // Word boundaries avoid inventing an unsupported bigram when a summary omits
   // a source modifier, e.g. 数据库必须使用 → 数据库使用.
+  const statements=normalize(quotes).split(/[。！？!?；;\n]/u).map(value=>value.trim().replace(/^(?:项目事实|独立观察|观察[甲乙丙丁])\s*:\s*/u,''));
+  // Rewrite a positive presentation frame only when its entire statement has a
+  // literal affirmative counterpart. A word appearing in a negative/conditional
+  // source, or an unrelated statement, does not support the rewrite.
+  let unsupportedFrame=false;
+  const presentation=normalize(content)
+    .replace(/(^|[。！？!?；;\n])\s*在“([^”\n]+)”范围内[，,]\s*([^。！？!?；;\n]+)/gu,(whole,boundary,scope,claim)=>{const statement=scope+'的'+claim.trim();if(statements.includes(statement))return boundary+statement;unsupportedFrame=true;return whole;})
+    .replace(/(^|[。！？!?；;\n])\s*该事实的主题标识为\s*([^。！？!?；;\n]+)/gu,(whole,boundary,value)=>{if(statements.some(statement=>/^主题标识\s*:\s*/u.test(statement)&&statement.replace(/^主题标识\s*:\s*/u,'')===value.trim()))return boundary+'主题标识:'+value.trim();unsupportedFrame=true;return whole;});
+  if(unsupportedFrame)return false;
   const segmenter=new Intl.Segmenter('zh',{granularity:'word'}),tokens=(value:string)=>[...segmenter.segment(normalize(value))].filter(part=>part.isWordLike).map(part=>part.segment);
-  const claims=tokens(content),observed=new Set(tokens(quotes));
+  const claims=tokens(presentation),observed=new Set(tokens(quotes));
   return claims.length>0&&claims.every(token=>observed.has(token));
 }
 
@@ -525,7 +534,10 @@ export class MemoryController implements PluginController {
     if (kind === 'preference' && scope !== 'personal') throw new Error('个人偏好请使用 personal 范围并明确记住');
     const evidenceInput=input.evidence;if(evidenceInput!==undefined&&(!Array.isArray(evidenceInput)||evidenceInput.length>200))throw new CapabilityError('VALIDATION_ERROR','evidence 必须是有界数组');
     const piEvidence=Array.isArray(evidenceInput)?evidenceInput.filter(e=>object(e).kind==='pi').map(e=>object(e).source):[];
-    const sources = this.refineSources(this.sources(input.sources??(piEvidence.length?piEvidence:undefined),ctx,automatic&&!evidenceInput),content,ctx);
+    const checkedSources=this.sources(input.sources??(piEvidence.length?piEvidence:undefined),ctx,automatic&&!evidenceInput);
+    // validate generated factId only after locating this exact model quote. Even
+    // a whole-entry quote must not lose supporting clauses during automatic save.
+    const sources=checkedSources.flatMap(source=>automatic&&source.factId?[source]:this.refineSources([source],content,ctx));
     const evidence:MemoryEvidence[]=sources.map(source=>{const item=ctx.readSource(source),provided=Array.isArray(evidenceInput)?evidenceInput.find(value=>object(value).kind==='pi'&&sameEntryOverlap(object(object(value).source) as unknown as SourceRef,source)):undefined,relation=provided?object(provided).relation||'supports':'supports';if(!['supports','contradicts','corrects'].includes(String(relation)))throw new CapabilityError('VALIDATION_ERROR','证据关系无效');return {kind:'pi',evidenceId:digest([preciseKey(source),relation]),relation:relation as 'supports'|'contradicts'|'corrects',observedAt:item.timestamp||now(),source,sourceRole:(['user','assistant','toolResult'].includes(item.role||'')?item.role:'assistant') as 'user'|'assistant'|'toolResult',visibility:item.role==='toolResult'?'tool-visible-range':'native-text'};});
     if(Array.isArray(evidenceInput))for(const raw of evidenceInput){const value=object(raw);if(value.kind==='pi')continue;if(value.kind!=='artifact')throw new CapabilityError('VALIDATION_ERROR','未知证据类型');if(value.relation!==undefined&&!['supports','contradicts','corrects'].includes(String(value.relation)))throw new CapabilityError('VALIDATION_ERROR','证据关系无效');
       const artifact=object(value.artifact) as unknown as ArtifactRef;const observer=object(value.observer);const receiptId=text(value.observationReceiptId,'观察收据');

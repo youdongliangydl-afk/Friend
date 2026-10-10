@@ -312,6 +312,43 @@ test('a direct instruction quote with an ASCII anchor cannot authorize an unquot
  }finally{await f.close();}
 });
 
+test('an exact whole-entry model quote retains both business fact and subject and isolates the actual orders conflict',async()=>{
+ const f=fixture();try{
+  const firstSource='项目事实：本验收项目的订单数据库实际使用 SQLite。主题标识：orders.database.engine。只回复已收到，不调用工具。',firstQuote=firstSource.slice(0,56),firstContent='本验收项目的订单数据库实际使用 SQLite。';f.items[0].id='orders-first';f.items[0].text=firstSource;
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'订单数据库使用 SQLite',content:firstContent,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['orders-first'],sourceQuotes:{'orders-first':firstQuote}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const first=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(first.status,'active');
+  const secondSource='独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。只回复已收到，不调用工具。',secondContent='在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。该事实的主题标识为 orders.database.engine。';assert.equal(secondSource.length,73);f.items.push({id:'orders-second',parentId:'orders-first',type:'message',role:'user',timestamp:new Date().toISOString(),text:secondSource});
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'订单数据库实际使用 PostgreSQL',content:secondContent,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['orders-second'],sourceQuotes:{'orders-second':secondSource}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx),old=(snapshot.memories as MemoryRecord[]).find(record=>record.id===first.id)!,next=(snapshot.candidates as MemoryRecord[]).find(record=>record.title==='订单数据库实际使用 PostgreSQL')!;
+  assert.equal(next.status,'candidate');assert.deepEqual(old.conflictIds,[next.id]);assert.deepEqual(next.conflictIds,[old.id]);assert.equal(old.content,firstContent);assert.equal(next.content,secondContent);assert.equal(next.sources.length,1);assert.deepEqual([next.sources[0].start,next.sources[0].end],[0,73]);assert.equal(next.sources[0].hash,digest(secondSource));assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),secondSource);
+  assert.deepEqual(f.c.search({query:'数据库',match:'any'},f.ctx),[]);const selected=await f.c.dispatch('select',{query:'数据库'},f.ctx) as any;assert.deepEqual(selected.records,[]);assert.deepEqual(selected.directory,[]);
+ }finally{await f.close();}
+});
+
+test('Chinese presentation normalization still rejects missing subject quotes, invented scope and future replacement',async()=>{
+ const source='独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。',fact=source.slice(0,32),content='在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。该事实的主题标识为 orders.database.engine。';
+ for(const proposal of [{content,quote:fact},{content:content.replace('本验收项目','生产项目'),quote:source},{content:content+'同一主题下后续若出现新观察，可能使该事实被取代。',quote:source},{content:'不在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。',quote:source}]){const f=fixture();try{
+  f.items[0].text=source;f.ctx.complete=async()=>JSON.stringify({memories:[{title:'未经来源支持的订单事实',content:proposal.content,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['user1'],sourceQuotes:{user1:proposal.quote}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx);assert.deepEqual(snapshot.memories,[]);assert.equal((snapshot.candidates as MemoryRecord[])[0].status,'candidate');assert.deepEqual(f.c.search({query:'数据库',match:'any'},f.ctx),[]);
+ }finally{await f.close();}}
+});
+
+test('negative, unknown or conditional source statements cannot authorize affirmative Chinese presentation frames',async()=>{
+ const content='在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。该事实的主题标识为 orders.database.engine。';
+ const sources=[
+  '独立观察：不在本验收项目范围内，订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。',
+  '独立观察：本验收项目的订单数据库可能实际使用 PostgreSQL。主题标识：orders.database.engine。',
+  '独立观察：本验收项目的订单数据库是否实际使用 PostgreSQL 尚未确认。主题标识：orders.database.engine。',
+  '独立观察：如果启用迁移，本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。',
+  '独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识不是 orders.database.engine。',
+  '独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识可能是 orders.database.engine。',
+  '独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine，尚未确认。',
+  '独立观察：本验收项目的订单数据库实际使用 PostgreSQL。若启用迁移，主题标识：orders.database.engine。',
+  '独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识不是 orders.database.engine。该事实的说明为标签示例。',
+  '独立观察：不在本验收项目范围内，订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。在其他范围内，该事实的说明为标签示例。',
+ ];
+ for(const source of sources){const f=fixture();try{
+  f.items[0].text=source;f.ctx.complete=async()=>JSON.stringify({memories:[{title:'肯定摘要不能覆盖来源条件',content,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['user1'],sourceQuotes:{user1:source}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx);assert.deepEqual(snapshot.memories,[],source);assert.equal((snapshot.candidates as MemoryRecord[])[0].status,'candidate',source);assert.deepEqual(f.c.search({query:'数据库',match:'any'},f.ctx),[],source);
+ }finally{await f.close();}}
+});
+
 test('ordinary preferences need independent native entries; personal grants expose only exact supported span (08-10)',async()=>{
  const f=fixture();try{
   f.items[0].text='中文解释便于我理解。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user1'],sourceQuotes:{user1:f.items[0].text}}]});
