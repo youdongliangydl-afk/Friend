@@ -9,6 +9,7 @@ import {readRunChange,RunChangesTracker,type RunChangesSummary} from '../apps/de
 import {RecordStore} from '../packages/core/src/index.js';
 import {ChangeDiffCache} from '../apps/desktop/src/renderer/change-review.js';
 import {frozenRunDiff} from '../apps/desktop/src/renderer/WorkspaceDiff.js';
+import {parsePatchBounded,DIFF_LINE_BUDGET} from '../apps/desktop/src/diff-budget.js';
 function fixture(){const root=mkdtempSync(join(tmpdir(),'friend-diff-')),data=mkdtempSync(join(tmpdir(),'friend-diff-data-')),git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();git('init','-q','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');git('config','commit.gpgsign','false');writeFileSync(join(root,'file.txt'),'initial\n');git('add','.');git('commit','-qm','initial');return {root,data,git,close:()=>{rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}};}
 function changed(path:string,before:string,after:string):ChangedFile{return {path,status:'M',staged:false,binary:false,...textFileDiff(path,before,after)};}
 test('committed root uses an explicit empty-tree boundary; later commits compare first parent and exclude dirty files',async()=>{
@@ -64,4 +65,21 @@ test('old v1 snapshots bound expanded per-file and aggregate JSON, retain metada
 });
 test('partial-clone missing blobs never trigger automatic remote fetch and remain explicit file errors',async()=>{
  const f=fixture(),directory=mkdtempSync(join(tmpdir(),'friend-diff-partial-')),partial=join(directory,'partial'),trace=join(directory,'trace.jsonl'),oldTrace=process.env.GIT_TRACE2_EVENT;try{f.git('config','uploadpack.allowFilter','true');execFileSync('git',['clone','--quiet','--no-checkout','--filter=blob:none','file://'+f.root,partial]);const missing=()=>execFileSync('git',['rev-list','--objects','--all','--missing=print'],{cwd:partial,encoding:'utf8',env:{...process.env,GIT_NO_LAZY_FETCH:'1'}}).split('\n').filter(line=>line.startsWith('?'));const before=missing();assert.ok(before.length>0);process.env.GIT_TRACE2_EVENT=trace;const diff=await workspaceDiff(partial,'partial',f.data,'committed');if(oldTrace===undefined)delete process.env.GIT_TRACE2_EVENT;else process.env.GIT_TRACE2_EVENT=oldTrace;assert.deepEqual(missing(),before);assert.equal(diff.files.length,1);assert.match(diff.files[0].error||'',/本地不可读取/);const events=readFileSync(trace,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line) as {event:string;argv?:string[]});assert.ok(!events.some(event=>event.event==='child_start'&&event.argv?.includes('fetch')));}finally{if(oldTrace===undefined)delete process.env.GIT_TRACE2_EVENT;else process.env.GIT_TRACE2_EVENT=oldTrace;f.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('dense patches are scanned for actual statistics before any DiffLine objects are parsed',()=>{
+ const patch='--- dense.txt\n+++ dense.txt\n@@ -1,500000 +1,500000 @@\n'+'-a\n'.repeat(500000)+'+b\n'.repeat(500000),bounded=parsePatchBounded(patch);
+ assert.ok(Buffer.byteLength(patch)<DIFF_PATCH_BUDGET);assert.ok(bounded.lineCount>DIFF_LINE_BUDGET);assert.equal(bounded.lineCount,1000004);assert.equal(bounded.parsedLineCount,0,'the parser never builds and then discards a million line objects');assert.deepEqual(bounded.lines,[]);assert.equal(bounded.truncated,true);assert.deepEqual([bounded.additions,bounded.deletions],[500000,500000]);
+ const byteLimited=parsePatchBounded('@@ -1 +1 @@\n-'+'a'.repeat(DIFF_PATCH_BUDGET)+'\n+b');assert.equal(byteLimited.parsedLineCount,0);assert.deepEqual([byteLimited.additions,byteLimited.deletions],[1,1]);
+ const small=parsePatchBounded('+++ header\n--- header\n@@ -1 +1 @@\n---old\n+++new');assert.equal(small.truncated,false);assert.equal(small.parsedLineCount,5);assert.deepEqual([small.additions,small.deletions],[1,1]);assert.equal(small.lines.at(-1)?.newLine,1);
+});
+
+test('legal dense v1 frozen snapshots return metadata before body parsing without substituting current files',()=>{
+ const f=fixture();try{
+  const before='a\n'.repeat(500000),after='b\n'.repeat(500000),patch='--- dense.txt\n+++ dense.txt\n@@ -1,500000 +1,500000 @@\n'+'-a\n'.repeat(500000)+'+b\n'.repeat(500000);
+  assert.ok(Buffer.byteLength(before)<1024*1024);assert.ok(Buffer.byteLength(after)<1024*1024);
+  const snapshot={v:1,sessionId:'s',projectId:'p',runId:'dense',files:[{path:'dense.txt',status:'M',staged:false,binary:false,patch,additions:500000,deletions:500000,contextComplete:true}]};assert.ok(Buffer.byteLength(JSON.stringify(snapshot))<DIFF_PATCH_BUDGET);
+  const store=new RecordStore('diff',f.data);try{store.put('snapshot:s:dense',snapshot,null);}finally{store.close();}writeFileSync(join(f.root,'dense.txt'),'current content must not replace history\n');
+  const result=readRunChange(f.data,'s','p','dense','dense',0),file=result.file!;assert.ok(file);assert.deepEqual([file.additions,file.deletions],[500000,500000]);assert.equal(file.patch,'');assert.deepEqual(file.lines,[]);assert.equal(file.truncated,true);assert.equal(file.contextComplete,false);assert.match(file.contextNote||'',/统计保留.*正文未提供/);assert.ok(Buffer.byteLength(JSON.stringify(result))<1024);assert.equal(readFileSync(join(f.root,'dense.txt'),'utf8'),'current content must not replace history\n');assert.ok(readRunChange(f.data,'other','p','dense','dense',0).unavailable);const saved=new RecordStore('diff',f.data);try{const {lines,...metadata}=file;saved.put('snapshot:s:metadata',{...snapshot,files:[metadata]},null);}finally{saved.close();}const reread=readRunChange(f.data,'s','p','dense','metadata',0).file!;assert.deepEqual(reread.lines,[]);assert.deepEqual([reread.additions,reread.deletions],[500000,500000]);assert.equal(reread.truncated,true);assert.equal(reread.contextComplete,false);
+ }finally{f.close();}
 });

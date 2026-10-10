@@ -3,7 +3,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFileSync,readdirSync,lstatSync,realpathSync,openSync,readSync,closeSync} from 'node:fs';
 import {structuredPatch,formatPatch} from 'diff';
-import {parsePatch,fitChangedFile,budgetWorkspaceDiff,boundDiffRefs as boundRefs,DIFF_PATCH_BUDGET} from './diff-budget.js';
+import {parsePatch,parseChangedFile,parsePatchBounded,fitChangedFile,budgetWorkspaceDiff,boundDiffRefs as boundRefs,DIFF_PATCH_BUDGET} from './diff-budget.js';
 export {parsePatch,fitChangedFile,compactDiffPatch,budgetWorkspaceDiff,DIFF_PATCH_BUDGET} from './diff-budget.js';
 import {join,resolve,relative,isAbsolute,extname} from 'node:path';
 import {RecordStore,digest} from '@friend-pi/core';
@@ -67,7 +67,7 @@ export async function uncoveredToolPaths(root:string,paths:string[]){
  });
  return new Set(output.split('\0').filter(Boolean));
 }
-export function textFileDiff(path:string,before:string,after:string):Pick<ChangedFile,'patch'|'lines'|'additions'|'deletions'|'contextComplete'|'contextNote'> {
+export function textFileDiff(path:string,before:string,after:string):Pick<ChangedFile,'patch'|'lines'|'additions'|'deletions'|'contextComplete'|'contextNote'|'truncated'> {
  const result=structuredPatch(path,path,before,after,undefined,undefined,{context:MAX,timeout:100});
  let patch:string;
  if(result)patch=formatPatch(result);
@@ -76,8 +76,8 @@ export function textFileDiff(path:string,before:string,after:string):Pick<Change
   const a=lines(before),b=lines(after),eof=(value:string)=>value&&!value.endsWith('\n')?['\\ No newline at end of file']:[];
   patch=['diff 比较超时，按整文件替换展示','--- '+path,'+++ '+path,`@@ -1,${a.length} +1,${b.length} @@`,...a.map(line=>'-'+line),...eof(before),...b.map(line=>'+'+line),...eof(after)].join('\n');
  }
- const lines=parsePatch(patch);
- return {patch,lines,additions:lines.filter(line=>line.kind==='add').length,deletions:lines.filter(line=>line.kind==='remove').length,contextComplete:true,...(!result?{contextNote:'比较超时，按整文件替换展示。'}:{})};
+ const parsed=parsePatchBounded(patch);if(parsed.truncated){const {path:_path,status,staged,binary,...body}=parseChangedFile({path,status:'M',staged:false,binary:false,patch});return body;}
+ return {patch,lines:parsed.lines,additions:parsed.additions,deletions:parsed.deletions,contextComplete:true,...(!result?{contextNote:'比较超时，按整文件替换展示。'}:{})};
 }
 export async function compareToolCapture(root:string,path:string,before:CapturedRunFile):Promise<ChangedFile|undefined>{
  const captured=captureToolFile(root,path);if(!captured)return {path,status:'M',binary:true,staged:false,patch:'',lines:[],error:'文件路径已不在当前工作区内'};

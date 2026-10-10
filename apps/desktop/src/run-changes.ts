@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { RecordStore } from '@friend-pi/core';
-import { captureRunBaseline, workspaceDiff, budgetWorkspaceDiff, parsePatch, fitChangedFile, captureToolFile, compareToolCapture, hasGitRepository, uncoveredToolPaths, type CapturedRunFile, type ChangedFile, type WorkspaceDiff } from './workspace-files.js';
+import { captureRunBaseline, workspaceDiff, budgetWorkspaceDiff, fitChangedFile, captureToolFile, compareToolCapture, hasGitRepository, uncoveredToolPaths, type CapturedRunFile, type ChangedFile, type WorkspaceDiff } from './workspace-files.js';
+import {parseChangedFile} from './diff-budget.js';
 
 export const RUN_CHANGES_TYPE = 'friend-pi.run.changes.v1';
 export interface RunChangesSummary {
@@ -25,7 +26,7 @@ export function readRunChange(dataDir:string,sessionId:string,projectId:string,r
     if(index>=500)return {unavailable:'该历史快照超过 500 个文件展示上限；未用当前文件替代'};
     const file=snapshot.files[index];if(!file)return {unavailable:'该轮没有此文件'};
     const budget=Number.isSafeInteger(maxBytes)?Math.max(1024,Math.min(8*1024*1024,maxBytes)):8*1024*1024;
-    const bounded=budgetWorkspaceDiff({scope:'run',files:[{...file,lines:parsePatch(file.patch)}]},budget);
+    const bounded=budgetWorkspaceDiff({scope:'run',files:[parseChangedFile(file)]},budget);
     return bounded.files[0]?{file:bounded.files[0]}:{unavailable:'该历史文件超过 8 MiB 响应预算；正文未提供，未用当前文件替代'};
   } finally {store.close();}
 }

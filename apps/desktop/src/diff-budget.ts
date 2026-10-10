@@ -1,12 +1,32 @@
 import {formatPatch,parsePatch as parseGitPatch} from 'diff';
 import type {ChangedFile,DiffLine,DiffRef,WorkspaceDiff} from './workspace-files.js';
 export const DIFF_PATCH_BUDGET=8*1024*1024;
+export const DIFF_LINE_BUDGET=128*1024;
 export const diffBytes=(text:string)=>new TextEncoder().encode(text).byteLength;
 
-export function parsePatch(patch:string):DiffLine[]{let old=0,next=0,inHunk=false;return patch.split('\n').map(text=>{const h=/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);if(text.startsWith('diff '))inHunk=false;if(h){inHunk=true;old=Number(h[1]);next=Number(h[2]);return {kind:'meta',text};}if(inHunk&&text.startsWith('+'))return {kind:'add',text:text.slice(1),newLine:next++};if(inHunk&&text.startsWith('-'))return {kind:'remove',text:text.slice(1),oldLine:old++};if(text.startsWith(' ')&&old&&next)return {kind:'context',text:text.slice(1),oldLine:old++,newLine:next++};return {kind:'meta',text};});}
+/** Scan the complete patch without splitting it or allocating a DiffLine per source line. */
+function inspectPatch(patch:string){
+ let lineCount=0,additions=0,deletions=0,inHunk=false;
+ for(let start=0;start<=patch.length;){const end=patch.indexOf('\n',start),text=patch.slice(start,end<0?patch.length:end);lineCount++;if(text.startsWith('diff '))inHunk=false;if(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(text))inHunk=true;else if(inHunk){if(text.startsWith('+'))additions++;else if(text.startsWith('-'))deletions++;}if(end<0)break;start=end+1;}
+ const bytes=diffBytes(patch);return {lineCount,additions,deletions,bytes,truncated:bytes>DIFF_PATCH_BUDGET||lineCount>DIFF_LINE_BUDGET};
+}
+export function parsePatchBounded(patch:string){
+ const stats=inspectPatch(patch);if(stats.truncated)return {...stats,lines:[] as DiffLine[],parsedLineCount:0};
+ let old=0,next=0,inHunk=false;const lines:DiffLine[]=patch.split('\n').map(text=>{const h=/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);if(text.startsWith('diff '))inHunk=false;if(h){inHunk=true;old=Number(h[1]);next=Number(h[2]);return {kind:'meta',text};}if(inHunk&&text.startsWith('+'))return {kind:'add',text:text.slice(1),newLine:next++};if(inHunk&&text.startsWith('-'))return {kind:'remove',text:text.slice(1),oldLine:old++};if(text.startsWith(' ')&&old&&next)return {kind:'context',text:text.slice(1),oldLine:old++,newLine:next++};return {kind:'meta',text};});
+ return {...stats,lines,parsedLineCount:lines.length};
+}
+export function parsePatch(patch:string):DiffLine[]{return parsePatchBounded(patch).lines;}
+function metadataOnly(file:Omit<ChangedFile,'lines'>,stats:ReturnType<typeof inspectPatch>):ChangedFile {
+ return {...file,...(!file.binary&&file.patch?{additions:stats.additions,deletions:stats.deletions}:{}),patch:'',lines:[],contextComplete:false,truncated:true,contextNote:'比较内容超过展示限额，文件统计保留，正文未提供。'};
+}
+export function parseChangedFile(file:Omit<ChangedFile,'lines'>):ChangedFile {
+ if(!file.patch)return {...file,lines:[]};
+ const parsed=parsePatchBounded(file.patch);return parsed.truncated?metadataOnly(file,parsed):{...file,lines:parsed.lines};
+}
 
 /** Remove only unchanged context; every changed line and EOF marker survives. */
 export function compactDiffPatch(patch:string,context=3):string {
+ if(inspectPatch(patch).truncated)return patch;
  try {
   const files=parseGitPatch(patch);
   if(files.length!==1||!files[0].hunks.length)return patch;
@@ -27,9 +47,10 @@ export function compactDiffPatch(patch:string,context=3):string {
 }
 /** The budget never silently clips a changed tail. Context is sacrificed first. */
 export function fitChangedFile(file:ChangedFile,budget=DIFF_PATCH_BUDGET,serialized=false):ChangedFile {
+ const stats=inspectPatch(file.patch);if(stats.truncated)return metadataOnly(file,stats);
  const size=(value:ChangedFile)=>diffBytes(serialized?JSON.stringify(value):value.patch);
  if(size(file)<=budget)return file;
- const compact=compactDiffPatch(file.patch),reduced={...file,patch:compact,lines:parsePatch(compact),contextComplete:false,contextNote:'上下文超出展示预算，仅保存改动周围 3 行；省略的正文不可展开。'};
+ const compact=compactDiffPatch(file.patch),reduced=parseChangedFile({...file,patch:compact,contextComplete:false,contextNote:'上下文超出展示预算，仅保存改动周围 3 行；省略的正文不可展开。'});
  if(size(reduced)<=budget)return reduced;
  return {...file,patch:'',lines:[],contextComplete:false,truncated:true,contextNote:'比较内容超过 8 MiB 展示预算，未截断伪装为完整补丁；文件统计保留，正文未提供。'};
 }
