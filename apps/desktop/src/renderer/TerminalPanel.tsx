@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -31,7 +31,7 @@ function TerminalView({sessionId,record,open,report}:{sessionId:string;record:Te
   useEffect(()=>{if(open){requestAnimationFrame(()=>{fit.current?.fit();view.current?.focus();});}},[open]);
   return <div className="terminal-screen" aria-label={'终端 '+record.name} ref={host}/>;
 }
-export function TerminalPanel({sessionId,open,version,onHide,report}:{sessionId:string;open:boolean;version:number;onHide():void;report(message:string,error?:boolean):void}){
+export function TerminalPanel({sessionId,open,version,onHide,report,notice}:{sessionId:string;open:boolean;version:number;onHide():void;report(message:string,error?:boolean):void;notice?:ReactNode}){
   const [terms,setTerms]=useState<Term[]>([]),[selected,setSelected]=useState(''),[busy,setBusy]=useState(false);
   const [closed,setClosed]=useState<Set<string>>(()=>new Set()),[showEnded,setShowEnded]=useState(false);
   const mounted=useRef(true),owner=useRef(sessionId);owner.current=sessionId;
@@ -49,6 +49,7 @@ export function TerminalPanel({sessionId,open,version,onHide,report}:{sessionId:
   const visible=terms.filter(t=>showEnded||!closed.has(t.id)),current=visible.find(t=>t.id===selected)||visible[0];
   return <section hidden={!open} className="terminal-panel terminal-tab-page" aria-label="内嵌终端">
     <header className="terminal-heading"><strong>终端</strong><button aria-label="新建终端" disabled={busy} onClick={()=>void create()}>＋</button><button aria-pressed={showEnded} onClick={()=>setShowEnded(v=>!v)}>已结束</button><span className="terminal-heading-space"/><button aria-label="隐藏终端面板" onClick={onHide}>×</button></header>
+    {open&&notice}
     <nav className="terminal-tabs" aria-label="终端标签">{visible.map(t=><div className={current?.id===t.id?'selected':''} key={t.id}><button aria-pressed={current?.id===t.id} onClick={()=>setSelected(t.id)}>{t.name}{t.state!=='running'?' · '+(t.state==='interrupted'?'已中断':t.state==='exited'?'已结束':t.state):''}</button><button aria-label={'关闭终端 '+t.name} disabled={busy} onClick={()=>void stop(t)}>×</button></div>)}</nav>
     {current?<><div className="terminal-status"><span>{current.cwd}</span><strong>{current.owner==='agent'?'Agent 控制':'用户控制'}</strong>{current.service&&current.owner==='user'&&current.state==='running'&&<button onClick={()=>void window.friendPi.request('terminal.release',{sessionId,id:current.id}).then(refresh).catch(error=>report(String(error),true))}>交还 Agent</button>}</div><TerminalView key={sessionId+':'+current.id} sessionId={sessionId} record={current} open={open} report={report}/></>:<div className="terminal-empty"><p>在当前会话的工作目录运行命令。</p><button disabled={busy} onClick={()=>void create()}>{busy?'正在创建…':'新建终端'}</button></div>}
   </section>;
