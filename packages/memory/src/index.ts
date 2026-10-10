@@ -164,6 +164,14 @@ export function searchTokens(value: string): string[] {
   }
   return [...new Set(tokens)];
 }
+/** Conservative lexical support: an empty literal list is not evidence for a fact. */
+function factSourceSupported(content:string,quotes:string):boolean {
+  // Word boundaries avoid inventing an unsupported bigram when a summary omits
+  // a source modifier, e.g. 数据库必须使用 → 数据库使用.
+  const segmenter=new Intl.Segmenter('zh',{granularity:'word'}),tokens=(value:string)=>[...segmenter.segment(normalize(value))].filter(part=>part.isWordLike).map(part=>part.segment);
+  const claims=tokens(content),observed=new Set(tokens(quotes));
+  return claims.length>0&&claims.every(token=>observed.has(token));
+}
 
 export class MemoryController implements PluginController {
   private store?: RecordStore;
@@ -463,7 +471,11 @@ export class MemoryController implements PluginController {
     // Overlapping project clauses already have separate canonical records. Keep
     // only a separately supported declaration (e.g. a later stable preference),
     // never a second combined candidate that could steal correction matching.
-    return kept.length?[...new Map(kept.map(source=>[preciseKey(source),source])).values()]:undefined;
+    const remaining=[...new Map(kept.map(source=>[preciseKey(source),source])).values()];
+    // Removing a canonical clause must also reject a body that still relies on it,
+    // even when an unrelated retained instruction happens to contain an ASCII name.
+    if(kind==='fact'&&!factSourceSupported(content,remaining.map(source=>readSourceSpan(ctx.readSource(source),source)).join('\n')))return undefined;
+    return remaining.length?remaining:undefined;
   }
   private epoch(ctx:PluginContext):number {const db=this.database(ctx);return (db.get<{epoch:number}>(`epoch:${ctx.projectId}`)?.value.epoch||0)+(db.get<{epoch:number}>('epoch:*')?.value.epoch||0);}
   private persistInvalidation(ids:string[],reason:string,revision:number,ctx:PluginContext,sources:SourceRef[],personal=false):void {
@@ -801,14 +813,16 @@ export class MemoryController implements PluginController {
       this.store!.transaction(()=>{ensure();for(const id of job.memoryIds){let record=this.get(id,ctx);if(record.status!=='candidate'||record.kind==='method')continue;
         const conflicts=this.records(ctx).filter(active=>active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
         const supporting=record.evidence?.length?record.evidence.filter(e=>e.kind==='pi'&&e.relation!=='contradicts').map(e=>(e as Extract<MemoryEvidence,{kind:'pi'}>).source):record.sources;const sourced=supporting.map(source=>({source,item:ctx.readSource(source)}));const userSources=sourced.filter(({item,source})=>{const typed=typedUserText(item);return item.role==='user'&&typed!==undefined&&(source.end??item.text.length)<=typed.length&&!taskOrQuotedCue.test(userEvidenceContext(item,source))&&!/(?:不要|别|不用|不必).{0,8}(?:记住|保存|学习)|do not remember|don't remember/iu.test(typed);});
-        const originals=[...sourced.map(({item,source})=>readSourceSpan(item,source)),...([...artifactAvailable.values()].filter(item=>record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===item.artifact.artifactId)).map(item=>item.text))].join('\n');
+        const artifactOriginals=[...artifactAvailable.values()].filter(item=>record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===item.artifact.artifactId)).map(item=>item.text);
+        const originals=[...sourced.map(({item,source})=>readSourceSpan(item,source)),...artifactOriginals].join('\n');
         const significant=record.content.match(/[A-Za-z][A-Za-z0-9_.-]{2,}|\b\d+(?:\.\d+)+\b/g)||[];const literalsSupported=significant.every(token=>normalize(originals).includes(normalize(token)));
+        const factSupported=record.kind!=='fact'||factSourceSupported(record.content,[...userSources.map(({item,source})=>readSourceSpan(item,source)),...artifactOriginals].join('\n'));
         const preferenceSupported=record.kind!=='preference'||userSources.some(({item,source})=>stablePreferenceCue.test(readSourceSpan(item,source)))||new Set(userSources.map(({source})=>source.entryId)).size>=2;
         const artifactSupported=record.kind!=='preference'&&(record.evidence||[]).some(e=>e.kind==='artifact'&&e.relation!=='contradicts'&&e.observer.kind!=='parser'&&artifactAvailable.size>0);
-        const authoritative=preferenceSupported&&literalsSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text)));
+        const authoritative=preferenceSupported&&literalsSupported&&factSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text)));
         if(authoritative&&conflicts.length)for(const conflict of conflicts)this.write({...conflict,revision:conflict.revision+1,conflictIds:[...new Set([...conflict.conflictIds||[],record.id])],updatedAt:now()},ctx,conflict.revision);
         const status=authoritative&&!conflicts.length?'active':'candidate';
-        const held=conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
+        const held=conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
         record=this.write({...record,revision:record.revision+1,status,confidence:status==='active'?'supported':'ambiguous',confirmedAt:status==='active'?now():undefined,confirmedBy:status==='active'?'system':undefined,conflictIds:conflicts.map(item=>item.id),invalidatedReason:held,updatedAt:now()},ctx,record.revision);
       }});const final=job.memoryIds.map(id=>this.get(id,ctx));job.diagnostics={v:1,...job.diagnostics,publication:{active:final.filter(record=>record.status==='active').length,candidates:final.filter(record=>record.status==='candidate').length}};job.stage='compact';return;
     }

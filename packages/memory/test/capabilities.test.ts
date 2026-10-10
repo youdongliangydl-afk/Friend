@@ -267,6 +267,51 @@ test('a unique quote in the first of two ranges from one 26k entry publishes wit
  }finally{await f.close();}
 });
 
+test('canonical normalization cannot activate a Chinese fact after removing its only supporting clause',async()=>{
+ const f=fixture();try{
+  const source='本项目规则：归档文件名必须使用中文前缀“验收”。仅确认这条规则，不修改文件；后台系统负责整理记忆，无需调用记忆写入工具。',fact=source.slice(0,24);
+  assert.equal(source.length,60);assert.equal(fact,'本项目规则：归档文件名必须使用中文前缀“验收”。');f.items[0].id='480eec2b';f.items[0].text=source;
+  const assistant='已按只读方式检索当前项目记忆（关键词「归档文件名 中文前缀 验收」及目录查询）：**返回空**，现有记忆中尚无此规则的记录。';f.items.push({id:'0aef9bda',parentId:'480eec2b',type:'message',role:'assistant',timestamp:new Date().toISOString(),text:assistant});
+  const content='本项目规则：归档文件名必须使用中文前缀“验收”。该规则由用户在当前会话中明确陈述，尚未在本项目文件或现存记忆中找到对应的书面来源。适用条件为归档文件名命名场景；本条规则本身不涉及修改文件，后台系统负责整理记忆，无需调用记忆写入工具。';
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'归档文件名必须使用中文前缀“验收”',content,kind:'fact',conditions:['归档文件名命名时'],subject:'归档文件名命名规则',sourceEntryIds:['480eec2b','0aef9bda'],sourceQuotes:{'480eec2b':source,'0aef9bda':assistant}}]});
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const active=f.c.snapshot(f.ctx).memories as MemoryRecord[];
+  assert.equal(active.length,1,'the model body cannot borrow remaining instructions after its canonical support was removed');assert.equal(active[0].content,fact);assert.equal(active[0].status,'active');
+  assert.deepEqual(active[0].sources.map(({factId,...ref})=>ref),[{sessionId:'s',entryId:'480eec2b',start:0,end:24,hash:digest(fact)}]);
+  const original=await f.c.dispatch('read',{id:active[0].id,source:true},f.ctx) as any;assert.equal(original.originals.length,1);assert.equal(original.originals[0].item.text,fact);
+  assert.ok(!(f.c.snapshot(f.ctx).candidates as MemoryRecord[]).some(record=>record.content===content));const job=((f.c.snapshot(f.ctx).learning as any).jobs as LearningJob[])[0];assert.equal(job.diagnostics?.reflection?.discarded,1);assert.equal(job.state,'completed');
+ }finally{await f.close();}
+});
+
+test('Chinese facts need matching quoted text even without ASCII literals, while supported Chinese declarations publish',async()=>{
+ const f=fixture();try{
+  const fact='本项目规则：归档文件名必须使用中文前缀“验收”。',instructions='仅确认这条规则，不修改文件；后台系统负责整理记忆，无需调用记忆写入工具。';f.items[0].text=fact+instructions;
+  const unsupported='归档文件名必须使用中文前缀“验收”。';assert.equal((unsupported.match(/[A-Za-z][A-Za-z0-9_.-]{2,}|\b\d+(?:\.\d+)+\b/g)||[]).length,0);
+  f.items.push({id:'assistant-echo',parentId:'user1',type:'message',role:'assistant',timestamp:new Date().toISOString(),text:unsupported});
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'仅指令引文',content:unsupported,kind:'fact',sourceEntryIds:['user1','assistant-echo'],sourceQuotes:{user1:instructions,'assistant-echo':unsupported}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
+  const active=f.c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(active.length,1);assert.equal(active[0].content,fact);const candidate=(f.c.snapshot(f.ctx).candidates as MemoryRecord[]).find(record=>record.title==='仅指令引文')!;assert.ok(candidate);assert.equal(candidate.status,'candidate');assert.match(candidate.invalidatedReason||'',/来源片段.*事实正文/);assert.ok(candidate.sources.filter(ref=>ref.entryId==='user1').every(ref=>ref.start!>=24));assert.ok(candidate.sources.some(ref=>ref.entryId==='assistant-echo'),'assistant echo does not supply user authority');
+  const declaration='归档资料保存在项目目录。';f.items.push({id:'independent-chinese',parentId:'user1',type:'message',role:'user',timestamp:new Date().toISOString(),text:declaration});
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'归档资料位置',content:declaration,kind:'fact',sourceEntryIds:['independent-chinese'],sourceQuotes:{'independent-chinese':declaration}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
+  const supported=(f.c.snapshot(f.ctx).memories as MemoryRecord[]).find(record=>record.content===declaration)!;assert.ok(supported);assert.equal(supported.status,'active');assert.equal(readSourceSpan(f.ctx.readSource(supported.sources[0]),supported.sources[0]),declaration);
+ }finally{await f.close();}
+});
+
+test('an ASCII instruction anchor cannot preserve a Chinese canonical claim whose source was removed',async()=>{
+ const f=fixture();try{
+  const fact='本项目规则：归档文件名必须使用中文前缀“验收”。',source=fact+'仅确认这条规则，不修改 README 文件；后台系统负责整理归档记忆。';f.items[0].text=source;
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'归档与文档',content:fact+'后台系统负责整理归档记忆，不修改 README 文件。',kind:'fact',sourceEntryIds:['user1'],sourceQuotes:{user1:source}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
+  const active=f.c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(active.length,1);assert.equal(active[0].content,fact);assert.equal(active[0].sources.length,1);assert.equal(readSourceSpan(f.ctx.readSource(active[0].sources[0]),active[0].sources[0]),fact);assert.equal((f.c.snapshot(f.ctx).candidates as MemoryRecord[]).length,0);
+ }finally{await f.close();}
+});
+
+test('a direct instruction quote with an ASCII anchor cannot authorize an unquoted Chinese fact',async()=>{
+ const f=fixture();try{
+  const fact='本项目规则：归档文件名必须使用中文前缀“验收”。',instructions='仅确认这条规则，不修改 README 文件；后台系统负责整理归档记忆。';f.items[0].text=fact+instructions;
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'遗漏事实引文',content:'归档文件名必须使用中文前缀“验收”。README',kind:'fact',sourceEntryIds:['user1'],sourceQuotes:{user1:instructions}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
+  const active=f.c.snapshot(f.ctx).memories as MemoryRecord[];assert.equal(active.length,1);assert.equal(active[0].content,fact);const candidate=(f.c.snapshot(f.ctx).candidates as MemoryRecord[]).find(record=>record.title==='遗漏事实引文')!;assert.ok(candidate);assert.equal(candidate.status,'candidate');assert.match(candidate.invalidatedReason||'',/来源片段.*事实正文/);
+  f.items.push({id:'supported-summary',parentId:'user1',type:'message',role:'user',timestamp:new Date().toISOString(),text:'数据库必须使用 PostgreSQL。'});f.ctx.complete=async()=>JSON.stringify({memories:[{title:'数据库',content:'数据库使用 PostgreSQL',kind:'fact',sourceEntryIds:['supported-summary'],sourceQuotes:{'supported-summary':'数据库必须使用 PostgreSQL。'}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);assert.ok((f.c.snapshot(f.ctx).memories as MemoryRecord[]).some(record=>record.content==='数据库使用 PostgreSQL'));
+ }finally{await f.close();}
+});
+
 test('ordinary preferences need independent native entries; personal grants expose only exact supported span (08-10)',async()=>{
  const f=fixture();try{
   f.items[0].text='中文解释便于我理解。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user1'],sourceQuotes:{user1:f.items[0].text}}]});
