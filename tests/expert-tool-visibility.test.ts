@@ -23,14 +23,14 @@ test('persisted Expert tabs stay hidden and their transient active state falls b
  const html=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),active:'tool-expert',tabs:[...toolTabs,{id:'web',kind:'browser',title:'Docs',url:'https://example.com/'}]},onSelect(){},onClose(){},onNew(){}}));
  assert.doesNotMatch(html,/>Expert<\/span>|关闭标签 Expert/);
  for(const title of ['文件','Diff','终端','任务','Memory','Docs'])assert.ok(html.includes(`<span>${title}</span>`));
- const selected=html.match(/<button role="tab" tabindex="0" aria-selected="true"[^>]*>[\s\S]*?<\/button>/)?.[0]||'';
+ const selected=html.match(/<button role="tab"[^>]*tabindex="0" aria-selected="true"[^>]*>[\s\S]*?<\/button>/)?.[0]||'';
  assert.match(selected,/<span>会话<\/span>/);
  assert.equal(html.match(/aria-selected="true"/g)?.length,1);
 });
 
 test('hiding an old Expert tab preserves the selected visible tool',()=>{
  const html=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),active:'tool-memory',tabs:toolTabs},onSelect(){},onClose(){},onNew(){}}));
- const selected=html.match(/<button role="tab" tabindex="0" aria-selected="true"[^>]*>[\s\S]*?<\/button>/)?.[0]||'';
+ const selected=html.match(/<button role="tab"[^>]*tabindex="0" aria-selected="true"[^>]*>[\s\S]*?<\/button>/)?.[0]||'';
  assert.match(selected,/<span>Memory<\/span>/);
  assert.doesNotMatch(html,/>Expert<\/span>/);assert.equal(html.match(/aria-selected="true"/g)?.length,1);
 });
