@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {historyItems,learningHostAvailable,learningRequestHash,digest,projectIdentity,RecordStore,LearningBudget,type PluginContext} from '../packages/core/src/index.js';
+import {historyItems,learningHostAvailable,learningRequestHash,learningRequestSnapshot,digest,projectIdentity,RecordStore,LearningBudget,type PluginContext} from '../packages/core/src/index.js';
 import {MemoryController,type LearningJob,type MemoryRecord} from '../packages/memory/src/index.js';
 import {createProviderRuntime,saveProviderConfiguration} from '../apps/desktop/src/provider-settings.js';
 
@@ -59,12 +59,14 @@ async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'|'le
     const lease=new RecordStore('runtime',dataDir);const previous=lease.get('learning-host');if(!learningHostAvailable(dataDir))lease.put('learning-host',{pid:process.pid,instance:'test-producer',expiresAt:Date.now()+15000});
     const ctx:PluginContext={origin:'plugin',dataDir,agentDir:join(dataDir,'pi'),projectDir,projectId,sessionId,sessionFile,modelId:'learning-loopback/fixture',thinkingLevel:'off',isIdle:()=>false,history:()=>historyItems(manager.getBranch()),readSource:source=>{const entry=historyItems(manager.getEntries()).find(item=>item.id===source.entryId);if(!entry)throw new Error('Unknown test source');return entry;},complete:async()=>{throw new Error('Producer must not execute a model');},request:async()=>{throw new Error('No producer peer');},appendEntry:(type,data)=>manager.appendCustomEntry(type,data),emit:()=>{},notify:()=>{}};
     const memory=new MemoryController();try{await memory.settled(ctx);}finally{await memory.dispose();if(!previous&&lease.get<{instance:string}>('learning-host')?.value.instance==='test-producer')lease.remove('learning-host');lease.close();}
-    const job=jobs().find(item=>item.sessionId===sessionId)!;assert.ok(job,'producer persists a learning job');return {projectDir,projectId,sessionId,sessionFile,jobId:job.id};
+    const job=jobs().find(item=>item.sessionId===sessionId)!;assert.ok(job,'producer persists a learning job');return {projectDir,projectId,sessionId,sessionFile,jobId:job.id,ctx};
   }
   async function startHost(){const child=await worker('learning-worker',dataDir,{});children.push(child);return child;}
   async function startForeground(projectDir:string){const child=await worker('sdk-worker',dataDir,{FRIEND_PI_PROJECT:projectDir,FRIEND_PI_MODEL:'learning-loopback/fixture',FRIEND_PI_PLUGINS:JSON.stringify(['memory']),FRIEND_PI_LEARNING_ROLE:'producer'});children.push(child);return child;}
   const close=async()=>{for(const child of children){if(child.child.exitCode===null&&child.child.signalCode===null)await child.stop().catch(async()=>{child.child.kill('SIGKILL');await child.exited;});}server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));rmSync(directory,{recursive:true,force:true});};
-  return {directory,dataDir,calls,jobs,memories,modelCall,enqueue,startHost,startForeground,close,model:runtime.getModel('learning-loopback','fixture'),get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
+  const changeModelConfiguration=async()=>saveProviderConfiguration(runtime,dataDir,{provider:'learning-loopback',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v2`,api:'openai-completions'});
+  const model=runtime.getModel('learning-loopback','fixture')!;const resolvedAuth=await runtime.getAuth(model),modelIdentity=learningRequestSnapshot(model,{...resolvedAuth?.auth,env:resolvedAuth?.env}).identityModel;
+  return {directory,dataDir,calls,jobs,memories,modelCall,enqueue,startHost,startForeground,close,changeModelConfiguration,modelIdentity,get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
 }
 
 function sendSse(res:ServerResponse,text:string,id:number,reason='stop'){
@@ -132,6 +134,28 @@ test('a killed host recovers its durable stage but refuses to replay its dispatc
   }finally{await f.close();}
 });
 
+test('a killed host with a changed model configuration preserves the original unknown operation without a new HTTP call',{timeout:45000},async()=>{
+ const f=await fixture((stage,index)=>stage==='extract'&&index===0);try{
+  const source=await f.enqueue('crashed-config-change'),first=await f.startHost();await until(()=>f.calls.length===1,'original HTTP dispatched');const checkpoint=f.jobs().find(job=>job.id===source.jobId)!,original=f.modelCall(checkpoint)!;assert.equal(original.state,'dispatched');assert.ok(original.requestHash);
+  first.child.kill('SIGKILL');await first.exited;await until(()=>f.calls[0].closed,'crashed HTTP socket closes');await f.changeModelConfiguration();
+  const second=await f.startHost();await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='operation_unknown','changed configuration cannot escape original unknown');await second.request('resume');await delay(1500);
+  const job=f.jobs().find(job=>job.id===source.jobId)!;assert.equal(f.calls.length,1);assert.equal(job.attempts,0);assert.equal(job.operationId,checkpoint.operationId);assert.deepEqual(job.sources,checkpoint.sources);assert.deepEqual(job.pendingRanges,checkpoint.sourceRanges||checkpoint.sources);assert.deepEqual(job.memoryIds,checkpoint.memoryIds);assert.deepEqual(job.modelOperations,checkpoint.modelOperations);assert.deepEqual(job.callIds,checkpoint.callIds);assert.equal(f.modelCall(job)?.callId,original.callId);assert.equal(f.modelCall(job)?.requestHash,original.requestHash);assert.equal(f.modelCall(job)?.state,'dispatched');assert.equal(f.memories().length,0);const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}await second.stop();
+  const third=await f.startHost();await third.request('resume');await delay(1000);assert.equal(f.calls.length,1);assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'operation_unknown');await third.stop();
+ }finally{await f.close();}
+});
+
+test('a killed compact request cannot be replayed under a new material key after a public title-only correction',{timeout:45000},async()=>{
+ const f=await fixture(stage=>stage==='compact');try{
+  const source=await f.enqueue('compact-crash'),controller=new MemoryController();let parent:MemoryRecord|undefined;
+  try{for(let i=0;i<3;i++){parent=await controller.dispatch('save',{title:`压缩父记忆${i}`,content:`公开输入的独立事实${i}。`,kind:'fact',scope:'project',subject:'compact-fixture',explicitRemember:true},{...source.ctx,origin:'user'}) as MemoryRecord;assert.equal(parent.status,'active');}}finally{await controller.dispose();}
+  const first=await f.startHost();await until(()=>f.calls.some(call=>call.stage==='compact'),'compact HTTP dispatched');const checkpoint=f.jobs().find(job=>job.id===source.jobId)!,original=f.modelCall(checkpoint)!;assert.equal(checkpoint.stage,'compact');assert.equal(original.state,'dispatched');const compactCount=f.calls.filter(call=>call.stage==='compact').length,total=f.calls.length;
+  first.child.kill('SIGKILL');await first.exited;await until(()=>f.calls.find(call=>call.stage==='compact')!.closed,'compact socket closed');
+  const editor=new MemoryController();try{await editor.dispatch('update',{id:parent!.id,revision:parent!.revision,title:'仅修改标题后的父记忆',aliases:['新的别名']},{...source.ctx,origin:'user'});}finally{await editor.dispose();}
+  const second=await f.startHost();await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='operation_unknown','compact preserves its original unresolved operation');await second.request('resume');await delay(1500);const job=f.jobs().find(job=>job.id===source.jobId)!;assert.equal(f.calls.length,total);assert.equal(f.calls.filter(call=>call.stage==='compact').length,compactCount);assert.equal(compactCount,1);assert.equal(job.attempts,0);assert.equal(job.stage,'compact');assert.deepEqual(job.modelOperations,checkpoint.modelOperations);assert.deepEqual(job.callIds,checkpoint.callIds);assert.deepEqual(job.pendingRanges,checkpoint.sourceRanges||checkpoint.sources);assert.equal(f.modelCall(job)?.callId,original.callId);assert.equal(f.modelCall(job)?.state,'dispatched');const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}await second.stop();
+  const third=await f.startHost();await third.request('resume');await delay(1000);assert.equal(f.calls.length,total);assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'operation_unknown');await third.stop();
+ }finally{await f.close();}
+});
+
 test('actual HTTP disconnect marks the host operation unknown and neither resume nor restart resends it',{timeout:45000},async t=>{
  const f=await fixture(stage=>stage==='extract'?'disconnect':false);try{
   const source=await f.enqueue('disconnected'),host=await f.startHost();
@@ -170,7 +194,7 @@ test('actual length-limited HTTP response is recorded as received incomplete and
   await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='failed','known incomplete extraction fails visibly');
   const job=f.jobs().find(job=>job.id===source.jobId)!,call=f.modelCall(job)!;assert.equal(call.state,'failed');assert.equal(call.response?.received,true);assert.equal(call.response?.complete,false);assert.equal(call.response?.stopReason,'length');assert.equal(typeof call.response?.maxTokens,'number');assert.ok(call.response?.usage);assert.equal(f.memories().filter(record=>record.status==='active').length,0);
   assert.equal(job.attempts,0);assert.equal(job.nextAttemptAt,undefined);assert.deepEqual(job.pendingRanges,job.sourceRanges||job.sources);
-  assert.equal(call.requestHash,learningRequestHash(f.model,'off',4096,'extract',digest(f.calls[0].prompt)),'built host binds actual non-secret request parameters');
+  assert.equal(call.requestHash,learningRequestHash(f.modelIdentity,'off',4096,'extract',digest(f.calls[0].prompt)),'built host binds actual non-secret request parameters');
   const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}
   const count=f.calls.length;assert.equal(count,1,'confirmed length stops the scheduler without a new operation');await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,1,'received incomplete calls are not replayed on restart');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'failed');await restarted.stop();
  }finally{await f.close();}

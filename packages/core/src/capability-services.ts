@@ -136,7 +136,7 @@ export class LearningBudget {
   if(input.requestHash!==undefined&&(typeof input.requestHash!=='string'||!/^[a-f0-9]{64}$/.test(input.requestHash)))throw new CapabilityError('VALIDATION_ERROR','后台请求身份摘要无效');
   const key=`learning-call:${input.budgetId}:${input.operationId}`,old=get<{hash:string;requestHash?:string;callId:string;state:string;result?:string;response?:JsonObject}>(this.store,'runtime',key),hash=input.requestHash===undefined?digest({stage:input.stage,promptHash:input.promptHash}):digest({v:2,stage:input.stage,promptHash:input.promptHash,requestHash:input.requestHash});
   if(old){
-   if(old.requestHash===undefined&&['dispatched','unknown'].includes(old.state))throw new CapabilityError('OPERATION_UNKNOWN','旧后台调用缺少完整请求身份且结果未确认，禁止自动重放',{callId:old.callId});
+   if(['dispatched','unknown'].includes(old.state))throw new CapabilityError('OPERATION_UNKNOWN','原后台调用结果未确认；配置变化也不得换请求重放',{callId:old.callId});
    if(old.requestHash!==input.requestHash||old.hash!==hash)throw new CapabilityError('VERSION_CONFLICT','调用幂等键与实际模型配置或请求参数不匹配');
    if(old.state==='complete')return {callId:old.callId,result:old.result};
    if(old.state==='failed'&&old.response?.stopReason==='length')throw new CapabilityError('VALIDATION_ERROR','模型响应已接收但达到输出上限，原调用不重放',{callId:old.callId,response:old.response});

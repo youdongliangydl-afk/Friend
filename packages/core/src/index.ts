@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SessionManager, getAgentDir, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
+import {getSupportedThinkingLevels,normalizeContext,type ProviderHeaders,type ProviderEnv,type Provider,type Model,type Api,type Context,type ApiStreamOptions} from '@earendil-works/pi-ai';
 import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCapabilityError,restrictedSourceItem,readRegisteredArtifact,type ArtifactRef,type EvidenceReceipt,type LearningLeaseToken} from './capability-services.js';
 export * from './capability-services.js';
 export * from './collaboration-services.js';
@@ -175,11 +175,30 @@ export function requestPlugin(bus:Bus,plugin:string,action:string,input:JsonObje
  const active=router,id=randomUUID();return new Promise((resolveResult,reject)=>{const release=()=>{active.pending.delete(id);if(!active.pending.size){active.off();pluginRouters.delete(bus);}};const timer=setTimeout(()=>{release();reject(new CapabilityError('CAPABILITY_UNAVAILABLE',`${plugin} 不可用或操作超时`));},timeoutMs);active.pending.set(id,{resolve:resolveResult,reject,timer});try{bus.emit(REQUEST,{v:1,id,plugin,action,input,origin,...(trustedContext?{trustedContext}:{})});}catch(error){clearTimeout(timer);release();reject(error instanceof Error?error:new Error(String(error)));}});
 }
 export interface TrialCheckAttribution {v:1;decisionEntryId:string;adoptions:{operationId:string;journalEntryId:string;skillsHash:string}[]}
+/** Resolve public SDK auth in the host first; retain credentials only in ephemeral SDK options. */
+export function learningRequestSnapshot<T extends object>(model:T,resolved?:{apiKey?:string;headers?:ProviderHeaders;baseUrl?:string;env?:ProviderEnv}) {
+  const executionModel=structuredClone(model),auth=resolved?structuredClone(resolved):undefined,source=executionModel as Record<string,unknown>;
+  if(auth?.baseUrl)source.baseUrl=auth.baseUrl;
+  const routingNames=['AZURE_OPENAI_DEPLOYMENT_NAME_MAP','AZURE_OPENAI_BASE_URL','AZURE_OPENAI_RESOURCE_NAME','AZURE_OPENAI_API_VERSION','AWS_REGION','AWS_DEFAULT_REGION','AWS_PROFILE','AWS_BEDROCK_SKIP_AUTH','AWS_BEDROCK_FORCE_HTTP1','AWS_BEDROCK_FORCE_CACHE','GOOGLE_CLOUD_PROJECT','GCLOUD_PROJECT','GOOGLE_CLOUD_LOCATION','CLOUDFLARE_ACCOUNT_ID','CLOUDFLARE_GATEWAY_ID','ANTHROPIC_FEDERATION_RULE_ID','ANTHROPIC_ORGANIZATION_ID','ANTHROPIC_WORKSPACE_ID','ANTHROPIC_SERVICE_ACCOUNT_ID','PI_CACHE_RETENTION'];
+  const routing=Object.fromEntries(routingNames.flatMap(name=>{const value=auth?.env?.[name]||process.env[name];return value?[[name,value]]:[];}));
+  let beta:string|null|undefined;for(const headers of [source.headers,auth?.headers])for(const [name,value] of Object.entries(headers&&typeof headers==='object'?headers:{}))if(name.toLowerCase()==='anthropic-beta'&&(typeof value==='string'||value===null))beta=value;
+  const featureHeaders:ProviderHeaders=beta===undefined?{}:{'anthropic-beta':beta};
+  const identityModel={...executionModel,headers:featureHeaders,requestRouting:{...routing,ambientAwsProfile:Boolean(process.env.AWS_PROFILE)}};
+  const requestOptions={...(auth?.apiKey===undefined?{}:{apiKey:auth.apiKey}),headers:{...Object.fromEntries(Object.entries(auth?.headers||{}).filter(([name])=>name.toLowerCase()!=='anthropic-beta')),...featureHeaders},env:{...auth?.env,...routing}};
+  return {model:executionModel,identityModel,requestOptions};
+}
+/** Execute through Pi's public provider and normalizer, using the already resolved request exactly once. */
+export async function executeLearningRequest(provider:Provider,snapshot:ReturnType<typeof learningRequestSnapshot<Model<Api>>>,context:Context,options:ApiStreamOptions<Api>={}) {
+  if(!provider.stream)throw new CapabilityError('CAPABILITY_UNAVAILABLE','模型未提供公开 SDK 流式执行器');
+  return await provider.stream(snapshot.model,normalizeContext(context),{...options,...snapshot.requestOptions}).result();
+}
 /** Request identity contains model configuration and effective parameters, never authentication headers or keys. */
 export function learningRequestHash(model:unknown,thinkingLevel:string,maxTokens:number,stage:string|undefined,promptHash:string):string {
-  const source=model&&typeof model==='object'?model as Record<string,unknown>:{},fields=['provider','id','api','baseUrl','type','reasoning','contextWindow','maxTokens','input','inputLimits','thinkingLevelMap','promptCache','samplingParams','samplingParamsByThinkingLevel','compat'];
+  const source=model&&typeof model==='object'?model as Record<string,unknown>:{},fields=['provider','id','api','baseUrl','type','reasoning','contextWindow','maxTokens','input','inputLimits','thinkingLevelMap','promptCache','samplingParams','samplingParamsByThinkingLevel','compat','requestRouting'];
+  // Locked Pi reads this non-authentication feature header case-insensitively, with the last matching value winning.
+  let anthropicBeta:unknown;for(const [name,value] of Object.entries(source.headers&&typeof source.headers==='object'?source.headers:{}))if(name.toLowerCase()==='anthropic-beta')anthropicBeta=value;
   const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).filter(([key])=>!/^(?:headers|key|api[-_]?key|authorization|password|secret|access[-_]?token|refresh[-_]?token)$/i.test(key)).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>[key,canonical(item)])):value;
-  return digest(canonical({v:1,kind:'friend-pi.learning-request',model:Object.fromEntries(fields.filter(key=>source[key]!==undefined).map(key=>[key,source[key]])),thinkingLevel,maxTokens,stage,promptHash}));
+  return digest(canonical({v:1,kind:'friend-pi.learning-request',model:Object.fromEntries(fields.filter(key=>source[key]!==undefined).map(key=>[key,source[key]])),anthropicBeta,thinkingLevel,maxTokens,stage,promptHash}));
 }
 /** A tool decision cannot gain credit from a method adopted later in the same assistant batch. */
 export function trialCheckAttribution(entries:readonly unknown[],runId:string,decisionEntryId:string):TrialCheckAttribution|undefined {
@@ -245,14 +264,16 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
     complete:async (prompt, options = {}) => {
       if (!model) throw new Error('请先配置模型');let executionModel=model;
       if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){let verifying=desktopVerificationRuntimes.get(ctx.modelRegistry);if(!verifying){verifying=(async()=>{const runtime=await ModelRuntime.create({authPath:join(agentDir,'auth.json'),modelsPath:join(agentDir,'models.json'),allowModelNetwork:false});if(process.env.FRIEND_PI_TEST_PROVIDER==='1')await installFixtureProvider(runtime);return runtime;})();desktopVerificationRuntimes.set(ctx.modelRegistry,verifying);}executionModel=await requireReadyModel(await verifying,dataDir,`${model.provider}/${model.id}`);await ctx.modelRegistry.refresh({allowNetwork:false});}
-      executionModel=structuredClone(executionModel);const maxTokens=options.maxTokens||2048,promptHash=digest(prompt),requestHash=learningRequestHash(executionModel,thinkingLevel,maxTokens,options.stage,promptHash);
+      const resolved=typeof ctx.modelRegistry.getApiKeyAndHeaders==='function'?await ctx.modelRegistry.getApiKeyAndHeaders(executionModel):undefined;if(resolved&&!resolved.ok)throw new CapabilityError('CAPABILITY_UNAVAILABLE','模型认证配置不可用');const snapshot=learningRequestSnapshot(executionModel,resolved?.ok?resolved:undefined);executionModel=snapshot.model;const hasProvider=typeof ctx.modelRegistry.getProvider==='function',provider=hasProvider?ctx.modelRegistry.getProvider(executionModel.provider):undefined;if(hasProvider&&!provider?.stream)throw new CapabilityError('CAPABILITY_UNAVAILABLE','模型未提供公开 SDK 流式执行器');const maxTokens=options.maxTokens||2048,promptHash=digest(prompt),requestHash=learningRequestHash(snapshot.identityModel,thinkingLevel,maxTokens,options.stage,promptHash);
       const callId=options.callId||randomUUID(),operationId=options.operationId||callId;let accounted=false,observed=false;let incompleteResponse:CapabilityError|undefined;const usageStore=options.budgetId?new RecordStore('runtime',dataDir):undefined;let budget:LearningBudget|undefined;
       const account=(tokens?:number)=>{if(accounted)return;accounted=true;options.onUsage?.({callId,tokens});if(!options.budgetId)pi.events?.emit('friend-pi:v1:event',{pluginEvent:'runtime.model-usage',sessionId,data:{runId:policy?.runId||process.env.FRIEND_PI_RUN_ID,callId,tokens}});};
       try{
         if(usageStore&&options.budgetId){const candidate=new LearningBudget(usageStore);try{candidate.read(options.budgetId);budget=candidate;}catch(error){if(!options.onUsage)throw error;}if(budget){const call=budget.begin({budgetId:options.budgetId,operationId,callId,stage:options.stage,promptHash,requestHash});if(call.result!==undefined)return call.result;}}
         const unknown=()=>new CapabilityError('OPERATION_UNKNOWN','已发出的模型调用未确认完成，禁止重放',{callId,operationId});
         let result;try{
-          result=await ctx.modelRegistry.complete(executionModel,{messages:[{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}]},{signal:options.signal,maxTokens,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})});
+          const requestContext={messages:[{role:'user' as const,content:[{type:'text' as const,text:prompt}],timestamp:Date.now()}]},requestOptions={...snapshot.requestOptions,signal:options.signal,maxTokens,...(thinkingLevel!=='off'?{reasoning:thinkingLevel}:{})};
+          // Public SDK provider execution consumes the resolved snapshot without a second auth/endpoint resolution.
+          result=await (provider?executeLearningRequest(provider,snapshot,requestContext,requestOptions):ctx.modelRegistry.complete(executionModel,requestContext,requestOptions));
           observed=true;const tokens=modelTokenUsage(result.usage),incomplete=result.stopReason==='aborted'||result.stopReason==='error',limited=result.stopReason==='length',responseMetadata={received:!incomplete,complete:!incomplete&&!limited,stopReason:result.stopReason,maxTokens,usage:result.usage};
           if(budget&&options.budgetId)budget.finish({budgetId:options.budgetId,operationId,callId,...(!incomplete?{result:visibleText(result.content)}:{}),tokens,state:incomplete?'unknown':limited?'failed':'complete',response:responseMetadata});account(tokens);
           if(incomplete)throw unknown();if(limited){incompleteResponse=new CapabilityError('VALIDATION_ERROR','模型响应已接收但达到输出上限，结果不完整',{callId,operationId,response:responseMetadata});throw incompleteResponse;}
