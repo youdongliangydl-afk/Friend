@@ -14,8 +14,8 @@ export interface DocumentCell {ref:string;column:number;value:string;formula?:st
 export interface DocumentRow {row:number;cells:DocumentCell[]}
 export interface DocumentSection {id:string;title:string;text:string;hidden?:'hidden'|'veryHidden';rows?:DocumentRow[];columns?:string[]}
 export interface DocumentCoverage {status:'complete'|'partial';scope:string;readUnits:number;totalUnits:number;unit:string;emptyUnits?:string[];nonTextUnits?:number;cells?:number;formulaCells?:number;uncachedFormulaCells?:number;hiddenSheets?:number}
-export interface ReadDocument {kind:DocumentKind;hash:string;sourceBytes:number;title:string;text:string;sections:DocumentSection[];coverage:DocumentCoverage;warnings:string[]}
-export interface DocumentManifest extends Omit<ReadDocument,'text'|'sections'> {textLength:number;sections:(Omit<DocumentSection,'text'|'rows'>&{textLength:number;rowCount:number})[]}
+export interface ReadDocument {kind:DocumentKind;hash:string;legacyHash:string;sourceBytes:number;title:string;text:string;sections:DocumentSection[];coverage:DocumentCoverage;warnings:string[]}
+export interface DocumentManifest extends Omit<ReadDocument,'text'|'sections'|'legacyHash'> {textLength:number;sections:(Omit<DocumentSection,'text'|'rows'>&{textLength:number;rowCount:number})[]}
 export interface DocumentPage {hash:string;kind:DocumentKind;sectionId:string;title:string;text:string;offset:number;nextOffset?:number;totalCharacters:number;rows?:DocumentRow[];columns?:string[];rowOffset:number;nextRowOffset?:number;totalRows:number;hidden?:'hidden'|'veryHidden';rowsOmitted?:string}
 const wordKinds=new Set(['docx','pptx','xlsx']);
 export function isDocumentPath(path:string){return /\.(pdf|docx|pptx|xlsx|csv)$/i.test(path);}
@@ -38,7 +38,7 @@ async function readDocx(archive:DocumentArchive){
   const main='word/document.xml';if(!archive.has(main))throw new Error('DOCX 缺少正文');
   const paths=[main,...archive.names.filter(path=>/^word\/(?:header\d*|footer\d*|footnotes|endnotes|comments)\.xml$/.test(path)).sort()];requireUnits(paths.length);
   const sections:DocumentSection[]=[];let textBytes=0;for(const [index,path] of paths.entries()){
-    const root=await xml(archive,path);let text:string;
+    const root=await xml(archive,path);if(descendants(root,'altChunk').length)throw new Error('DOCX 含尚未转换的导入正文（altChunk），无法完整读取；请用 Word 打开并另存后重试');let text:string;
     if(/\/(?:footnotes|endnotes)\.xml$/.test(path))text=children(root).filter(node=>Number(attribute(node,'id'))>=0).map(prose).join('\n');else text=prose(root);
     textBytes+=Buffer.byteLength(text);requireTextBytes(textBytes);sections.push({id:'part-'+index,title:index===0?'正文':basename(path),text});
   }
@@ -56,7 +56,8 @@ async function readPptx(archive:DocumentArchive){
 }
 async function readXlsx(archive:DocumentArchive){
   const main='xl/workbook.xml';if(!archive.has(main))throw new Error('XLSX 缺少工作簿目录');const workbook=await xml(archive,main),rels=await relationships(archive,main),sheets=descendants(workbook,'sheet');requireUnits(sheets.length);
-  const shared=archive.has('xl/sharedStrings.xml')?children(await xml(archive,'xl/sharedStrings.xml'),'si').map(officeText):[];
+  const unescape=(value:string)=>value.replace(/_x([0-9a-fA-F]{4})_/g,(_match,hex:string)=>String.fromCharCode(parseInt(hex,16)));
+  const shared=archive.has('xl/sharedStrings.xml')?children(await xml(archive,'xl/sharedStrings.xml'),'si').map(node=>unescape(officeText(node))):[];
   const sections:DocumentSection[]=[],warnings:string[]=[];let cells=0,formulaCells=0,uncachedFormulaCells=0,hiddenSheets=0,textBytes=0;
   for(const [index,sheet] of sheets.entries()){
     const relation=Object.entries(sheet.attributes).find(([key])=>key.includes(':')&&key.endsWith(':id'))?.[1]??attribute(sheet,'id'),path=relation?rels.get(relation):undefined;if(!path)throw new Error('XLSX 工作表关系缺失');
@@ -68,7 +69,7 @@ async function readXlsx(archive:DocumentArchive){
       const f=children(cell,'f')[0],v=children(cell,'v')[0],inline=children(cell,'is')[0];if(!f&&!v&&!inline)continue;
       if(++cells>DOCUMENT_LIMITS.cells)throw new Error('工作簿有效单元格超过 100 万上限');const position=cellPosition(ref),type=attribute(cell,'t'),raw=v?xmlText(v):undefined;let value=raw??'';
       if(type==='s'){if(raw===undefined||!/^\d+$/.test(raw)||Number(raw)>=shared.length)throw new Error('工作表共享字符串索引无效');value=shared[Number(raw)];}
-      else if(type==='inlineStr')value=inline?officeText(inline):'';else if(type==='b')value=raw==='1'?'TRUE':raw==='0'?'FALSE':raw??'';
+      else if(type==='inlineStr')value=inline?unescape(officeText(inline)):'';else if(type==='str')value=unescape(value);else if(type==='b')value=raw==='1'?'TRUE':raw==='0'?'FALSE':raw??'';
       let formula:string|undefined;if(f){formulaCells++;formula=xmlText(f);const sharedId=attribute(f,'si');if(attribute(f,'t')==='shared'&&sharedId){if(formula)sharedFormulas.set(sharedId,formula);else formula=`共享公式 #${sharedId}（主公式：${sharedFormulas.get(sharedId)??'见本工作表主单元格'}；此地址未重算）`;}
         if(raw===undefined){uncachedFormulaCells++;value='（公式无缓存，未计算）';}}
       const entry:DocumentCell={ref,column:position.column,value,...(formula!==undefined?{formula,...(raw!==undefined?{cachedValue:value}:{})}:{})};
@@ -84,15 +85,16 @@ async function readXlsx(archive:DocumentArchive){
   return {sections,warnings,cells,formulaCells,uncachedFormulaCells,hiddenSheets};
 }
 export function parseCsv(source:string):string[][]{
-  if(source.startsWith('\ufeff'))source=source.slice(1);const rows:string[][]=[];let row:string[]=[],field='',quoted=false,closed=false;
+  if(source.startsWith('\ufeff'))source=source.slice(1);const rows:string[][]=[];let row:string[]=[],field='',quoted=false,closed=false,cells=0;
+  const addField=()=>{if(++cells>DOCUMENT_LIMITS.cells)throw new Error('CSV 单元格超过 100 万上限');row.push(field);field='';closed=false;};
   for(let i=0;i<source.length;i++){
     const ch=source[i];if(quoted){if(ch==='"'){if(source[i+1]==='"'){field+='"';i++;}else{quoted=false;closed=true;}}else field+=ch;continue;}
     if(ch==='"'){if(field||closed)throw new Error('CSV 引号位置无效');quoted=true;continue;}
     if(closed&&ch!==','&&ch!=='\r'&&ch!=='\n')throw new Error('CSV 引号结束后含无效字符');
-    if(ch===','){row.push(field);field='';closed=false;}else if(ch==='\r'||ch==='\n'){if(ch==='\r'&&source[i+1]==='\n')i++;row.push(field);rows.push(row);row=[];field='';closed=false;}else field+=ch;
+    if(ch===',')addField();else if(ch==='\r'||ch==='\n'){if(ch==='\r'&&source[i+1]==='\n')i++;addField();rows.push(row);row=[];}else field+=ch;
     if(rows.length>DOCUMENT_LIMITS.cells)throw new Error('CSV 超过 100 万行上限');
   }
-  if(quoted)throw new Error('CSV 引号未闭合');if(field||closed||row.length)rows.push([...row,field]);return rows;
+  if(quoted)throw new Error('CSV 引号未闭合');if(field||closed||row.length){addField();rows.push(row);}return rows;
 }
 const PDF_SCRIPT=String.raw`ObjC.import('Foundation');ObjC.import('PDFKit');ObjC.import('AppKit');
 function run(args){var document=$.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(args[0]));var count=Number(document.pageCount);if(document.isLocked)throw new Error('PDF 已加密，请先解除密码保护');if(!count||count>2000)throw new Error('PDF 无法打开或超过 2000 页上限');
@@ -134,7 +136,9 @@ async function parseDocument(path:string,bytes:Buffer):Promise<ReadDocument>{
   }
   requireUnits(kind==='csv'?1:sections.length);const text=sections.map(section=>`## ${section.title}${section.hidden?'（'+section.hidden+'）':''}\n${section.text}`).join('\n\n');
   requireTextBytes(Buffer.byteLength(text));
-  return {kind,hash,sourceBytes:bytes.length,title:basename(path),text,sections,coverage,warnings};
+  // Older frozen queue payloads and started receipts hashed base64, not raw bytes.
+  const legacyHash=createHash('sha256').update(bytes.toString('base64')).digest('hex');
+  return {kind,hash,legacyHash,sourceBytes:bytes.length,title:basename(path),text,sections,coverage,warnings};
 }
 export async function readDocument(path:string):Promise<ReadDocument>{return parseDocument(path,await sourceBytes(path));}
 function immutable<T>(value:T):T{if(value&&typeof value==='object'&&!Object.isFrozen(value)){for(const child of Object.values(value))immutable(child);Object.freeze(value);}return value;}

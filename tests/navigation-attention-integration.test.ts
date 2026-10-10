@@ -79,6 +79,13 @@ test('late session.open readiness cannot replace a later selected ready session'
     assert.equal(f.api.workers.has(a.id), true, 'old startup may finish without selecting its session');
   } finally {f.cleanup();}
 });
+test('archive auto-selection cannot replace a later explicitly opened session',async()=>{
+  const f=fixture();try{const a=f.record('archive-a'),b=f.record('selected-b');await f.ready(a);await f.ready(b);
+    const c=f.record('slow-c');c.updatedAt='2099-01-01T00:00:00Z';f.api.store.put('session:'+c.id,c);await f.api.handle('session.open',{id:a.id});
+    const archiving=f.api.handle('session.archive',{id:a.id,archived:true});await f.flush();const childC=f.children.at(-1);assert.equal(childC.options.env.FRIEND_PI_DESKTOP_SESSION_ID,c.id);
+    await f.api.handle('session.open',{id:b.id});finishStarting(f,childC,c);await archiving;assert.equal(f.api.state().current.sessionId,b.id);assert.equal(f.api.store.get('session:'+a.id).value.archived,true);
+  }finally{f.cleanup();}
+});
 
 test('session.new returns its fixed created identity when another selection wins before worker readiness', async () => {
   const f = fixture();

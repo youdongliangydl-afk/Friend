@@ -25,6 +25,8 @@ interface Options {
 const record=(value:unknown):Json=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('配置应为对象');return value as Json;};
 function string(value:unknown,label:string,max=8192){if(typeof value!=='string'||!value.trim()||value.length>max||value.includes('\0'))throw new Error(`${label}无效`);return value.trim();}
 const braveSource='https://api-dashboard.search.brave.com/app/documentation/web-search/query';
+export const nativeMcpResourceTools:readonly string[]=['list_mcp_resources','list_mcp_resource_templates','read_mcp_resource'];
+const resourceTools=new Set(nativeMcpResourceTools);
 function nameOf(value:unknown){const name=string(value,'服务名称',64);if(!/^[A-Za-z0-9_-]+$/.test(name))throw new Error('服务名称仅支持字母、数字、下划线和连字符');return name;}
 function secretMap(value:unknown,prior:Record<string,string>|undefined,label:string){
   if(value===undefined)return prior;
@@ -67,12 +69,35 @@ export function createExternalCapabilities(options:Options){
     return {v:1,revision:saved.revision as number,servers,web:{provider:'brave',enabled:web.enabled,apiKey:web.apiKey as string|undefined}};
   }
   function secrets(){return [settings.web.apiKey,...settings.servers.flatMap(server=>[...Object.values('url' in server.config?server.config.headers||{}:server.config.env||{}),...('url' in server.config?[...new URL(server.config.url).searchParams.values()]:[])])].flatMap(value=>typeof value==='string'?[value,...[...value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match=>process.env[match[1]]||'')]:[]).filter(value=>value.length>=4).sort((a,b)=>b.length-a.length);}
-  function redact(value:string){let text=value;for(const secret of secrets())text=text.split(secret).join('[凭证已隐藏]');return text.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.-]+/gi,'[凭证已隐藏]').replace(/sk-[A-Za-z0-9_-]{8,}/g,'[凭证已隐藏]');}
+  function redact(value:string){let text=value;for(const secret of secrets())for(const form of new Set([JSON.stringify(secret).slice(1,-1),secret]))text=text.split(form).join('[凭证已隐藏]');return text.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.-]+/gi,'[凭证已隐藏]').replace(/sk-[A-Za-z0-9_-]{8,}/g,'[凭证已隐藏]');}
   function publicError(error:unknown){return new Error(redact(error instanceof Error?error.message:String(error)));}
+  function redactValues<T>(value:T):T {
+    if(typeof value==='string')return redact(value) as T;
+    if(Array.isArray(value))return value.map(item=>redactValues(item)) as T;
+    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redactValues(item)])) as T;
+    return value;
+  }
+  function safeSchema<T>(value:T,annotation=false):T {
+    if(typeof value==='string'){const clean=redact(value);if(annotation)return clean as T;if(clean!==value&&!['text','image','object','array','string','number','integer','boolean','null'].includes(value))throw new Error('MCP 工具参数结构含已配置凭证，已阻止公开');return value;}
+    if(Array.isArray(value))return value.map(item=>safeSchema(item,annotation)) as T;
+    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>{safeIdentifier(key);return [key,
+      ['properties','$defs','definitions','patternProperties','dependentSchemas'].includes(key)&&item&&typeof item==='object'
+        ?Object.fromEntries(Object.entries(item).map(([name,schema])=>{safeIdentifier(name);return [name,safeSchema(schema)];}))
+        :safeSchema(item,annotation||['description','title','$comment','examples'].includes(key))];})) as T;
+    return value;
+  }
+  function safeIdentifier(value:string){if(redact(value)!==value&&!['type','text','image','content','details','data','mimeType'].includes(value))throw new Error('MCP 工具名称或参数键含已配置凭证，已阻止公开');}
+  function safeResult<T extends Awaited<ReturnType<ToolDefinition['execute']>>>(result:T):T {
+    let structuredContent=redactValues(result.structuredContent);
+    const native=result.structuredContent as Json|undefined;
+    if(native&&Array.isArray(native.content))structuredContent={...structuredContent as Json,content:native.content.map(raw=>{const part=record(raw);return {...redactValues(part),type:part.type,...(['image','audio'].includes(String(part.type))?{data:part.data,mimeType:part.mimeType}:{})};})} as typeof structuredContent;
+    return {...result,content:result.content.map(part=>part.type==='text'?{...part,text:redact(part.text)}:part),details:redactValues(result.details),
+      ...(result.structuredContent===undefined?{}:{structuredContent})};
+  }
   function snapshot():ExternalCapabilitiesSnapshot {
     return {v:1,revision:settings.revision,servers:settings.servers.map(server=>{
       const config=server.config,status=statuses.get(server.name),namespace=`mcp__${server.name.replaceAll('-','_')}`;
-      const tools=[...definitions.values()].filter(tool=>tool.namespace?.name===namespace).map(tool=>({name:tool.name,label:redact(tool.label),description:redact(tool.description),parameters:JSON.parse(redact(JSON.stringify(tool.parameters))),readOnly:tool.annotations?.readOnlyHint===true,available:config.enabled===true&&tool.exposure!=='hidden'}));
+      const tools=[...definitions.values()].filter(tool=>tool.namespace?.name===namespace).map(tool=>({name:tool.name,label:redact(tool.label),description:redact(tool.description),parameters:tool.parameters,readOnly:tool.annotations?.readOnlyHint===true,available:config.enabled===true&&tool.exposure!=='hidden'}));
       const url='url' in config?new URL(config.url):undefined;if(url)for(const key of url.searchParams.keys())url.searchParams.set(key,'[已隐藏]');
       return {name:server.name,type:'url' in config?'http':'stdio',enabled:config.enabled===true,...('url' in config?{url:url!.href,urlRedacted:!!url!.search}:{command:redact(config.command),args:config.args?.map(redact),cwd:config.cwd}),envNames:'command' in config?Object.keys(config.env||{}):[],headerNames:'url' in config?Object.keys(config.headers||{}):[],state:config.enabled===true?status?.state||'unchecked':'disabled',diagnostic:status?.diagnostic?redact(status.diagnostic):undefined,testedAt:status?.testedAt,tools};
     }),web:{provider:'brave',enabled:settings.web.enabled,configured:!!settings.web.apiKey,fetchAvailable:true,source:braveSource,...webTest}};
@@ -152,7 +177,14 @@ export function createExternalCapabilities(options:Options){
     const cleanContext=<T extends ExtensionContext>(ctx:T):T=>({...ctx,ui:{...ctx.ui,notify:(message:string,level?:'info'|'warning'|'error')=>ctx.ui.notify(redact(message),level)}});
     const proxy=new Proxy(api,{get(target,key){
       if(key==='on')return (event:string,handler:(event:unknown,ctx:ExtensionContext)=>unknown)=>Reflect.apply(target.on,target,[event,(data:unknown,ctx:ExtensionContext)=>{const result=handler(data,cleanContext(ctx));if(event==='mcp_servers_change'&&result instanceof Promise){connectionChanges.add(result);void result.finally(()=>connectionChanges.delete(result)).catch(()=>{});}return result;}]);
-      if(key==='registerTool')return (tool:ToolDefinition)=>{definitions.set(tool.name,tool);target.registerTool({...tool,execute:async(...args)=>{try{return JSON.parse(redact(JSON.stringify(await tool.execute(...args))));}catch(error){throw publicError(error);}}});publish();};
+      if(key==='registerTool')return (tool:ToolDefinition)=>{
+        safeIdentifier(tool.name);if(tool.namespace)safeIdentifier(tool.namespace.name);
+        const safe:ToolDefinition={...tool,label:redact(tool.label),description:redact(tool.description),parameters:safeSchema(tool.parameters),
+          ...(tool.promptSnippet===undefined?{}:{promptSnippet:redact(tool.promptSnippet)}),...(tool.promptGuidelines?{promptGuidelines:tool.promptGuidelines.map(redact)}:{}),
+          ...(tool.outputSchema?{outputSchema:safeSchema(tool.outputSchema)}:{}),...(tool.namespace?{namespace:{...tool.namespace,...(tool.namespace.description?{description:redact(tool.namespace.description)}:{}),...(tool.namespace.instructions?{instructions:redact(tool.namespace.instructions)}:{})}}:{}),
+          execute:async(id,input,signal,onUpdate,ctx)=>{try{return safeResult(await tool.execute(id,input,signal,onUpdate?value=>onUpdate(safeResult(value)):undefined,ctx));}catch(error){throw publicError(error);}}};
+        definitions.set(tool.name,safe);target.registerTool(safe);publish();
+      };
       if(key==='registerCommand')return (name:string,command:Parameters<ExtensionAPI['registerCommand']>[1])=>{if(name==='mcp')nativeCommand=command.handler;target.registerCommand(name,{...command,handler:(args,ctx)=>command.handler(args,cleanContext(ctx))});};
       const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
     }});
@@ -160,7 +192,15 @@ export function createExternalCapabilities(options:Options){
     createMcpExtension({loadConfig:()=>({servers:[],errors:[],autoEnableCodemode:false}),logPath:process.platform==='win32'?'NUL':'/dev/null'})(proxy);
     settings=load();sync();
     api.on('session_start',(_event,ctx)=>{context=ctx;void readStatus().catch(error=>{for(const server of settings.servers)if(server.config.enabled)statuses.set(server.name,{state:'failed',diagnostic:redact(String(error))});publish();});});
-    api.on('tool_call',async(event,ctx)=>{if(!event.toolName.startsWith('mcp__'))return;refresh();const definition=definitions.get(event.toolName),namespace=definition?.namespace?.name,server=settings.servers.find(server=>namespace===`mcp__${server.name.replaceAll('-','_')}`);if(!server?.config.enabled||definition?.exposure==='hidden')return {block:true,reason:'MCP 服务已停用或移除'};const identity=JSON.stringify(server.config);const approved=options.confirm?await options.confirm({operation:'调用 MCP 工具',message:redact(event.toolName+'\n'+JSON.stringify(event.input).slice(0,8000)),autoEligible:false}):ctx.hasUI?await ctx.ui.confirm('调用 MCP 工具',redact(event.toolName+'\n'+JSON.stringify(event.input).slice(0,8000))):false;refresh();if(disposed||!approved||definitions.get(event.toolName)?.namespace?.name!==namespace||definitions.get(event.toolName)?.exposure==='hidden'||JSON.stringify(settings.servers.find(item=>item.name===server.name)?.config)!==identity)return {block:true,reason:'MCP 工具未获批准或配置已变化'};});
+    api.on('tool_call',async(event,ctx)=>{
+      const resource=resourceTools.has(event.toolName);if(!resource&&!event.toolName.startsWith('mcp__'))return;refresh();
+      const namespace=definitions.get(event.toolName)?.namespace?.name,serverName=resource?(event.input as Json).server:undefined;
+      const selected=()=>settings.servers.filter(server=>resource?(serverName===undefined?server.config.enabled:server.name===serverName):namespace===`mcp__${server.name.replaceAll('-','_')}`);
+      const servers=selected();if(!servers.length||servers.some(server=>!server.config.enabled)||definitions.get(event.toolName)?.exposure==='hidden')return {block:true,reason:'MCP 服务已停用或移除'};
+      const identity=JSON.stringify(servers),message=redact(event.toolName+'\n'+JSON.stringify(event.input).slice(0,8000));
+      const approved=options.confirm?await options.confirm({operation:'调用 MCP 工具',message,autoEligible:false}):ctx.hasUI?await ctx.ui.confirm('调用 MCP 工具',message):false;
+      refresh();await Promise.allSettled([...connectionChanges]);if(disposed||!approved||definitions.get(event.toolName)?.namespace?.name!==namespace||definitions.get(event.toolName)?.exposure==='hidden'||JSON.stringify(selected())!==identity)return {block:true,reason:'MCP 工具未获批准或配置已变化'};
+    });
     api.on('session_shutdown',()=>{context=undefined;shutdown.abort();});
     for(const [name,label,description,parameters,execute] of [
       ['web_fetch','读取网页','读取公网 HTTP(S) 网页文本并返回来源 URL；不执行脚本，不访问本机或私网。截断会明确标注。',Type.Object({url:Type.String(),maxChars:Type.Optional(Type.Integer({minimum:100,maximum:100000}))}),webFetch],

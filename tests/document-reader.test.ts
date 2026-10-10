@@ -10,6 +10,7 @@ import {readDocument,renderPdfPage,parseCsv,paginateDocument,documentManifest,cr
 import {parseXml,officeText} from '../apps/desktop/src/document-xml.js';
 import {captureDocumentInput,inspectAttachment,type DeliveredAttachment} from '../apps/desktop/src/attachment-input.js';
 import {documentTools} from '../apps/desktop/src/document-tools.js';
+import {captureInput} from '../apps/desktop/src/message-queue.js';
 function crc32(bytes:Buffer){let crc=0xffffffff;for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;}
 function zip(entries:Record<string,string|Buffer>){
   const locals:Buffer[]=[],directory:Buffer[]=[];let offset=0;
@@ -44,6 +45,21 @@ test('DOCX preserves paragraphs, table cells, header and footnotes while identif
     'word/media/image1.png':Buffer.from([1,2,3])}));const result=await readDocument(path);assert.match(result.text,/第一段&实体\t后半/);assert.match(result.text,/姓名\t小明/);assert.match(result.text,/末段/);assert.match(result.text,/页眉信息/);assert.match(result.text,/脚注原文/);assert.doesNotMatch(result.text,/分隔符/);assert.equal(result.coverage.status,'partial');assert.equal(result.coverage.nonTextUnits,1);assert.equal(result.sections.length,3);
   }finally{f.close();}
 });
+test('DOCX imported altChunk content cannot be silently reported as complete',async()=>{
+  const f=fixture();try{for(const part of ['word/document.xml','word/header1.xml','word/footnotes.xml']){
+    const parts={'word/document.xml':'<document><body><p><t>visible</t></p></body></document>',[part]:'<document><p><t>visible</t></p><altChunk id="import"/></document>','word/import.htm':'<p>required imported body</p>'};
+    await assert.rejects(readDocument(f.file('import.docx',zip(parts))),/altChunk.*无法完整读取/);
+  }}finally{f.close();}
+});
+test('XLSX decodes escaped strings once across shared, inline and formula cached text',async()=>{
+  const f=fixture();try{const result=await readDocument(f.file('escaped.xlsx',zip({
+    'xl/workbook.xml':'<workbook xmlns:r="r"><sheets><sheet name="data" r:id="s"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels':rels([['s','worksheets/sheet1.xml']]),
+    'xl/sharedStrings.xml':'<sst><si><t>line1_x000D_line2 literal _x005F_x000D_</t></si></sst>',
+    'xl/worksheets/sheet1.xml':'<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>_xD83D__xDE00_ _x005F_x0041_</t></is></c><c r="C1" t="str"><f>"cached"</f><v>A_x000A_B</v></c></row></sheetData></worksheet>'
+  })));const cells=result.sections[0].rows![0].cells;assert.equal(cells[0].value,'line1\rline2 literal _x000D_');assert.equal(cells[1].value,'😀 _x0041_');assert.equal(cells[2].cachedValue,'A\nB');
+  }finally{f.close();}
+});
 test('PPTX follows presentation order, reads tables and slide notes, and never fetches external relations',async()=>{
   const f=fixture();try{const result=await readDocument(f.file('deck.pptx',zip({
     'ppt/presentation.xml':'<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="8" r:id="slideB"/><p:sldId id="3" r:id="slideA"/></p:sldIdLst></p:presentation>',
@@ -58,6 +74,10 @@ test('PPTX follows presentation order, reads tables and slide notes, and never f
 test('CSV handles BOM, escaped quotes, CRLF, quoted multiline fields and trailing empty cells',async()=>{
   const source='\ufeffname,note,tail\r\n"小明","第一行\r\n第二行含""引号""",\r\n';assert.deepEqual(parseCsv(source),[['name','note','tail'],['小明','第一行\r\n第二行含"引号"','']]);assert.deepEqual(parseCsv('""'),[['']]);assert.deepEqual(parseCsv(''),[]);assert.throws(()=>parseCsv('"broken'),/未闭合/);assert.throws(()=>parseCsv('bad"quote'),/位置/);assert.throws(()=>parseCsv('"value"extra'),/无效/);
   const f=fixture();try{const result=await readDocument(f.file('table.csv',source));assert.equal(result.coverage.cells,6);assert.equal(result.sections[0].rows![1].cells[1].value,'第一行\r\n第二行含"引号"');}finally{f.close();}
+});
+test('CSV enforces its cell budget while collecting fields, including one wide row',()=>{
+  assert.throws(()=>parseCsv(','.repeat(DOCUMENT_LIMITS.cells)),/单元格超过/);
+  assert.throws(()=>parseCsv('a,b\n'.repeat(DOCUMENT_LIMITS.cells/2+1)),/单元格超过/);
 });
 test('document reader refuses named pipes without waiting for a writer',{skip:process.platform==='win32',timeout:5000},async()=>{
   const f=fixture();try{const pipe=join(f.root,'not-a-file.pdf');execFileSync('/usr/bin/mkfifo',[pipe],{timeout:2000});
@@ -109,6 +129,13 @@ test('read_document limits model output to one text range, keeps hidden sheet co
     const first=JSON.parse((await tool.execute('read',{path:'all.xlsx'})).content[0].text);assert.equal(first.manifest.sections.length,3);assert.equal(first.manifest.sections[1].hidden,'hidden');assert.equal(first.manifest.sections[2].hidden,'veryHidden');assert.equal(first.nextSectionId,'sheet-2');
     const original=await readDocument(path);for(const source of original.sections){let offset=0,joined='';while(true){const response=JSON.parse((await tool.execute('read',{path:'all.xlsx',sectionId:source.id,offset,limit:9})).content[0].text);assert.equal(response.page.rows,undefined);joined+=response.page.text;if(response.page.nextOffset===undefined)break;offset=response.page.nextOffset;}assert.equal(joined,source.text);}
     await tool.execute('read',{path:external});writeFileSync(external,'changed after preflight');await assert.rejects(tool.execute('read',{path:external}),/已经变化/);await assert.rejects(tool.execute('read',{path:outside.file('not-added.txt','not authorized')}),/只能读取/);const controller=new AbortController();controller.abort();await assert.rejects(tool.execute('read',{path:'all.xlsx'},controller.signal),/取消/);
+  }finally{f.close();outside.close();}
+});
+test('legacy frozen attachment hashes authorize unchanged bytes without weakening changed-source rejection',async()=>{
+  const f=fixture(),outside=fixture();try{const path=outside.file('legacy.txt','original legacy bytes'),old=captureInput({text:'read',attachments:[{path}]}).attachments[0];let tool:any;
+    documentTools(f.root,new Map([[realpathSync(path),old.hash]]))({registerTool:(registered:unknown)=>{tool=registered;}} as any);
+    const result=JSON.parse((await tool.execute('legacy',{path})).content[0].text);assert.match(result.page.text,/original legacy bytes/);assert.notEqual(result.manifest.hash,old.hash);assert.equal('legacyHash' in result.manifest,false);
+    writeFileSync(path,'changed legacy bytes');await assert.rejects(tool.execute('changed',{path}),/已经变化/);
   }finally{f.close();outside.close();}
 });
 function pdf(pages:string[]){

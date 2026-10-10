@@ -18,11 +18,23 @@
 
 - 附件单条最多 20 份、单个 10 MiB、合计 20 MiB；正文和附件说明合计最多 128 KiB。侧聊增量合并也检查合计限制，保留已有冻结快照；新增附件检查预期 Hash，避免悄悄替换源内容。
 - PDF 使用 macOS PDFKit：支持文字层和页面预览，未实现 OCR。Office 预览按文字/表格内容组织，不还原原始排版或内嵌对象语义；旧 `.doc/.xls/.ppt` 提示转换后重试，可系统打开。
+- DOCX 含尚未转换的 `altChunk` 导入正文时明确拒绝完整读取，须用 Word 打开并另存后重试；不静默遗漏导入内容。
 - XLSX 包含隐藏和 veryHidden 工作表、稀疏有效单元格、公式及保存的缓存值；不重新计算公式、不还原格式或图表。图表工作表、ZIP64 等不支持的结构明确报错。
 - 解析资源限制见 `DOCUMENT_LIMITS`；超限失败，不将截断预览冒充完整源内容。每个主机独立维护有界缓存，每次读取校验真实文件 Hash。
 - MCP 配置支持显式环境变量和 HTTP 请求头。无专用 OAuth 登录界面和旧 SSE 传输。Pi 状态诊断依赖固定版本公开 `/mcp` 状态输出，升级 SDK 时须重跑兼容测试。
 - Web 读取执行有界 HTTP(S) GET，限制重定向、内容和时间，并校验 DNS/私网地址。Brave 搜索无隐式凭据或默认供应商回退。
 - 活动中心状态属于本次桌面运行；过期或退出的运行时交互不会从历史恢复为可批准请求。
+- CSV 预览读取已保存文件；未保存时显示提示，保存成功后刷新预览。
+
+## 集成修复
+
+- 旧队列/侧聊附件及原生 started 回执继续支持旧 Base64 Hash；文档工具用同一份源字节验证新旧 Hash，实际文件变化仍拒绝。
+- XLSX 按单次 ST_Xstring 解码还原共享、内联和公式缓存字符串；CSV 在字段入队时检查百万单元格限额。
+- 归档、删除后的自动选择及原史重定位沿用导航代次，迟到启动不会覆盖用户后续选择。
+- MCP 注册前脱敏描述、参数说明及命名空间说明；参数结构包含凭证时拒绝公开，保留参数语义。进度和最终结果按内容值脱敏，保留原生内容结构。
+- 原生 MCP 资源工具也检查服务停用/移除和配置变化，临时会话统一走一次 MCP 审批。
+
+格式依据：[Microsoft altChunk](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.altchunk?view=openxml-3.0.1)、[Microsoft ST_Xstring](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oe376/bd0aa042-434a-4ca7-b25f-4e1fd25a954d)。
 
 ## 验证与证据
 

@@ -1,6 +1,6 @@
 import {createDocumentReader} from './document-reader.js';
 const documentReader=createDocumentReader();
-import {createExternalCapabilities} from './external-capabilities.js';
+import {createExternalCapabilities,nativeMcpResourceTools} from './external-capabilities.js';
 const documentAttachments=new Map<string,string>();
 import {captureDocumentInput,validateCapturedInput} from './attachment-input.js';
 import {documentTools} from './document-tools.js';
@@ -181,9 +181,9 @@ function guard():ExtensionFactory{return pi=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
     if(planMode){
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
-      if(event.toolName!=='friend_todo'&&!['read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
+      if(event.toolName!=='friend_todo'&&![...nativeMcpResourceTools,'read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
-    const request=(event.toolName.startsWith('mcp__')||['web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
+    const request=(event.toolName.startsWith('mcp__')||[...nativeMcpResourceTools,'web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
     if(request&&!await approvePermission(request))return {block:true,reason:'用户未批准该操作'};
     await changeTracker?.captureTool(event.toolName,input).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));
   });

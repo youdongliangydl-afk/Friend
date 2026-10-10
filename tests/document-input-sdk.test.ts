@@ -120,3 +120,14 @@ test('cold restore authorizes external documents from started receipts and ignor
     requestedPath=unstarted;const rejected=await sendSettled(worker,{text:'读取仅准备过的外部材料，必须被拒绝'});tool=branch(rejected.state.sessionFile).findLast(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='read_document');assert.equal(tool.message.isError,true);assert.match(text(tool.message.content),/只能读取/);assert.doesNotMatch(text(tool.message.content),/COLD_PREPARED_DOCUMENT/);
   }finally{await worker.close();await provider.close();rmSync(outside,{recursive:true,force:true});}
 });
+test('legacy external draft receipts restore read_document authorization and still reject changed bytes',{timeout:30000},async()=>{
+  const outside=mkdtempSync(join(tmpdir(),'friend-legacy-external-')),path=join(realpathSync(outside),'legacy.txt');writeFileSync(path,'LEGACY_EXTERNAL_ORIGINAL');let readTools=false;
+  const provider=await localProvider(request=>readTools&&!recentToolResults(request).length?{tool:{path}}:{text:'Local legacy fixture completed.'});let worker=await start();
+  try{await configureProvider(worker,provider.baseUrl);const captured=captureInput({text:'original legacy request',attachments:[{path}],mode:'single',planMode:false});
+    await worker.request('draft.install',{payload:{...captured,id:'legacy-cold-restore'}});await worker.request('queue',{action:'add',fromSideDraft:true,text:captured.text,intentId:'legacy-cold-submit'});await worker.wait(()=>eventCount(worker,'agent_settled')>0);let state=await worker.request('state');
+    assert.equal(branch(state.sessionFile).findLast(entry=>entry.customType==='friend-pi.attachments.v1'&&entry.data.stage==='started').data.attachments[0].hash,captured.attachments[0].hash);
+    const directory=worker.directory;await worker.close(true);worker=await start({directory,sessionFile:state.sessionFile,modelId:'document-sdk-local/fixture'});readTools=true;
+    state=(await sendSettled(worker,{text:'read restored legacy source'})).state;let tool=branch(state.sessionFile).findLast(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='read_document');assert.notEqual(tool.message.isError,true);assert.match(text(tool.message.content),/LEGACY_EXTERNAL_ORIGINAL/);
+    writeFileSync(path,'LEGACY_EXTERNAL_CHANGED');state=(await sendSettled(worker,{text:'reject changed legacy source'})).state;tool=branch(state.sessionFile).findLast(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='read_document');assert.equal(tool.message.isError,true);assert.match(text(tool.message.content),/已经变化/);assert.doesNotMatch(text(tool.message.content),/LEGACY_EXTERNAL_CHANGED/);
+  }finally{await worker.close();await provider.close();rmSync(outside,{recursive:true,force:true});}
+});

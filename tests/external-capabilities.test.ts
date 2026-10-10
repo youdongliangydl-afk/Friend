@@ -92,6 +92,52 @@ async function sessionFor(dir:string,external:ReturnType<typeof createExternalCa
   await session.bindExtensions({mode:'rpc'});
   return {session,fixture,async close(){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});await external.dispose();session.dispose();if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;}};
 }
+const secretFixture=`import {createInterface} from 'node:readline';
+createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;const secret=process.env.TOKEN;let result={};
+if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'private-fixture',version:'1'},instructions:'private instructions '+secret};
+if(m.method==='tools/list')result={tools:[{name:'echo',description:'private description '+secret,inputSchema:{type:'object',properties:{value:{type:'string',description:'private parameter '+secret}},required:['value']}}]};
+if(m.method==='tools/call'){const progressToken=m.params._meta?.progressToken;if(progressToken!==undefined)process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',params:{progressToken,progress:1,total:2,message:'private progress '+secret}})+'\\n');result={content:process.argv.includes('--empty')?[]:[{type:'text',text:'private output '+secret}],structuredContent:{echo:secret}};}
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`;
+test('native MCP definitions, model requests, progress and results hide secrets without changing content structure',async()=>{
+  for(const secret of ['SYNTHETIC_PRIVATE_TOKEN','SYNTHETIC_PRIVATE_"TOKEN','text'])for(const empty of [false,true]){
+    const dir=temp(),file=join(dir,'secrets.mjs');writeFileSync(file,secretFixture);const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+    await external.call('mcp.save',{name:'private',type:'stdio',command:process.execPath,args:[file,...empty?['--empty']:[]],env:{TOKEN:secret},enabled:true});const harness=await sessionFor(dir,external),updates:unknown[]=[],requests:unknown[]=[],completed:Array<{structuredContent?:unknown}>=[];
+    const unsubscribe=harness.session.subscribe(event=>{if(event.type==='tool_execution_update')updates.push(event.partialResult);if(event.type==='tool_execution_end')completed.push(event.result);});
+    try{assert.equal((await external.call('mcp.test',{name:'private'}) as {ok:boolean}).ok,true);
+      const tool=harness.session.getAllTools().find(tool=>tool.name==='mcp__private__echo')!;assert.ok(tool);assert.ok(!tool.description.includes(secret));
+      harness.fixture.setResponses([context=>{requests.push(context);return fauxAssistantMessage(fauxToolCall(tool.name,{value:'fixture'}),{stopReason:'toolUse'});},context=>{requests.push(context);return fauxAssistantMessage('done');}]);await harness.session.prompt('call configured tool');
+      const result=harness.session.messages.findLast(message=>message.role==='toolResult');assert.ok(result&&result.role==='toolResult');assert.notEqual(result.isError,true);assert.equal(result.content[0].type,'text');assert.match((result.content[0] as {text:string}).text,/凭证已隐藏/);
+      const native=completed.at(-1)?.structuredContent as {content:Array<{type:string}>;structuredContent:{echo:string}};assert.equal(native.structuredContent.echo,'[凭证已隐藏]');if(!empty)assert.equal(native.content[0].type,'text');else assert.equal(JSON.parse((result.content[0] as {text:string}).text).echo,'[凭证已隐藏]');
+      assert.ok(updates.length>0);assert.ok(JSON.stringify(updates).includes('凭证已隐藏'));
+      if(secret!=='text'){assert.ok(!JSON.stringify(requests).includes(secret));assert.ok(!JSON.stringify(updates).includes(secret));assert.ok(!JSON.stringify(tool).includes(secret));}
+    }finally{unsubscribe();await harness.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
+test('native MCP refuses a credential embedded in schema enum instead of rewriting argument semantics',async()=>{
+  const dir=temp(),file=join(dir,'enum.mjs');writeFileSync(file,secretFixture.replace("description:'private parameter '+secret","enum:[secret]"));const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+  await external.call('mcp.save',{name:'unsafe',type:'stdio',command:process.execPath,args:[file],env:{TOKEN:'SYNTHETIC_PRIVATE_ENUM'},enabled:true});const harness=await sessionFor(dir,external);
+  try{const result=await external.call('mcp.test',{name:'unsafe'}) as {ok:boolean};assert.equal(result.ok,false);assert.equal(harness.session.getAllTools().some(tool=>tool.name==='mcp__unsafe__echo'),false);assert.ok(!JSON.stringify(external.snapshot()).includes('SYNTHETIC_PRIVATE_ENUM'));}
+  finally{await harness.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('native MCP refuses a credential embedded in a parameter property name',async()=>{
+  const dir=temp(),file=join(dir,'property.mjs');writeFileSync(file,secretFixture.replace('properties:{value:{','properties:{[secret]:{').replace("required:['value']","required:[secret]"));const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+  await external.call('mcp.save',{name:'unsafe',type:'stdio',command:process.execPath,args:[file],env:{TOKEN:'SYNTHETIC_PRIVATE_PROPERTY'},enabled:true});const harness=await sessionFor(dir,external);
+  try{assert.equal((await external.call('mcp.test',{name:'unsafe'}) as {ok:boolean}).ok,false);assert.equal(harness.session.getAllTools().some(tool=>tool.name==='mcp__unsafe__echo'),false);assert.ok(!JSON.stringify(external.snapshot()).includes('SYNTHETIC_PRIVATE_PROPERTY'));}
+  finally{await harness.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('all native MCP resource entries recheck another controller disabling the server during a turn',async()=>{
+  const dir=temp(),file=join(dir,'resources.mjs'),log=join(dir,'reads.log');writeFileSync(file,`import {createInterface} from 'node:readline';import {appendFileSync} from 'node:fs';createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{resources:{}},serverInfo:{name:'resources',version:'1'}};if(m.method==='resources/list'){appendFileSync(process.env.LOG,'list\\n');result={resources:[{uri:'fixture://item',name:'item'}]};}if(m.method==='resources/templates/list'){appendFileSync(process.env.LOG,'templates\\n');result={resourceTemplates:[]};}if(m.method==='resources/read'){appendFileSync(process.env.LOG,'read\\n');result={contents:[{uri:'fixture://item',text:'RESOURCE_BODY'}]};}process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`);
+  let approvals=0;const external=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async request=>{if(request.operation==='调用 MCP 工具')approvals++;return true;}});
+  await external.call('mcp.save',{name:'resources',type:'stdio',command:process.execPath,args:[file],env:{LOG:log},enabled:true});const harness=await sessionFor(dir,external),other=createExternalCapabilities({dataDir:dir,cwd:dir,confirm:async()=>true});
+  try{assert.equal((await external.call('mcp.test',{name:'resources'}) as {ok:boolean}).ok,true);
+    harness.fixture.setResponses([fauxAssistantMessage(fauxToolCall('read_mcp_resource',{server:'resources',uri:'fixture://item'}),{stopReason:'toolUse'}),fauxAssistantMessage('done')]);await harness.session.prompt('read enabled resource');assert.equal(approvals,1);const before=readFileSync(log,'utf8');assert.match(before,/read/);
+    for(const name of ['list_mcp_resources','list_mcp_resource_templates','read_mcp_resource']){
+      await other.call('mcp.enable',{name:'resources',enabled:true});await external.call('mcp.test',{name:'resources'});const beforeCall=readFileSync(log,'utf8');
+      harness.fixture.setResponses([async()=>{await other.call('mcp.enable',{name:'resources',enabled:false});return fauxAssistantMessage(fauxToolCall(name,{server:'resources',...name==='read_mcp_resource'?{uri:'fixture://item'}:{}}),{stopReason:'toolUse'});},fauxAssistantMessage('done')]);await harness.session.prompt('disabled during active provider request');
+      assert.equal(readFileSync(log,'utf8'),beforeCall);const result=harness.session.messages.findLast(message=>message.role==='toolResult');assert.ok(result&&result.role==='toolResult');assert.equal(result.isError,true);assert.match(JSON.stringify(result.content),/停用|移除/);
+    }assert.equal(approvals,1);
+  }finally{await other.dispose();await harness.close();rmSync(dir,{recursive:true,force:true});}
+});
 
 test('native Pi MCP stdio test discovers tools without invoking them; tool execution obeys approval',async()=>{
   const dir=temp(),file=join(dir,'mcp.mjs'),log=join(dir,'calls.txt');writeFileSync(file,stdioFixture);let allowTools=false;
