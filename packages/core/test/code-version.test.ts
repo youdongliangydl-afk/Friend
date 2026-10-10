@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {appendFileSync,mkdtempSync,mkdirSync,readFileSync,rmSync,symlinkSync,unlinkSync,writeFileSync} from 'node:fs';
+import {appendFileSync,existsSync,mkdtempSync,mkdirSync,readFileSync,rmSync,symlinkSync,unlinkSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {projectCodeVersion} from '../src/code-version.js';
 import {CapabilityError,GoalLedger,RecordStore,TaskLedger,type PluginContext} from '../src/index.js';
+import {ProcessJobs} from '../../../apps/desktop/src/process-jobs.js';
+import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 
 const emptyHash=createHash('sha256').digest('hex');
 type Layout='nested-project'|'nested-data'|'same-root'|'sibling';
@@ -65,6 +67,46 @@ test('same-root host projections and native history do not invalidate business f
  }finally{f.close();}
 });
 
+test('first host .pi parent creation is stable while its user files and directories remain bound',()=>{
+ const f=fixture('nested-project');try{
+  writeFileSync(join(f.project,'result.txt'),'SINGLE_OK\n');const version=projectCodeVersion(f.project,f.data);
+  mkdirSync(join(f.project,'.pi','tasks','first-check'),{recursive:true});writeFileSync(join(f.project,'.pi','tasks','first-check','stdout.log'),'host output');
+  assert.equal(projectCodeVersion(f.project,f.data),version);
+  writeFileSync(join(f.project,'.pi','user.txt'),'before');let userVersion=projectCodeVersion(f.project,f.data);assert.notEqual(userVersion,version);
+  appendFileSync(join(f.project,'.pi','user.txt'),'after');const changed=projectCodeVersion(f.project,f.data);assert.notEqual(changed,userVersion);userVersion=changed;
+  mkdirSync(join(f.project,'.pi','user-directory'));assert.notEqual(projectCodeVersion(f.project,f.data),userVersion);
+ }finally{f.close();}
+});
+
+test('first real ProcessJobs check can create its .pi host parent during TaskLedger verification',async()=>{
+ const f=fixture('nested-project'),goals=new GoalLedger(f.data),tasks=new TaskLedger(f.data),jobs=new ProcessJobs(f.data,()=>{},()=>{});
+ const hooks=new Map<string,((event:unknown,ctx:unknown)=>Promise<unknown>)[]>();
+ const native={cwd:f.project,sessionManager:{getSessionId:()=> 'code-version-first-process-check'},modelRegistry:{getAll:()=>[]},hasUI:false,ui:{}};
+ const ctx:PluginContext={origin:'user',executionMode:'single',dataDir:f.data,projectDir:f.project,projectId:'project',sessionId:'code-version-first-process-check',runId:'run',isIdle:()=>true,history:()=>[],readSource:()=>{throw new Error('unexpected source read');},complete:async()=>{throw new Error('model calls are forbidden');},request:async()=>{throw new Error('external calls are forbidden');},emit:()=>{},notify:()=>{},appendEntry:()=>{}};
+ try{
+  writeFileSync(join(f.project,'result.txt'),'SINGLE_OK\n');
+  writeFileSync(join(f.project,'check.mjs'),"import {readFileSync} from 'node:fs';\nif(readFileSync('result.txt','utf8')!=='SINGLE_OK\\n')throw new Error('SINGLE_OUTPUT_MISMATCH');\nconsole.log('SINGLE_OUTPUT_OK');\n");
+  await jobs.extension()({on:(name:string,handler:(event:unknown,ctx:unknown)=>Promise<unknown>)=>{const handlers=hooks.get(name)||[];handlers.push(handler);hooks.set(name,handlers);}} as unknown as ExtensionAPI);
+  assert.equal(existsSync(join(f.project,'.pi')),false);
+  const goal=goals.create({objective:'check actual result through the production process backend'},ctx,1);goals.noteWrite(ctx,'write');
+  const task=tasks.create({title:'first process check',mode:'write',checks:[{command:process.execPath,args:['check.mjs']}]},ctx,goal.id),before=projectCodeVersion(f.project,f.data);
+  const checked=await tasks.verify(task.id,{result:'production process check passed'},ctx,async check=>{
+   for(const handler of hooks.get('session_start')||[])await handler({reason:'startup'},native);
+   assert.equal(existsSync(join(f.project,'.pi','tasks')),true);
+   const result=await jobs.check(check,ctx,1);assert.equal(result.exitCode,0);assert.match(result.output,/SINGLE_OUTPUT_OK/);return result;
+  },1);
+  assert.equal(checked.status,'completed');assert.equal(projectCodeVersion(f.project,f.data),before);
+  goals.update({progress:'actual process check passed'},ctx);const waiting=await goals.finish(ctx,tasks,async()=>{throw new Error('Single must not start a reviewer');},true);
+  assert.equal(goals.accept({goalId:goal.id,expectedRevision:waiting.revision,candidateDigest:waiting.acceptance!.binding},ctx,tasks,true).status,'completed');
+ }finally{
+  try{for(const handler of hooks.get('session_shutdown')||[])await handler({reason:'shutdown'},native);}finally{
+   jobs.dispose();goals.dispose();tasks.dispose();
+   // The real backend persists final notification metadata after publishing completion.
+   process.once('beforeExit',()=>f.close());
+  }
+ }
+});
+
 for(const git of [false,true]){
  test(`Single rejects a changed nested ${git?'Git':'non-Git'} result, then accepts only a fresh real check`,async()=>{
   const f=fixture('nested-project');if(git){const init=spawnSync('git',['init','--quiet',f.project],{encoding:'utf8'});assert.equal(init.status,0,init.stderr);}
@@ -83,10 +125,10 @@ for(const aliasTarget of ['project','data'] as const){
  });
 }
 
-test('canonical roots still bind internal symlink spelling without following target contents',()=>{
+for(const linkName of ['linked.txt','.pi'])test(`canonical roots still bind ${linkName} symlink spelling without following target contents`,()=>{
  const f=fixture('sibling');try{
   const external=join(f.base,'external');mkdirSync(external);writeFileSync(join(external,'one.txt'),'before');writeFileSync(join(external,'two.txt'),'before');
-  const link=join(f.project,'linked.txt');symlinkSync(join(external,'one.txt'),link);
+  const link=join(f.project,linkName);symlinkSync(join(external,'one.txt'),link);
   const version=projectCodeVersion(f.project,f.data);writeFileSync(join(external,'one.txt'),'after');
   assert.equal(projectCodeVersion(f.project,f.data),version);
   unlinkSync(link);symlinkSync(join(external,'two.txt'),link);
