@@ -1,3 +1,5 @@
+import * as sessionNavigation from '../apps/desktop/src/session-navigation.js';
+import * as sessionOrder from '../apps/desktop/src/session-order.js';
 import {MessageQueue} from '../apps/desktop/src/message-queue.js';
 import {ownedEntries} from '../apps/desktop/src/task-todo.js';
 import * as sessionView from '../apps/desktop/src/session-view.js';
@@ -45,12 +47,14 @@ function fixture(){
     setTimeout:(callback:()=>void,delay:number)=>{const id=++nextTimer;timers.set(id,{at:now+delay,callback});return id;},clearTimeout:(id:number)=>timers.delete(id),
     process:{argv:['node','main.mjs'],execPath:'/fixture/Friend-Pi',env:{FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_NODE:'/fixture/node'},platform:'darwin',resourcesPath:'/fixture/resources',kill:(pid:number,signal:string)=>{signals.push({pid,signal});return true;}},
     require(specifier:string){
-      if(specifier==='electron')return {app,BrowserWindow:class{},ipcMain:{handle(){}},dialog:{showOpenDialog:async()=>({canceled:true})},Menu:{},shell:{openPath:async()=>'',openExternal:async()=>{}}};
+      if(specifier==='electron')return {app,BrowserWindow:class{},ipcMain:{handle(){}},dialog:{showOpenDialog:async()=>({canceled:true}),showSaveDialog:async()=>({canceled:true})},Menu:{},shell:{openPath:async()=>'',openExternal:async()=>{}}};
       if(specifier==='node:child_process')return {fork,execFile(){}};
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
       if(specifier==='@friend-pi/core')return {RecordStore,object,text,digest,projectIdentity,isSessionDeleted,parsePermissionMode};
       if(specifier==='./session-view.js')return sessionView;
+      if(specifier==='./session-navigation.js')return sessionNavigation;
+      if(specifier==='./session-order.js')return sessionOrder;
       if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
       if(specifier==='./run-changes.js')return runChanges;
@@ -296,4 +300,55 @@ test('side transfers recover prepare and fork reply loss in project and temporar
    if(temporary){const directories=fs.readdirSync(path.join(f.dataDir,'workspaces'));assert.deepEqual(directories.sort(),['transfer-parent',intent.id].sort());}
   }finally{queue.dispose();f.cleanup();}
  }
+});
+
+test('session order persists a complete project scope without touching active workers or hidden sessions',async()=>{
+ const f=fixture();try{
+  const a=f.record('sort-a'),b=f.record('sort-b'),hidden=f.record('sort-hidden');hidden.archived=true;f.api.store.put('session:'+hidden.id,hidden);
+  const foreign={...f.record('sort-foreign'),projectId:''};f.api.store.put('session:'+foreign.id,foreign);
+  await f.ready(a);await f.api.handle('session.open',{id:a.id});const count=f.children.length;
+  const result=await f.api.handle('session.reorder',{projectId:'fixture',ids:[b.id,hidden.id,a.id]});assert.equal(result.current.sessionId,a.id);assert.equal(f.children.length,count);
+  assert.deepEqual(Array.from(result.sessionOrder.fixture),[b.id,hidden.id,a.id]);
+  const temp=await f.api.handle('session.reorder',{projectId:'',ids:[foreign.id]});assert.deepEqual(Array.from(temp.sessionOrder['']),[foreign.id]);
+  const cold=new RecordStore('desktop',f.dataDir);try{assert.deepEqual(cold.get<string[]>('session-order:fixture')?.value,[b.id,hidden.id,a.id]);}finally{cold.close();}
+  for(const ids of [[a.id,b.id],[a.id,a.id,hidden.id],[a.id,b.id,foreign.id]])await assert.rejects(f.api.handle('session.reorder',{projectId:'fixture',ids}),/列表已变化/);
+  assert.deepEqual(Array.from(f.api.store.get('session-order:fixture').value),[b.id,hidden.id,a.id]);assert.equal(f.children.length,count);
+ }finally{f.cleanup();}
+});
+test('new project creates a new directory, cancellation is harmless and existing content cannot be overwritten',async()=>{
+ const f=fixture();try{
+  const before=f.api.store.list('project:').length;assert.equal((await f.api.handle('project.create',{})).cancelled,true);assert.equal(f.api.store.list('project:').length,before);
+  const directory=path.join(f.directory,'新项目'),project=await f.api.handle('project.create',{path:directory});assert.equal(fs.statSync(directory).isDirectory(),true);assert.equal(project.name,'新项目');
+  fs.writeFileSync(path.join(directory,'keep.md'),'preserved');await assert.rejects(f.api.handle('project.create',{path:directory}),/已存在/);assert.equal(fs.readFileSync(path.join(directory,'keep.md'),'utf8'),'preserved');
+  const file=path.join(f.directory,'file');fs.writeFileSync(file,'keep');await assert.rejects(f.api.handle('project.open',{path:file}),/必须是文件夹/);assert.equal(fs.readFileSync(file,'utf8'),'keep');
+ }finally{f.cleanup();}
+});
+test('host back and forward restore an empty project rather than auto-selecting its newly created session',async()=>{
+ const f=fixture();try{
+  const a=f.record('nav-a');await f.ready(a);await f.api.handle('session.open',{id:a.id});
+  f.api.store.put('project:empty',{id:'empty',path:f.project,name:'Empty'});const empty=await f.api.handle('project.select',{projectId:'empty'});assert.equal(empty.current,undefined);assert.equal(empty.selectedProjectId,'empty');
+  const pending=f.api.handle('session.new',{projectId:'empty'});await f.flush();const child=f.children.at(-1),native=f.history('new-empty-project');child.state={isRunning:false,lifecycleStatus:'idle',sessionId:native.id,sessionFile:native.file,plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});const created=await pending;assert.equal(created.current.projectId,'empty');assert.equal(created.createdSessionId,created.current.sessionId);
+  const back=await f.api.handle('navigation.go',{direction:-1});assert.equal(back.current,undefined);assert.equal(back.selectedProjectId,'empty');assert.equal(back.navigation.forward,true);
+  const forward=await f.api.handle('navigation.go',{direction:1});assert.equal(forward.current.sessionId,created.createdSessionId);
+  await f.api.handle('navigation.go',{direction:-1});const opened=await f.api.handle('session.open',{id:a.id});assert.equal(opened.navigation.forward,false);
+  const broken=f.record('nav-broken');fs.unlinkSync(broken.path);await assert.rejects(f.api.handle('session.open',{id:broken.id}),/原始会话历史缺失/);
+  const unchanged=await f.api.handle('app.state',{});assert.equal(unchanged.current.sessionId,a.id);assert.equal(unchanged.navigation.forward,false);
+ }finally{f.cleanup();}
+});
+
+test('failed project navigation preserves the selected empty-project route and its draft owner',async()=>{
+ const f=fixture();try{
+  f.api.store.put('project:empty-a',{id:'empty-a',path:f.project,name:'Empty A'});await f.api.handle('project.select',{projectId:'empty-a'});
+  const bad=f.record('missing-b');fs.unlinkSync(bad.path);await assert.rejects(f.api.handle('project.select',{projectId:'fixture'}),/原始会话历史缺失/);
+  const after=await f.api.handle('app.state',{});assert.equal(after.current,undefined);assert.equal(after.selectedProjectId,'empty-a');assert.equal(after.navigation.forward,false);
+ }finally{f.cleanup();}
+});
+
+test('archive fallback keeps the same project while its next worker is starting',async()=>{
+ const f=fixture();try{
+  f.api.store.put('project:empty-a',{id:'empty-a',path:f.project,name:'A'});await f.api.handle('project.select',{projectId:'empty-a'});
+  const a=f.record('archive-nav-a'),next=f.record('archive-nav-next');await f.ready(a);await f.api.handle('session.open',{id:a.id});
+  const pending=f.api.handle('session.archive',{id:a.id,archived:true});await f.flush();const child=f.children.at(-1);const interim=await f.api.handle('app.state',{});assert.equal(interim.current,undefined);assert.equal(interim.selectedProjectId,'fixture');
+  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:next.piSessionId,sessionFile:next.path,plugins:['swarm'],thinkingLevels:['off']};child.emit('message',{type:'ready',state:child.state,models:[],providers:[]});const settled=await pending;assert.equal(settled.current.sessionId,next.id);assert.equal(settled.selectedProjectId,'fixture');
+ }finally{f.cleanup();}
 });

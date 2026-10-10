@@ -1,5 +1,6 @@
-export type IconName='friend'|'hand'|'smart'|'unlock'|'chat'|'folder'|'sidebar'|'file'|'diff'|'swarm'|'team'|'expert'|'memory'|'context'|'settings'|'history'|'search'|'bookmark'|'send'|'shield'|'plan'|'single'|'plus'|'workbench';
+export type IconName='friend'|'hand'|'smart'|'unlock'|'chat'|'folder'|'sidebar'|'file'|'diff'|'swarm'|'team'|'expert'|'memory'|'context'|'settings'|'history'|'search'|'bookmark'|'send'|'shield'|'plan'|'single'|'plus'|'workbench'|'back'|'forward'|'compose'|'trace';
 const paths:Record<Exclude<IconName,'friend'>,string[]>={
+  back:['M15 5l-7 7 7 7','M8 12h13'],forward:['M9 5l7 7-7 7','M16 12H3'],compose:['M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7','M15 3l6 6M9 15l2-6 9-9 4 4-9 9z'],trace:['M4 5h3v3H4zM4 16h3v3H4z','M11 6h10M11 17h10M5.5 8v8'],
   hand:['M7 12V5a2 2 0 0 1 4 0v6M11 9V4a2 2 0 0 1 4 0v7M15 10V7a2 2 0 0 1 4 0v9c0 4-3 6-7 6-3 0-5-1-7-4l-2-4a2 2 0 0 1 3-2l2 2'],smart:['M12 3l2 6 6 3-6 2-2 7-2-7-7-2 7-3z'],unlock:['M8 11V7a4 4 0 0 1 8 0','M5 11h14v10H5z','M12 15v2'],
   chat:['M4 4h16v12H9l-5 4z'],team:['M12 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6','M5 7a2 2 0 1 0 0 4a2 2 0 1 0 0-4','M19 7a2 2 0 1 0 0 4a2 2 0 1 0 0-4','M7 21v-3a5 5 0 0 1 10 0v3M2 20v-4a3 3 0 0 1 5-2M22 20v-4a3 3 0 0 0-5-2'],
   folder:['M3 6h6l2 2h10v11H3z'],sidebar:['M4 4h16v16H4z','M9 4v16'],file:['M6 3h8l4 4v14H6z','M14 3v5h5','M9 12h6M9 16h6'],

@@ -1,6 +1,6 @@
 .app.friend-layout .sidebar{border:0;border-radius:0;box-shadow:none;background:#f4f5f7}
 .project-sidebar{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0;color:#404349;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.project-sidebar-title{flex:none;padding:14px 10px 6px;color:#858a92;font-size:11px;font-weight:600}
+.project-sidebar-title{display:flex;align-items:center;justify-content:space-between;flex:none;padding:14px 10px 6px;color:#858a92;font-size:11px;font-weight:600}
 .project-sidebar-groups{flex:1;min-height:0;overflow:auto;padding:4px 0 12px;scrollbar-gutter:stable}
 .project-sidebar-group{margin:0 0 12px}
 .project-sidebar-heading{position:relative;display:flex;align-items:center;min-width:0;min-height:34px;padding:0 3px}
@@ -39,3 +39,15 @@
 @media(hover:none){.project-sidebar .project-sidebar-more{opacity:1}}
 
 .project-sidebar-status.status-awaiting_user{background:#b79b61}.project-sidebar-status.status-unread_completed{background:#7189b7}.project-sidebar-status.status-unread_failed{background:#bf786c}
+
+.project-sidebar .archive-toggle{display:grid;place-items:center;width:26px;height:26px;padding:4px;border:0;border-radius:5px;background:transparent;color:#818a87}
+.archive-toggle:hover,.archive-toggle[aria-pressed=true]{background:#e6e9e8;color:#486453}
+.project-sidebar-actions{display:flex;align-items:center;gap:2px;flex:none;opacity:1}
+.project-sidebar-heading:hover .project-sidebar-actions,.project-sidebar-heading:focus-within .project-sidebar-actions,.project-sidebar-heading.is-current .project-sidebar-actions{opacity:1}
+.project-sidebar-actions .project-sidebar-more{opacity:1}
+.project-sidebar .project-sidebar-compose{display:grid;place-items:center;width:26px;height:28px;padding:4px;border:0;border-radius:5px;background:transparent;color:#737c77}
+.project-sidebar-compose:hover{background:#dce0e4;color:#34383f}
+.project-sidebar-heading:hover,.project-sidebar-heading.is-current{background:#eceef0;border-radius:6px}
+.project-sidebar-session[draggable=true]{cursor:grab}.project-sidebar-session[draggable=true]:active{cursor:grabbing}
+.project-sidebar-chat.drop-before{box-shadow:inset 0 2px #8799aa}.project-sidebar-chat.drop-after{box-shadow:inset 0 -2px #8799aa}
+@media(hover:none){.project-sidebar-actions{opacity:1}}

@@ -1,3 +1,5 @@
+import * as sessionNavigation from '../apps/desktop/src/session-navigation.js';
+import * as sessionOrder from '../apps/desktop/src/session-order.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -43,7 +45,7 @@ harness = harness.replace('throw new Error(`Unrecognized production dependency: 
 harness = harness.replace('setBrowserHost:value=>{browserHost=value;},startWorker', 'setWindow:value=>{window=value;},state,attention,publishState,selectCurrent,setBrowserHost:value=>{browserHost=value;},startWorker');
 harness = harness.replace('return {directory,project,dataDir,modelRuntime,api,children,', 'return {notifications,directory,project,dataDir,modelRuntime,api,children,');
 const scope: Record<string, unknown> = {console, Buffer, URL, queueMicrotask, assert, fs, path, tmpdir, EventEmitter, randomUUID, fileURLToPath, vm, transformSync, SessionManager,
-  RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView,
+  RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView, sessionNavigation, sessionOrder,
   attachmentInput, materialReferences, documentReader, AttentionRegistry, nodeRequire: createRequire(import.meta.url)};
 vm.runInNewContext(transformSync(harness + '\nglobalThis.navigationFixture=fixture;', {loader: 'ts', format: 'cjs', target: 'node24'}).code, scope);
 const fixture = scope.navigationFixture as () => any;

@@ -50,3 +50,8 @@ test('UI validation fences malformed tabs, duplicate tools and unknown selection
   assert.throws(()=>validateView({...view,tabs:[{id:'evil',kind:'browser',url:'file:///etc/passwd'}]}));
   assert.equal(validateView({...initialView(),tabs:[{id:'blank',kind:'browser',url:'about:blank'}],active:'blank'}).tabs[0].url,'about:blank');
 });
+
+test('trace is a persistent singleton fullscreen tab using the same selection and close contract',()=>{
+ const view=openTool(initialView(),'trace');assert.equal(view.tabs[0].page,'trace');assert.deepEqual(validateView(view),view);
+ const reopened=openTool(addNewTab(view),'trace');assert.equal(reopened.tabs.length,1);assert.equal(reopened.active,view.active);assert.equal(closeViewTab(reopened,reopened.active).active,'conversation');
+});

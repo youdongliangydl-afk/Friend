@@ -1,10 +1,16 @@
 import { mkdirSync, realpathSync, statSync, existsSync } from 'node:fs';
-import { join, isAbsolute, resolve } from 'node:path';
+import { join, isAbsolute, resolve,dirname,basename } from 'node:path';
 import { homedir } from 'node:os';
 import { projectIdentity, type RecordStore } from '@friend-pi/core';
 
 export type WorkspaceRef = { kind: 'project'; projectId: string } | { kind: 'temporary'; sessionId: string };
 export interface Project { id: string; path: string; name: string }
+export function createProjectDirectory(path:string):Project {
+  if(!isAbsolute(path)||!basename(path)||['.','..'].includes(basename(path)))throw new Error('请选择有效的新项目位置');
+  const canonical=join(realpathSync(dirname(path)),basename(path));
+  try{mkdirSync(canonical,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')throw new Error('此名称已存在，请换一个名称，或使用“打开项目”');throw error;}
+  return {id:projectIdentity(canonical),path:canonical,name:basename(canonical)};
+}
 export interface WorkspaceSession {
   id: string; projectId: string; workspace?: WorkspaceRef; workspaceDir?: string;
 }

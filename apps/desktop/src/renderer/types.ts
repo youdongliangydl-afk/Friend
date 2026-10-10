@@ -8,6 +8,7 @@ export interface Message { senderLabel?:string;role: string; text: string; id?: 
 export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[];ready?:boolean;connectionStatus?:string;testedAt?:string;baseUrl?:string;api?:string }
 export interface Preferences {defaultLayoutMode?:import('../session-view.js').LayoutMode;defaultBrowserScope?:import('../session-view.js').BrowserScope;defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;defaultWorkspaceDir?:string;contextMode:'native'|'infinite';backgroundModelId:string}
 export interface AppState {
+  selectedProjectId?:string;sessionOrder?:Record<string,string[]>;navigation?:{back:boolean;forward:boolean};
   revision?:number;createdSessionId?:string;activities?:import('../session-attention.js').AttentionActivity[];
   projects: Project[];
   sessions: SessionSummary[];

@@ -1,10 +1,12 @@
 import {AttentionRegistry,type AttentionOwner} from './session-attention.js';
+import {SessionNavigation,type SessionRoute} from './session-navigation.js';
+import {validateSessionOrder} from './session-order.js';
 import {BrowserHost} from './browser-host.js';
 import {initialView,validateView,mergeViewUpdate,type LayoutMode,type BrowserScope,type SessionViewState} from './session-view.js';
 import {processSnapshot,ownedDescendants,terminateOwned,type ProcessIdentity} from './terminal-processes.js';
 import { app,BrowserWindow,ipcMain,dialog,Menu,shell,protocol,Notification } from 'electron';
 import { fork,type ChildProcess } from 'node:child_process';
-import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync } from 'node:fs';
+import { existsSync,readFileSync,realpathSync,unlinkSync,readdirSync,statSync } from 'node:fs';
 import { join,resolve,dirname,relative,isAbsolute,basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -18,7 +20,7 @@ import {readRunChange} from './run-changes.js';
 import {fileTree,previewFile,workspaceDiff,projectFile,type DiffScope} from './workspace-files.js';
 import { TerminalBroker } from './terminal-broker.js';
 import type { TerminalContext } from './terminal-controller.js';
-import { sessionWorkspace, temporaryWorkspace, temporaryDirectory, orderedProjects, validateProjectOrder, type Project, type WorkspaceRef } from './workspaces.js';
+import { sessionWorkspace, temporaryWorkspace, temporaryDirectory, orderedProjects, validateProjectOrder,createProjectDirectory, type Project, type WorkspaceRef } from './workspaces.js';
 import { listDirectory, readEditorFile, writeEditorFile } from './file-editor.js';
 import { grantHtmlPreview, revokeHtmlPreview, htmlPreviewResponse } from './html-preview.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration,type ProviderRuntime } from './provider-settings.js';
@@ -46,6 +48,10 @@ interface Worker {generation:string;child:ChildProcess;record:SessionRecord;stat
 const documentReader=createDocumentReader();
 const attention=new AttentionRegistry();
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let selectedWorkspace:string|undefined;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
+const initialRecord=currentId?store.get<SessionRecord>('session:'+currentId)?.value:undefined;
+const navigationHistory=new SessionNavigation({projectId:initialRecord?.projectId||'',sessionId:initialRecord?.id||null});
+function routeAvailable(route:SessionRoute){return (!route.projectId||!!store.get('project:'+route.projectId))&&(!route.sessionId||!!store.get('session:'+route.sessionId)&&!store.get('deleting:'+route.sessionId));}
+function visitSelection(){const record=currentId?store.get<SessionRecord>('session:'+currentId)?.value:undefined;navigationHistory.visit({projectId:record?.projectId??selectedWorkspace??'',sessionId:record?.id||null});}
 let models:unknown[]=[];let providers:unknown[]=[];
 let learningReady=false;let learning:ChildProcess|undefined;let learningRestarts=0;const learningPending=new Map<string,{resolve:(v:unknown)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
 const ownedChildren=new Map<Worker,Map<number,ProcessIdentity>>();const learningOwned=new Map<number,ProcessIdentity>();
@@ -53,6 +59,7 @@ function startLearning(){if(shuttingDown||learning)return;processSnapshot();lear
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.changes.read','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('attention.dismiss');
+for(const method of ['project.create','session.reorder','navigation.go'])allowed.add(method);
 for(const method of ['attachment.import','attachment.inspect','reference.list','document.read','document.section','document.pdf.page','external.call'])allowed.add(method);
 allowed.add('link.open');allowed.add('model.test');
 for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload'])allowed.add(method);
@@ -64,15 +71,15 @@ function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boo
 const deletionPreviews=new Map<string,{token:string;updatedAt:string}>();
 const pendingConfigurations=new Map<string,{plugins:string[];contextMode:string}>();
 function idleRecord(input:Record<string,unknown>){const id=text(input.id),record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record||store.get(`deleting:${id}`))throw new Error('会话不存在或已删除');const active=workers.get(id);if(active&&(active.phase==='starting'||active.state.isRunning||active.state.lifecycleStatus==='stopping'))throw new Error('请先停止前台和 Swarm 执行');return {record,active};}
-async function chooseAfterArchive(projectId:string,navigation:number){if(navigation!==navigationGeneration)return;const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];selectCurrent(undefined);store.remove('current');if(recent){try{await startWorker(recent);if(navigation===navigationGeneration){selectCurrent(recent.id);store.put('current',recent.id);}}catch{if(navigation===navigationGeneration)publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}}
+async function chooseAfterArchive(projectId:string,navigation:number){if(navigation!==navigationGeneration)return;const recent=records().filter(r=>r.projectId===projectId&&!r.archived&&!store.get(`deleting:${r.id}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];selectedWorkspace=projectId||undefined;selectCurrent(undefined);store.remove('current');if(recent){try{await startWorker(recent);if(navigation===navigationGeneration){selectCurrent(recent.id);store.put('current',recent.id);}}catch{if(navigation===navigationGeneration)publish('notice',{level:'warning',message:'其他会话原史不可用，保留空态和索引'});}}if(navigation===navigationGeneration){selectedWorkspace=projectId||undefined;visitSelection();}}
 function records(){return store.list<SessionRecord>('session:').map(row=>row.value);}
 function projects(){return orderedProjects(store.list<Project>('project:').map(row=>row.value),store.get<string[]>('project-order')?.value||[]);}
 let stateRevision=0,navigationGeneration=0;
 function attentionOwner(worker:Worker):AttentionOwner{return {sessionId:worker.record.id,generation:worker.generation,runId:typeof worker.state.runId==='string'?worker.state.runId:undefined};}
-function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {revision:++stateRevision,activities:attention.snapshot(),projects:projects(),sessions:records(),current:worker?{...worker.state,dialogs:attention.snapshot().filter(activity=>activity.sessionId===worker.record.id&&activity.kind==='dialog').map(activity=>({...activity.dialog,expiresAt:activity.expiresAt})),pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,ui:viewContext(worker.record.id).ui,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(worker?.record.projectId||selectedWorkspace),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
+function state(){if(storeClosed)throw new Error('应用已经退出');const worker=currentId?workers.get(currentId):undefined;return {revision:++stateRevision,activities:attention.snapshot(),projects:projects(),sessions:records(),sessionOrder:Object.fromEntries(store.list<string[]>('session-order:').map(row=>[row.key.slice(14),row.value])),selectedProjectId:(currentId?store.get<SessionRecord>('session:'+currentId)?.value?.projectId:undefined)??selectedWorkspace??'',navigation:{back:!!navigationHistory.target(-1,routeAvailable),forward:!!navigationHistory.target(1,routeAvailable)},current:worker?{...worker.state,dialogs:attention.snapshot().filter(activity=>activity.sessionId===worker.record.id&&activity.kind==='dialog').map(activity=>({...activity.dialog,expiresAt:activity.expiresAt})),pendingConfiguration:pendingConfigurations.get(worker.record.id),sessionId:worker.record.id,ui:viewContext(worker.record.id).ui,piSessionId:worker.state.sessionId,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}:undefined,models,providers,preferences:preferences(worker?.record.projectId||selectedWorkspace),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
 function sideState(worker:Worker){return {...state(),current:{...worker.state,sessionId:worker.record.id,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}};}
 let browserHost:BrowserHost|undefined;
-function selectCurrent(id:string|undefined){if(id!==currentId)browserHost?.hide();currentId=id;}
+function selectCurrent(id:string|undefined){if(id!==currentId)browserHost?.hide();if(id){const record=store.get<SessionRecord>('session:'+id)?.value;if(record)selectedWorkspace=record.projectId||undefined;}currentId=id;}
 function viewContext(id:string){const record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不存在');const saved=store.get<SessionViewState>('session-ui:'+id)?.value,ui=saved?validateView(saved):initialView(preferences(record.projectId));if(saved&&JSON.stringify(saved)!==JSON.stringify(ui))store.put('session-ui:'+id,ui);return {id,workspacePath:sessionWorkspace(store,record).path,ui};}
 function saveView(id:string,ui:SessionViewState){viewContext(id);const next=validateView(ui);store.put('session-ui:'+id,next);publish('view',next,id);return next;}
 function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.isDestroyed())window.webContents.send('friend-pi:event',{type,data,sessionId});}
@@ -234,7 +241,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     const {record}=idleRecord(input),preview=deletionPreviews.get(record.id);if(!preview||preview.token!==input.token||preview.updatedAt!==record.updatedAt)throw new Error('删除预览已变化，请重新确认');deletionPreviews.delete(record.id);let nativeId=record.piSessionId;if(!nativeId&&record.path&&existsSync(record.path)){try{const header=JSON.parse(readFileSync(record.path,'utf8').split('\n')[0]);if(header.type==='session'&&typeof header.id==='string')nativeId=header.id;}catch{}}
     browserHost?.removeSession(record.id);const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:sessionWorkspace(store,record).id,workspaceDir:sessionWorkspace(store,record).path,listProjectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
   }
-  if(method==='session.relocate'){const navigation=++navigationGeneration,{record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',record.id);}publishState();return state();}
+  if(method==='session.relocate'){const navigation=++navigationGeneration,{record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',record.id);visitSelection();}publishState();return state();}
   if(method==='settings.get')return await settings(typeof input.projectId==='string'?input.projectId:undefined);
   if(method==='settings.update'){
     const projectId=typeof input.projectId==='string'?input.projectId:undefined;if(projectId&&!store.get(`project:${projectId}`))throw new Error('项目不存在');const key=projectId?`preferences:${projectId}`:'preferences';
@@ -265,7 +272,24 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='project.open'){
     let path=typeof input.path==='string'?input.path:undefined;if(!path){const result=await dialog.showOpenDialog(window,{title:'打开项目',properties:['openDirectory']});if(result.canceled)return {cancelled:true};path=result.filePaths[0];}
-    requireActive();const canonical=realpathSync(text(path));const project:Project={id:projectIdentity(canonical),path:canonical,name:canonical.split('/').at(-1)||canonical};store.put(`project:${project.id}`,project);publishState();return project;
+    requireActive();const canonical=realpathSync(text(path));if(!statSync(canonical).isDirectory())throw new Error('项目位置必须是文件夹');const project:Project={id:projectIdentity(canonical),path:canonical,name:canonical.split('/').at(-1)||canonical};store.put(`project:${project.id}`,project);publishState();return project;
+  }
+  if(method==='project.create'){
+    let path=typeof input.path==='string'?input.path:undefined;
+    if(!path){const result=await dialog.showSaveDialog(window,{title:'新建项目文件夹',buttonLabel:'创建项目',defaultPath:join(temporaryDirectory(preferences().defaultWorkspaceDir||'~/Documents/Friend'),'新项目'),properties:['createDirectory','showOverwriteConfirmation']});if(result.canceled)return {cancelled:true};path=result.filePath;}
+    requireActive();const project=createProjectDirectory(text(path));store.put('project:'+project.id,project);publishState();return project;
+  }
+  if(method==='session.reorder'){
+    const projectId=input.projectId;if(typeof projectId!=='string'||projectId&&!store.get('project:'+projectId))throw new Error('会话项目不存在');
+    store.put('session-order:'+projectId,validateSessionOrder(records(),projectId,input.ids));publishState();return state();
+  }
+  if(method==='navigation.go'){
+    if(input.direction!==-1&&input.direction!==1)throw new Error('导航方向无效');
+    const target=navigationHistory.target(input.direction,routeAvailable);if(!target)return state();
+    const navigation=++navigationGeneration,route=target.route;
+    if(route.sessionId){const record=store.get<SessionRecord>('session:'+route.sessionId)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);}
+    requireActive();if(navigation===navigationGeneration&&routeAvailable(route)&&navigationHistory.commit(target)){selectedWorkspace=route.projectId||undefined;selectCurrent(route.sessionId||undefined);if(route.sessionId)store.put('current',route.sessionId);else store.remove('current');}
+    publishState();return state();
   }
   if(method==='project.reorder'){
     store.put('project-order',validateProjectOrder(projects(),input.ids));publishState();return state();
@@ -280,18 +304,17 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(input.forSend===true)await requireReadyModel(await getProviderRuntime(),dataDir,selectedId||'');
     const id=randomUUID();const workspace=projectId?{workspace:{kind:'project',projectId} as WorkspaceRef}:temporaryWorkspace(preferences().defaultWorkspaceDir||'~/Documents/Friend',id);
     const record:SessionRecord={id,projectId,...workspace,name:'新会话',archived:false,updatedAt:new Date().toISOString(),status:'idle',modelId:selectedId,thinkingLevel:(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels.find(level=>level===defaults.defaultThinkingLevel)||(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.find(model=>model.id===selectedId)?.thinkingLevels[0]||'off',plugins:[...defaults.defaultPlugins],executionMode:defaults.defaultMode,planMode:defaults.defaultPlanMode,permissionMode:chosenPermission};
-    store.put('session-ui:'+id,initialView(defaults));persist(record);await startWorker(record);if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',currentId);}publishState();return {...state(),createdSessionId:id};
+    store.put('session-ui:'+id,initialView(defaults));persist(record);await startWorker(record);if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',currentId);visitSelection();}publishState();return {...state(),createdSessionId:id};
   }
   if(method==='project.select'){
     ++navigationGeneration;
     const projectId=typeof input.projectId==='string'?input.projectId:'';if(projectId&&!store.get('project:'+projectId))throw new Error('项目不存在');
-    selectedWorkspace=projectId||undefined;
     const recent=records().filter(record=>record.projectId===projectId&&!record.archived).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
     if(recent)return await handle('session.open',{id:recent.id});
-    selectCurrent(undefined);store.remove('current');publishState();return state();
+    selectedWorkspace=projectId||undefined;selectCurrent(undefined);store.remove('current');visitSelection();publishState();return state();
   }
   if(method==='session.open'){
-    const navigation=++navigationGeneration,id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();if(navigation===navigationGeneration){selectCurrent(id);store.put('current',id);}publishState();return state();
+    const navigation=++navigationGeneration,id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');await startWorker(record);requireActive();if(navigation===navigationGeneration){selectCurrent(id);store.put('current',id);visitSelection();}publishState();return state();
   }
   if(method==='session.rename'){
     const id=text(input.id);const record=store.get<SessionRecord>(`session:${id}`)?.value;if(!record)throw new Error('会话不存在');record.name=text(input.name,'名称',200);persist(record);const worker=workers.get(id);if(worker){worker.record.name=record.name;await request(worker,'rename',{name:record.name});}publishState();return state();
