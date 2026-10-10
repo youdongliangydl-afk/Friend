@@ -1,18 +1,29 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {existsSync,mkdirSync,lstatSync,readdirSync,readFileSync,writeFileSync,renameSync,copyFileSync,unlinkSync} from 'node:fs';
+import {existsSync,mkdirSync,lstatSync,readdirSync,readFileSync,writeFileSync,renameSync,copyFileSync,unlinkSync,realpathSync} from 'node:fs';
 import {join,dirname,resolve,relative} from 'node:path';
 import {SourcePolicy,CapabilityError,digest,RecordStore,type PluginContext} from '@friend-pi/core';
 import {contains} from './guard.js';
 import {schemaErrors} from './verification.js';
 import type {ArtifactVersion,Graph,Attempt} from './types.js';
 export const fileDigest=(path:string):string=>{if(!existsSync(path))return 'missing';if(lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())throw new CapabilityError('VALIDATION_ERROR','产物必须为普通文件');return createHash('sha256').update(readFileSync(path)).digest('hex');};
-function walk(root:string,excluded?:string):string[]{const out:string[]=[];const visit=(path:string)=>{if(excluded&&contains(excluded,path))return;for(const entry of readdirSync(path,{withFileTypes:true})){if(entry.name==='.git')continue;const file=join(path,entry.name);if(entry.isSymbolicLink())throw new CapabilityError('VALIDATION_ERROR','非Git暂存不接受符号链接');if(entry.isDirectory())visit(file);else if(entry.isFile())out.push(relative(root,file));}};visit(root);return out.sort();}
+function walk(root:string,excluded?:string,stagingRoots:string[]=[]):string[]{
+  root=realpathSync(root);const data=excluded?(existsSync(excluded)?realpathSync(excluded):resolve(excluded)):undefined,out:string[]=[];
+  const hidden=new Set([...(data?[data]:[]),...stagingRoots.map(path=>realpathSync(path))].filter(path=>path!==root&&contains(root,path)));
+  // Mirror the host roots in core/code-version only at the actual data root.
+  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
+  const visit=(path:string)=>{for(const entry of readdirSync(path,{withFileTypes:true})){
+    const file=join(path,entry.name);
+    if(entry.name==='.git'||hidden.has(file)||path===data&&(hostEntries.has(entry.name)||/^swarm-pre-v3-[a-f0-9-]+\.sqlite$/.test(entry.name)))continue;
+    if(entry.isSymbolicLink())throw new CapabilityError('VALIDATION_ERROR','非Git暂存不接受符号链接');
+    if(entry.isDirectory())visit(file);else if(entry.isFile())out.push(relative(root,file));
+  }};visit(root);return out.sort();
+}
 const media=(path:string)=>path.endsWith('.json')?'application/json':path.endsWith('.csv')?'text/csv':path.endsWith('.md')?'text/markdown':'application/octet-stream';
 export class Artifacts {
   constructor(private readonly store:RecordStore,private readonly changed:(artifact:ArtifactVersion,ctx:PluginContext)=>void){store.db.exec('CREATE TABLE IF NOT EXISTS swarm_file_applications(operation_id TEXT NOT NULL,target TEXT NOT NULL,baseline TEXT NOT NULL,digest TEXT NOT NULL,status TEXT NOT NULL,backup TEXT,json TEXT NOT NULL,PRIMARY KEY(operation_id,target))');}
   stage(graph:Graph,attempt:Attempt,ctx:PluginContext):{cwd:string;baselines:Record<string,string>;inputBaselines:Record<string,string>}{
-    const cwd=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId,graph.id,'artifacts',attempt.id);mkdirSync(cwd,{recursive:true,mode:0o700});const baselines:Record<string,string>={};
-    for(const path of walk(ctx.projectDir,ctx.dataDir)){const source=join(ctx.projectDir,path),target=join(cwd,path);baselines[path]=fileDigest(source);mkdirSync(dirname(target),{recursive:true,mode:0o700});copyFileSync(source,target);}
+    const workspaceRoot=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces'),artifactRoot=join(workspaceRoot,ctx.projectId,graph.id,'artifacts'),cwd=join(artifactRoot,attempt.id);mkdirSync(cwd,{recursive:true,mode:0o700});const baselines:Record<string,string>={};
+    for(const path of walk(ctx.projectDir,ctx.dataDir,[workspaceRoot,artifactRoot,cwd])){const source=join(ctx.projectDir,path),target=join(cwd,path);baselines[path]=fileDigest(source);mkdirSync(dirname(target),{recursive:true,mode:0o700});copyFileSync(source,target);}
     for(const spec of graph.contract?.artifacts||[])if(spec.kind==='file')baselines[spec.target]??='missing';
     // Dependency outputs are member inputs; preserve the original target hashes for apply CAS.
     const inputBaselines={...baselines};
