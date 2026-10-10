@@ -6,7 +6,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {composerKeyAction,insertNewline} from '../apps/desktop/src/renderer/composer-keys.js';
 import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
-import {reorderIds} from '../apps/desktop/src/renderer/ProjectStrip.js';
+import {reorderIds} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 import {materialPath} from '../apps/desktop/src/renderer/material-links.js';
 import type {Message} from '../apps/desktop/src/renderer/types.js';
 const assistant:Message={id:'a',role:'assistant',text:'beforeafter',parts:[{type:'text',text:'before'},{type:'thinking',thinking:'why'},{type:'toolCall',id:'one',name:'read',arguments:{path:'a'}},{type:'text',text:'after'}]};

@@ -35,8 +35,8 @@ interface SessionRecord {id:string;projectId:string;workspace?:WorkspaceRef;work
 const pluginNames=['swarm','expert','memory','topic-rebuild'];
 const thinkingLevels=['off','minimal','low','medium','high','xhigh','max'];
 interface Preferences {defaultLayoutMode:LayoutMode;defaultBrowserScope:BrowserScope;defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:string[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;defaultWorkspaceDir?:string;contextMode:'native'|'infinite';backgroundModelId:string}
-const preferenceDefaults:Preferences={defaultLayoutMode:'standard',defaultBrowserScope:'app',defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',defaultWorkspaceDir:'~/Documents/Friend',contextMode:'native',backgroundModelId:''};
-function preferences(projectId?:string):Preferences{return {...preferenceDefaults,...store.get<Partial<Preferences>>('preferences')?.value,...(projectId?store.get<Partial<Preferences>>(`preferences:${projectId}`)?.value:{})};}
+const preferenceDefaults:Preferences={defaultLayoutMode:'fullscreen',defaultBrowserScope:'app',defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:pluginNames,defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',defaultWorkspaceDir:'~/Documents/Friend',contextMode:'native',backgroundModelId:''};
+function preferences(projectId?:string):Preferences{return {...preferenceDefaults,...store.get<Partial<Preferences>>('preferences')?.value,...(projectId?store.get<Partial<Preferences>>(`preferences:${projectId}`)?.value:{}),defaultLayoutMode:'fullscreen'};}
 let providerRuntime:Promise<ProviderRuntime>|undefined;
 const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await createProviderRuntime(dataDir);if(process.env.FRIEND_PI_TEST_PROVIDER==='1'){await installFixtureProvider(runtime);registerSavedModel(dataDir,'friend-fixture/offline');}return runtime;})();
 function requireActive(){if(shuttingDown)throw new Error('应用正在退出');}
@@ -73,7 +73,7 @@ function state(){if(storeClosed)throw new Error('应用已经退出');const work
 function sideState(worker:Worker){return {...state(),current:{...worker.state,sessionId:worker.record.id,projectId:worker.record.projectId,workspace:sessionWorkspace(store,worker.record).ref,workspacePath:sessionWorkspace(store,worker.record).path}};}
 let browserHost:BrowserHost|undefined;
 function selectCurrent(id:string|undefined){if(id!==currentId)browserHost?.hide();currentId=id;}
-function viewContext(id:string){const record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不存在');return {id,workspacePath:sessionWorkspace(store,record).path,ui:store.get<SessionViewState>('session-ui:'+id)?.value||initialView()};}
+function viewContext(id:string){const record=store.get<SessionRecord>('session:'+id)?.value;if(!record||store.get('deleting:'+id))throw new Error('会话不存在');const saved=store.get<SessionViewState>('session-ui:'+id)?.value,ui=saved?validateView(saved):initialView(preferences(record.projectId));if(saved&&JSON.stringify(saved)!==JSON.stringify(ui))store.put('session-ui:'+id,ui);return {id,workspacePath:sessionWorkspace(store,record).path,ui};}
 function saveView(id:string,ui:SessionViewState){viewContext(id);const next=validateView(ui);store.put('session-ui:'+id,next);publish('view',next,id);return next;}
 function publish(type:string,data:unknown,sessionId?:string){if(window&&!window.isDestroyed())window.webContents.send('friend-pi:event',{type,data,sessionId});}
 function publishState(){if(shuttingDown)return;attention.setView({sessionId:currentId,foreground:!!window&&!window.isDestroyed()&&window.isVisible()&&window.isFocused()});publish('state',state());for(const note of attention.takeNotifications()){if(!Notification?.isSupported?.())continue;const notification=new Notification({title:note.title,body:note.body,silent:true});notification.on('click',()=>{window?.show();window?.focus();publish('navigation.request',{id:note.sessionId});});notification.show();}}
@@ -242,7 +242,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(input.reset===true&&projectId){store.remove(key);await applyPreferenceSnapshots(projectId);await learningRequest('refresh').catch(()=>{});publishState();return await settings(projectId);}
     const next={...preferences(projectId)};
     if(!projectId&&input.defaultWorkspaceDir!==undefined)next.defaultWorkspaceDir=temporaryDirectory(input.defaultWorkspaceDir);
-    if(input.defaultLayoutMode!==undefined){if(!['standard','fullscreen'].includes(String(input.defaultLayoutMode)))throw new Error('默认布局无效');next.defaultLayoutMode=input.defaultLayoutMode as LayoutMode;}
+    if(input.defaultLayoutMode!==undefined){if(!['standard','fullscreen'].includes(String(input.defaultLayoutMode)))throw new Error('默认布局无效');next.defaultLayoutMode='fullscreen';}
     if(input.defaultBrowserScope!==undefined){if(!['app','project','session'].includes(String(input.defaultBrowserScope)))throw new Error('默认浏览器登录范围无效');next.defaultBrowserScope=input.defaultBrowserScope as BrowserScope;}
     if(input.defaultModelId!==undefined){const id=String(input.defaultModelId);if(id&&!(await configuredModelMetadata(await getProviderRuntime(),dataDir)).models.some(model=>model.id===id&&model.ready))throw new Error('默认型号不可用');next.defaultModelId=id;}
     if(input.defaultThinkingLevel!==undefined){if(!thinkingLevels.includes(String(input.defaultThinkingLevel)))throw new Error('思考等级无效');next.defaultThinkingLevel=String(input.defaultThinkingLevel);}

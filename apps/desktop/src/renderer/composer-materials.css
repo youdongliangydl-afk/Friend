@@ -1,1 +1,13 @@
 .composer-input{position:relative;min-width:0}.composer-input textarea{width:100%;box-sizing:border-box}.composer-references{position:absolute;z-index:40;bottom:100%;left:0;right:0;max-height:280px;overflow:auto;padding:6px;background:var(--panel,#fff);border:1px solid var(--line,#c8d9c8);border-radius:10px;box-shadow:0 8px 26px #26342720}.composer-references button{display:flex;gap:10px;text-align:left;width:100%;padding:9px;border:0;border-radius:6px;background:transparent;color:inherit}.composer-references button[aria-selected=true]{background:#e7f0e4}.composer-references small{color:#627763;flex:none}.composer-references span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment-status{display:flex;flex-direction:column;gap:3px;max-width:330px;overflow-wrap:anywhere}.attachment-status small{font-size:11px;font-weight:400;color:#607461}.material-error{color:#9c332d;font-size:12px}.composer-input p{margin:4px 8px;font-size:12px}
+
+/* Text and controls share one shell; this also covers the input wrapper. */
+.friend-layout .composer .composer-input>textarea{display:block;min-height:96px;max-height:32vh;border:0;border-radius:0;padding:16px 16px 6px;background:transparent;outline:none;box-shadow:none;resize:none;line-height:1.6}
+.friend-layout .composer-toolbar{gap:6px;padding:8px 10px 10px;flex-wrap:wrap;background:transparent;border:0}
+.friend-layout .composer-model-group{min-width:0;max-width:340px;flex:1 1 160px}
+.friend-layout .composer-model-controls{min-width:0;max-width:100%;flex:0 1 auto}
+.friend-layout .model-picker-trigger{min-width:0;max-width:100%}
+.friend-layout .member-toolbar{justify-content:flex-end}
+.friend-layout .floating-composer .composer-input>textarea{min-height:68px;padding:8px 4px 4px}
+.friend-layout .floating-composer .composer-toolbar{flex-wrap:nowrap;padding:8px 0 0}
+.floating-composer.composer-wrap{overflow:visible}
+@container (max-width:700px){.friend-layout .agent-mode-control button,.friend-layout .agent-mode-control button.selected{width:34px;min-width:34px}.friend-layout .agent-mode-control button.selected span{display:none}.friend-layout .agent-mode-thumb{width:34px;left:3px;top:3px;bottom:3px}.friend-layout .agent-mode-control[data-mode=team] .agent-mode-thumb{transform:translateX(36px)}.friend-layout .agent-mode-control[data-mode=swarm] .agent-mode-thumb{transform:translateX(72px)}.friend-layout .agent-mode-control{padding:3px}}

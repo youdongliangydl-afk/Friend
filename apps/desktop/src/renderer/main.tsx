@@ -1,5 +1,4 @@
 import './activity-center.css';
-import './composer-materials.css';
 import './document-preview.css';
 import './capabilities.css';
 import './deliverables.css';
@@ -15,6 +14,8 @@ import './session-fullscreen.css';
 import './session-trace.css';
 import './session-stats.css';
 import './task-info.css';
+import './composer-materials.css';
+import './project-sidebar.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Friend-Pi root element missing');

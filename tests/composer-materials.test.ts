@@ -93,22 +93,13 @@ test('an obsolete App attachment inspection cannot hash a new session or a newer
   assert.equal(f.ctx.attachmentsRef.current[0].hash, undefined); assert.equal(f.storage.size, 0); assert.equal(f.requests.length, 0);
 });
 
-test('SideChat inspection metadata can settle during submission without retaining an already sent attachment', async () => {
-  const source = readFileSync('apps/desktop/src/renderer/SideChat.tsx', 'utf8');
-  const action = between(source, ' const action=async(input:ComposerAction)=>{', ' const current=');
-  const storage = new Map<string, string>(), requests: any[] = [];
-  let release!: () => void; const acknowledgement = new Promise<void>(done => {release = done;});
-  const ctx: any = {id: 'side', lock: {current: false}, state: {current: {isRunning: false, queue: {items: []}}}, draftRef: {current: 'side analysis'}, attachmentRef: {current: [{path: '/side/data.csv'}]}, mode: 'single', planMode: false,
-    asObject: (value: any) => value || {}, hasQueueIntent: () => false, errorText: String, setSending() {}, setDraft(value: string) {ctx.draftRef.current = value;}, setAttachments(value: any) {ctx.attachmentRef.current = value;},
-    saveDraft(body = ctx.draftRef.current, files = ctx.attachmentRef.current) {storage.set('side', JSON.stringify({text: body, attachments: files}));}, refresh: async () => {}, report(error: string) {throw Error(error);},
-    window: {friendPi: {request: async (method: string, input: any) => {requests.push({method, input}); await acknowledgement; return {};}}}};
-  vm.createContext(ctx); vm.runInContext(stripTypeScriptTypes(action + '\nglobalThis.action=action;'), ctx);
-  const sending = ctx.action({type: 'send'});
-  await ctx.action({type: 'attachmentChecked', value: {path: '/side/data.csv', hash: 'side-sha', text: 'not source text'}});
-  assert.equal(ctx.attachmentRef.current[0].hash, 'side-sha'); assert.equal(ctx.attachmentRef.current[0].text, undefined);
-  release(); await sending;
-  assert.equal(ctx.attachmentRef.current.length, 0); assert.equal(ctx.draftRef.current, '');
-  assert.equal(JSON.parse(storage.get('side')!).attachments.length, 0); assert.equal(requests.length, 1);
+test('opening a branch draft retains its frozen mode and plan instead of the root configuration', () => {
+  const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
+  const body=between(source,'    let saved:JsonObject={};','    setChangeReview(undefined);');
+  const values:any={},ctx:any={ownerKey:'branch',sessionId:'branch',state:{current:{sideDraft:{text:'frozen',attachments:[{path:'/frozen.csv'}],mode:'team',planMode:true},executionMode:'single',planMode:false},preferences:{}},asObject:(value:any)=>value||{},asList:(value:any)=>value||[],localStorage:{getItem:()=>null},permissionExplicitRef:{current:false}};
+  for(const name of ['Draft','Attachments','DraftOwner','PlanMode','PermissionExplicit','PermissionMode','Mode'])ctx['set'+name]=(value:any)=>{values[name]=value;};
+  vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(body),ctx);
+  assert.equal(values.Draft,'frozen');assert.equal(values.Mode,'team');assert.equal(values.PlanMode,true);assert.equal(values.Attachments[0].path,'/frozen.csv');
 });
 
 test('the actual BrowserHost overlay action admits material events only for the bound session and token', () => {
@@ -116,11 +107,11 @@ test('the actual BrowserHost overlay action admits material events only for the 
   const method = between(source, '  overlayAction(raw:', '  private watchDownloads').replace('overlayAction(', 'function overlayAction(');
   const emitted: any[] = [], host = {overlayToken: 'bound-token', overlayOwner: 'owner', emit: (...args: any[]) => emitted.push(args)};
   const scope: any = {}; vm.createContext(scope); vm.runInContext(stripTypeScriptTypes(method + '\nglobalThis.action=overlayAction;'), scope);
-  for (const type of ['files', 'reference', 'attachmentChecked']) {
+  for (const type of ['files', 'reference', 'referenceSpace', 'attachmentChecked']) {
     scope.action.call(host, {type, sessionId: 'owner', token: 'bound-token', epoch: 1, value: {path: '/material'}});
     assert.throws(() => scope.action.call(host, {type, sessionId: 'old-owner', token: 'bound-token'}), /所属会话/);
     assert.throws(() => scope.action.call(host, {type, sessionId: 'owner', token: 'old-token'}), /所属会话/);
   }
-  assert.equal(emitted.length, 3); assert.ok(emitted.every(args => args[0] === 'composer.action' && args[2] === 'owner'));
+  assert.equal(emitted.length, 4); assert.ok(emitted.every(args => args[0] === 'composer.action' && args[2] === 'owner'));
   assert.throws(() => scope.action.call(host, {type: 'arbitrary-tool', sessionId: 'owner', token: 'bound-token'}), /操作无效/);
 });

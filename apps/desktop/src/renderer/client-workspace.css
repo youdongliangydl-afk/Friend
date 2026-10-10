@@ -1,7 +1,4 @@
-.project-strip-shell{flex:1;min-width:0;display:flex;align-items:center;gap:4px}
-.project-strip-shell .project-tabs{flex:1;min-width:0;scrollbar-width:none}
-.project-scroll{flex:none;width:25px;padding:4px;font-size:22px}
-.project-tab{transition:background .15s,transform .15s}.project-tab.drop-before{box-shadow:-3px 0 #397961}.project-tab.drop-after{box-shadow:3px 0 #397961}
+
 .timeline-tool summary{display:flex;align-items:center;gap:8px}.timeline-tool strong{flex:none}
 .tool-activity{min-width:0;margin:8px 0 12px;color:#657169;font-size:12px}
 .tool-activity summary{display:flex;align-items:center;gap:8px;min-height:32px;list-style:none;cursor:pointer;border-radius:5px;padding:4px 3px}
@@ -18,9 +15,6 @@ details[open]>summary>.disclosure-chevron{transform:rotate(45deg)}
 .tool-section-label{font-size:11px;color:#657169;margin:5px 0}.tool-activity .code-view,.activity-thinking pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:none;line-height:1.65;font-size:12px}
 .tool-result-image{display:block;max-width:100%;max-height:280px;object-fit:contain;object-position:left;margin:8px 0;border-radius:8px}
 @media(prefers-reduced-motion:reduce){.disclosure-chevron{transition:none}}
-.expand-workbench{position:absolute;right:48px;top:21px;z-index:2;font-size:11px}.workspace{position:relative!important}
-.workbench-expanded .workspace{grid-area:auto!important;position:absolute!important;left:calc(var(--sidebar-width) + 28px);right:10px;top:68px;bottom:10px;z-index:45;width:auto!important;box-shadow:0 16px 60px #24312630}
-.workbench-expanded.sidebar-hidden .workspace{left:10px}
 .editable-workspace{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .file-workspace-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e0e7df}.file-workspace-toolbar input{min-width:0;flex:1;margin:0}
 .file-workspace-body{display:flex;min-height:0;flex:1}.directory-browser{width:155px;min-width:120px;max-width:40%;margin:0;border-right:1px solid #e2e8df;display:flex;flex-direction:column;flex:none;overflow:auto}
@@ -36,21 +30,9 @@ details[open]>summary>.disclosure-chevron{transform:rotate(45deg)}
 .html-preview{display:block;width:100%;height:100%;min-height:240px;border:0;background:white}.add-file-context{font-size:10px;margin:5px 10px;align-self:flex-start}
 .conflict-preview{max-height:40vh;overflow:auto}.conflict-preview pre{white-space:pre-wrap;font-size:11px}
 .terminal-panel{display:flex;flex-direction:column;min-width:0;min-height:0;background:#18231e;color:#e6eee8;border:1px solid #52645a;border-radius:12px;overflow:hidden;z-index:60;position:relative}
-.terminal-panel[hidden]{display:none}.terminal-heading{display:flex;align-items:center;gap:7px;min-height:36px;padding:4px 9px;background:#eff3eb;color:#355744;flex:none}.terminal-heading button,.terminal-heading select{font-size:11px;padding:4px 7px}.terminal-heading-space{flex:1}.terminal-move{touch-action:none;user-select:none;cursor:move}
+.terminal-panel[hidden]{display:none}.terminal-heading{display:flex;align-items:center;gap:7px;min-height:36px;padding:4px 9px;background:#eff3eb;color:#355744;flex:none}.terminal-heading button{font-size:11px;padding:4px 7px}.terminal-heading-space{flex:1}
 .terminal-tabs{display:flex;overflow:auto;min-height:32px;flex:none;background:#23332a}.terminal-tabs>div{display:flex;flex:none;border-right:1px solid #42594a}.terminal-tabs>div.selected{background:#355143}.terminal-tabs button{font-size:11px;border:0;border-radius:0;background:transparent;color:#e1e9e2;padding:5px 9px}
 .terminal-status{display:flex;gap:12px;align-items:center;font-size:10px;padding:5px 10px;flex:none;color:#c3d1c5}.terminal-status>span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.terminal-status button{font-size:10px;padding:3px 6px}.terminal-screen{flex:1;min-height:0;padding:4px 8px;overflow:hidden}.terminal-screen .xterm{height:100%}.terminal-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;font-size:12px}.terminal-empty button{font-size:12px}
-.terminal-panel.dock-bottom{grid-area:terminal}.terminal-panel.dock-right{position:absolute;right:10px;top:68px;bottom:10px;max-width:calc(100% - var(--sidebar-width) - 350px)}
-.terminal-panel.dock-floating{position:fixed;max-width:calc(100vw - 24px);box-shadow:0 16px 55px #17251d55}.terminal-resize{position:absolute;border:0;background:transparent;padding:0;z-index:4;touch-action:none}.terminal-resize.resize-bottom{height:5px;left:0;right:0;top:0;cursor:ns-resize}.terminal-resize.resize-right{width:5px;left:0;top:0;bottom:0;cursor:ew-resize}.terminal-resize.resize-floating{width:15px;height:15px;right:0;bottom:0;cursor:nwse-resize}
-.friend-layout.terminal-bottom{grid-template-rows:var(--header-height) minmax(0,1fr) var(--terminal-height);grid-template-areas:"header header header" "sidebar side-resize main" "sidebar side-resize terminal"}
-.friend-layout.workspace-open.terminal-bottom{grid-template-areas:"header header header header header" "sidebar side-resize main workspace-resize workspace" "sidebar side-resize terminal terminal terminal"}
-.friend-layout.sidebar-hidden.terminal-bottom{grid-template-areas:"header" "main" "terminal"}
-.friend-layout.sidebar-hidden.workspace-open.terminal-bottom{grid-template-areas:"header header header" "main workspace-resize workspace" "terminal terminal terminal"}
-.friend-layout.terminal-right:not(.workspace-open) .main{margin-right:calc(var(--terminal-width) + 10px)}
-@media(max-width:1100px){.terminal-panel.dock-right{max-width:calc(100vw - 45px)}.friend-layout.terminal-right:not(.workspace-open) .main{margin-right:0}.workbench-expanded .workspace{left:10px}.directory-browser{width:135px}.terminal-panel.dock-bottom{grid-area:terminal}.friend-layout.terminal-bottom .workspace{bottom:calc(var(--terminal-height) + 20px)}}
-@media(prefers-reduced-motion:reduce){.project-tab{transition:none}}
-
-.project-tab-group{display:flex;align-items:center;min-width:0;flex:1;gap:8px}.project-tab-group>.temporary-tab{flex:none}.markdown img{max-width:100%;height:auto}.directory-browser{resize:horizontal;overflow:auto;min-width:130px;max-width:70%}
-
-.project-strip-shell,.project-tab-group{-webkit-app-region:drag}.project-strip-shell .project-tabs{flex:0 1 auto;max-width:100%;-webkit-app-region:no-drag!important}.project-tab{touch-action:none;user-select:none}
+@media(max-width:1100px){.directory-browser{width:135px}}.markdown img{max-width:100%;height:auto}.directory-browser{resize:horizontal;overflow:auto;min-width:130px;max-width:70%}
 
 .friend-layout .sidebar-settings{flex-shrink:0;margin-top:auto}
