@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type RefObject,type TextareaHTMLAttributes} from 'react';
 import {asList,asObject,errorText,type JsonObject} from './types.js';
+import {Icon} from './Icons.js';
 type Candidate={id:string;label:string;insert:string;kind:string;path?:string};
 export interface MaterialAttachment {path:string;name?:string;hash?:string}
 function bridge(){return window.friendPi||window.friendComposer;}
@@ -18,5 +19,21 @@ export function ComposerInput({inputRef,sessionId,epoch,attachments,onFiles,onRe
 export function AttachmentStatus({attachment,sessionId,onChecked}:{attachment:MaterialAttachment;sessionId:string;onChecked?(hash:string):Promise<unknown>}){
  const [state,setState]=useState<JsonObject>({status:'loading'}),[attempt,setAttempt]=useState(0);
  useEffect(()=>{let active=true;setState({status:'loading'});void bridge().request('attachment.inspect',{path:attachment.path,sessionId}).then(async raw=>{if(!active)return;const result=asObject(raw);if(typeof result.hash==='string')await onChecked?.(result.hash);if(active)setState(result);}).catch(e=>{if(active)setState({status:'error',error:errorText(e)});});return()=>{active=false;};},[attachment.path,sessionId,attempt]);
- return <span className="attachment-status" title={String(state.delivery||'')}><strong>{attachment.name||attachment.path.split('/').at(-1)}</strong><small>{state.status==='loading'?'正在解析…':state.status==='error'?String(state.error):String(state.summary)}</small>{state.delivery!==undefined&&<small>{String(state.delivery)}</small>}{asList<string>(state.warnings).map((warning,index)=><small key={index}>{warning}</small>)}<button type="button" disabled={state.status==='loading'} onClick={()=>setAttempt(old=>old+1)}>{state.status==='error'?'重试':'重新检查'}</button></span>;
+ const name=attachment.name||attachment.path.split('/').at(-1)||'附件',extension=name.includes('.')?name.split('.').at(-1)!.slice(0,4).toUpperCase():'FILE';
+ const loading=state.status==='loading',failed=state.status==='error',warnings=asList<string>(state.warnings);
+ const summary=loading?'正在解析…':failed?'解析失败 · 查看原因':String(state.summary||'已添加');
+ return <details className="attachment-status" data-state={loading?'loading':failed?'error':warnings.length?'warning':'ready'}>
+  <summary aria-label={'查看附件详情 '+name}>
+   <span className="attachment-file-icon" aria-hidden="true"><Icon name="file" size={20}/><span>{extension}</span></span>
+   <span className="attachment-file-meta"><span className="attachment-file-title"><strong title={name}>{name}</strong>{warnings.length>0&&!loading&&!failed&&<span className="attachment-warning-count">{warnings.length} 项提示</span>}</span><span className="attachment-file-state" role="status">{loading&&<span className="attachment-spinner" aria-hidden="true"/>}<span>{summary}</span></span></span>
+   <svg className="attachment-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>
+  </summary>
+  <div className="attachment-details">
+   {!loading&&!failed&&state.summary!==undefined&&<p>{String(state.summary)}</p>}
+   {failed&&<p className="attachment-error">{String(state.error)}</p>}
+   {state.delivery!==undefined&&<p>{String(state.delivery)}</p>}
+   {warnings.length>0&&<ul>{warnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
+   <button type="button" className="attachment-recheck" disabled={loading} onClick={()=>setAttempt(old=>old+1)}>{failed?'重试解析':loading?'正在解析…':'重新检查'}</button>
+  </div>
+ </details>;
 }
