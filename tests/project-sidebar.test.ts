@@ -97,5 +97,8 @@ test('only a project header drag can reorder projects and keeps chat actions sep
 test('sidebar attention shows approval before running and unread results without mutating sessions',()=>{
  const original=sessions.map(session=>({...session})),projected=sidebarSessions(original,[{sessionId:'recent',kind:'dialog',unseen:false},{sessionId:'old',kind:'completed',unseen:true},{sessionId:'design',kind:'failed',unseen:true},{sessionId:'deleted',kind:'dialog',unseen:false}]);
  assert.equal(projected.find(session=>session.id==='recent')?.status,'awaiting_user');assert.equal(projected.find(session=>session.id==='old')?.status,'unread_completed');assert.equal(projected.find(session=>session.id==='design')?.status,'unread_failed');assert.equal(original.find(session=>session.id==='recent')?.status,'running');
- assert.equal(sidebarSessions(original,[{sessionId:'recent',kind:'completed',unseen:true}]).find(session=>session.id==='recent')?.status,'running');
+ for(const status of ['running','awaiting_review','rebuilding','stopping']){
+  const active=[{...original.find(session=>session.id==='recent')!,status}];
+  for(const kind of ['completed','failed'] as const)assert.equal(sidebarSessions(active,[{sessionId:'recent',kind,unseen:true}])[0].status,status);
+ }
 });

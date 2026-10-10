@@ -8,7 +8,7 @@ export function sidebarSessions(sessions:SessionSummary[],activities:Pick<Attent
     const attention=activities.filter(item=>item.sessionId===session.id);
     if(attention.some(item=>item.kind==='dialog'))return {...session,status:'awaiting_user'};
     const result=attention.find(item=>item.unseen&&(item.kind==='completed'||item.kind==='failed'));
-    if(result&&!['running','rebuilding','stopping'].includes(session.status||''))return {...session,status:'unread_'+result.kind};
+    if(result&&!['running','awaiting_review','rebuilding','stopping'].includes(session.status||''))return {...session,status:'unread_'+result.kind};
     return session;
   });
 }
