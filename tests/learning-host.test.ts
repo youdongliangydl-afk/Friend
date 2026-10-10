@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {historyItems,learningHostAvailable,projectIdentity,RecordStore,LearningBudget,type PluginContext} from '../packages/core/src/index.js';
+import {historyItems,learningHostAvailable,learningRequestHash,digest,projectIdentity,RecordStore,LearningBudget,type PluginContext} from '../packages/core/src/index.js';
 import {MemoryController,type LearningJob,type MemoryRecord} from '../packages/memory/src/index.js';
 import {createProviderRuntime,saveProviderConfiguration} from '../apps/desktop/src/provider-settings.js';
 
@@ -64,7 +64,7 @@ async function fixture(hold:(stage:Stage,index:number)=>boolean|'disconnect'|'le
   async function startHost(){const child=await worker('learning-worker',dataDir,{});children.push(child);return child;}
   async function startForeground(projectDir:string){const child=await worker('sdk-worker',dataDir,{FRIEND_PI_PROJECT:projectDir,FRIEND_PI_MODEL:'learning-loopback/fixture',FRIEND_PI_PLUGINS:JSON.stringify(['memory']),FRIEND_PI_LEARNING_ROLE:'producer'});children.push(child);return child;}
   const close=async()=>{for(const child of children){if(child.child.exitCode===null&&child.child.signalCode===null)await child.stop().catch(async()=>{child.child.kill('SIGKILL');await child.exited;});}server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));rmSync(directory,{recursive:true,force:true});};
-  return {directory,dataDir,calls,jobs,memories,modelCall,enqueue,startHost,startForeground,close,get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
+  return {directory,dataDir,calls,jobs,memories,modelCall,enqueue,startHost,startForeground,close,model:runtime.getModel('learning-loopback','fixture'),get maxActive(){return maxActive;},get maxLearning(){return maxLearning;}};
 }
 
 function sendSse(res:ServerResponse,text:string,id:number,reason='stop'){
@@ -170,6 +170,7 @@ test('actual length-limited HTTP response is recorded as received incomplete and
   await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='failed','known incomplete extraction fails visibly');
   const job=f.jobs().find(job=>job.id===source.jobId)!,call=f.modelCall(job)!;assert.equal(call.state,'failed');assert.equal(call.response?.received,true);assert.equal(call.response?.complete,false);assert.equal(call.response?.stopReason,'length');assert.equal(typeof call.response?.maxTokens,'number');assert.ok(call.response?.usage);assert.equal(f.memories().filter(record=>record.status==='active').length,0);
   assert.equal(job.attempts,0);assert.equal(job.nextAttemptAt,undefined);assert.deepEqual(job.pendingRanges,job.sourceRanges||job.sources);
+  assert.equal(call.requestHash,learningRequestHash(f.model,'off',4096,'extract',digest(f.calls[0].prompt)),'built host binds actual non-secret request parameters');
   const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}
   const count=f.calls.length;assert.equal(count,1,'confirmed length stops the scheduler without a new operation');await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,1,'received incomplete calls are not replayed on restart');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'failed');await restarted.stop();
  }finally{await f.close();}

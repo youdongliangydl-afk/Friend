@@ -45,6 +45,7 @@
 ### 公共宿主与桌面
 
 - 公共 SourcePolicy 原子提交围栏、精确个人来源授权、ArtifactRef/CheckRef/依赖、共享串行 learning lease 和独立调用预算。
+- 两宿主的后台调用幂等身份绑定版本化请求摘要：实际模型非秘密配置、思考强度、输出上限、阶段及提示正文摘要；同 operationId 参数变化拒绝 VERSION_CONFLICT。旧未确认调用保持 UNKNOWN 禁重派，缺完整请求身份的旧完成记录不能作为新请求缓存。
 - 后台使用入队时冻结型号；前台工作阻止新后台准入，已发请求可并行完成。Memory/Expert 公平轮转。
 - 暂停/退出/进程被杀、HTTP 断连或派发后账本写入失败的未知调用保留账本并返回 OPERATION_UNKNOWN；手动恢复与重启均不得换 operationId 自动重发。已确认阶段可复用。调用收据保存实际 stopReason、请求 maxTokens 与 SDK 返回的 usage；length 明确记为已收到但不完整的失败响应，保留原结果/用量，Memory 与 Expert 停止该学习作业、保留未覆盖范围且不推进 cursor；唤醒与重启不能换 operationId 重试或采用半截 JSON。普通格式错误仍按原三次上限处理。
 - 附件注册不可变原始字节快照；保持旧冻结输入/侧分支队列行为。
