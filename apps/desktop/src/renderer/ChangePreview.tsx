@@ -6,7 +6,7 @@ import {changePreviewPosition} from './change-preview-position.js';
 import {useChangeDiff,type ChangeCoordinates,type ChangeDiffCache} from './change-review.js';
 function PreviewContent({cache,coordinates,path}:{cache:ChangeDiffCache;coordinates:ChangeCoordinates;path:string}){
  const state=useChangeDiff(cache,coordinates);
- return <><div className="change-preview-path">{path}</div><FileDiffView state={state} preview retry={()=>void cache.load(coordinates)}/></>;
+ return <>{state?.phase!=='ready'&&<div className="change-preview-path">{path}</div>}<FileDiffView state={state} preview retry={()=>void cache.load(coordinates)}/></>;
 }
 export function ChangePreview({anchor,cardRef,cache,coordinates,path}:{anchor:ReactNode;cardRef:RefObject<HTMLElement|null>;cache:ChangeDiffCache;coordinates:ChangeCoordinates;path:string}){
  const [phase,setPhase]=useState<'closed'|'open'|'closing'>('closed'),[position,setPosition]=useState<ReturnType<typeof changePreviewPosition>|null>(null);
