@@ -1,10 +1,23 @@
-import {useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
+import {Fragment,useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {errorText,type Model} from './types.js';
 
 const thinkingNames:Record<string,string>={off:'不思考',minimal:'最少',low:'低',medium:'中',high:'高',xhigh:'最高',max:'Max',ultra:'Ultra'};
 
-export function ModelPicker({models,modelId,thinkingLevel,thinkingLevels,disabled,onChange,onConfigure}:{
-  models:Model[];modelId?:string;thinkingLevel?:string;thinkingLevels:string[];disabled:boolean;
+export function groupModels(models:Model[],providerNames?:Record<string,string>){
+  const groups=new Map<string,Model[]>();
+  for(const model of models){const group=groups.get(model.provider);if(group)group.push(model);else groups.set(model.provider,[model]);}
+  return [...groups].map(([provider,items])=>({provider,name:typeof providerNames?.[provider]==='string'&&providerNames[provider].trim()||provider,models:items}));
+}
+export function ModelOptions({models,providerNames,modelId,pending,onChoose}:{models:Model[];providerNames?:Record<string,string>;modelId?:string;pending:boolean;onChoose(id:string):void}){
+  return <div className="model-picker-list" role="group" aria-label="已配置模型">{groupModels(models,providerNames).map(group=><Fragment key={group.provider}>
+    <h3 aria-label={'供应商 '+group.name} style={{fontSize:11,fontWeight:500,color:'#78917b',margin:'12px 5px 5px',overflowWrap:'anywhere'}}>{group.name}</h3>
+    {group.models.map(item=><button type="button" key={item.id} aria-label={group.name+' · '+item.name+(!item.ready?' · 待测试连接':'')} aria-pressed={item.id===modelId} disabled={pending||!item.ready} onClick={()=>onChoose(item.id)}>
+      <span>{item.name}{!item.ready&&<small>待测试连接</small>}</span><span aria-hidden="true">{item.id===modelId?'✓':''}</span>
+    </button>)}
+  </Fragment>)}</div>;
+}
+export function ModelPicker({models,providerNames,modelId,thinkingLevel,thinkingLevels,disabled,onChange,onConfigure}:{
+  models:Model[];providerNames?:Record<string,string>;modelId?:string;thinkingLevel?:string;thinkingLevels:string[];disabled:boolean;
   onChange(input:{modelId?:string;thinkingLevel?:string}):Promise<unknown>;onConfigure():void;
 }) {
   const id=useId(),trigger=useRef<HTMLButtonElement>(null),panel=useRef<HTMLDivElement>(null),modelButton=useRef<HTMLButtonElement>(null),slider=useRef<HTMLInputElement>(null),focusModel=useRef(false);
@@ -58,10 +71,7 @@ export function ModelPicker({models,modelId,thinkingLevel,thinkingLevels,disable
         {thinkingLevels.length===1&&<p className="hint">当前模型不支持调整思考强度。</p>}
       </div>:<>
         <div className="model-picker-heading"><span>选择模型</span><button type="button" aria-label="返回强度选择" onClick={returnToEffort}>‹</button></div>
-        <div className="model-picker-list" role="group" aria-label="已配置模型">{models.map(item=>
-          <button type="button" key={item.id} aria-pressed={item.id===modelId} disabled={pending||!item.ready} onClick={()=>void choose({modelId:item.id})}>
-            <span>{item.name}{!item.ready&&<small>待测试连接</small>}</span><span aria-hidden="true">{item.id===modelId?'✓':''}</span>
-          </button>)}</div>
+        <ModelOptions models={models} providerNames={providerNames} modelId={modelId} pending={pending} onChoose={id=>void choose({modelId:id})}/>
         <button type="button" className="model-picker-settings" disabled={pending} onClick={()=>{close(false);onConfigure();}}>配置模型与供应商 ↗</button>
       </>}
       {pending&&<p role="status">正在应用…</p>}{error&&<p role="alert" className="model-picker-error">{error}</p>}
