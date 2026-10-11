@@ -331,6 +331,21 @@ test('an exact whole-entry model quote retains both business fact and subject an
  }finally{await f.close();}
 });
 
+test('mixed knowledge extraction retains an unresolved observation and excludes both sides of its conflict',async()=>{
+ const f=fixture();try{
+  const first='个人偏好：今后我默认偏好用中文解释技术问题。事实名称：服务协议；主题标识：service.protocol；已观察结论：本项目服务使用 HTTP/1.1。';
+  f.items[0].text=first;
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'服务使用 HTTP/1.1',content:'本项目服务使用 HTTP/1.1。',kind:'fact',subject:'service.protocol',sourceEntryIds:['user1'],sourceQuotes:{user1:'本项目服务使用 HTTP/1.1。'}}]});
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const original=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(original.status,'active');
+  const content='本项目服务使用 HTTP/2。两项观察尚未消歧。';
+  f.items.push({id:'independent-observation',parentId:'user1',type:'message',role:'user',timestamp:new Date().toISOString(),text:'事实名称：服务协议；主题标识：service.protocol；另一项独立观察结论：'+content});
+  f.ctx.complete=async()=>JSON.stringify({memories:[{title:'服务使用 HTTP/2',content,kind:'fact',subject:'service.protocol',conditions:['两项观察尚未消歧'],sourceEntryIds:['independent-observation'],sourceQuotes:{'independent-observation':content}}]});
+  await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx),old=(snapshot.memories as MemoryRecord[]).find(record=>record.id===original.id)!,next=(snapshot.candidates as MemoryRecord[]).find(record=>record.content===content)!;
+  assert.ok(next);assert.deepEqual(old.conflictIds,[next.id]);assert.deepEqual(next.conflictIds,[old.id]);assert.equal(old.enabled,true);assert.equal(next.status,'candidate');assert.deepEqual(next.conditions,['两项观察尚未消歧']);assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),content);assert.equal(next.sources[0].hash,digest(content));
+  assert.deepEqual(f.c.search({query:'服务',match:'any'},f.ctx),[]);const selected=await f.c.dispatch('select',{query:'服务'},f.ctx) as any;assert.deepEqual(selected.records,[]);assert.deepEqual(selected.directory,[]);
+ }finally{await f.close();}
+});
+
 test('Chinese presentation normalization still rejects missing subject quotes, invented scope and future replacement',async()=>{
  const source='独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。',fact=source.slice(0,32),content='在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。该事实的主题标识为 orders.database.engine。';
  for(const proposal of [{content,quote:fact},{content:content.replace('本验收项目','生产项目'),quote:source},{content:content+'同一主题下后续若出现新观察，可能使该事实被取代。',quote:source},{content:'不在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。',quote:source}]){const f=fixture();try{
