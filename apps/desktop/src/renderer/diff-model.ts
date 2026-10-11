@@ -52,7 +52,7 @@ export function diffBlockLocation(lines:DiffLine[],block:DiffBlock,split:boolean
  const row=split?splitDiffRows(items).findIndex(value=>value.left?.index===block.first||value.right?.index===block.first):items.findIndex(value=>value.kind==='line'&&value.value.index===block.first);
  return row<0?undefined:{row,page:Math.floor(row/DIFF_PAGE_LINES)};
 }
-export function diffFileStatus(file:{status:string;oldPath?:string}){return file.status==='??'||file.status.includes('A')?'新增':file.status.includes('D')?'删除':file.oldPath?'重命名':'修改';}
+export function diffFileStatus(file:{status?:unknown;oldPath?:string}){if(typeof file.status!=='string'||!file.status.trim())return '状态未记录';return file.status==='??'||file.status.includes('A')?'新增':file.status.includes('D')?'删除':file.oldPath?'重命名':'修改';}
 export function diffFileRatio(file:{additions?:number;deletions?:number}){
  const known=typeof file.additions==='number'&&Number.isFinite(file.additions)&&file.additions>=0&&typeof file.deletions==='number'&&Number.isFinite(file.deletions)&&file.deletions>=0;
  if(!known)return undefined;const total=file.additions!+file.deletions!;return {additions:file.additions!,deletions:file.deletions!,addedPercent:total?file.additions!/total*100:0,removedPercent:total?file.deletions!/total*100:0};

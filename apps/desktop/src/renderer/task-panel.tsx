@@ -3,7 +3,7 @@ import {useCallback,useEffect,useState,useRef,useMemo} from 'react';
 import {asObject,asList,type JsonObject,type AppState,errorText} from './types.js';
 import {Badge,Card,Empty,Field,JsonView,Markdown} from './ui.js';
 import {TaskGraphCanvas} from './TaskGraph.js';
-import {projectTaskGraphs} from './task-graph-model.js';
+import {projectSessionTaskGraphs} from './task-graph-model.js';
 
 export function TaskPanel({state,report}:{state:AppState;report(message:string,error?:boolean):void}){
  const current=state.current,sessionId=current?.sessionId;
@@ -16,7 +16,7 @@ export function TaskPanel({state,report}:{state:AppState;report(message:string,e
  useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
  useEffect(()=>{void refresh().catch(error=>report(errorText(error),true));return window.friendPi.onEvent(event=>{if(event.sessionId&&event.sessionId!==sessionId)return;const data=asObject(event.data);if(event.type==='state'||event.type==='runtime'||event.type==='plugin'&&/^(goal|task|jobs|workflow|swarm|team)\./.test(String(data.pluginEvent)))void refresh().catch(error=>report(errorText(error),true));});},[refresh,sessionId,report]);
  const act=async(operation:()=>Promise<unknown>,message?:string)=>{setBusy(true);try{const result=await operation();await refresh();if(message)report(message);return result;}catch(error){report(errorText(error),true);return undefined;}finally{setBusy(false);}};
- const taskGraphs=useMemo(()=>sessionId?projectTaskGraphs({sessionId,runId:current?.runId,graphs,flows,teammates}):[],[sessionId,current?.runId,graphs,flows,teammates]);
+ const taskGraphs=useMemo(()=>projectSessionTaskGraphs(current||{},{graphs,flows,teammates}),[current?.piSessionId,current?.runId,graphs,flows,teammates]);
  if(!current)return <Empty title="创建会话后管理任务"/>;
  const unknown=asList<JsonObject>(snapshot.unknownActivities),unknownJobs=asList<JsonObject>(snapshot.jobs).filter(job=>job.status==='unknown');
  const archived=state.sessions.find(session=>session.id===sessionId)?.archived===true;

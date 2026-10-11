@@ -5,7 +5,7 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {createElement,type ComponentType} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {projectTaskGraphs} from '../apps/desktop/src/renderer/task-graph-model.js';
+import {projectTaskGraphs,projectSessionTaskGraphs} from '../apps/desktop/src/renderer/task-graph-model.js';
 import {centerTaskGraph,fitTaskGraph,graphMiniMap,layoutTaskGraph,zoomTaskGraph} from '../apps/desktop/src/renderer/task-graph-layout.js';
 
 const node=(id:string,dependencies:string[]=[],extra:Record<string,unknown>={})=>({id,title:id,prompt:'Inspect '+id,mode:'read',dependencies,status:'pending',...extra});
@@ -99,4 +99,14 @@ test('graph component renders native accessible controls and exact nodes without
  let opened=0;const markup=renderToStaticMarkup(createElement(module.exports.TaskGraphCanvas,{graphs:project([graph({workflowId:'f'})],[flow()]),onOpenMember:()=>{opened++;}}));
  assert.equal((markup.match(/class="task-graph-node"/g)||[]).length,2);assert.match(markup,/选择任务依赖图/);assert.match(markup,/只读任务画布/);assert.match(markup,/适配全部/);assert.match(markup,/任务小地图/);assert.match(markup,/等待：a/);assert.equal(opened,0);assert.doesNotMatch(markup,/contenteditable|draggable="true"/);
  const empty=renderToStaticMarkup(createElement(module.exports.TaskGraphCanvas,{graphs:[],onOpenMember:()=>{opened++;}}));assert.match(empty,/本轮尚未建立任务依赖图/);assert.equal(opened,0);
+});
+
+test('TaskPanel uses native Pi identity while desktop routing keeps its separate ID',()=>{
+ const owner={sessionId:'desktop-id',piSessionId:'native-id',runId:'r'},data={graphs:[graph({sessionId:'native-id',tasks:[node('a',[],{memberId:'m'})]})],flows:[],teammates:[{id:'m',rootSessionId:'native-id',name:'Native reader'}]};
+ const result=projectSessionTaskGraphs(owner,data);assert.equal(result.length,1);assert.equal(result[0].nodes[0].memberName,'Native reader');assert.equal(projectSessionTaskGraphs({runId:'r'},data).length,0);
+});
+
+test('paused materialized workflow does not hide an unknown native execution behind stale running state',()=>{
+ const [g]=project([graph({workflowId:'f',status:'paused',tasks:[node('a',[],{status:'unknown',currentAttempt:'a1'})],attempts:[{id:'a1',taskId:'a',status:'unknown'}]})],[flow({status:'paused'})]);
+ assert.equal(g.nodes[0].status,'unknown');assert.match(g.nodes[0].waitingReason,/待核对/);assert.match(g.warning,/流程状态待同步/);
 });

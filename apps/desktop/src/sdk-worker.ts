@@ -560,7 +560,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   }
   if(method==='dialog.respond'){
     const pending=dialogs.get(text(input.id));if(!pending)throw new Error('交互已结束');
-    if(pending.batch){const batch=pending.batch;if(input.v!==1||input.generation!==batch.generation||input.runId!==batch.runId||runId!==batch.runId||stopping||disposed)throw new Error('问题所属运行已失效');const first=[...dialogs.values()].find(item=>item.batch);if(first!==pending)throw new Error('请先处理前一组问题');const answers=input.cancelled===true?undefined:questionAnswers(batch,input.answers);dialogs.delete(batch.id);pending.cleanup?.();pending.resolve(answers);publish('dialog.closed',{id:batch.id});return {ok:true,status:input.cancelled===true?'cancelled':'answered'};}
+    if(pending.batch){const batch=pending.batch;if(input.v!==1||input.generation!==batch.generation||input.runId!==batch.runId||runId!==batch.runId||stopping||disposed)throw new Error('问题所属运行已失效');const first=[...dialogs.values()].find(item=>item.batch);if(first!==pending)throw new Error('请先处理前一组问题');const answers=input.cancelled===true?undefined:questionAnswers(batch,input.answers);dialogs.delete(batch.id);pending.cleanup?.();pending.resolve(answers);publish('dialog.closed',{id:batch.id,questionReceipt:{generation:batch.generation,runId:batch.runId,status:input.cancelled===true?'cancelled':'answered'}});return {ok:true,status:input.cancelled===true?'cancelled':'answered'};}
     clearTimeout(pending.timer);dialogs.delete(String(input.id));pending.resolve(input.cancelled?undefined:input.confirmed!==undefined?Boolean(input.confirmed):input.value);return {ok:true};
   }
   if(method==='provider.save'||method==='provider.refresh'){

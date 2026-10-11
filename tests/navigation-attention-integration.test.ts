@@ -240,3 +240,10 @@ test('batch answers route to their owner once and expose a receipt after acknowl
  await assert.rejects(f.api.handle('dialog.respond',{...answer,answers:[]}),/不同/);f.api.retireWorker(f.api.workers.get(a.id),Error('restart'));assert.equal((await f.api.handle('dialog.status',{id:'batch-request'})).status,'invalid');await assert.rejects(f.api.handle('dialog.respond',answer),/失效/);
  }finally{f.cleanup();}
 });
+
+test('a settled batch close reconciles a lost IPC response without replaying answers',async()=>{
+ const f=fixture();try{const record=f.record('batch-lost-receipt'),child=await f.ready(record);emitState(child,{runId:'r',isRunning:true,lifecycleStatus:'running'});child.emit('message',{type:'event',event:{type:'dialog',runId:'r',data:{id:'lost',kind:'questionBatch',v:1,title:'问题',generation:'g',runId:'r',toolCallId:'tool',createdAt:1,sequence:1,questions:[{id:'q',type:'text',title:'回答',required:true}]}}});
+ const send=child.send;child.send=(message:any,callback?:Function)=>{if(message.method!=='dialog.respond')return send(message,callback);child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'event',event:{type:'dialog.closed',data:{id:'lost',questionReceipt:{generation:'g',runId:'r',status:'answered'}}}}));return true;};
+ const answer={id:'lost',v:1,generation:'g',runId:'r',answers:[{questionId:'q',text:'确认'}]},response=f.api.handle('dialog.respond',answer);await f.flush();assert.equal((await f.api.handle('dialog.status',{id:'lost'})).status,'settled');await f.tick(125001);assert.equal((await response).reconciled,true);await f.api.handle('dialog.respond',answer);assert.equal(child.commands.filter((command:any)=>command.method==='dialog.respond').length,1);
+ }finally{f.cleanup();}
+});

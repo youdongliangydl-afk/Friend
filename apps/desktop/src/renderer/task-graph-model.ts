@@ -26,7 +26,9 @@ function nodesFor(definitions:JsonObject[],states:JsonObject[],backend:JsonObjec
   const member=memberId?members.find(item=>item.id===memberId&&(!item.rootSessionId||item.rootSessionId===owner)):undefined;
   const dependencies=[...new Set(asList<unknown>(definition.dependencies).filter((dep):dep is string=>typeof dep==='string'))];
   const missing=dependencies.filter(dep=>!definitionsById.has(dep));if(missing.length)warnings.push(`“${string(definition.title)||id}”的依赖来源缺失`);
-  const status=string(state?.status)||'unavailable';
+  const executionUnknown=workflow&&state?.materialized===true&&(task?.status==='unknown'||attempt?.status==='unknown');
+  const status=executionUnknown?'unknown':string(state?.status)||'unavailable';
+  if(executionUnknown&&state?.status!=='unknown')warnings.push(`“${string(definition.title)||id}”的流程状态待同步，执行结果需核对`);
   let waitingReason='';
   if(status==='pending'){
    const pending=dependencies.filter(dep=>!settled.has(string(statesById.get(dep)?.status)));
@@ -69,3 +71,6 @@ export function projectTaskGraphs({sessionId,runId,graphs,flows,teammates=[]}:{s
  }
  return result;
 }
+
+/** Desktop routing IDs and Pi history IDs have different authorities. */
+export function projectSessionTaskGraphs(owner:{piSessionId?:string;runId?:string},data:{graphs:JsonObject[];flows:JsonObject[];teammates?:JsonObject[]}):TaskGraph[]{return owner.piSessionId?projectTaskGraphs({sessionId:owner.piSessionId,runId:owner.runId,...data}):[];}

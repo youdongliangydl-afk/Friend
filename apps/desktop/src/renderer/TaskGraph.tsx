@@ -3,7 +3,6 @@ import {Empty,JsonView,Markdown} from './ui.js';
 import {statusLabels} from './types.js';
 import type {TaskGraph,TaskGraphNode} from './task-graph-model.js';
 import {centerTaskGraph,fitTaskGraph,graphMiniMap,layoutTaskGraph,zoomTaskGraph,type GraphViewport,type TaskGraphLayout} from './task-graph-layout.js';
-import './task-graph.css';
 
 const label=(status:string)=>({unknown:'结果待核对',unavailable:'状态待核对',skipped:'已跳过',waiting_review:'等待复核'}[status]||statusLabels[status]||status||'状态待核对');
 const color=(status:string)=>status==='completed'?'#4b8068':status==='running'?'#659f89':['failed','blocked','unknown'].includes(status)?'#bd8c58':'#b8c8bc';
@@ -65,7 +64,7 @@ export function TaskGraphCanvas({graphs,onOpenMember,loading=false,error}:{graph
     {selected.memberId&&<button onClick={()=>onOpenMember(selected.memberId!)}>打开{selected.memberName||'队友'}会话 ↗</button>}
     <h4>任务要求</h4><Markdown text={selected.prompt||'尚无可读任务要求'}/><h4>前置任务</h4><p>{selected.dependencies.map(id=>byId.get(id)?.title||id).join('、')||'无'}</p>
     {selected.writeScopes.length>0&&<><h4>写入范围</h4><p>{selected.writeScopes.join('、')}</p></>}
-    <h4>当前成果{selected.resultRevision?` · v${selected.resultRevision}`:''}</h4><Markdown text={selected.summary||selected.error||'尚未形成已保存成果；查看不会启动执行。'}/>
+    <h4>{selected.status==='unknown'?'已保存成果（需核对）':'当前成果'}{selected.resultRevision?` · v${selected.resultRevision}`:''}</h4><Markdown text={selected.summary||selected.error||'尚未形成已保存成果；查看不会启动执行。'}/>
     <details><summary>任务与当前尝试记录</summary><JsonView value={Object.fromEntries(Object.entries(selected.detail).filter(([key])=>!['checks','review'].includes(key)))}/></details>
     {(selected.detail.checks!==undefined||selected.detail.review!==undefined)&&<details><summary>整图检查与复核</summary><JsonView value={{checks:selected.detail.checks,review:selected.detail.review}}/></details>}
    </aside>}

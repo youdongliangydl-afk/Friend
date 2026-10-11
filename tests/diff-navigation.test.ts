@@ -4,7 +4,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {DiffFileBrowser} from '../apps/desktop/src/renderer/DiffFileBrowser.js';
 import {DiffRows,FileDiffView} from '../apps/desktop/src/renderer/DiffView.js';
-import {DIFF_PAGE_LINES,diffBlockLocation,diffFileRatio,foldDiffLines,projectDiffBlocks,selectedDiffIndex} from '../apps/desktop/src/renderer/diff-model.js';
+import {DIFF_PAGE_LINES,diffBlockLocation,diffFileRatio,diffFileStatus,foldDiffLines,projectDiffBlocks,selectedDiffIndex} from '../apps/desktop/src/renderer/diff-model.js';
 import {frozenRunMetadata} from '../apps/desktop/src/renderer/WorkspaceDiff.js';
 import {parsePatch,type ChangedFile,type DiffLine} from '../apps/desktop/src/workspace-files.js';
 import type {RunChangesSummary} from '../apps/desktop/src/run-changes.js';
@@ -56,4 +56,8 @@ test('frozen map comes from summary only and previous selection cannot leak into
  const data=frozenRunMetadata('s',summary);assert.deepEqual(data.files.map(file=>file.path),['a.ts','b.bin']);assert.ok(data.files.every(file=>file.lines.length===0&&file.patch===''));assert.match(data.note||'',/冻结快照/);
  assert.equal(selectedDiffIndex('A',{owner:'A',index:1},2),1);assert.equal(selectedDiffIndex('B',{owner:'A',index:1},2),0);assert.equal(selectedDiffIndex('B',{owner:'A',index:7},8,3),3);assert.equal(selectedDiffIndex('B',undefined,0),-1);
  assert.match(frozenRunMetadata('s',{...summary,changeId:undefined}).unavailable||'',/未使用当前工作区/);
+});
+
+test('historical file metadata without status stays readable',()=>{
+ assert.equal(diffFileStatus({}),'状态未记录');assert.equal(diffFileStatus({status:null}),'状态未记录');
 });
