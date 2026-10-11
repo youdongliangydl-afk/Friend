@@ -1,8 +1,9 @@
+import {questionBatch,type BatchQuestion} from './question-batch.js';
 export type AttentionGeneration = string | number;
 export interface AttentionOwner { sessionId: string; generation: AttentionGeneration; runId?: string }
 export interface AttentionDialog {
-  id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string;
-  message?: string; options?: string[]; prefill?: string; placeholder?: string;
+  id: string; kind: 'confirm' | 'input' | 'select' | 'editor' | 'questionBatch'; title: string;
+  v?:1; questions?:BatchQuestion[];generation?:string;runId?:string;toolCallId?:string;createdAt?:number;sequence?:number;message?: string; options?: string[]; prefill?: string; placeholder?: string;
 }
 export interface AttentionActivity extends AttentionOwner {
   id: string; kind: 'dialog' | 'running' | 'completed' | 'failed';
@@ -17,7 +18,7 @@ export interface AttentionView { sessionId?: string; foreground: boolean; muted?
 export interface AttentionRunState { runId?: string; isRunning?: boolean; lifecycleStatus?: string }
 interface WorkerState { generation: AttentionGeneration; runId?: string; active: boolean }
 const runningStatuses = new Set(['running', 'awaiting_review', 'rebuilding', 'stopping']);
-const dialogKinds = new Set(['confirm', 'input', 'select', 'editor']);
+const dialogKinds = new Set(['confirm', 'input', 'select', 'editor', 'questionBatch']);
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const key = (owner: AttentionOwner, kind: string, id = '') => JSON.stringify([owner.sessionId, owner.generation, kind, id]);
 
@@ -31,12 +32,13 @@ function dialogRequest(value: unknown): AttentionDialog | undefined {
   const raw = object(value);
   if (typeof raw.id !== 'string' || !raw.id || raw.id.length > 200 || !dialogKinds.has(String(raw.kind)) || typeof raw.title !== 'string') return;
   const request: AttentionDialog = {id: raw.id, kind: raw.kind as AttentionDialog['kind'], title: safeText(raw.title)};
+  if(raw.kind==='questionBatch'){try{const batch=questionBatch(raw);if(typeof raw.generation!=='string'||typeof raw.toolCallId!=='string'||typeof raw.createdAt!=='number'||typeof raw.sequence!=='number')return;Object.assign(request,batch,{generation:raw.generation,runId:raw.runId,toolCallId:raw.toolCallId,createdAt:raw.createdAt,sequence:raw.sequence});}catch{return;}}
   for (const field of ['message', 'prefill', 'placeholder'] as const) if (typeof raw[field] === 'string') request[field] = safeText(raw[field]);
   if (Array.isArray(raw.options) && raw.options.every(option => typeof option === 'string')) request.options = raw.options.map(option => safeText(option));
   return request;
 }
 function copy(activity: AttentionActivity): AttentionActivity {
-  return {...activity, ...(activity.dialog ? {dialog: {...activity.dialog, ...(activity.dialog.options ? {options: [...activity.dialog.options]} : {})}} : {})};
+  return {...activity, ...(activity.dialog ? {dialog: {...activity.dialog, ...(activity.dialog.questions?{questions:structuredClone(activity.dialog.questions)}:{}), ...(activity.dialog.options ? {options: [...activity.dialog.options]} : {})}} : {})};
 }
 
 /** The host owns this live index; Pi remains the authority for execution and history. */
@@ -88,8 +90,8 @@ export class AttentionRegistry {
     const id = key(owner, 'dialog', request.id);
     if (this.activities.has(id) || this.announced.has(id)) return false;
     const now = this.now(), supplied = object(raw).expiresAt;
-    const expiresAt = typeof supplied === 'number' && Number.isFinite(supplied) ? supplied : now + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 60_000);
-    if (expiresAt <= now) return false;
+    const expiresAt = request.kind==='questionBatch'?undefined:typeof supplied === 'number' && Number.isFinite(supplied) ? supplied : now + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 60_000);
+    if (expiresAt !== undefined && expiresAt <= now) return false;
     const activity: AttentionActivity = {...owner, id, kind: 'dialog', title: request.title, status: 'waiting', createdAt: now, updatedAt: now, unseen: !this.viewed(owner.sessionId), expiresAt, dialog: request};
     this.activities.set(id, activity); this.announce(activity); return true;
   }
@@ -154,7 +156,7 @@ export class AttentionRegistry {
   }
   expire(): boolean {
     let changed = false; const now = this.now();
-    for (const [id, activity] of this.activities) if (activity.kind === 'dialog' && activity.expiresAt! <= now) { this.activities.delete(id); changed = true; }
+    for (const [id, activity] of this.activities) if (activity.kind === 'dialog' && activity.expiresAt !== undefined && activity.expiresAt <= now) { this.activities.delete(id); changed = true; }
     return changed;
   }
   snapshot(): AttentionActivity[] {

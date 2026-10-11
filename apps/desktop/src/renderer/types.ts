@@ -1,3 +1,4 @@
+import type {QuestionBatchDialog} from '../question-batch.js';
 import type {PermissionMode} from '@friend-pi/core';
 export type {PermissionMode};
 import type { WorkspaceRef } from '../workspaces.js';
@@ -23,7 +24,8 @@ declare global { interface Window { friendPi: FriendBridge } }
 export type PluginName = 'swarm' | 'expert' | 'memory' | 'topic-rebuild';
 export type WorkspaceTab = 'browser' | PluginName | 'file' | 'diff' | 'settings';
 export type JsonObject = Record<string, unknown>;
-export interface DialogRequest { expiresAt?:number;id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string; message?: string; options?: string[]; prefill?: string }
+export type DialogRequest = QuestionBatchDialog | LegacyDialogRequest;
+export interface LegacyDialogRequest { expiresAt?:number;id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string; message?: string; options?: string[]; prefill?: string }
 export function asObject(value: unknown): JsonObject { return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}; }
 export function asList<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : []; }
 export function errorText(error: unknown): string { return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }

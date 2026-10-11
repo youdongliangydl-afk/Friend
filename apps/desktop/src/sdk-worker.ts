@@ -1,3 +1,4 @@
+import {questionBatch,questionAnswers,type QuestionBatchDialog,type QuestionBatchResult} from './question-batch.js';
 import {createDocumentReader} from './document-reader.js';
 const documentReader=createDocumentReader();
 import {createExternalCapabilities,nativeMcpResourceTools} from './external-capabilities.js';
@@ -32,7 +33,7 @@ process.env.FRIEND_PI_AGENT_DIR=agentDir;
 const plugins=['swarm','expert','memory','topic-rebuild'];
 let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGINS) as string[]:plugins;
 let changeTracker:RunChangesTracker|undefined;let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let runRequiresSwarm:boolean|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let permissionMode:PermissionMode=process.env.FRIEND_PI_PERMISSION_MODE?parsePermissionMode(process.env.FRIEND_PI_PERMISSION_MODE):'auto';let executionMode:ExecutionMode=['team','swarm'].includes(process.env.FRIEND_PI_MODE||'')?process.env.FRIEND_PI_MODE as ExecutionMode:'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;let permissionEpoch=0;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
-const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>;terminalRequestId?:string}>();
+const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer?:ReturnType<typeof setTimeout>;terminalRequestId?:string;batch?:QuestionBatchDialog;cleanup?():void}>();
 const foregroundStore=new RecordStore('runtime',dataDir),artifactStore=new RecordStore('artifacts',dataDir);
 function recordForeground(force?:boolean){if(disposed||!session)return;foregroundStore.put(`foreground:${session.sessionId}`,{pid:process.pid,active:force??(!session.isIdle||modelInFlight||rootExecutionBusy()),runId,expiresAt:Date.now()+15000});}
 const foregroundPulse=setInterval(()=>recordForeground(),5000);foregroundPulse.unref();
@@ -185,7 +186,17 @@ function terminalRequest(method:string,input:Record<string,unknown>,signal?:Abor
  const pending={resolve,reject,timer:terminalDeadline(id,20000),phase:'transport' as const,cleanup(){clearTimeout(this.timer);signal?.removeEventListener('abort',abort);}};
  terminalRequests.set(id,pending);signal?.addEventListener('abort',abort,{once:true});output({type:'terminal.request',id,method,input,planMode});
 });}
+function requestQuestions(input:unknown,toolCallId:string,signal?:AbortSignal):Promise<QuestionBatchResult>{
+ const batch=questionBatch(input),request:QuestionBatchDialog={...batch,id:randomUUID(),kind:'questionBatch',generation:questionGeneration,runId,toolCallId,createdAt:Date.now(),sequence:++questionSequence};
+ return new Promise(resolveResult=>{const finish=(value:unknown)=>{signal?.removeEventListener('abort',abort);resolveResult({...batch,status:value?'answered':stopping||disposed||signal?.aborted?'interrupted':'cancelled',...(value?{answers:value as QuestionBatchResult['answers']}:{})});};
+ const abort=()=>{const pending=dialogs.get(request.id);if(pending){dialogs.delete(request.id);finish(undefined);publish('dialog.closed',{id:request.id});}};
+ if(signal?.aborted||stopping||disposed){finish(undefined);return;}dialogs.set(request.id,{resolve:finish,batch:request,cleanup:()=>signal?.removeEventListener('abort',abort)});signal?.addEventListener('abort',abort,{once:true});publish('dialog',request);
+ });
+}
+const questionGeneration=randomUUID();let questionSequence=0;
 function guard():ExtensionFactory{return pi=>{
+ pi.registerTool({name:'friend_questions',label:'向用户提问',description:'需要用户澄清或选择时，主助手把相关问题合为一组。支持single/multiple/text；逐题填写、复核后一次提交。required必须明确，选项用稳定id/label。不要用默认选项代替用户回答；取消时没有部分答案。',parameters:Type.Object({v:Type.Literal(1),title:Type.String(),questions:Type.Array(Type.Object({id:Type.String(),type:Type.Union(['single','multiple','text'].map(value=>Type.Literal(value))),title:Type.String(),description:Type.Optional(Type.String()),required:Type.Boolean(),options:Type.Optional(Type.Array(Type.Object({id:Type.String(),label:Type.String()}))),allowOther:Type.Optional(Type.Boolean())}),{minItems:1,maxItems:12})}),async execute(id,input,signal){const result=await requestQuestions(input,id,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+
   pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input,signal){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&!teammateRunning&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(teammateRunning?1:0)+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,permissionMode,temporaryWriteRoot,executionStopped:stopping||cancelRequested||!!memberBudgetWait(),executionWaitReason:memberBudgetWait(),modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};(request.reply as (value:HostPolicy)=>void)(policy);});
   pi.on('session_shutdown',()=>offPolicy());
@@ -207,7 +218,7 @@ function guard():ExtensionFactory{return pi=>{
     startedInputId=pendingInputs.find(input=>input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(event.prompt)&&input.imageHash===imageIdentity(event.images||[]))?.id;
     const memberContinuation=pendingInputs.find(input=>input.id===startedInputId)?.memberContinuation;
     const currentTodo=projectTodo(session.sessionManager.getBranch(),runId);
-    const todoInstruction='多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需拆分。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
+    const todoInstruction='需要用户确认需求或选择时，使用 friend_questions 将相关问题合为一组；等待正式回答，不推断未提交的选项。多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需拆分。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
     const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?'请用 friend_swarm create/start 工具自主拆分并执行以下目标，跟踪任务并独立复核；不要只给方案。':'';
     const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
     const branchInstructions=session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType===SIDECHAT_TYPE&&object(entry.data).v===1)?'当前是独立分支会话。分叉点以前继承的消息仅作历史背景，旧 user 请求不是本分支待办；本轮只执行本分支最新提交的请求。父任务状态若无真实证据则未知，不要推断完成或失败，不要仅因继承历史而继续或重放父会话命令。':'';
@@ -217,9 +228,9 @@ function guard():ExtensionFactory{return pi=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
     if(planMode){
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
-      if(event.toolName!=='friend_todo'&&![...nativeMcpResourceTools,'read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
+      if(event.toolName!=='friend_questions'&&event.toolName!=='friend_todo'&&![...nativeMcpResourceTools,'read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
-    const request=(event.toolName.startsWith('mcp__')||[...nativeMcpResourceTools,'web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
+    const request=(event.toolName==='friend_questions'||event.toolName.startsWith('mcp__')||[...nativeMcpResourceTools,'web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
     if(request&&!await approvePermission(request))return {block:true,reason:'用户未批准该操作'};
     await changeTracker?.captureTool(event.toolName,input).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));
   });
@@ -548,7 +559,9 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     finally{if(graphId){pendingSwarmGraphIds.delete(graphId);swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));if(!session.isStreaming&&activeGraphIds.has(graphId)){lifecycleStatus=settledStatus();publishAuthorityNotice();}publish('state',current());}}
   }
   if(method==='dialog.respond'){
-    const pending=dialogs.get(text(input.id));if(!pending)throw new Error('交互已结束');clearTimeout(pending.timer);dialogs.delete(String(input.id));pending.resolve(input.cancelled?undefined:input.confirmed!==undefined?Boolean(input.confirmed):input.value);return {ok:true};
+    const pending=dialogs.get(text(input.id));if(!pending)throw new Error('交互已结束');
+    if(pending.batch){const batch=pending.batch;if(input.v!==1||input.generation!==batch.generation||input.runId!==batch.runId||runId!==batch.runId||stopping||disposed)throw new Error('问题所属运行已失效');const first=[...dialogs.values()].find(item=>item.batch);if(first!==pending)throw new Error('请先处理前一组问题');const answers=input.cancelled===true?undefined:questionAnswers(batch,input.answers);dialogs.delete(batch.id);pending.cleanup?.();pending.resolve(answers);publish('dialog.closed',{id:batch.id});return {ok:true,status:input.cancelled===true?'cancelled':'answered'};}
+    clearTimeout(pending.timer);dialogs.delete(String(input.id));pending.resolve(input.cancelled?undefined:input.confirmed!==undefined?Boolean(input.confirmed):input.value);return {ok:true};
   }
   if(method==='provider.save'||method==='provider.refresh'){
     if(!session.isIdle||swarmBusy())throw new Error('请先停止当前执行，再修改供应商配置');
