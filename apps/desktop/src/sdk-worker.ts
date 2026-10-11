@@ -45,10 +45,24 @@ function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runI
 async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
 interface PendingInput {background?:boolean;attachmentMetadata?:Record<string,unknown>[];queueId?:string;id:string;text:string;combinedLength:number;combinedHash:string;imageHash:string;expectsStart:boolean;preflightStarted?:boolean;automatic?:boolean;memberContinuation?:boolean;nativeMessage?:unknown;runId?:string}
 const pendingInputs:PendingInput[]=[];let startedInputId:string|undefined;let stopping=false;
+let authorisedCorrectionResume:{runId:string;generation:number}|undefined;
+const correctionPauseReason='只读协作核验已保留；原目标需用户明确接续，未自动重放执行';
+function correctedRun(owner=runId){return !!owner&&session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.correction.v1'&&object(entry.data).runId===owner);}
 function freshCorrection(frame:WakeFrame){return correctionEligibleRun===frame.runId&&correctionEligibleGeneration===frame.generation;}
+function skipRuntimeWake(frame:Pick<WakeFrame,'id'|'generation'|'runId'>,reason:string){
+ if(!session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.runtime-wake.skipped'&&object(entry.data).eventId===frame.id))session.sessionManager.appendCustomEntry('friend-pi.runtime-wake.skipped',{v:1,eventId:frame.id,generation:frame.generation,runId:frame.runId,status:'not-run',reason});
+}
+function runtimeWakeAllowed(frame:WakeFrame){
+ const initial=frame.id.startsWith('swarm-correction:'),owner=frame.runId||runId;
+ if(initial?freshCorrection(frame):!correctedRun(owner)||authorisedCorrectionResume&&authorisedCorrectionResume.runId===owner&&authorisedCorrectionResume.generation===frame.generation)return true;
+ // A read-only verification must not turn a member/goal/job result into renewed execution.
+ skipRuntimeWake({...frame,runId:owner},initial?'stale-correction':'correction-verification-only');
+ const goal=services.currentGoal();if(goal&&goal.sourceRunId===owner&&['active','waiting'].includes(goal.status)){services.goals.setState('paused',services.context(),correctionPauseReason);lifecycleStatus='paused';foregroundOpen=false;publish('state',current());}
+ return false;
+}
 async function prepareRuntimeWake(frame:WakeFrame){
  const correction=frame.id.startsWith('swarm-correction:'),wakeGeneration=frame.generation,wakeEpoch=queueEpoch;
- if(correction&&!freshCorrection(frame))return;
+ if(!runtimeWakeAllowed(frame))return;
  let wakeRunId=frame.runId||runId;
  const owns=()=>!disposed&&!stopping&&(!correction||!cancelRequested)&&wakeEpoch===queueEpoch&&wakeGeneration===services.generation()&&(!wakeRunId||wakeRunId===runId);
  const assertOwned=()=>{if(!owns())throw new Error('接续已取消');};
@@ -63,7 +77,7 @@ async function prepareRuntimeWake(frame:WakeFrame){
 }
 async function sendRuntimeWake(frame:WakeFrame){
  const correction=frame.id.startsWith('swarm-correction:'),wakeEpoch=queueEpoch;
- if(correction&&!freshCorrection(frame))return;
+ if(!runtimeWakeAllowed(frame))return;
  const owns=()=>!disposed&&!stopping&&!cancelRequested&&wakeEpoch===queueEpoch&&frame.generation===services.generation()&&(!frame.runId||frame.runId===runId);
  let input:PendingInput|undefined,started=false;
  try{
@@ -134,6 +148,7 @@ async function admitQueuedInput():Promise<boolean>{
    runRequiresSwarm=nativePolicy?.type==='custom'?object(nativePolicy.data).requiresSwarm===true:goal.mode==='swarm';
    for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId===session.sessionId&&graph.runId===runId&&graph.audit!==true){swarmGraphs.set(String(graph.id),graph);runGraphIds.add(String(graph.id));}}
    services.goals.store.put(`focus:${session.sessionId}`,goal.id);
+   if(correctedRun(runId)){skipRuntimeWake({id:`queue-resume:${goal.id}:${goal.revision}`,generation:services.generation(),runId},'correction-verification-only');services.goals.setState('paused',services.context(),correctionPauseReason);cancelQueueResume();queueResumeAuthorised=false;lifecycleStatus='paused';foregroundOpen=false;queueChanged();return false;}
    await services.dispatch('goal.resume',{goalId:goal.id},services.context('user'));cancelQueueResume();queueResumeAuthorised=false;lifecycleStatus='running';queueChanged();return false;
    })();try{return await queueRestoring;}finally{queueRestoring=undefined;}
   }
@@ -402,7 +417,14 @@ async function initialize(){
     if(event.pluginEvent==='runtime.model-usage'){const data=object(event.data);services.account(typeof data.tokens==='number'?data.tokens:undefined,'aux:'+String(data.callId),typeof data.runId==='string'?data.runId:runId);return;}
     if(event.pluginEvent==='swarm.member-usage'){const data=object(event.data);services.account(typeof data.tokens==='number'?data.tokens:undefined,'member:'+String(data.memberId)+':'+String(data.entryId),typeof data.runId==='string'?data.runId:runId);return;}
     if(event.pluginEvent==='swarm.member-supplement'){const data=object(event.data);session.sessionManager.appendCustomEntry('friend-pi.swarm.supplement',{v:1,memberId:data.memberId,messageId:data.messageId,graphId:data.graphId});return;}
-    if(event.pluginEvent==='swarm.member-request'){const data=object(event.data);services.enqueue('member-request:'+String(data.attemptId)+':'+digest(data.body),'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body),{generation:services.generation(),runId});return;}
+    if(event.pluginEvent==='swarm.member-request'){
+      const data=object(event.data),graph=swarmGraphs.get(String(data.graphId)),sourceRun=typeof graph?.runId==='string'?graph.runId:undefined;
+      const frame={id:'member-request:'+String(data.attemptId)+':'+digest(data.body),generation:services.generation(),runId:sourceRun,message:'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body),createdAt:new Date().toISOString()};
+      if(!graph||graph.sessionId!==session.sessionId||!sourceRun||![sourceRun,runId].includes(String(data.runId))||cancelRequested||stopping){skipRuntimeWake(frame,'stale-member-source');return;}
+      if(correctedRun(sourceRun)){skipRuntimeWake(frame,sourceRun===runId?'correction-member-source':'stale-member-source');return;}
+      if(data.runId!==runId){skipRuntimeWake(frame,'stale-member-source');return;}
+      services.enqueue(frame.id,frame.message,{generation:frame.generation,runId});return;
+    }
     if(event.pluginEvent==='swarm.member-event'){const data=object(event.data),native=object(data.event);if(!data.memberId&&native.type==='message_end'){const message=object(native.message),graph=swarmGraphs.get(String(data.graphId)),goal=services.currentGoal();if(message.role==='assistant'&&goal&&(graph?.goalId===goal.id||graph?.runId===goal.sourceRunId)){const usage=message.usage?object(message.usage):undefined;services.account(modelTokenUsage(usage),`member:${data.attemptId}:${message.timestamp}:${digest(message.content)}`);}}return;}
     if(event.pluginEvent==='team.result'){services.teamResult(object(event.data));return;}
     if(event.pluginEvent==='workflow.changed'){
@@ -577,11 +599,14 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     }}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);if(inputRecord.queueId)inputQueue.failed(inputRecord.queueId);if(sendEpoch===queueEpoch&&!disposed){foregroundOpen=rootExecutionBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});}publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId};
   }
-  if(method==='runtime'){const action=text(input.action);if(['goal.pause','goal.stop','goal.create','goal.resume'].includes(action)){queueEpoch++;cancelQueueResume();}if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;captureRunPolicy();await changeTracker?.begin(runId);baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;policyRevision++;}const result=await services.dispatch(action,object(input.input||{}),services.context('user'));if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
+  if(method==='runtime'){const action=text(input.action);if(['goal.pause','goal.stop','goal.create','goal.resume'].includes(action)){queueEpoch++;cancelQueueResume();}if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;captureRunPolicy();await changeTracker?.begin(runId);baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();cancelRequested=false;policyRevision++;}const previousAuthorisation=authorisedCorrectionResume;
+    if(action==='goal.resume'){const goalId=object(input.input||{}).goalId,goal=typeof goalId==='string'?services.goals.read(goalId,services.context()):services.currentGoal();if(goal?.sourceRunId===runId&&correctedRun(runId))authorisedCorrectionResume={runId:runId!,generation:services.generation()+1};}
+    let result:unknown;try{result=await services.dispatch(action,object(input.input||{}),services.context('user'));}catch(error){authorisedCorrectionResume=previousAuthorisation;throw error;}
+    if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
   if(method==='workflow.generate'){if(executionMode!=='swarm'||planMode||!session.isIdle)throw new Error('请在闲置 Swarm 执行模式生成工作流');await ensureModelReady();const result=await services.context('user').complete('只返回JSON，结构为 {v:1,title,goal,maxWorkers:4,nodes:[{id,title,prompt,dependencies:[],mode:"read"或"write",writeScopes:[最窄实际目录]}]}; 写入节点writeScopes非空，读取节点可省略。至多64节点，无脚本，条件用结构化谓词。目标：'+text(input.prompt),{maxTokens:6000});const body=result.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');return requestPlugin(bus,'workflow','create',{definition:object(JSON.parse(body))},1000,'user');}
   if(method==='stop'){
     queueEpoch++;queueResumeAuthorised=false;inputQueue.pause(true);cancelQueueResume();session.clearQueue();for(const item of inputQueue.snapshot().items)if(item.state==='dispatching')inputQueue.failed(item.id);
-    cancelRequested=true;correctionEligibleRun=undefined;swarmCorrectionPending=false;swarmCorrectionActive=false;permissionEpoch++;stopping=true;cancelTerminalRequests();lifecycleStatus='stopping';publish('state',current());
+    cancelRequested=true;correctionEligibleRun=undefined;authorisedCorrectionResume=undefined;swarmCorrectionPending=false;swarmCorrectionActive=false;permissionEpoch++;stopping=true;cancelTerminalRequests();lifecycleStatus='stopping';publish('state',current());
     for(const [id,pending] of dialogs){clearTimeout(pending.timer);pending.resolve(undefined);publish('dialog.closed',{id});}dialogs.clear();
     try{const foregroundStop=session.abort();const runtimeStop=input.keepGoalState===true?Promise.resolve():services.stop();
     if(enabled.includes('swarm')){const workflows=object(await requestPlugin(bus,'workflow','snapshot',{},1000,'user'));for(const flow of Array.isArray(workflows.workflows)?workflows.workflows.map(object):[])if(['running','waiting_review'].includes(String(flow.status)))await requestPlugin(bus,'workflow','stop',{workflowId:flow.id},20000,'user');}
