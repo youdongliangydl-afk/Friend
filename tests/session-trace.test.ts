@@ -53,10 +53,33 @@ const summary:RunChangesSummary={v:1,runId:'run',sessionId:'session',projectId:'
 test('summary renders four-file preview, totals and unavailable truthfully; anchors to its own run',()=>{
  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary}));assert.match(html,/已改动 5 个文件/);assert.match(html,/全部 5 个文件/);assert.match(html,/二进制或大文件/);assert.ok(!html.includes('file-4'));assert.match(html,/aria-expanded="false"/);assert.match(html,/查看 Diff/);assert.doesNotMatch(html,/侧边栏/);
  const missing=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[],unavailable:'Git unavailable'}}));assert.match(missing,/统计不可用/);assert.doesNotMatch(missing,/本轮没有文件变化|change-review-hint/);
- const unchanged=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[]}}));assert.match(unchanged,/本轮没有文件变化/);assert.match(unchanged,/disabled=""/);assert.doesNotMatch(unchanged,/change-review-hint/);
+ const unchanged=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[]}}));assert.equal(unchanged,'');
  const conversation=renderToStaticMarkup(React.createElement(Conversation,{messages:[{id:'u',role:'user',text:'query',runId:'run'},{id:'a',role:'assistant',text:'answer',runId:'run'},{id:'u2',role:'user',text:'next',runId:'next'}],live:null,tools:[],running:false,changes:[summary]}));
  assert.equal(conversation.match(/aria-label="本轮改动文件"/g)?.length,1);assert.ok(conversation.indexOf('answer')<conversation.indexOf('已改动'));assert.ok(conversation.indexOf('已改动')<conversation.indexOf('next'));
  const trace=renderToStaticMarkup(React.createElement(Trajectory,{messages:[],live:null,tools:[],running:false}));assert.match(trace,/搜索轨迹/);assert.match(trace,/发送消息后/);
+});
+
+test('confirmed empty run summaries hide the entire card in both anchored and historical conversation positions',()=>{
+ const empty:RunChangesSummary={...summary,files:[],fileCount:0,note:'统计本轮期间的文件变化，包含同期外部编辑'};
+ for(const status of ['completed','stopped','failed','interrupted'])assert.equal(renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,status}})),'');
+ const conversation=renderToStaticMarkup(React.createElement(Conversation,{messages:[{id:'u',role:'user',text:'只读问题',runId:'run'},{id:'a',role:'assistant',text:'这是正文',runId:'run'}],live:null,tools:[],running:false,changes:[empty,{...empty,runId:'historical-without-anchor'}]}));
+ assert.match(conversation,/这是正文/);assert.doesNotMatch(conversation,/本轮改动文件|run-changes|本轮没有文件变化|执行结束|统计本轮期间/);
+});
+
+test('empty file lists retain errors, unavailable snapshots and omitted or incomplete comparisons',()=>{
+ const empty={...summary,files:[],fileCount:0};
+ for(const boundary of [{unavailable:'Git 基线读取失败'},{error:'统计读取失败'},{truncated:true},{omittedFiles:2,fileCount:2},{fileCount:3}]){
+  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,...boundary}}));
+  assert.match(html,/aria-label="本轮改动文件"/);assert.match(html,/统计不可用|统计不完整/);assert.doesNotMatch(html,/本轮没有文件变化|change-review-hint/);
+ }
+ const failedFile={...summary,files:[{path:'broken.txt',status:'M',binary:false,error:'读取失败'}]};
+ const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:failedFile}));assert.match(html,/broken.txt/);assert.match(html,/统计失败/);
+});
+
+test('a real file change remains visible even when line counts are zero or unavailable',()=>{
+ for(const file of [{path:'empty.txt',status:'A',binary:false,additions:0,deletions:0},{path:'image.png',status:'M',binary:true}]){
+  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[file],fileCount:1}}));assert.match(html,/本轮改动文件/);assert.ok(html.includes(file.path));assert.match(html,/查看 Diff/);
+ }
 });
 
 test('DSH preview placement uses card inset, viewport clamps, gap and available vertical room',async()=>{
