@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {initialView,validateView,browserUrl,mergeViewUpdate} from '../apps/desktop/src/session-view.js';
 import {browserPartition} from '../apps/desktop/src/browser-policy.js';
-import {openTool,addNewTab,closeViewTab} from '../apps/desktop/src/renderer/view-tabs.js';
+import {openTool,toggleTrace,addNewTab,closeViewTab} from '../apps/desktop/src/renderer/view-tabs.js';
 test('pending renderer updates preserve concurrent popup creation and self-close',()=>{
   const base=validateView({...initialView(),tabs:[{id:'web',kind:'browser',url:'https://example.com'}],active:'web'});
   const popup={id:'popup',kind:'browser' as const,url:'about:blank'},prior=validateView({...base,tabs:[...base.tabs,popup],active:'popup'});
@@ -54,4 +54,12 @@ test('UI validation fences malformed tabs, duplicate tools and unknown selection
 test('trace is a persistent singleton fullscreen tab using the same selection and close contract',()=>{
  const view=openTool(initialView(),'trace');assert.equal(view.tabs[0].page,'trace');assert.deepEqual(validateView(view),view);
  const reopened=openTool(addNewTab(view),'trace');assert.equal(reopened.tabs.length,1);assert.equal(reopened.active,view.active);assert.equal(closeViewTab(reopened,reopened.active).active,'conversation');
+});
+test('trace shortcut toggles back to conversation while preserving other tabs and focuses an existing inactive trace',()=>{
+ const file=openTool(initialView(),'file'),trace=toggleTrace(file);
+ assert.equal(trace.tabs.length,2);assert.equal(trace.tabs.at(-1)?.page,'trace');
+ const closed=toggleTrace(trace);assert.equal(closed.active,'conversation');assert.deepEqual(closed.tabs,file.tabs);assert.deepEqual(validateView(closed),closed);
+ const elsewhere={...trace,active:file.active},focused=toggleTrace(elsewhere);
+ assert.equal(focused.active,trace.active);assert.deepEqual(focused.tabs,trace.tabs);
+ assert.equal(elsewhere.active,file.active);assert.equal(trace.tabs.length,2);
 });

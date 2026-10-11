@@ -6,6 +6,19 @@ import {processSnapshot,identityAlive,terminateOwned} from '../apps/desktop/src/
 // @ts-expect-error JS shared packaging harness
 import {verifyTerminalHost} from '../scripts/terminal-smoke.mjs';
 const shell=process.platform==='darwin'?'/bin/zsh':'/bin/sh';
+test('terminal shortcut creates once, reuses running sessions and replaces an ended terminal without crossing session scope',{timeout:15000,skip:process.platform==='win32'},async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'friend-terminal-open-')),oldShell=process.env.SHELL,oldZ=process.env.ZDOTDIR;process.env.SHELL=shell;process.env.ZDOTDIR=dir;
+ const controller=new TerminalController(join(dir,'data'),()=>{}),ctx:TerminalContext={sessionId:'open',workspaceId:'project',cwd:dir,actor:'user'};
+ const open=(context=ctx)=>controller.handle('open',{},context) as Promise<TerminalRecord>;
+ const list=async(context=ctx)=>(await controller.handle('list',{},context) as {terminals:TerminalRecord[]}).terminals;
+ try{
+  const [first,repeated]=await Promise.all([open(),open()]);assert.equal(first.id,repeated.id);assert.equal(first.state,'running');assert.equal((await list()).length,1);
+  const another={...ctx,sessionId:'another'},other=await open(another);assert.notEqual(other.id,first.id);assert.equal((await list(another)).length,1);assert.equal((await open()).id,first.id);
+  assert.equal((await controller.handle('stop',{id:first.id},ctx) as TerminalRecord).state,'exited');
+  const replacement=await open();assert.notEqual(replacement.id,first.id);assert.equal(replacement.state,'running');assert.equal((await list()).length,2);assert.equal((await open()).id,replacement.id);
+  await assert.rejects(open({...ctx,actor:'agent'}),/仅供用户/);assert.equal((await list()).length,2);
+ }finally{await controller.shutdown();if(oldShell===undefined)delete process.env.SHELL;else process.env.SHELL=oldShell;if(oldZ===undefined)delete process.env.ZDOTDIR;else process.env.ZDOTDIR=oldZ;rmSync(dir,{recursive:true,force:true});}
+});
 test('independent Node host uses real PTY, workspace, authority epochs and verified cleanup',{timeout:30000,skip:process.platform==='win32'},async()=>{assert.equal((await verifyTerminalHost(process.execPath,resolve('.'))).success,true);});
 test('owned background descendants stop; cold records restore output without replay',{timeout:15000,skip:process.platform==='win32'},async()=>{
  const dir=mkdtempSync(join(tmpdir(),'friend-terminal-tree-')),oldShell=process.env.SHELL,oldZ=process.env.ZDOTDIR;process.env.SHELL=shell;process.env.ZDOTDIR=dir;

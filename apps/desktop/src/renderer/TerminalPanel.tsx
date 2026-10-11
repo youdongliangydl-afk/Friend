@@ -31,18 +31,19 @@ function TerminalView({sessionId,record,open,report}:{sessionId:string;record:Te
   useEffect(()=>{if(open){requestAnimationFrame(()=>{fit.current?.fit();view.current?.focus();});}},[open]);
   return <div className="terminal-screen" aria-label={'终端 '+record.name} ref={host}/>;
 }
-export function TerminalPanel({sessionId,open,version,onHide,report,notice}:{sessionId:string;open:boolean;version:number;onHide():void;report(message:string,error?:boolean):void;notice?:ReactNode}){
+export function TerminalPanel({sessionId,open,version,target,onHide,report,notice}:{sessionId:string;open:boolean;version:number;target?:{id:string};onHide():void;report(message:string,error?:boolean):void;notice?:ReactNode}){
   const [terms,setTerms]=useState<Term[]>([]),[selected,setSelected]=useState(''),[busy,setBusy]=useState(false);
   const [closed,setClosed]=useState<Set<string>>(()=>new Set()),[showEnded,setShowEnded]=useState(false);
-  const mounted=useRef(true),owner=useRef(sessionId);owner.current=sessionId;
+  const mounted=useRef(true),owner=useRef(sessionId),refreshVersion=useRef(0);owner.current=sessionId;
   const refresh=async()=>{
-    const target=sessionId;
-    try { const result=await window.friendPi.request<{terminals:Term[]}>('terminal.list',{sessionId:target});if(!mounted.current||owner.current!==target)return;setTerms(result.terminals);setSelected(old=>result.terminals.some(t=>t.id===old)?old:result.terminals.find(t=>!closed.has(t.id))?.id||''); }
+    const target=sessionId,request=++refreshVersion.current;
+    try { const result=await window.friendPi.request<{terminals:Term[]}>('terminal.list',{sessionId:target});if(!mounted.current||owner.current!==target||request!==refreshVersion.current)return;setTerms(result.terminals);setSelected(old=>result.terminals.some(t=>t.id===old)?old:result.terminals.find(t=>!closed.has(t.id))?.id||''); }
     catch(error){report(String(error),true);}
   };
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   useEffect(()=>{setTerms([]);setSelected('');try{setClosed(new Set(JSON.parse(localStorage.getItem('friend-pi.terminal-closed:'+sessionId)||'[]')));}catch{setClosed(new Set());}if(open)void refresh();},[sessionId]);
   useEffect(()=>{if(open)void refresh();},[open,version]);
+  useEffect(()=>{if(target){setSelected(target.id);setClosed(old=>{const next=new Set(old);next.delete(target.id);return next;});void refresh();}},[target]);
   useEffect(()=>{try{localStorage.setItem('friend-pi.terminal-closed:'+sessionId,JSON.stringify([...closed]));}catch{}},[closed,sessionId]);
   const create=async()=>{if(busy)return;setBusy(true);try{const result=await window.friendPi.request<Term>('terminal.create',{sessionId});if(owner.current===sessionId){await refresh();setSelected(result.id);}}catch(error){report(String(error),true);}finally{setBusy(false);}};
   const stop=async(record:Term)=>{setBusy(true);try{const result=await window.friendPi.request<Term>('terminal.stop',{sessionId,id:record.id});if(result.state!=='exited'&&result.state!=='interrupted')throw new Error('终端清理尚未完成，请检查保留记录');setClosed(old=>new Set([...old,record.id]));await refresh();}catch(error){report(String(error),true);}finally{setBusy(false);}};

@@ -48,6 +48,11 @@ export class TerminalController {
   async handle(method:string,input:Record<string,unknown>,ctx:TerminalContext):Promise<unknown> {
     if(ctx.actor==='agent'&&ctx.planMode&&!['list','read'].includes(method))throw new Error('计划模式只允许读取已有服务终端');
     if(method==='list')return {terminals:[...this.records.values()].filter(r=>r.sessionId===ctx.sessionId&&r.workspaceId===ctx.workspaceId&&(ctx.actor==='user'||r.service&&r.owner==='agent')).map(r=>this.public(r,ctx.actor))};
+    if(method==='open') {
+      if(ctx.actor!=='user')throw new Error('终端快捷入口仅供用户使用');
+      const running=[...this.records.values()].find(record=>record.sessionId===ctx.sessionId&&record.workspaceId===ctx.workspaceId&&record.state==='running');
+      return running?this.public(running,ctx.actor,true):this.handle('create',{},ctx);
+    }
     if(method==='create') {
       if(this.live.size>=24)throw new Error('运行中的终端已达上限，请先关闭不用的终端');
       if(ctx.actor==='agent'&&typeof input.command==='string'&&input.command.length>16384)throw new Error('服务命令过长');
