@@ -162,12 +162,62 @@ test('Swarm task authority rejects a provider claiming completion after create a
    await fixture.wait(()=>fixture.events.slice(next).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','a new Single run retains its own native settled authority');
    const noGraph=fixture.events.length;await fixture.request('send',{text:'新一轮 Swarm 必须实际执行',mode:'swarm'});
-   await fixture.wait(()=>fixture.events.slice(noGraph).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   await fixture.wait(()=>fixture.events.slice(noGraph).filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length===2);
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'failed','old unstarted graphs and a text-only answer cannot complete a new Swarm execution');
    const plan=fixture.events.length;await fixture.request('send',{text:'先只读规划即可',mode:'swarm',planMode:true});
    await fixture.wait(()=>fixture.events.slice(plan).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','read-only planning does not require executing members');
  }finally{await fixture.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+test('a missing Swarm graph gets one read-only correction, with final payload proof and no replay',{timeout:40000},async()=>{
+ for(const scenario of ['recover','queued','refuse','stop']){
+  let corrections=0,blocked=false,queued=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});
+  const server=createServer(async(req,res)=>{
+   let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
+   const index=messages.findLastIndex(message=>message.role==='user'),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
+   if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
+   else if(names.includes('friend_swarm')){
+    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('不能因任务简单而自行改为 Single')));
+    if(body.includes('用户已选择 Swarm')){
+     if(!recent.length){corrections++;if(scenario==='stop'){blocked=true;await held;}}
+     if(scenario==='recover'||scenario==='queued'){
+      if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'must not replace original'}};
+      else if(recent.length===1)call={name:'friend_swarm',input:{action:'create',input:{goal:'Blocked command contract',checks:[],tasks:[{id:'check',title:'Check',prompt:'Inspect',mode:'read'}],contract:{checks:[{id:'shell',kind:'command',command:'touch',argv:['must-not-exist']}]}}}};
+      else {const graph=recent.find(value=>value.status==='created');
+       if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only verification of retained delivery',checks:[],tasks:[{id:'check',title:'Check delivery',prompt:'Read delivery.txt and verify retained content',mode:'read',dependencies:[]}]}}};
+       else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
+       else text='Read-only verification dispatched';
+      }
+     }
+    }else if(!recent.length){if(scenario==='queued'){queued=true;await held;}call={name:'write',input:{path:'delivery.txt',content:'original delivery'}};}
+   }else if(!messages.some(message=>message.role==='tool'))call={name:'read',input:{path:'delivery.txt'}};
+   else text='Read-only member verified original delivery';
+   if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});
+   const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:text};
+   for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'correction',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+  try{
+   await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'correction-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+   await f.request('send',{text:'Deliver delivery.txt with original delivery, then verify it with Swarm',mode:'swarm'});
+   if(scenario==='queued'){await f.wait(()=>queued);await f.request('queue',{action:'add',text:'QUEUED_CHECK',mode:'single',planMode:false});release();}
+   if(scenario==='stop'){await f.wait(()=>blocked);await f.request('stop');release();}
+   else await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus===(['recover','queued'].includes(scenario)?'completed':'failed')&&!event.event.data.isRunning),25000);
+   if(scenario==='queued')await f.wait(()=>f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=3);
+   const state=await f.request('state') as {sessionFile:string;messages:{role:string;background?:boolean}[];lifecycleStatus:string},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   assert.equal(corrections,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(state.messages.filter(message=>message.role==='user').length,scenario==='queued'?2:1);assert.equal(state.messages.filter(message=>message.role==='automatic').length,1);assert.equal(state.messages.find(message=>message.role==='automatic')?.background,true);
+   assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original delivery');
+   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('不能因任务简单而自行改为 Single')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
+   if(['recover','queued'].includes(scenario)){
+    assert.equal(existsSync(join(f.directory,'must-not-exist')),false);
+    assert.ok(entries.some(entry=>entry.message?.toolName==='friend_swarm'&&entry.message.isError));
+    const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string;tasks:{mode:string}[]}[]};assert.equal(graphs.graphs.length,1);assert.equal(graphs.graphs[0].status,'integrated');assert.ok(graphs.graphs[0].tasks.every(task=>task.mode==='read'));
+    assert.ok(entries.some(entry=>entry.message?.toolName==='write'&&entry.message.isError));assert.ok(!f.events.some(event=>event.event?.type==='notice'&&String(event.event.data.message).includes('没有实际任务图')));
+   }else assert.equal(state.lifecycleStatus,scenario==='stop'?'stopped':'failed');
+  }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ }
 });
 
 test('automatic Rebuild at the settled boundary cannot restore a stale running lifecycle',{timeout:30000},async()=>{
@@ -642,4 +692,14 @@ test('batch questions use one native result in plan mode, reject invalid answers
   await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const state=await f.request('state') as {sessionFile:string};const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));const results=entries.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='friend_questions');assert.equal(results.length,1);const result=JSON.parse(results[0].message.content.find((item:{type:string})=>item.type==='text').text);assert.equal(result.status,stop?'interrupted':'answered');if(!stop)assert.deepEqual(result.answers[2],{questionId:'notes',skipped:true});assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1,'answers are a native tool result, not duplicate user messages');
  }finally{await f.close();}}}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+
+test('cold restore discards a persisted internal Swarm correction without starting a model or changing status',{timeout:30000},async()=>{
+ const directory=mkdtempSync(join(tmpdir(),'friend-pi-cold-correction-')),dataDir=join(directory,'data'),manager=SessionManager.create(directory,join(dataDir,'sessions'));
+ const text='retained user goal',sessionId=manager.getSessionId(),runId='retained-run';manager.appendMessage({role:'user',content:text,timestamp:Date.now()});manager.appendCustomEntry('friend-pi.input.v1',{entryId:manager.getLeafId(),textEnd:text.length,hash:digest(text),runId});manager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId,mode:'swarm',planMode:false,requiresSwarm:true});
+ const wake=new RecordStore('runtime-wake',dataDir),id='swarm-correction:'+runId,key=`queue:${sessionId}:${id}`;wake.put(`seen:${sessionId}:${id}`,{generation:0,at:new Date().toISOString()});wake.put(key,{id,generation:0,runId,message:'must never reach a model after cold restore',createdAt:new Date().toISOString()});
+ const f=await start({directory,sessionFile:manager.getSessionFile(),status:'interrupted',executionMode:'swarm'});
+ try{await f.request('queue',{action:'resume'});await f.wait(()=>!wake.get(key));const state=await f.request('state') as {lifecycleStatus:string;isRunning:boolean};assert.equal(state.lifecycleStatus,'interrupted');assert.equal(state.isRunning,false);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);assert.equal(f.events.some(event=>event.event?.type==='notice'&&event.event.data.level==='error'),false);}
+ finally{wake.close();await f.close();}
 });

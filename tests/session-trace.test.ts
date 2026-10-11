@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {projectMessages,projectTraceSystems} from '../apps/desktop/src/message-projection.js';
+import {projectMessages,projectTraceSystems,providerSystems} from '../apps/desktop/src/message-projection.js';
 import {projectTrajectory,searchTrajectory,groupTrajectory,traceDuration} from '../apps/desktop/src/renderer/trace-projection.js';
 import {ChangedFiles} from '../apps/desktop/src/renderer/ChangedFiles.js';
 import {Trajectory} from '../apps/desktop/src/renderer/Trajectory.js';
@@ -100,4 +100,27 @@ test('hover and review share one lazy comparison read; failures retry and missin
  const {ChangeDiffCache}=await import('../apps/desktop/src/renderer/change-review.js');const cache=new ChangeDiffCache(),coords={sessionId:'desktop',runId:'run',changeId:'change',index:0};let calls=0;
  const original=globalThis.window;Object.assign(globalThis,{window:{friendPi:{request:async(method:string)=>{assert.equal(method,'session.changes.read');calls++;if(calls===1)throw new Error('read failed');return {file:{path:'f',lines:[],patch:'',binary:false}};}}}});
  try{await cache.load(coords);assert.equal(cache.get(coords)?.phase,'error');await Promise.all([cache.load(coords),cache.load(coords)]);assert.equal(calls,2);assert.equal(cache.get(coords)?.phase,'ready');await cache.load(coords);assert.equal(calls,2);await cache.load({...coords,changeId:undefined});assert.equal(cache.get({...coords,changeId:undefined})?.phase,'missing');assert.equal(calls,2);}finally{if(original)Object.assign(globalThis,{window:original});else delete (globalThis as {window?:unknown}).window;}
+});
+
+
+test('internal Swarm correction stays native and inspectable but is hidden from the conversation',()=>{
+ const text='internal read-only Swarm correction';
+ const entries=[{type:'message',id:'u',message:{role:'user',content:'original goal'}},
+  {type:'message',id:'wake',message:{role:'user',content:text}},
+  {type:'custom',customType:'friend-pi.runtime-wake.input',data:{entryId:'wake',textEnd:text.length,hash:digest(text),runId:'run',background:true}},
+  {type:'message',id:'a',message:{role:'assistant',content:'verified result'}}];
+ const messages=projectMessages(entries);assert.equal(messages.length,3);assert.equal(messages[1].background,true);assert.equal(messages[1].role,'automatic');
+ const html=renderToStaticMarkup(React.createElement(Conversation,{messages,live:null,tools:[],running:false}));assert.doesNotMatch(html,/internal read-only|自动接续/);assert.match(html,/original goal|verified result/);
+ assert.ok(projectTrajectory(messages,null,[],false).some(row=>row.text===text));
+ const invalid=structuredClone(entries);(invalid[2].data as {hash:string}).hash='invalid';assert.equal(projectMessages(invalid)[1].background,false);
+});
+
+
+test('final provider systems cover completions, responses, Codex, Anthropic and Google without request secrets',()=>{
+ for(const payload of [{messages:[{role:'system',content:'rule'},{role:'user',content:'private input'}]},
+  {input:[{role:'developer',content:'rule'},{role:'user',content:'private input'}]},
+  {instructions:'rule'},{system:[{type:'text',text:'rule'}]},{config:{systemInstruction:'rule',apiKey:'secret'}}]){
+  const text=JSON.stringify(providerSystems({...payload,headers:{Authorization:'secret'},apiKey:'secret'}));assert.match(text,/rule/);assert.doesNotMatch(text,/secret|private input/);
+ }
+ assert.deepEqual(providerSystems({messages:[{role:'user',content:'private input'}]}),[]);
 });

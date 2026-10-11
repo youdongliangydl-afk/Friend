@@ -27,7 +27,7 @@ export function Conversation({ messages, live, tools, running, initialExpanded, 
     if (expansionKey && !initialExpanded) sessionStorage.setItem(expansionKey, JSON.stringify(next));
     return next;
   });
-  const timeline = groupToolActivity(projectTimeline(messages, live, tools, running));
+  const timeline = groupToolActivity(projectTimeline(messages.filter(message => !message.background), live, tools, running));
   const anchors = new Map<string, string>();
   for (const message of timeline) if (message.source.runId) anchors.set(message.source.runId, message.id);
   return <div className="messages">{timeline.map((message, i) =>
