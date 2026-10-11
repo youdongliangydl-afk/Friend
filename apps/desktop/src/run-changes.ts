@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { RecordStore } from '@friend-pi/core';
-import { captureRunBaseline, workspaceDiff, parsePatch, captureToolFile, compareToolCapture, hasGitRepository, uncoveredToolPaths, type CapturedRunFile, type ChangedFile, type WorkspaceDiff } from './workspace-files.js';
+import { captureRunBaseline, workspaceDiff, budgetWorkspaceDiff, fitChangedFile, captureToolFile, compareToolCapture, hasGitRepository, uncoveredToolPaths, type CapturedRunFile, type ChangedFile, type WorkspaceDiff } from './workspace-files.js';
+import {parseChangedFile} from './diff-budget.js';
 
 export const RUN_CHANGES_TYPE = 'friend-pi.run.changes.v1';
 export interface RunChangesSummary {
   v: 1; runId: string; sessionId: string; projectId: string; anchorId?: string; changeId?: string;
   startedAt: string; finishedAt: string; status: string; unavailable?: string; note?: string;
+  fileCount?:number;omittedFiles?:number;truncated?:boolean;
   files: { path: string; oldPath?: string; status: string; binary: boolean; additions?: number; deletions?: number; error?: string }[];
 }
 
@@ -15,14 +17,17 @@ interface ToolCaptures {
   failure?:string; files:[string,CapturedRunFile][]; uncoveredAtCapture?:string[];
 }
 /** Read an announced comparison by its owning session and original summary index. Never reread current files. */
-export function readRunChange(dataDir:string,sessionId:string,projectId:string,runId:string,changeId:string,index:number) {
+export function readRunChange(dataDir:string,sessionId:string,projectId:string,runId:string,changeId:string,index:number,maxBytes=8*1024*1024) {
   if(!Number.isSafeInteger(index)||index<0)throw new Error('变更文件索引无效');
   const store=new RecordStore('diff',dataDir);
   try {
     const snapshot=store.get<ChangeSnapshot>(`snapshot:${sessionId}:${changeId}`)?.value;
     if(!snapshot||snapshot.v!==1||snapshot.sessionId!==sessionId||snapshot.projectId!==projectId||snapshot.runId!==runId)return {unavailable:'该轮变更快照不可用，未使用当前文件替代'};
+    if(index>=500)return {unavailable:'该历史快照超过 500 个文件展示上限；未用当前文件替代'};
     const file=snapshot.files[index];if(!file)return {unavailable:'该轮没有此文件'};
-    return {file:{...file,lines:parsePatch(file.patch)}};
+    const budget=Number.isSafeInteger(maxBytes)?Math.max(1024,Math.min(8*1024*1024,maxBytes)):8*1024*1024;
+    const bounded=budgetWorkspaceDiff({scope:'run',files:[parseChangedFile(file)]},budget);
+    return bounded.files[0]?{file:bounded.files[0]}:{unavailable:'该历史文件超过 8 MiB 响应预算；正文未提供，未用当前文件替代'};
   } finally {store.close();}
 }
 
@@ -88,17 +93,19 @@ export class RunChangesTracker {
         }else if(uncovered.has(path)&&index<0){const file=await compareToolCapture(this.root,path,before);if(file)files.push(file);}
       }
       if(this.fileToolsOnly&&this.captures.size)diff={scope:'run',files};else diff={...diff,files};
-      return diff;
+      return budgetWorkspaceDiff({...diff,fileCount:files.length+(diff.omittedFiles||0)});
     })
-      .catch(() => ({ files: [], unavailable: '无法读取本轮文件变化' }))
+      .catch(():WorkspaceDiff => ({scope:'run', files: [], unavailable: '无法读取本轮文件变化' }))
       .then(diff => {if(generation!==this.generation)return;
-        const changeId=randomUUID();let budget=8*1024*1024;
-        const files=diff.files.map(({lines,...file})=>{const bytes=Buffer.from(file.patch);const kept=bytes.subarray(0,budget);budget-=kept.length;return {...file,patch:kept.toString('utf8'),truncated:file.truncated||kept.length<bytes.length};});
+        const changeId=randomUUID(),snapshot:ChangeSnapshot={v:1,sessionId:this.sessionId,projectId:this.projectId,runId,files:[]};let budget=8*1024*1024-Buffer.byteLength(JSON.stringify(snapshot))-32,omittedFiles=diff.omittedFiles||0;
+        for(const value of diff.files){const fitted=fitChangedFile(value,Math.max(0,budget),true),{lines,...file}=fitted,size=Buffer.byteLength(JSON.stringify(file))+1;if(size>budget){omittedFiles++;continue;}budget-=size;snapshot.files.push(file);}
+        const files=snapshot.files;
         const store=new RecordStore('diff',this.dataDir);try{store.put(`snapshot:${this.sessionId}:${changeId}`,{v:1,sessionId:this.sessionId,projectId:this.projectId,runId,files} satisfies ChangeSnapshot,null);}finally{store.close();}
         this.append({ v: 1, runId, sessionId: this.sessionId, projectId: this.projectId,changeId,
         anchorId, startedAt, finishedAt, status, unavailable: diff.unavailable,
+        fileCount:diff.fileCount??diff.files.length,omittedFiles,truncated:diff.truncated||omittedFiles>0||files.some(file=>file.truncated||file.contextComplete===false),
         note: this.fileToolsOnly?'此目录没有可用 Git 基线，仅统计文件工具修改；二进制或大文件不计行数。':'统计本轮期间的文件变化，包含同期外部编辑；二进制或大文件不计行数。',
-        files: diff.files.map(({ path, oldPath, status, binary, additions, deletions, error }) =>
+        files: files.map(({ path, oldPath, status, binary, additions, deletions, error }) =>
           ({ path, oldPath, status, binary, additions, deletions, error })) });});
     return this.pending;
   }

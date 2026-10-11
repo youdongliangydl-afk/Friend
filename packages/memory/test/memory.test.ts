@@ -71,7 +71,7 @@ test('correction uses CAS and invalidates descendants before the next context',a
   const f = fixture(); const c = new MemoryController();
   try {
     const parent = await c.dispatch('save',{content:'错误：数据库并行写入',explicitRemember:true,sources:[{sessionId:'session-a',entryId:'user1'}]},f.ctx) as MemoryRecord;
-    const child = await c.dispatch('save',{content:'从并行写入派生的错误方法',kind:'method',parentIds:[parent.id],sources:parent.sources},f.ctx) as MemoryRecord;
+    const child = await c.dispatch('save',{content:'从并行写入派生的错误方法',kind:'experience',parentIds:[parent.id],sources:parent.sources},f.ctx) as MemoryRecord;
     const corrected = await c.dispatch('update',{id:parent.id,revision:1,content:'数据库写入必须串行'},f.ctx) as MemoryRecord;
     assert.equal(corrected.revision,2);
     await assert.rejects(c.dispatch('update',{id:parent.id,revision:1,content:'另一个版本'},f.ctx),{name:'ConflictError'});
@@ -79,7 +79,7 @@ test('correction uses CAS and invalidates descendants before the next context',a
     assert.equal(invalidated.status,'invalidated'); assert.equal(invalidated.enabled,false);
     assert.equal((f.events.find(item => item.event === 'memory.invalidated')?.data as {reason:string}).reason,'corrected');
     await assert.rejects(c.dispatch('accept',{id:child.id,revision:invalidated.revision},f.ctx),/来源无效/);
-    const sourceRead = await c.dispatch('read',{id:parent.id,source:true},f.ctx) as {originals:{item:HistoryItem}[]};
+    const sourceRead = await c.dispatch('read',{id:parent.id,revision:parent.revision,source:true},f.ctx) as {originals:{item:HistoryItem}[]};
     assert.equal(sourceRead.originals[0]?.item.id,'user1');
     const exported = await c.dispatch('export',{id:parent.id},f.ctx) as {path:string};
     assert.match(readFileSync(exported.path,'utf8'),/数据库写入必须串行/);
@@ -90,7 +90,7 @@ test('forget deletes descendants and versions, suppression survives a cold resta
   const f = fixture(); let c = new MemoryController();
   try {
     const parent = await c.dispatch('save',{content:'服务端数据库写操作需要串行',explicitRemember:true,sources:[{sessionId:'session-a',entryId:'user1'}]},f.ctx) as MemoryRecord;
-    const child = await c.dispatch('save',{content:'旧派生方法',kind:'method',parentIds:[parent.id],sources:parent.sources},f.ctx) as MemoryRecord;
+    const child = await c.dispatch('save',{content:'旧派生方法',kind:'experience',parentIds:[parent.id],sources:parent.sources},f.ctx) as MemoryRecord;
     await c.dispatch('forget',{id:parent.id,revision:1},f.ctx);
     await assert.rejects(c.dispatch('read',{id:child.id},f.ctx),/不存在/);
     await c.dispose(); c = new MemoryController();
@@ -116,7 +116,7 @@ test('disabled memory stays disabled after automatic relearning and cold restart
   } finally { await c.dispose(); f.cleanup(); }
 });
 
-test('background reflection, dream, distill keep method candidates without Expert',async () => {
+test('independent Memory extraction publishes experience with one call and never submits Expert',async () => {
   const f = fixture(); const c = new MemoryController(); let calls = 0;
   try {
     f.entries.push({id:'verified1',parentId:'reply1',type:'message',timestamp:new Date().toISOString(),role:'toolResult',text:'服务端数据库写操作串行验证通过。'});
@@ -128,10 +128,10 @@ test('background reflection, dream, distill keep method candidates without Exper
     };
     await c.settled(f.ctx); await c.whenIdle(f.ctx);
     const candidates = c.snapshot(f.ctx).candidates as MemoryRecord[];
-    assert.equal(candidates.length,1); assert.equal(calls,2);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[])[0]?.confirmedBy,'system');
-    assert.equal(candidates.find(record => record.kind === 'method')?.expertDelivery,'unavailable');
+    assert.equal(candidates.length,0); assert.equal(calls,1);assert.equal((c.snapshot(f.ctx).memories as MemoryRecord[])[0]?.confirmedBy,'system');
+    assert.ok(!(c.snapshot(f.ctx).memories as MemoryRecord[]).some(record=>record.kind==='method'));
     assert.equal(candidates.every(record => record.status === 'candidate'),true);
-    await c.settled(f.ctx); await c.whenIdle(f.ctx); assert.equal(calls,2);
+    await c.settled(f.ctx); await c.whenIdle(f.ctx); assert.equal(calls,1);
   } finally { await c.dispose(); f.cleanup(); }
 });
 

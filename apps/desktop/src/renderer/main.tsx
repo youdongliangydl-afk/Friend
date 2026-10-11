@@ -11,6 +11,7 @@ import './client-workspace.css';
 import './model-settings.css';
 import './session-fullscreen.css';
 import './session-trace.css';
+import './diff-view.css';
 import './session-stats.css';
 import './queue-messages.css';
 import './composer-materials.css';

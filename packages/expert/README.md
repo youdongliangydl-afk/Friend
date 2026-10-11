@@ -38,11 +38,19 @@ Swarm 通过版本化请求 `freeze {catalog:true}` 取得完整冻结目录，�
 自动目录的冻结记录不宣称采用全部专家。后续改版或另一轮运行不会
 改写旧记录；SQLite 的当前运行指针只供范围检查与当前方法读取。
 
-Memory 的自动方法必须携带可回查来源和父记忆。`idempotencyKey` 在项目内绑定内容及来源摘要，重复投递不创建重复候选，不同内容使用同一标识会被拒绝。用户也可手动提交文本候选。
+Expert 与 Skill 使用同一 `plugins.sqlite` 的 `expert` namespace。首次安装包含五类专家和十五个文本 Skill；角色合同保持独立。Skill 正文版本不可变，当前 head 采用 revision CAS。Markdown 位于应用数据目录的 `projections/expert`，仅为可重建只读视图；外部编辑会标记漂移并重建，不导回数据库。旧项目 Markdown 在迁移或用户明确更新时冻结，不在后续执行中追随文件变化。
 
-发布只依据用户提供的固定 JSON 基准：至少两个不同输入的适用案例和一个范围外反例。队列实际调用配置的模型，分别运行基础方法和候选方法；将响应与预期 JSON 做严格客观相等检查。发布保留案例快照、基准摘要、模型、逐例结果，且只在本项目范围启用。结果仅证明这些声明案例，不证明一般专业水平。
+新目录动作 `catalog.search` 默认返回最多 8 项元数据，上限 20；`expert.read` 返回职责与默认 Skill 引用，`skill.read {id,version}` 才返回指定正文。实际 `use {expertId,runId,catalogHash,skillIds?}` 冻结版本、来源和权限交集，先保存采用 intent，再核对 canonical Pi custom entry。未知或失败的 journal 不返回正文，已收紧限制保持生效；重试仅核对原 operationId，不重复创建成功收据。Swarm 成员通过可信上下文调用 `adopt.frozen`，在自己的 JSONL 写入并 fsync 收据，再调用 `adopt.confirm`。
 
-自动验证串行进行，SQLite 运行租约避免同数据目录下两个控制器并发验证。前台工作优先；可暂停，关闭时取消在途调用，模型调用失败不无限自动重试。进程异常后的在途验证恢复为待验证，不制造发布。来源纠正或遗忘撤回候选和派生方法；撤回期间的迟到响应不能发布。
+独立成长入口是 `taskTraceReady {runId,taskResultVersion,taskResult,evidence}`。可验证的 Pi 原史、登记产物及宿主检查构成证据，Memory 仅是可选依赖。`peekExpertLearningJob` / `wakeExpertLearningJobs` 和控制器 `executeLearningJob` 供统一宿主公平轮转；每次 execute 最多发起一个模型请求。作业保存独立 budgetId、sourceRunId、阶段、cursor、调用身份和租约 epoch。普通前台开始不取消在途请求，下一请求等待准入；未知调用不盲目重放。
+
+低风险文本候选通过 `candidate.submit` 提交，以 `trial.configure` 在指定项目和适用范围试用，默认最多三个任务，准入时 CAS 预占。重复输入不作为独立效果证据；真实客观关键失败冻结后续试用。自动方法不得改变角色、工具授权、模型或预算，也不生成脚本、hook、tool 或安装指令。
+
+`validation.manifest` 冻结 train、validation 和隐藏 release 分区、任务/来源族、候选与基线 hash、模型、工具、预算及客观检查器；`validation.schedule` 创建独立后台作业。validation 和 release 各至少需要两个独立正例和一个范围外反例。每阶段 candidate 必须严格多于 baseline 的通过数，关键项和范围外检查全部通过，才晋升 `validated + growth`。两者同样全过、证据不足、近似副本泄漏或预算不足均不发布。隐藏题、答案和可逆输出不通过普通 snapshot 或 validation.read 返回。
+
+来源、登记产物与明确能力依赖在准入及同数据库短事务提交时再次核验；迟到 owner 或来源撤回后的结果不能晋升。旧 published 方法迁为 `trial + legacy-partial`，保留原 id/hash/验证快照；旧 `validation.suite/run` 仅产生局部试用证据，不再直接发布默认方法。用户仍可通过旧管理接口操作，新的 Skill 编辑、启停和回滚使用 `expectedRevision` 与业务 `key`，回滚创建新版本。
+
+新执行的默认方法解析当前有效 Skill head，已冻结执行继续沿用原 version/hash。用户可用 `freeze {expertId,skillRefs:[{id,version}]}` 明确固定单个专家的方法版本；模型与后台不能设置此覆盖。原生 Pi 采用以公开工具清单限制工具，缺少宿主授权与真实清单时保持空工具范围。自动成长不会把 Memory/Expert 工具输出或受管投影回读当作独立 Pi 事实；引用这些能力时需要明确的版本依赖。
 
 ```text
 /expert select {"ids":["reviewer"]}
@@ -53,3 +61,14 @@ Memory 的自动方法必须携带可回查来源和父记忆。`idempotencyKey`
 ```
 
 Pi 和 Typebox 使用宿主 peer；不绑定特定 Provider，不复制 Pi loop。源码和设计参考见 SOURCES.md，以及仓库根来源记录。
+
+新 Skill 操作示例：
+
+```text
+/expert catalog.search {"query":"编码","limit":8}
+/expert skill.read {"id":"seed.implementer.1","version":1}
+/expert learning.settings {"expectedRevision":0,"paused":false,"limits":{"maxCalls":64,"autoTrial":true}}
+/expert jobs.read {}
+```
+
+包内 fake Provider 测试验证合同和状态，不证明真实模型成长效果。最终真实模型、GUI、制品及组合验收由集成宿主执行并绑定候选提交与 Pi SHA。

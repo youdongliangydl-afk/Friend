@@ -52,13 +52,13 @@ export class TeammateStore {
     if(task.memberId)return this.get(task.memberId,ctx);
     let name=task.memberName||task.title.slice(0,60);const existing=this.list(ctx).find(member=>task.memberName?member.name===name:member.key===task.id);if(existing)return existing;if(this.list(ctx).some(member=>member.name===name))name=name.slice(0,50)+' ('+task.id.slice(0,24)+')';return this.create({name,description:task.title,key:task.id},ctx);
   }
-  acquire(id:string,attemptId:string,graphId:string,taskId:string,ctx:PluginContext,runtime:string,discussion=false):Teammate {
+  acquire(id:string,attemptId:string,graphId:string,taskId:string,ctx:PluginContext,runtime:string,discussion=false,provisioning=false):Teammate {
     return this.update(id,ctx,member=>{
       if(member.state!=='idle')throw new ConflictError('队友正在执行或需要明确接续');
-      member.generation++;member.state='running';member.attemptId=attemptId;member.graphId=graphId;member.taskId=taskId;member.ownerPid=process.pid;member.ownerRuntime=runtime;member.discussion=discussion;member.reason=undefined;
+      member.generation++;member.state=provisioning?'provisioning':'running';if(provisioning)member.provisioning={attemptId,generation:member.generation,intentAt:now()};member.attemptId=attemptId;member.graphId=graphId;member.taskId=taskId;member.ownerPid=process.pid;member.ownerRuntime=runtime;member.discussion=discussion;member.reason=undefined;
     });
   }
-  owns(member:Teammate,attemptId:string,generation:number|undefined):boolean {return member.attemptId===attemptId&&member.generation===generation&&member.state==='running';}
+  owns(member:Teammate,attemptId:string,generation:number|undefined):boolean {return member.attemptId===attemptId&&member.generation===generation&&(member.state==='running'||member.state==='provisioning');}
   release(id:string,attemptId:string,ctx:PluginContext,state:Teammate['state']='idle',reason?:string):void {
     this.update(id,ctx,member=>{if(member.attemptId!==attemptId)return;member.state=state;member.reason=reason;if(state==='idle'){member.attemptId=undefined;member.discussion=false;member.ownerPid=undefined;member.ownerRuntime=undefined;}});
   }

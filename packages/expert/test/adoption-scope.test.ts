@@ -8,7 +8,7 @@ import type {PluginContext} from '@friend-pi/core';
 
 test('automatic adoption immediately narrows scope, freezes versions, and is idempotent within its run',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'expert-scope-')),controller=new ExpertController(dir),entries:{type:string;value:unknown}[]=[];
-  const ctx:PluginContext={origin:'user',dataDir:dir,projectId:'p',projectDir:dir,sessionId:'s',runId:'run-one',isIdle:()=>true,history:()=>[],readSource:()=>{throw Error('unused');},request:async()=>undefined,complete:async()=>'',emit:()=>{},notify:()=>{},appendEntry:(type,value)=>entries.push({type,value})};
+  const ctx:PluginContext={origin:'user',dataDir:dir,projectId:'p',projectDir:dir,sessionId:'s',runId:'run-one',policy:{v:1,revision:1,stage:'settled',runId:'run-one',tools:['read','grep','find','ls','write','edit','bash'],writeScopes:['.'],canSwitchRole:true,unsettledTools:0,executionMode:'single',planMode:false},availableTools:['read','grep','find','ls','write','edit','bash'],isIdle:()=>true,history:()=>[],readSource:()=>{throw Error('unused');},request:async()=>undefined,complete:async()=>'',emit:()=>{},notify:()=>{},appendEntry:(type,value)=>{entries.push({type,value});return String(entries.length);}};
   try{
     const readOnly=await controller.dispatch('create',{title:'readonly',prompt:'Read source only',tools:['read','grep'],skills:[]},ctx) as {id:string;revision:number};
     const first=controller.beginRun(ctx);assert.equal(first.selectionMode,'auto');assert.equal(blockedByFrozenScope(first,'bash'),false);

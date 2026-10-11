@@ -1,3 +1,4 @@
+import {V2SwarmController as SwarmController} from './legacy-controller.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
@@ -5,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {RecordStore,digest,type PluginContext} from '@friend-pi/core';
-import {SwarmController,type Graph,type MemberLauncher,type MemberStart,type MemberOutput,type StopObject} from '../src/index.js';
+import {type Graph,type MemberLauncher,type MemberStart,type MemberOutput,type StopObject} from '../src/index.js';
 import {nativeBranch,TeammateStore,teamMessageText} from '../src/teammates.js';
 import {MemberInbox} from '../src/member-inbox.js';
 import type {AgentSession} from '@earendil-works/pi-coding-agent';

@@ -31,6 +31,12 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       if(start.parentTools&&!['swarm_message','team_message','friend_expert'].includes(event.toolName)&&!start.parentTools.includes(event.toolName))return {block:true,reason:'工具超出父任务权限'};
       if(start.executionStyle==='team'&&(event.toolName==='swarm_shared'||event.toolName==='swarm_message'&&input.to!=='parent'))return {block:true,reason:'Team 成员只能与主 Agent 通信'};
       if (Array.isArray(expert?.toolScope) && !['swarm_message','team_message','swarm_shared','friend_expert'].includes(event.toolName) && !expert.toolScope.includes(event.toolName)) return {block:true,reason:'工具不在已冻结的专家范围'};
+      if(Array.isArray(expert?.effectiveWriteScopes)){
+        const scopes=expert.effectiveWriteScopes.filter((scope):scope is string=>typeof scope==='string');
+        if(['write','edit'].includes(event.toolName)&&!scopes.some(scope=>contains(resolve(start.cwd,scope),permissionPath(String(input.path||'.'),start.cwd))))return {block:true,reason:'写入超出已确认的方法范围'};
+        if(event.toolName==='bash'&&!scopes.includes('.'))return {block:true,reason:'窄方法写入范围不能开放 Bash'};
+        if(event.toolName==='swarm_shared'&&input.action==='write'&&!scopes.includes('.'))return {block:true,reason:'共享写入超出已确认的方法范围'};
+      }
       if (/friend_swarm|friend_team|subagent|spawn_agent/i.test(event.toolName)) return {block:true,reason:'协作成员不能递归派生'};
       if (['read','write','edit','find','grep','ls'].includes(event.toolName)) {
         const target = permissionPath(String(input.path || input.cwd || '.'),start.cwd);

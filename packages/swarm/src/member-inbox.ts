@@ -10,7 +10,7 @@ export class MemberInbox {
   private readonly store:RecordStore;
   private readonly admitted=new Map<string,MemberMessage>();
   constructor(private readonly start:MemberStart,private readonly session:AgentSession,private readonly output:(message:MemberOutput)=>void){this.store=new RecordStore('swarm',start.dataDir);}
-  owned():boolean {const member=this.store.get<Teammate>(teammateKey(this.start.rootSessionId!,this.start.memberId!))?.value;return member?.state==='running'&&member.attemptId===this.start.attemptId&&member.generation===this.start.generation;}
+  owned():boolean {const member=this.store.get<Teammate>(teammateKey(this.start.rootSessionId!,this.start.memberId!))?.value;return (member?.state==='running'||member?.state==='provisioning')&&member.attemptId===this.start.attemptId&&member.generation===this.start.generation;}
   pending():MemberMessage[]{return this.store.list<MemberMessage>('teammate-message:'+this.start.rootSessionId+':').map(row=>row.value).filter(message=>message.memberId===this.start.memberId&&!message.processedAt).sort((a,b)=>(a.sequence||0)-(b.sequence||0));}
   receive(id:string,bodyDigest?:string):MemberMessage|undefined {
     if(!this.owned())return;

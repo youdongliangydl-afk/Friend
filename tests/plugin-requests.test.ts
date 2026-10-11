@@ -25,3 +25,19 @@ test('compact model content keeps authoritative details and desktop responses in
   assert.equal(await requestPlugin(bus,'sample','snapshot',{},1000),raw);assert.equal(raw.internalCatalog.length,5000);
  }finally{await hooks.get('session_shutdown')?.();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(directory,{recursive:true,force:true});}
 });
+
+test('member input identity travels only through the native trusted context and rejects serialized or invalid hashes',async()=>{
+ const directory=mkdtempSync(join(tmpdir(),'friend-trusted-input-')),prior=process.env.FRIEND_PI_DATA_DIR;process.env.FRIEND_PI_DATA_DIR=directory;
+ const emitter=new EventEmitter(),hooks=new Map<string,Function>(),bus:Bus={on:(event,listener)=>{emitter.on(event,listener);return()=>emitter.off(event,listener);},emit:(event,data)=>{emitter.emit(event,data);}};let tool:any;
+ const pi={events:bus,on:(event:string,hook:Function)=>hooks.set(event,hook),registerTool:(definition:any)=>{tool=definition;},registerCommand:()=>{},getThinkingLevel:()=> 'off',appendEntry:()=>{}};
+ const native={cwd:directory,sessionManager:{getSessionFile:()=>undefined,getSessionId:()=> 'trusted-test'},ui:{notify:()=>{}},isIdle:()=>true,model:undefined};
+ try{
+  registerPlugin(pi as any,'sample',{snapshot:ctx=>({inputHash:ctx.inputHash}),dispatch:(_action,_input,ctx)=>({inputHash:ctx.inputHash,runId:ctx.runId,taskId:ctx.taskId,taskScope:ctx.taskScope})},'test');hooks.get('session_start')!({},native);
+  const trusted={runId:'attempt',memberId:'member',taskId:'task',taskScope:'b'.repeat(64),inputHash:'a'.repeat(64),findJournalEntry:()=>undefined};
+  assert.deepEqual(await requestPlugin(bus,'sample','observe',{},1000,'plugin',trusted),{inputHash:trusted.inputHash,runId:'attempt',taskId:'task',taskScope:trusted.taskScope});
+  await assert.rejects(requestPlugin(bus,'sample','observe',{},1000,'plugin',JSON.parse(JSON.stringify(trusted))),{code:'PERMISSION_DENIED'});
+  await assert.rejects(requestPlugin(bus,'sample','observe',{},1000,'plugin',{...trusted,inputHash:'unverified'}),{code:'VALIDATION_ERROR'});
+  await assert.rejects(requestPlugin(bus,'sample','observe',{},1000,'plugin',{...trusted,taskScope:'other-graph'}),{code:'VALIDATION_ERROR'});
+  const result=await tool.execute('model',{action:'observe',input:{inputHash:trusted.inputHash}},undefined,undefined,native);assert.equal(result.details.inputHash,undefined);
+ }finally{await hooks.get('session_shutdown')?.();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(directory,{recursive:true,force:true});}
+});

@@ -1,5 +1,5 @@
-import {SessionTabs} from '../apps/desktop/src/renderer/SessionTabs.js';
-import {initialView} from '../apps/desktop/src/session-view.js';
+import {SessionTabs,NewTabPage} from '../apps/desktop/src/renderer/SessionTabs.js';
+import {initialView,toolNames,type ToolPage} from '../apps/desktop/src/session-view.js';
 import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,9 +10,19 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
 import {reorderIds} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 import {materialPath} from '../apps/desktop/src/renderer/material-links.js';
+import {pluginEventUpdate} from '../apps/desktop/src/renderer/panels.js';
 import type {Message} from '../apps/desktop/src/renderer/types.js';
 const assistant:Message={id:'a',role:'assistant',text:'beforeafter',parts:[{type:'text',text:'before'},{type:'thinking',thinking:'why'},{type:'toolCall',id:'one',name:'read',arguments:{path:'a'}},{type:'text',text:'after'}]};
 const result:Message={id:'r',role:'toolResult',text:'contents',toolCallId:'one',toolName:'read',isError:false};
+test('plugin panels refresh sessionless learning broadcasts instead of displaying another project snapshot',()=>{
+ const current={memories:[{id:'sqlite-current-project'}]},foreign={memories:[{id:'other-project'}]};
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',sessionId:'current',data:{pluginEvent:'memory.changed',data:current}}),current);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{pluginEvent:'memory.changed',data:foreign}}),'refresh');
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',sessionId:'other',data:{pluginEvent:'memory.changed',data:foreign}}),undefined);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{pluginEvent:'expert.changed',data:foreign}}),undefined);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{plugin:'memory',action:'learning.completed'}}),'refresh');
+ assert.equal(pluginEventUpdate('swarm','current',{type:'plugin',data:{pluginEvent:'swarm.changed',data:{graphs:[{id:'foreign'}]}}}),'refresh');
+});
 test('composer Enter sends and modifier Enter inserts a newline, including inherited DOM properties',()=>{
   assert.equal(composerKeyAction({key:'Enter'},false),'send');
   for(const key of ['metaKey','ctrlKey','shiftKey','altKey'])assert.equal(composerKeyAction(Object.create({key:'Enter',[key]:true}),false),'newline');
@@ -43,6 +53,15 @@ test('material links preserve absolute paths and resolve Unicode relative links 
 test('terminal protocol replies remain responses after copy/modifier intent; actual data uses user input',async()=>{const {terminalDataAction}=await import('../apps/desktop/src/renderer/terminal-input.js');for(const reply of ['\x1b[1;2R','\x1b[0n','\x1b[I','\x1b[O'])for(const intent of [false,true])assert.equal(terminalDataAction(reply,intent),'response');assert.equal(terminalDataAction('text',true),'input');assert.equal(terminalDataAction('text',false),'ignore');assert.deepEqual(materialPath('README.md:20'),{path:'README.md',line:20});});
 
 test('conversation composer keeps attachment, permission, plan, collaboration and send controls in one shell',()=>{const snapshot:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'hello',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'准备就绪'};const html=renderToStaticMarkup(React.createElement(SessionComposer,{value:snapshot,action:async()=>{}}));for(const label of ['添加附件','发送消息','权限策略：安全自动','计划模式','Agent 协作方式'])assert.ok(html.includes(label));});
+test('legacy empty plugin preferences still expose all collaboration choices while busy sessions lock every mode',()=>{
+ const value:ComposerSnapshot={sessionId:'legacy-ui',epoch:1,draft:'A',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'准备就绪'};
+ const render=(snapshot:ComposerSnapshot)=>renderToStaticMarkup(React.createElement(SessionComposer,{value:snapshot,action:async()=>{}})).match(/<button\b[^>]*data-agent-mode="[^"]+"[^>]*>/g)||[];
+ for(const mode of ['single','team','swarm'] as const){
+  const buttons=render({...value,mode});assert.equal(buttons.length,3);
+  for(const [index,choice] of ['single','team','swarm'].entries()){assert.ok(buttons[index].includes(`data-agent-mode="${choice}"`));assert.doesNotMatch(buttons[index],/\bdisabled=/,`${choice} is selectable before Swarm is lazily enabled`);assert.ok(buttons[index].includes(`aria-checked="${choice===mode}"`));assert.ok(buttons[index].includes(`tabindex="${choice===mode?0:-1}"`));}
+ }
+ for(const busy of ['running','sending','navigating','archived'] as const)for(const button of render({...value,[busy]:true}))assert.match(button,/\bdisabled=""/,busy);
+});
 test('composer locks its draft during submission but permits queue input during execution',()=>{
  const value:ComposerSnapshot={sessionId:'ui',epoch:1,draft:'A',attachments:[],running:true,sending:true,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:true,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'执行中'};
  for(const sending of [false,true]){
@@ -53,3 +72,17 @@ test('composer locks its draft during submission but permits queue input during 
 });
 
 test('conversation tab has a fixed title while tool and web tabs keep their own titles',()=>{const html=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),tabs:[{id:'web',kind:'browser',title:'Example Domain',url:'https://example.com/'}]},onSelect(){},onClose(){},onNew(){}}));assert.match(html,/>会话<\/span>/);assert.match(html,/>Example Domain<\/span>/);});
+
+
+test('tool tiles and their session tabs use the same distinct accessible vector icons',()=>{
+ const page=renderToStaticMarkup(React.createElement(NewTabPage,{onTool(){},onNavigate:async()=>{}}));
+ const icons=new Set<string>();
+ const visibleTools=Object.entries(toolNames).filter(([id])=>id!=='expert');
+ for(const [id,title] of visibleTools){
+  const tile=page.match(new RegExp('<button[^>]*>(<svg[\\s\\S]*?</svg>)<span>'+title+'</span>'));
+  assert.ok(tile,'tool tile exists: '+title);const svg=tile[1].slice(tile[1].lastIndexOf('<svg'));assert.match(svg,/aria-hidden="true"/);assert.ok(!icons.has(svg),'each tool has its own icon');icons.add(svg);
+  const tab=renderToStaticMarkup(React.createElement(SessionTabs,{view:{...initialView(),active:id,tabs:[{id,kind:'tool',page:id as ToolPage}]},onSelect(){},onClose(){},onNew(){}}));
+  const paths=[...svg.matchAll(/<path d="([^"]+)"/g)].map(match=>match[1]);for(const path of paths)assert.ok(tab.includes('d="'+path+'"'));
+ }
+ assert.equal(icons.size,visibleTools.length);assert.doesNotMatch(page,/>Expert<\/span>/);
+});

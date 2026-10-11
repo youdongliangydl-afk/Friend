@@ -1,59 +1,49 @@
-import {useRef,type UIEvent} from 'react';
-import type {JsonObject} from './types.js';
+import {useEffect,useMemo,useRef,useState,type ReactNode,type UIEvent} from 'react';
+import type {ChangedFile,DiffLine} from '../workspace-files.js';
 import type {ChangeDiffState} from './change-review.js';
-type SplitRow={left?:JsonObject;right?:JsonObject;meta?:JsonObject};
-function pairedRows(lines:JsonObject[]){
- const rows:SplitRow[]=[];
- for(let i=0;i<lines.length;){
-  const line=lines[i];
-  if(line.kind==='meta'){rows.push({meta:line});i++;}
-  else if(line.kind==='context'){rows.push({left:line,right:line});i++;}
-  else{
-   const removed:JsonObject[]=[],added:JsonObject[]=[];
-   while(i<lines.length&&['remove','add'].includes(String(lines[i].kind)))(lines[i].kind==='remove'?removed:added).push(lines[i++]);
-   for(let j=0;j<Math.max(removed.length,added.length);j++)rows.push({left:removed[j],right:added[j]});
-  }
- }
- return rows;
-}
-function Cell({line,side}:{line?:JsonObject;side:'left'|'right'}){
- return <pre className={line?`diff-${line.kind}`:'diff-empty'}><small>{String(line?.[side==='left'?'oldLine':'newLine']??'')}</small><code>{String(line?.text??'')||'\u00a0'}</code></pre>;
-}
-/** DSH SplitColumns adaptation: clip each side and synchronize browser-clamped scroll offsets. */
-function SplitColumns({rows}:{rows:SplitRow[]}){
- const columns=useRef<Record<'left'|'right',HTMLDivElement|null>>({left:null,right:null});
- const offsets=useRef({left:{scrollLeft:0,scrollTop:0},right:{scrollLeft:0,scrollTop:0}});
- const follow=(side:'left'|'right')=>(event:UIEvent<HTMLDivElement>)=>{
-  const peer=side==='left'?'right':'left',other=columns.current[peer];if(!other)return;
-  for(const axis of ['scrollLeft','scrollTop'] as const){
-   const value=event.currentTarget[axis];if(offsets.current[side][axis]===value)continue;
-   offsets.current[side][axis]=value;other[axis]=value;offsets.current[peer][axis]=other[axis];
-  }
- };
- return <div className="diff-split-columns">{(['left','right'] as const).map(side=><div className="diff-split-column" data-diff-side={side} key={side} ref={element=>{columns.current[side]=element;}} onScroll={follow(side)}>
-  {rows.map((row,i)=>row.meta?<pre className="diff-split-meta" key={i}>{String(row.meta.text)}</pre>:<Cell key={i} line={row[side]} side={side}/>)}
- </div>)}</div>;
-}
-export function DiffRows({lines,split,wrap=false}:{lines:JsonObject[];split:boolean;wrap?:boolean}){
- if(!split)return <pre className="diff-lines">{lines.map((line,i)=><span className={`diff-${line.kind}`} key={i}><small>{String(line.oldLine??'')}</small><small>{String(line.newLine??'')}</small><code>{line.kind==='add'?'+':line.kind==='remove'?'-':' '}{String(line.text)}{'\n'}</code></span>)}</pre>;
- const rows=pairedRows(lines);
- if(!wrap)return <SplitColumns rows={rows}/>;
- return <div className="diff-split-table">{rows.map((row,i)=>row.meta?<pre className="diff-split-meta" key={i}>{String(row.meta.text)}</pre>:<div className="diff-split-row" key={i}>{(['left','right'] as const).map(side=><Cell key={side} line={row[side]} side={side}/>)}</div>)}</div>;
-}
+import {expandDiffItems,foldDiffLines,splitDiffRows,type DiffDisplayItem,type IndexedDiffLine,type SplitDiffRow} from './diff-model.js';
+import {highlightDiff,type DiffHighlight} from './diff-language.js';
 
-export function FileDiffView({state,split=false,wrap=false,preview=false,retry}:{state:ChangeDiffState|undefined;split?:boolean;wrap?:boolean;preview?:boolean;retry():void}){
- if(!state||state.phase==='loading')return <p role="status">读取本轮变更…</p>;
+export type DiffMode='unified'|'split';
+export function DiffControls({mode,onMode,wrap,onWrap}:{mode:DiffMode;onMode(mode:DiffMode):void;wrap:boolean;onWrap(value:boolean):void}){
+ return <div className="friend-diff-view-options"><div role="group" aria-label="Diff 显示方式">{([['unified','统一'],['split','左右']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} onClick={()=>onMode(value)}>{label}</button>)}</div><label><input type="checkbox" checked={wrap} onChange={event=>onWrap(event.target.checked)}/>自动换行</label></div>;
+}
+export function DiffFileHeader({file,pathLabel}:{file:Pick<ChangedFile,'path'|'oldPath'|'status'|'binary'|'additions'|'deletions'|'error'>;pathLabel?:string}){
+ const status=file.status==='??'||file.status.includes('A')?'新增':file.status.includes('D')?'删除':file.oldPath?'重命名':'修改';
+ return <div className="friend-diff-file-header"><span className="friend-diff-path"><strong>{pathLabel||file.path}</strong>{file.oldPath&&<small>原路径：{file.oldPath}</small>}</span><span className="friend-diff-file-status">{status}</span><span className="friend-diff-counts">{file.error?'读取失败':file.binary?'二进制或大文件':typeof file.additions==='number'&&typeof file.deletions==='number'?<><span className="added">+{file.additions}</span><span className="removed">−{file.deletions}</span></>:'行数未记录'}</span></div>;
+}
+function Code({value,side,highlight,prefix=''}:{value:IndexedDiffLine;side:'left'|'right';highlight:DiffHighlight;prefix?:string}){
+ const tokens=highlight[side].get(value.index);
+ return <code>{prefix}{tokens?.length?tokens.map((token,i)=>token.classes?<span className={token.classes} key={i}>{token.text}</span>:token.text):value.line.text||'\u00a0'}</code>;
+}
+function Cell({value,side,highlight}:{value?:IndexedDiffLine;side:'left'|'right';highlight:DiffHighlight}){
+ return <div className={'friend-diff-row '+(value?`diff-${value.line.kind}`:'diff-empty')} aria-label={!value?'无对应行':undefined}><small className="friend-diff-number">{value?.line[side==='left'?'oldLine':'newLine']??''}</small><span className="friend-diff-sign" aria-hidden="true">{value?.line.kind==='add'?'+':value?.line.kind==='remove'?'-':' '}</span>{value?<Code value={value} side={side} highlight={highlight}/>:<code>{'\u00a0'}</code>}</div>;
+}
+function Fold({item,expand}:{item:Extract<DiffDisplayItem,{kind:'fold'}>;expand(key:string):void}){return <button className="friend-diff-fold" aria-label={`展开 ${item.count} 行未修改内容`} onClick={()=>expand(item.key)}>↕ 展开 {item.count} 行未修改内容</button>;}
+function SplitColumns({rows,highlight,expand}:{rows:SplitDiffRow[];highlight:DiffHighlight;expand(key:string):void}){
+ const columns=useRef<Record<'left'|'right',HTMLDivElement|null>>({left:null,right:null}),offsets=useRef({left:{scrollLeft:0,scrollTop:0},right:{scrollLeft:0,scrollTop:0}});
+ const follow=(side:'left'|'right')=>(event:UIEvent<HTMLDivElement>)=>{const peer=side==='left'?'right':'left',other=columns.current[peer];if(!other)return;for(const axis of ['scrollLeft','scrollTop'] as const){const value=event.currentTarget[axis];if(offsets.current[side][axis]===value)continue;offsets.current[side][axis]=value;other[axis]=value;offsets.current[peer][axis]=other[axis];}};
+ return <div className="friend-diff-sides">{(['left','right'] as const).map(side=><div className="friend-diff-pane" data-diff-side={side} key={side} ref={element=>{columns.current[side]=element;}} onScroll={follow(side)}>{rows.map((row,i)=>row.fold?<Fold item={row.fold} key={i} expand={expand}/>:row.meta?<div className="friend-diff-hunk" key={i}>{row.meta.line.text}</div>:<Cell key={i} value={row[side]} side={side} highlight={highlight}/>)}</div>)}</div>;
+}
+const PAGE_LINES=2000;
+export function DiffRows({lines,split,wrap=false,path='',preview=false}:{lines:DiffLine[];split:boolean;wrap?:boolean;path?:string;preview?:boolean}){
+ const [expanded,setExpanded]=useState<Set<string>>(()=>new Set()),[page,setPage]=useState(0);
+ useEffect(()=>{setExpanded(new Set());setPage(0);},[lines,path]);
+ const folded=useMemo(()=>foldDiffLines(lines),[lines]),highlight=useMemo(()=>highlightDiff(lines,path),[lines,path]);
+ const items=useMemo(()=>expandDiffItems(folded,expanded).filter(item=>!preview||item.kind!=='line'||item.value.line.kind!=='meta'),[folded,expanded,preview]);
+ const paired=useMemo(()=>splitDiffRows(items),[items]),total=split?paired.length:items.length,pages=Math.max(1,Math.ceil(total/PAGE_LINES)),current=Math.min(page,pages-1),start=current*PAGE_LINES;
+ const expand=(key:string)=>setExpanded(previous=>new Set([...previous,key]));
+ const visible=items.slice(start,start+PAGE_LINES),rows=paired.slice(start,start+PAGE_LINES);
+ let content:ReactNode;
+ if(!split)content=<div className="diff-lines friend-diff-unified">{visible.map((item,i)=>item.kind==='fold'?<Fold item={item} expand={expand} key={item.key}/>:item.value.line.kind==='meta'?<div className="friend-diff-hunk" key={i}>{item.value.line.text}</div>:<div className={`friend-diff-row diff-${item.value.line.kind}`} key={i}><small className="friend-diff-number">{item.value.line.oldLine??''}</small><small className="friend-diff-number">{item.value.line.newLine??''}</small><Code value={item.value} side={item.value.line.kind==='remove'?'left':'right'} highlight={highlight} prefix={item.value.line.kind==='add'?'+':item.value.line.kind==='remove'?'-':' '}/></div>)}</div>;
+ else if(!wrap)content=<SplitColumns rows={rows} highlight={highlight} expand={expand}/>;
+ else content=<div className="friend-diff-wrapped-sides">{rows.map((row,i)=>row.fold?<Fold item={row.fold} key={i} expand={expand}/>:row.meta?<div className="friend-diff-hunk" key={i}>{row.meta.line.text}</div>:<div className="friend-diff-pair" key={i}><Cell value={row.left} side="left" highlight={highlight}/><Cell value={row.right} side="right" highlight={highlight}/></div>)}</div>;
+ return <div className={`friend-diff ${wrap?'friend-diff-wrap':'friend-diff-nowrap'}`} data-diff-mode={split?'split':'unified'}>{content}{pages>1&&<nav className="friend-diff-pages" aria-label="Diff 内容分页"><button disabled={current===0} onClick={()=>setPage(current-1)}>上一页</button><span>第 {current+1} / {pages} 页 · 所有改动均可分页读取</span><button disabled={current===pages-1} onClick={()=>setPage(current+1)}>下一页</button></nav>}{expanded.size>0&&<button className="friend-diff-collapse" onClick={()=>{setExpanded(new Set());setPage(0);}}>折叠未修改内容</button>}</div>;
+}
+export function FileDiffView({state,split=false,wrap=false,preview=false,hideHeader=false,retry}:{state:ChangeDiffState|undefined;split?:boolean;wrap?:boolean;preview?:boolean;hideHeader?:boolean;retry():void}){
+ if(!state||state.phase==='loading')return <p role="status">读取文件变更…</p>;
  if(state.phase==='missing')return <p>{state.message}</p>;
  if(state.phase==='error')return <p role="alert">{state.message} <button onClick={retry}>重试</button></p>;
  const file=state.file;
- if(file.error)return <p role="alert">{file.error}</p>;
- if(file.binary)return <p>二进制或大文件，仅提供变更信息</p>;
- const lines=file.lines.filter(line=>line.kind!=='meta'||!preview&&line.text.startsWith('@@')).slice(0,5000);
- const additions=lines.some(line=>line.kind==='add'),removals=lines.some(line=>line.kind==='remove');
- return <div className={'file-diff-view '+(wrap?'wrap':'nowrap')}>
-  {!preview&&<p className="diff-file-note">{file.status==='A'?'本轮新建的文件':file.status==='D'?'本轮删除的文件':'本轮开始 → 本轮结束'}</p>}
-  {file.patch.startsWith('diff 比较超时')&&<p className="diff-file-note">比较超时，按整文件替换展示。</p>}
-  {!lines.length?<p>此文件没有文本行变化</p>:<DiffRows lines={lines as unknown as JsonObject[]} split={split&&additions&&removals} wrap={wrap}/>}
-  {(file.truncated||file.lines.length>5000)&&<p>比较内容已截取；最多显示 5,000 行。</p>}
- </div>;
+ return <section className="friend-diff-file file-diff-view">{!hideHeader&&<DiffFileHeader file={file}/>}{file.error?<p role="alert" className="friend-diff-note">{file.error}</p>:file.binary?<div className="friend-diff-note"><p>二进制或超过 1024 KiB 的文件，仅提供变更信息。</p><pre>{file.patch}</pre></div>:<>{file.contextNote&&<p className="friend-diff-note" role={file.truncated?'alert':undefined}>{file.contextNote}</p>}{file.contextComplete!==true&&!file.contextNote&&<p className="friend-diff-note">此比较仅保存改动附近上下文；未保存的历史正文不可展开。</p>}{file.lines.some(line=>line.kind!=='meta')?<DiffRows lines={file.lines} split={split} wrap={wrap} path={file.path} preview={preview}/>:<p className="friend-diff-note">{file.truncated?'比较正文未提供；请查看预算提示。':file.patch||'此文件没有文本行变化'}</p>}{file.truncated&&!file.contextNote&&<p role="alert" className="friend-diff-note">此快照比较内容不完整，未用当前文件替换历史内容。</p>}</>}</section>;
 }

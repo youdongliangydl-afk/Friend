@@ -1,3 +1,4 @@
+import {orderedSessions} from '../apps/desktop/src/session-order.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
@@ -5,7 +6,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
-import {ProjectSidebar,reorderIds,sidebarSessions,type ProjectSidebarProps} from '../apps/desktop/src/renderer/ProjectSidebar.js';
+import {ProjectSidebar,reorderIds,reorderVisibleIds,sidebarSessions,type ProjectSidebarProps} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 
 const projects=[{id:'b',name:'设计项目',path:'/design'},{id:'a',name:'开发项目',path:'/code'},{id:'empty',name:'空项目',path:'/empty'}];
 const sessions=[
@@ -16,7 +17,7 @@ const sessions=[
   {id:'archived',projectId:'a',name:'归档聊天',path:'/archive.jsonl',updatedAt:'2026-10-11T00:00:00Z',archived:true},
 ];
 function render(overrides:Partial<ProjectSidebarProps>={}) {
-  return renderToStaticMarkup(React.createElement(ProjectSidebar,{projects,sessions,onProject(){},onSession(){},onMenu(){},onOpenProject(){},onReorder(){},...overrides}));
+  return renderToStaticMarkup(React.createElement(ProjectSidebar,{projects,sessions,onProject(){},onSession(){},onMenu(){},onReorder(){},onNewSession(){},onReorderSessions(){},...overrides}));
 }
 
 test('sidebar keeps project order, groups every project, and sorts nested chats by recency',()=>{
@@ -40,7 +41,7 @@ test('global search matches project names or chat names and archive filtering ap
   const archive=render({archived:true});assert.match(archive,/title="归档聊天"/);assert.doesNotMatch(archive,/title="新聊天"|title="临时分析"/);
 });
 
-test('disabled navigation also disables project menus, chat menus and opening a project',()=>{
+test('disabled navigation also disables project and chat menus',()=>{
   const html=render({disabled:true});
   const buttons=html.match(/<button\b[^>]*>/g)||[];assert.ok(buttons.length>10);assert.ok(buttons.every(button=>button.includes('disabled=""')));
   assert.match(html,/aria-label="聊天 新聊天 的更多操作" aria-haspopup="menu"/);
@@ -59,10 +60,10 @@ test('project reorder moves one known project without mutating input or includin
 function interactive(overrides:Partial<ProjectSidebarProps>={}) {
   let cursor=0;const slots:any[]=[],calls:{type:string;value:unknown}[]=[];
   const hooks={useState(initial:unknown){const index=cursor++;if(!(index in slots))slots[index]=initial;return [slots[index],(value:any)=>{slots[index]=typeof value==='function'?value(slots[index]):value;}];},useRef(initial:unknown){const index=cursor++;if(!(index in slots))slots[index]={current:initial};return slots[index];},useEffect(){}};
-  const jsx=(type:unknown,props:any)=>({type,props}),context:any={module:{exports:{}},require(name:string){if(name==='react')return hooks;if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};if(name==='./Icons.js')return {Icon(){}};throw Error(name);}};
+  const jsx=(type:unknown,props:any)=>({type,props}),context:any={module:{exports:{}},require(name:string){if(name==='react')return hooks;if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};if(name==='./Icons.js')return {Icon(){}};if(name==='../session-order.js')return {orderedSessions};throw Error(name);}};
   const source=readFileSync('apps/desktop/src/renderer/ProjectSidebar.tsx','utf8');
   vm.runInNewContext(transformSync(source,{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code,context);
-  const props:ProjectSidebarProps={projects,sessions,onProject:id=>calls.push({type:'project',value:id}),onSession:id=>calls.push({type:'session',value:id}),onMenu:(session,position)=>calls.push({type:'menu',value:{id:session.id,position:{...position}}}),onOpenProject:()=>calls.push({type:'open',value:true}),onReorder:ids=>{calls.push({type:'reorder',value:Array.from(ids)});},...overrides};
+  const props:ProjectSidebarProps={projects,sessions,onProject:id=>calls.push({type:'project',value:id}),onSession:id=>calls.push({type:'session',value:id}),onMenu:(session,position)=>calls.push({type:'menu',value:{id:session.id,position:{...position}}}),onNewSession:id=>calls.push({type:'new',value:id}),onReorderSessions:(projectId,ids)=>{calls.push({type:'session-reorder',value:{projectId,ids:Array.from(ids)}});},onReorder:ids=>{calls.push({type:'reorder',value:Array.from(ids)});},...overrides};
   const render=()=>{cursor=0;return context.module.exports.ProjectSidebar(props);};
   const nodes=(root:any):any[]=>!root?[]:Array.isArray(root)?root.flatMap(nodes):typeof root==='object'?[root,...nodes(root.props?.children)]:[];
   const find=(match:(props:any)=>boolean)=>{const node=nodes(render()).find(node=>node.type==='button'&&match(node.props));assert.ok(node,'requested control exists');return node.props;};
@@ -85,7 +86,7 @@ test('project keyboard reorder and chat actions call their own controller withou
 
 test('only a project header drag can reorder projects and keeps chat actions separate',()=>{
   const f=interactive(),drag=f.find(props=>props.title==='/design');
-  assert.equal(drag.draggable,true);assert.equal(f.find(props=>props.title==='临时会话').draggable,false);assert.equal(f.find(props=>props.title==='新聊天').draggable,undefined);
+  assert.equal(drag.draggable,true);assert.equal(f.find(props=>props.title==='临时会话').draggable,false);assert.equal(f.find(props=>props.title==='新聊天').draggable,true);
   const transfer={effectAllowed:'',dropEffect:'',setData(){}};
   drag.onDragStart({dataTransfer:transfer});
   const group=f.nodes(f.render()).find(node=>node.type==='section'&&node.props['aria-label']==='空项目');
@@ -101,4 +102,29 @@ test('sidebar attention shows approval before running and unread results without
   const active=[{...original.find(session=>session.id==='recent')!,status}];
   for(const kind of ['completed','failed'] as const)assert.equal(sidebarSessions(active,[{sessionId:'recent',kind,unseen:true}])[0].status,status);
  }
+});
+
+test('session drag saves the complete project order, preserves hidden positions and rejects cross-project drops',()=>{
+ const f=interactive({query:'聊天',sessionOrder:{a:['old','archived','recent']}}),drag=f.find(p=>p.title==='新聊天');
+ const transfer={effectAllowed:'',dropEffect:'',setData(){}};drag.onDragStart({dataTransfer:transfer});
+ const row=f.nodes(f.render()).find(n=>n.type==='li'&&n.props.children?.[0]?.props.title==='旧聊天');
+ row.props.onDrop({dataTransfer:transfer,clientY:101,currentTarget:{getBoundingClientRect:()=>({top:100,height:30})},preventDefault(){}});
+ assert.deepEqual(f.calls,[{type:'session-reorder',value:{projectId:'a',ids:['recent','archived','old']}}]);
+ assert.deepEqual(reorderVisibleIds(['a','hidden','b'],['a','b'],'b','a'),['b','hidden','a']);
+ const foreign=interactive();foreign.find(p=>p.title==='新聊天').onDragStart({dataTransfer:transfer});
+ const other=foreign.nodes(foreign.render()).find(n=>n.type==='li'&&n.props.children?.[0]?.props.title==='界面草稿');
+ other.props.onDrop({dataTransfer:transfer,clientY:101,currentTarget:{getBoundingClientRect:()=>({top:100,height:30})},preventDefault(){throw Error('foreign drag accepted');}});assert.deepEqual(foreign.calls,[]);
+});
+test('project compose uses its explicit target without selecting a project or changing the draft',()=>{
+ const f=interactive({selectedProject:'a'});f.find(p=>p['aria-label']==='在项目 设计项目 中新建会话').onClick();assert.deepEqual(f.calls,[{type:'new',value:'b'}]);
+});
+test('failed session reorder leaves original order and exposes a recoverable error',async()=>{
+ const f=interactive({onReorderSessions:async()=>{throw Error('列表已变化');}});f.find(p=>p.title==='旧聊天').onKeyDown({key:'ArrowUp',altKey:true,shiftKey:true,preventDefault(){}});
+ await new Promise(resolve=>setImmediate(resolve));const nodes=f.nodes(f.render());assert.match(String(nodes.find(n=>n.props?.role==='alert')?.props.children),/会话顺序未保存：.*列表已变化/);
+ assert.equal(f.find(p=>p.title==='旧聊天').disabled,false);assert.ok(nodes.findIndex(n=>n.props?.title==='新聊天')<nodes.findIndex(n=>n.props?.title==='旧聊天'));
+});
+test('pending reorder admits one save and a rejected save permits a later retry',async()=>{
+ let reject!:(error:Error)=>void,count=0;const f=interactive({onReorderSessions:()=>{count++;return new Promise((_resolve,fail)=>{reject=fail;});}});
+ const event={key:'ArrowUp',altKey:true,shiftKey:true,preventDefault(){}};const action=f.find(p=>p.title==='旧聊天').onKeyDown;action(event);action(event);assert.equal(count,1);assert.equal(f.find(p=>p.title==='旧聊天').disabled,true);
+ reject(Error('failed'));await new Promise(resolve=>setImmediate(resolve));f.find(p=>p.title==='旧聊天').onKeyDown(event);assert.equal(count,2);reject(Error('failed again'));await new Promise(resolve=>setImmediate(resolve));assert.equal(f.find(p=>p.title==='旧聊天').disabled,false);
 });

@@ -1,3 +1,5 @@
+import * as sessionNavigation from '../apps/desktop/src/session-navigation.js';
+import * as sessionOrder from '../apps/desktop/src/session-order.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -10,7 +12,7 @@ import {createRequire} from 'node:module';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode} from '../packages/core/src/index.js';
+import {RecordStore,SourcePolicy, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode} from '../packages/core/src/index.js';
 import * as modelReadiness from '../apps/desktop/src/model-readiness.js';
 import * as workspaceRefs from '../apps/desktop/src/workspaces.js';
 import * as fileEditor from '../apps/desktop/src/file-editor.js';
@@ -43,7 +45,7 @@ harness = harness.replace('throw new Error(`Unrecognized production dependency: 
 harness = harness.replace('setBrowserHost:value=>{browserHost=value;},startWorker', 'setWindow:value=>{window=value;},state,attention,publishState,selectCurrent,setBrowserHost:value=>{browserHost=value;},startWorker');
 harness = harness.replace('return {directory,project,dataDir,modelRuntime,api,children,', 'return {notifications,directory,project,dataDir,modelRuntime,api,children,');
 const scope: Record<string, unknown> = {console, Buffer, URL, queueMicrotask, assert, fs, path, tmpdir, EventEmitter, randomUUID, fileURLToPath, vm, transformSync, SessionManager,
-  RecordStore, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView,
+  RecordStore, SourcePolicy, object, text, digest, projectIdentity, isSessionDeleted, parsePermissionMode, modelReadiness, workspaceRefs, fileEditor, htmlPreview, workspace, runChanges, sessionView, sessionNavigation, sessionOrder,
   attachmentInput, materialReferences, documentReader, AttentionRegistry, nodeRequire: createRequire(import.meta.url)};
 vm.runInNewContext(transformSync(harness + '\nglobalThis.navigationFixture=fixture;', {loader: 'ts', format: 'cjs', target: 'node24'}).code, scope);
 const fixture = scope.navigationFixture as () => any;
@@ -145,6 +147,25 @@ test('a late close from a retired SDK cannot clear the replacement worker pendin
     assert.equal(oldChild.commands.some((command: any) => command.method === 'dialog.respond'), false);
     assert.equal(child.commands.filter((command: any) => command.method === 'dialog.respond').length, 1);
   } finally {f.cleanup();}
+});
+
+test('background collaboration receives General plugin changes at idle without moving selection or losing its approval',async()=>{
+ const f=fixture();try{
+  f.api.store.put('preferences',{...f.api.store.get('preferences').value,defaultMode:'swarm',defaultPlugins:[]});
+  const a=f.record('settings-background'),b=f.record('settings-selected'),childA=await f.ready(a),childB=await f.ready(b);
+  emitState(childA,{executionMode:'team',isRunning:true,lifecycleStatus:'running',runId:'settings-run'});emitState(childB,{executionMode:'single'});
+  emitDialog(childA,'settings-approval','settings-run',10000);await f.api.handle('session.open',{id:b.id});
+  const before=childA.commands.length,navigation=JSON.stringify(f.api.state().navigation);await f.api.handle('settings.update',{defaultPlugins:['expert']});
+  assert.equal(f.api.state().current.sessionId,b.id);assert.equal(JSON.stringify(f.api.state().navigation),navigation);
+  assert.equal(childA.commands.slice(before).some((message:any)=>message.method==='configure'),false);
+  assert.ok(f.api.state().activities.some((activity:any)=>activity.sessionId===a.id&&activity.kind==='dialog'&&activity.dialog.id==='settings-approval'));
+  await f.api.handle('dialog.respond',{id:'settings-approval',confirmed:true});assert.equal(childA.commands.filter((message:any)=>message.method==='dialog.respond').length,1);assert.equal(childB.commands.some((message:any)=>message.method==='dialog.respond'),false);
+  emitState(childA,{isRunning:false,lifecycleStatus:'idle'});await f.flush();
+  const configured=childA.commands.slice(before).filter((message:any)=>message.method==='configure');assert.equal(configured.length,1);assert.deepEqual(Array.from(configured[0].input.plugins),['expert','swarm']);
+  assert.deepEqual(Array.from(childB.commands.findLast((message:any)=>message.method==='configure').input.plugins),['expert']);
+  assert.deepEqual(Array.from(f.api.store.get('session:'+a.id).value.plugins),['expert','swarm']);assert.deepEqual(Array.from(f.api.store.get('preferences').value.defaultPlugins),['expert']);
+  assert.equal(f.api.state().current.sessionId,b.id);assert.equal(JSON.stringify(f.api.state().navigation),navigation);
+ }finally{f.cleanup();}
 });
 
 test('expired approval snapshots cannot dispatch a late permission response', async () => {
