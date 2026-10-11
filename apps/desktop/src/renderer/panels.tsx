@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { asList, asObject, errorText, type JsonObject, type PluginName } from './types.js';
+import { asList, asObject, errorText, type BridgeEvent, type JsonObject, type PluginName } from './types.js';
 import { Badge, Card, Empty, Field, JsonView, Markdown, Modal, TextDiff } from './ui.js';
 
 interface PanelProps { sessionId: string; report(message: string, error?: boolean): void }
+export function pluginEventUpdate(plugin:PluginName,sessionId:string,event:BridgeEvent):JsonObject|'refresh'|undefined {
+  if(event.type!=='plugin'||event.sessionId&&event.sessionId!==sessionId)return;
+  const data=asObject(event.data);
+  if(data.pluginEvent===`${plugin}.changed`&&event.sessionId===sessionId&&data.data&&typeof data.data==='object')return asObject(data.data);
+  // Background broadcasts can carry another project's snapshot. Read the current session instead.
+  if(String(data.pluginEvent||'').startsWith(`${plugin}.`)||data.plugin===plugin)return 'refresh';
+}
 function usePlugin(plugin: PluginName, { sessionId, report }: PanelProps) {
   const [snapshot, setSnapshot] = useState<JsonObject>({});
   const [pending, setPending] = useState(false);
@@ -12,10 +19,9 @@ function usePlugin(plugin: PluginName, { sessionId, report }: PanelProps) {
   useEffect(() => {
     void refresh().catch(error => report(errorText(error), true));
     return window.friendPi.onEvent(event => {
-      if (event.type !== 'plugin' || event.sessionId && event.sessionId !== sessionId) return;
-      const data = asObject(event.data);
-      if (data.pluginEvent === `${plugin}.changed` && data.data && typeof data.data === 'object') setSnapshot(asObject(data.data));
-      else if (String(data.pluginEvent || '').startsWith(`${plugin}.`) || data.plugin === plugin) void refresh().catch(error => report(errorText(error), true));
+      const update=pluginEventUpdate(plugin,sessionId,event);
+      if(update==='refresh')void refresh().catch(error=>report(errorText(error),true));
+      else if(update)setSnapshot(update);
     });
   }, [refresh, plugin, sessionId, report]);
   const perform = async (action: string, input: JsonObject = {}, success?: string) => {

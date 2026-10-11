@@ -10,9 +10,19 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {Conversation} from '../apps/desktop/src/renderer/Conversation.js';
 import {reorderIds} from '../apps/desktop/src/renderer/ProjectSidebar.js';
 import {materialPath} from '../apps/desktop/src/renderer/material-links.js';
+import {pluginEventUpdate} from '../apps/desktop/src/renderer/panels.js';
 import type {Message} from '../apps/desktop/src/renderer/types.js';
 const assistant:Message={id:'a',role:'assistant',text:'beforeafter',parts:[{type:'text',text:'before'},{type:'thinking',thinking:'why'},{type:'toolCall',id:'one',name:'read',arguments:{path:'a'}},{type:'text',text:'after'}]};
 const result:Message={id:'r',role:'toolResult',text:'contents',toolCallId:'one',toolName:'read',isError:false};
+test('plugin panels refresh sessionless learning broadcasts instead of displaying another project snapshot',()=>{
+ const current={memories:[{id:'sqlite-current-project'}]},foreign={memories:[{id:'other-project'}]};
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',sessionId:'current',data:{pluginEvent:'memory.changed',data:current}}),current);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{pluginEvent:'memory.changed',data:foreign}}),'refresh');
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',sessionId:'other',data:{pluginEvent:'memory.changed',data:foreign}}),undefined);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{pluginEvent:'expert.changed',data:foreign}}),undefined);
+ assert.equal(pluginEventUpdate('memory','current',{type:'plugin',data:{plugin:'memory',action:'learning.completed'}}),'refresh');
+ assert.equal(pluginEventUpdate('swarm','current',{type:'plugin',data:{pluginEvent:'swarm.changed',data:{graphs:[{id:'foreign'}]}}}),'refresh');
+});
 test('composer Enter sends and modifier Enter inserts a newline, including inherited DOM properties',()=>{
   assert.equal(composerKeyAction({key:'Enter'},false),'send');
   for(const key of ['metaKey','ctrlKey','shiftKey','altKey'])assert.equal(composerKeyAction(Object.create({key:'Enter',[key]:true}),false),'newline');
