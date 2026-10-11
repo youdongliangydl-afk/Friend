@@ -1,3 +1,7 @@
+import './task-graph.css';
+import './diff-navigation.css';
+import './memory-management.css';
+import './batch-questions.css';
 import './document-preview.css';
 import './capabilities.css';
 import './deliverables.css';

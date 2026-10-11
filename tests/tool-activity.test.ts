@@ -16,9 +16,9 @@ const activity = (items: ToolActivity['items']): ToolActivity => ({ kind: 'activ
 
 test('completed run changes remain attached when several native assistant rows become one tool group', () => {
   const messages=[{...assistant('first',[call('one')]),runId:'run'},result('one'),{...assistant('last',[call('two')],2),runId:'run'},result('two')];
-  const html=renderToStaticMarkup(React.createElement(Conversation,{messages,live:null,tools:[],running:false,changes:[{v:1,runId:'run',sessionId:'s',projectId:'p',startedAt:'start',finishedAt:'finish',status:'completed',files:[]}]}));
+  const html=renderToStaticMarkup(React.createElement(Conversation,{messages,live:null,tools:[],running:false,changes:[{v:1,runId:'run',sessionId:'s',projectId:'p',startedAt:'start',finishedAt:'finish',status:'completed',files:[{path:'result.txt',status:'A',binary:false,additions:1,deletions:0}]}]}));
   assert.equal((html.match(/aria-label="本轮改动文件"/g)||[]).length,1);
-  assert.match(html,/本轮没有文件变化/);
+  assert.match(html,/已改动 result.txt/);
 });
 
 test('entering a running conversation after tool start keeps partial output through native handover', () => {

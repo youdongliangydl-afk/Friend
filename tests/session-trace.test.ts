@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {projectMessages,projectTraceSystems} from '../apps/desktop/src/message-projection.js';
+import {projectMessages,projectTraceSystems,providerSystems} from '../apps/desktop/src/message-projection.js';
 import {projectTrajectory,searchTrajectory,groupTrajectory,traceDuration} from '../apps/desktop/src/renderer/trace-projection.js';
 import {ChangedFiles} from '../apps/desktop/src/renderer/ChangedFiles.js';
 import {Trajectory} from '../apps/desktop/src/renderer/Trajectory.js';
@@ -53,10 +53,33 @@ const summary:RunChangesSummary={v:1,runId:'run',sessionId:'session',projectId:'
 test('summary renders four-file preview, totals and unavailable truthfully; anchors to its own run',()=>{
  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary}));assert.match(html,/已改动 5 个文件/);assert.match(html,/全部 5 个文件/);assert.match(html,/二进制或大文件/);assert.ok(!html.includes('file-4'));assert.match(html,/aria-expanded="false"/);assert.match(html,/查看 Diff/);assert.doesNotMatch(html,/侧边栏/);
  const missing=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[],unavailable:'Git unavailable'}}));assert.match(missing,/统计不可用/);assert.doesNotMatch(missing,/本轮没有文件变化|change-review-hint/);
- const unchanged=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[]}}));assert.match(unchanged,/本轮没有文件变化/);assert.match(unchanged,/disabled=""/);assert.doesNotMatch(unchanged,/change-review-hint/);
+ const unchanged=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[]}}));assert.equal(unchanged,'');
  const conversation=renderToStaticMarkup(React.createElement(Conversation,{messages:[{id:'u',role:'user',text:'query',runId:'run'},{id:'a',role:'assistant',text:'answer',runId:'run'},{id:'u2',role:'user',text:'next',runId:'next'}],live:null,tools:[],running:false,changes:[summary]}));
  assert.equal(conversation.match(/aria-label="本轮改动文件"/g)?.length,1);assert.ok(conversation.indexOf('answer')<conversation.indexOf('已改动'));assert.ok(conversation.indexOf('已改动')<conversation.indexOf('next'));
  const trace=renderToStaticMarkup(React.createElement(Trajectory,{messages:[],live:null,tools:[],running:false}));assert.match(trace,/搜索轨迹/);assert.match(trace,/发送消息后/);
+});
+
+test('confirmed empty run summaries hide the entire card in both anchored and historical conversation positions',()=>{
+ const empty:RunChangesSummary={...summary,files:[],fileCount:0,note:'统计本轮期间的文件变化，包含同期外部编辑'};
+ for(const status of ['completed','stopped','failed','interrupted'])assert.equal(renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,status}})),'');
+ const conversation=renderToStaticMarkup(React.createElement(Conversation,{messages:[{id:'u',role:'user',text:'只读问题',runId:'run'},{id:'a',role:'assistant',text:'这是正文',runId:'run'}],live:null,tools:[],running:false,changes:[empty,{...empty,runId:'historical-without-anchor'}]}));
+ assert.match(conversation,/这是正文/);assert.doesNotMatch(conversation,/本轮改动文件|run-changes|本轮没有文件变化|执行结束|统计本轮期间/);
+});
+
+test('empty file lists retain errors, unavailable snapshots and omitted or incomplete comparisons',()=>{
+ const empty={...summary,files:[],fileCount:0};
+ for(const boundary of [{unavailable:'Git 基线读取失败'},{error:'统计读取失败'},{truncated:true},{omittedFiles:2,fileCount:2},{fileCount:3}]){
+  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,...boundary}}));
+  assert.match(html,/aria-label="本轮改动文件"/);assert.match(html,/统计不可用|统计不完整/);assert.doesNotMatch(html,/本轮没有文件变化|change-review-hint/);
+ }
+ const failedFile={...summary,files:[{path:'broken.txt',status:'M',binary:false,error:'读取失败'}]};
+ const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:failedFile}));assert.match(html,/broken.txt/);assert.match(html,/统计失败/);
+});
+
+test('a real file change remains visible even when line counts are zero or unavailable',()=>{
+ for(const file of [{path:'empty.txt',status:'A',binary:false,additions:0,deletions:0},{path:'image.png',status:'M',binary:true}]){
+  const html=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...summary,files:[file],fileCount:1}}));assert.match(html,/本轮改动文件/);assert.ok(html.includes(file.path));assert.match(html,/查看 Diff/);
+ }
 });
 
 test('DSH preview placement uses card inset, viewport clamps, gap and available vertical room',async()=>{
@@ -77,4 +100,27 @@ test('hover and review share one lazy comparison read; failures retry and missin
  const {ChangeDiffCache}=await import('../apps/desktop/src/renderer/change-review.js');const cache=new ChangeDiffCache(),coords={sessionId:'desktop',runId:'run',changeId:'change',index:0};let calls=0;
  const original=globalThis.window;Object.assign(globalThis,{window:{friendPi:{request:async(method:string)=>{assert.equal(method,'session.changes.read');calls++;if(calls===1)throw new Error('read failed');return {file:{path:'f',lines:[],patch:'',binary:false}};}}}});
  try{await cache.load(coords);assert.equal(cache.get(coords)?.phase,'error');await Promise.all([cache.load(coords),cache.load(coords)]);assert.equal(calls,2);assert.equal(cache.get(coords)?.phase,'ready');await cache.load(coords);assert.equal(calls,2);await cache.load({...coords,changeId:undefined});assert.equal(cache.get({...coords,changeId:undefined})?.phase,'missing');assert.equal(calls,2);}finally{if(original)Object.assign(globalThis,{window:original});else delete (globalThis as {window?:unknown}).window;}
+});
+
+
+test('internal Swarm correction stays native and inspectable but is hidden from the conversation',()=>{
+ const text='internal read-only Swarm correction';
+ const entries=[{type:'message',id:'u',message:{role:'user',content:'original goal'}},
+  {type:'message',id:'wake',message:{role:'user',content:text}},
+  {type:'custom',customType:'friend-pi.runtime-wake.input',data:{entryId:'wake',textEnd:text.length,hash:digest(text),runId:'run',background:true}},
+  {type:'message',id:'a',message:{role:'assistant',content:'verified result'}}];
+ const messages=projectMessages(entries);assert.equal(messages.length,3);assert.equal(messages[1].background,true);assert.equal(messages[1].role,'automatic');
+ const html=renderToStaticMarkup(React.createElement(Conversation,{messages,live:null,tools:[],running:false}));assert.doesNotMatch(html,/internal read-only|自动接续/);assert.match(html,/original goal|verified result/);
+ assert.ok(projectTrajectory(messages,null,[],false).some(row=>row.text===text));
+ const invalid=structuredClone(entries);(invalid[2].data as {hash:string}).hash='invalid';assert.equal(projectMessages(invalid)[1].background,false);
+});
+
+
+test('final provider systems cover completions, responses, Codex, Anthropic and Google without request secrets',()=>{
+ for(const payload of [{messages:[{role:'system',content:'rule'},{role:'user',content:'private input'}]},
+  {input:[{role:'developer',content:'rule'},{role:'user',content:'private input'}]},
+  {instructions:'rule'},{system:[{type:'text',text:'rule'}]},{config:{systemInstruction:'rule',apiKey:'secret'}}]){
+  const text=JSON.stringify(providerSystems({...payload,headers:{Authorization:'secret'},apiKey:'secret'}));assert.match(text,/rule/);assert.doesNotMatch(text,/secret|private input/);
+ }
+ assert.deepEqual(providerSystems({messages:[{role:'user',content:'private input'}]}),[]);
 });

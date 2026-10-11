@@ -230,3 +230,20 @@ test('an unexpected background SDK exit leaves one unread interrupted result ins
     assert.equal(f.api.state().current.sessionId, b.id);
   } finally {f.cleanup();}
 });
+
+test('batch answers route to their owner once and expose a receipt after acknowledgement loss',async()=>{
+ const f=fixture();try{const a=f.record('batch-owner'),b=f.record('another');const child=await f.ready(a);await f.ready(b);await f.api.handle('session.open',{id:a.id});emitState(child,{runId:'active-run',isRunning:true,lifecycleStatus:'running'});
+ child.emit('message',{type:'event',event:{type:'dialog',runId:'active-run',data:{id:'batch-request',kind:'questionBatch',v:1,title:'需求',generation:'batch-generation',runId:'active-run',toolCallId:'tool',createdAt:1,sequence:1,questions:[{id:'q',type:'text',title:'补充',required:true}]}}});
+ assert.equal((await f.api.handle('dialog.status',{id:'batch-request'})).status,'pending');await f.api.handle('session.open',{id:b.id});
+ const answer={id:'batch-request',v:1,generation:'batch-generation',runId:'active-run',answers:[{questionId:'q',text:'已确认'}]};await Promise.all([f.api.handle('dialog.respond',answer),f.api.handle('dialog.respond',answer)]);
+ assert.equal(child.commands.filter((command:any)=>command.method==='dialog.respond').length,1);assert.equal((await f.api.handle('dialog.status',{id:'batch-request'})).status,'settled');await f.api.handle('dialog.respond',answer);assert.equal(child.commands.filter((command:any)=>command.method==='dialog.respond').length,1);
+ await assert.rejects(f.api.handle('dialog.respond',{...answer,answers:[]}),/不同/);f.api.retireWorker(f.api.workers.get(a.id),Error('restart'));assert.equal((await f.api.handle('dialog.status',{id:'batch-request'})).status,'invalid');await assert.rejects(f.api.handle('dialog.respond',answer),/失效/);
+ }finally{f.cleanup();}
+});
+
+test('a settled batch close reconciles a lost IPC response without replaying answers',async()=>{
+ const f=fixture();try{const record=f.record('batch-lost-receipt'),child=await f.ready(record);emitState(child,{runId:'r',isRunning:true,lifecycleStatus:'running'});child.emit('message',{type:'event',event:{type:'dialog',runId:'r',data:{id:'lost',kind:'questionBatch',v:1,title:'问题',generation:'g',runId:'r',toolCallId:'tool',createdAt:1,sequence:1,questions:[{id:'q',type:'text',title:'回答',required:true}]}}});
+ const send=child.send;child.send=(message:any,callback?:Function)=>{if(message.method!=='dialog.respond')return send(message,callback);child.commands.push(message);callback?.();queueMicrotask(()=>child.emit('message',{type:'event',event:{type:'dialog.closed',data:{id:'lost',questionReceipt:{generation:'g',runId:'r',status:'answered'}}}}));return true;};
+ const answer={id:'lost',v:1,generation:'g',runId:'r',answers:[{questionId:'q',text:'确认'}]},response=f.api.handle('dialog.respond',answer);await f.flush();assert.equal((await f.api.handle('dialog.status',{id:'lost'})).status,'settled');await f.tick(125001);assert.equal((await response).reconciled,true);await f.api.handle('dialog.respond',answer);assert.equal(child.commands.filter((command:any)=>command.method==='dialog.respond').length,1);
+ }finally{f.cleanup();}
+});

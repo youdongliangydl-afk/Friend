@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const Session:any=AgentSession;
 test('public Pi preflight cannot start after stop and handled input has a durable receipt',async()=>{
 const source=readFileSync('apps/desktop/src/sdk-worker.ts','utf8');
-const start=source.indexOf('preflightResult:result=>{');const end=source.indexOf('}}).then',start);
+const start=source.indexOf('preflightResult:result=>{',source.indexOf('void session.prompt(combined'));assert.ok(start>=0,'user input preflight must be found');const end=source.indexOf('}}).then',start);
 const callback='('+source.slice(start+'preflightResult:'.length,end+1)+')';
 const callbackContext:any={attachments:[],sendEpoch:0,queueEpoch:0,stopping:false,disposed:false,inputRecord:{id:'input',runId:'B'},startedInputId:undefined};
 vm.createContext(callbackContext);const preflight=vm.runInContext(callback,callbackContext);
