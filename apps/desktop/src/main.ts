@@ -66,7 +66,7 @@ for(const method of ['session.ui.get','session.ui.update','browser.list','browse
 for(const method of ['project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
 for(const method of ['session.queue','session.sidechat.read','session.sidechat.draft','session.sidechat.send'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
-for(const method of ['create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
+for(const method of ['open','create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
 function terminalContext(record:SessionRecord,actor:'user'|'agent',planMode?:boolean):TerminalContext {const workspace=sessionWorkspace(store,record);return {sessionId:record.id,workspaceId:workspace.id,cwd:workspace.path,temporaryWriteRoot:record.workspace?.kind==='temporary'?workspace.path:undefined,actor,planMode,runId:typeof workers.get(record.id)?.state.runId==='string'?String(workers.get(record.id)?.state.runId):undefined};}
 const deletionPreviews=new Map<string,{token:string;updatedAt:string}>();
 const pendingConfigurations=new Map<string,{plugins:string[];contextMode:string}>();
