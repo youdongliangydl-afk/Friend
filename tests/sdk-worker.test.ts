@@ -162,12 +162,145 @@ test('Swarm task authority rejects a provider claiming completion after create a
    await fixture.wait(()=>fixture.events.slice(next).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','a new Single run retains its own native settled authority');
    const noGraph=fixture.events.length;await fixture.request('send',{text:'新一轮 Swarm 必须实际执行',mode:'swarm'});
-   await fixture.wait(()=>fixture.events.slice(noGraph).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+   await fixture.wait(()=>fixture.events.slice(noGraph).filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length===2);
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'failed','old unstarted graphs and a text-only answer cannot complete a new Swarm execution');
    const plan=fixture.events.length;await fixture.request('send',{text:'先只读规划即可',mode:'swarm',planMode:true});
    await fixture.wait(()=>fixture.events.slice(plan).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','read-only planning does not require executing members');
  }finally{await fixture.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+test('a missing Swarm graph gets one read-only correction, with final payload proof and no replay',{timeout:40000},async()=>{
+ for(const scenario of ['recover','queued','refuse','stop']){
+  let corrections=0,blocked=false,queued=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});
+  const server=createServer(async(req,res)=>{
+   let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
+   const index=messages.findLastIndex(message=>message.role==='user'),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
+   if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
+   else if(names.includes('friend_swarm')){
+    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('不能因任务简单而自行改为 Single')));
+    if(body.includes('用户已选择 Swarm')){
+     if(!recent.length){corrections++;if(scenario==='stop'){blocked=true;await held;}}
+     if(scenario==='recover'||scenario==='queued'){
+      if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'must not replace original'}};
+      else if(recent.length===1)call={name:'friend_swarm',input:{action:'create',input:{goal:'Blocked command contract',checks:[],tasks:[{id:'check',title:'Check',prompt:'Inspect',mode:'read'}],contract:{checks:[{id:'shell',kind:'command',command:'touch',argv:['must-not-exist']}]}}}};
+      else {const graph=recent.find(value=>value.status==='created');
+       if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only verification of retained delivery',checks:[],tasks:[{id:'check',title:'Check delivery',prompt:'Read delivery.txt and verify retained content',mode:'read',dependencies:[]}]}}};
+       else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
+       else text='Read-only verification dispatched';
+      }
+     }
+    }else if(!recent.length){if(scenario==='queued'){queued=true;await held;}call={name:'write',input:{path:'delivery.txt',content:'original delivery'}};}
+   }else if(!messages.some(message=>message.role==='tool'))call={name:'read',input:{path:'delivery.txt'}};
+   else text='Read-only member verified original delivery';
+   if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});
+   const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:text};
+   for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'correction',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+  try{
+   await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'correction-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+   await f.request('send',{text:'Deliver delivery.txt with original delivery, then verify it with Swarm',mode:'swarm'});
+   if(scenario==='queued'){await f.wait(()=>queued);await f.request('queue',{action:'add',text:'QUEUED_CHECK',mode:'single',planMode:false});release();}
+   if(scenario==='stop'){await f.wait(()=>blocked);await f.request('stop');release();}
+   else await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus===(['recover','queued'].includes(scenario)?'completed':'failed')&&!event.event.data.isRunning),25000);
+   if(scenario==='queued')await f.wait(()=>f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=3);
+   const state=await f.request('state') as {sessionFile:string;messages:{role:string;background?:boolean}[];lifecycleStatus:string},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   assert.equal(corrections,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(state.messages.filter(message=>message.role==='user').length,scenario==='queued'?2:1);assert.equal(state.messages.filter(message=>message.role==='automatic').length,1);assert.equal(state.messages.find(message=>message.role==='automatic')?.background,true);
+   assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original delivery');
+   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('不能因任务简单而自行改为 Single')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
+   if(['recover','queued'].includes(scenario)){
+    assert.equal(existsSync(join(f.directory,'must-not-exist')),false);
+    assert.ok(entries.some(entry=>entry.message?.toolName==='friend_swarm'&&entry.message.isError));
+    const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string;tasks:{mode:string}[]}[]};assert.equal(graphs.graphs.length,1);assert.equal(graphs.graphs[0].status,'integrated');assert.ok(graphs.graphs[0].tasks.every(task=>task.mode==='read'));
+    assert.ok(entries.some(entry=>entry.message?.toolName==='write'&&entry.message.isError));assert.ok(!f.events.some(event=>event.event?.type==='notice'&&String(event.event.data.message).includes('没有实际任务图')));
+   }else assert.equal(state.lifecycleStatus,scenario==='stop'?'stopped':'failed');
+  }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ }
+});
+
+test('read-only correction results cannot wake writable member, goal or job continuations; a fresh user request can write',{timeout:35000},async()=>{
+ const phases:string[]=[];
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
+  const index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+  let call:{name:string;input:unknown}|undefined,reply='Original delivery retained';
+  const phase=names.includes('friend_swarm')?body.includes('NEW_USER_REQUEST')?'user':body.includes('队友提出补充')?'member-followup':body.includes('用户已选择 Swarm')?'correction':'original':'member';phases.push(phase);
+  if(phase==='correction'){
+   const graph=recent.find(value=>value.status==='created');
+   if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only verification',checks:[],tasks:[{id:'check',title:'Verify result',prompt:'Read retained delivery only',mode:'read',dependencies:[]}]}}};
+   else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
+  }else if(phase==='member'){
+   await f.wait(()=>f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=2);
+   if(!recent.length)call={name:'swarm_message',input:{to:'parent',body:body.includes('LATE_MEMBER_REQUEST')?'Late repair suggestion from the old verification':'Please repair delivery.txt after your read-only verification'}};
+  }else if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:phase==='member-followup'?'UNAUTHORIZED_REPLAY':phase==='user'?'fresh user delivery':'original delivery'}};
+  if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'correction-descendant',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions'});let wakes:RecordStore|undefined;
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'correction-descendant',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  const sent=await f.request('send',{text:'Deliver original delivery, then verify using Swarm',mode:'swarm'}) as {runId:string};
+  const entries=()=>readFileSync(String((f.events.find(event=>event.type==='ready')!.state!).sessionFile),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  await f.wait(()=>entries().some(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.eventId.startsWith('member-request:')));
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='completed'&&!event.event.data.isRunning));
+  assert.equal(phases.includes('member-followup'),false);assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original delivery');
+  const state=await f.request('state') as {sessionId:string;runtime:{pendingWakes:unknown[]};queue:{items:unknown[]}};assert.deepEqual(state.runtime.pendingWakes,[]);assert.deepEqual(state.queue.items,[]);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{tasks:{memberId:string}[]}[]};const memberId=snapshot.graphs[0].tasks[0].memberId;
+  const started=f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start').length;
+  wakes=new RecordStore('runtime-wake',f.dataDir);const generation=wakes.get<number>(`generation:${state.sessionId}`)?.value||0;
+  const ids=['goal:verification','job:verification:completed','swarm:verification','restore:verification'];
+  for(const id of ids)wakes.put(`queue:${state.sessionId}:${id}`,{id,generation,...(id.startsWith('goal:')?{}:{runId:sent.runId}),message:'must not start another writable turn',createdAt:new Date().toISOString()});
+  await f.request('queue',{action:'resume'});await f.wait(()=>ids.every(id=>entries().some(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.eventId===id)));
+  assert.equal(f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start').length,started);assert.deepEqual(wakes.list(`queue:${state.sessionId}:`),[]);
+  const stopped=await f.request('stop') as {isRunning:boolean};assert.equal(stopped.isRunning,false);await f.request('queue',{action:'resume'});
+  assert.equal(f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start').length,started);
+  const fresh=await f.request('send',{text:'NEW_USER_REQUEST: replace delivery.txt',mode:'single'}) as {runId:string};assert.notEqual(fresh.runId,sent.runId);
+  await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='fresh user delivery');await f.wait(()=>f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=3);
+  const writes=entries().filter(entry=>entry.message?.toolName==='write');assert.equal(writes.length,2);assert.ok(writes.every(entry=>entry.message.isError===false));
+  assert.equal(entries().filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped').length,ids.length+1,'each rejected wake has one NOT_RUN receipt');
+  await f.request('configure',{executionMode:'swarm'});const freshStarted=f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start').length;
+  await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'late-correction-supplement',body:'LATE_MEMBER_REQUEST: explain the old read-only verification'}});
+  await f.request('plugin',{plugin:'swarm',action:'member.resume',input:{memberId,confirmUnknown:true}});
+  await f.wait(()=>entries().filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.reason==='stale-member-source').length===2);
+  const late=entries().filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.reason==='stale-member-source');assert.ok(late.every(entry=>entry.data.runId===sent.runId&&entry.data.status==='not-run'));assert.notEqual(late[0].data.eventId,late[1].data.eventId,'send and settled summary have different bodies');
+  assert.equal(f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start').length,freshStarted);assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'fresh user delivery');
+  await f.wait(()=>f.events.slice(-5).some(event=>event.event?.type==='state'&&!event.event.data.isRunning));assert.deepEqual((await f.request('state') as {runtime:{pendingWakes:unknown[]}}).runtime.pendingWakes,[]);
+ }finally{wakes?.close();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+test('corrected Goals pause after verification and queued restoration; explicit user resume authorises fresh execution',{timeout:50000},async()=>{
+ for(const queued of [false,true]){
+  let memberHeld=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
+  const server=createServer(async(req,res)=>{
+   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
+   if(names.includes('friend_swarm')){
+    rootRequests++;
+    if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'friend_goal',input:{action:'create',input:{objective:'Retain the original delivery and verify with Swarm'}}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
+    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}
+    else if(body.includes('继续目标：')){if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};else if(recent.length===1)call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};}
+    else if(body.includes('QUEUE_B'))reply='Independent queued user request completed';
+    else throw Error('Unexpected automatic Goal continuation: '+body);
+   }else{if(queued){memberHeld=true;await held;}if(!recent.length)call={name:'read',input:{path:'delivery.txt'}};}
+   if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'correction-goal',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions'});
+  try{
+   await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'correction-goal',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+   const sent=await f.request('send',{text:'GOAL_SOURCE: retain delivery and verify in Swarm',mode:'swarm'}) as {runId:string};
+   if(queued){await f.wait(()=>memberHeld);await f.request('queue',{action:'add',text:'QUEUE_B: an independent user request',mode:'single',planMode:false});release();}
+   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&event.event.data.lifecycleStatus==='paused'&&(event.event.data.runtime as any)?.goal?.status==='paused'));
+   const paused=await f.request('state') as {lifecycleStatus:string;isRunning:boolean;runId:string;sessionFile:string;queue:{items:unknown[]};runtime:{goal:{id:string;status:string;error:string};pendingWakes:unknown[]}};
+   assert.equal(paused.runId,sent.runId);assert.equal(paused.isRunning,false);assert.equal(paused.lifecycleStatus,'paused');assert.match(paused.runtime.goal.error,/用户明确接续/);assert.deepEqual(paused.queue.items,[]);assert.deepEqual(paused.runtime.pendingWakes,[]);assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original goal delivery');
+   const requestsBefore=rootRequests;await f.request('state');await f.request('queue',{action:'resume'});await f.request('state');assert.equal(rootRequests,requestsBefore,'paused Goal cannot keep draining automatic turns');
+   if(queued){const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(entries.some(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.eventId.startsWith('queue-resume:')&&entry.data.status==='not-run'));}
+   await f.request('runtime',{action:'goal.pause',input:{goalId:paused.runtime.goal.id}});await f.request('runtime',{action:'goal.resume',input:{goalId:paused.runtime.goal.id}});
+   await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='waiting'));
+   const final=await f.request('state') as {isRunning:boolean;runtime:{pendingWakes:unknown[]}};assert.equal(final.isRunning,false);assert.deepEqual(final.runtime.pendingWakes,[]);const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.message?.toolName==='write'&&!entry.message.isError).length,2);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);
+  }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ }
 });
 
 test('automatic Rebuild at the settled boundary cannot restore a stale running lifecycle',{timeout:30000},async()=>{
@@ -626,4 +759,31 @@ test('a rejected side-draft admission remains one paused message and retry canno
   await f.request('configure',{plugins:['swarm']});await f.request('queue',{action:'resume'});await f.wait(()=>f.events.some(e=>e.event?.data.type==='agent_settled'));
   state=await f.request('state');assert.equal(state.messages.filter((m:any)=>m.role==='user'&&m.userText==='one side request').length,1);assert.equal(state.queue.items.length,0);
  }finally{await f.close();}
+});
+
+test('batch questions use one native result in plan mode, reject invalid answers and cancel with stop',{timeout:45000},async()=>{
+ const questions={v:1,title:'确认交付',questions:[{id:'format',type:'single',title:'交付形式',required:true,options:[{id:'web',label:'网页'},{id:'doc',label:'文档'}],allowOther:true},{id:'features',type:'multiple',title:'功能',required:true,options:[{id:'mobile',label:'移动端'},{id:'offline',label:'离线'}]},{id:'notes',type:'text',title:'备注',required:false}]};
+ let nextCall=0;const server=createServer(async(req,res)=>{let raw='';for await(const bytes of req)raw+=String(bytes);const body=JSON.parse(raw);const answered=body.messages.some((message:{role:string})=>message.role==='tool');res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=answered?{content:'已收到整组回答。'}:{tool_calls:[{index:0,id:'batch-'+(++nextCall),type:'function',function:{name:'friend_questions',arguments:JSON.stringify(questions)}}]};for(const choice of [{delta:{role:'assistant',...delta},finish_reason:null},{delta:{},finish_reason:answered?'stop':'tool_calls'}])res.write(`data: ${JSON.stringify({id:'fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');});await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ try{for(const stop of [false,true]){const f=await start({permissionMode:'ask'});try{
+  await f.request('provider.save',{provider:'batch-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'请一次澄清这三个问题',planMode:true});await f.wait(()=>f.events.some(event=>event.event?.type==='dialog'));
+  const dialog=f.events.find(event=>event.event?.type==='dialog')!.event!.data;assert.equal(dialog.kind,'questionBatch');assert.equal(dialog.expiresAt,undefined);assert.equal(f.events.filter(event=>event.event?.type==='dialog').length,1,'clarification does not require a separate permission approval');
+  const identity={id:dialog.id,v:1,generation:dialog.generation,runId:dialog.runId};
+  await assert.rejects(f.request('dialog.respond',{...identity,generation:'obsolete',answers:[]}),/失效/);
+  await assert.rejects(f.request('dialog.respond',{...identity,answers:[]}),/请选择/);
+  if(stop){await f.request('stop');await assert.rejects(f.request('dialog.respond',{...identity,answers:[]}),/已结束|失效/);}
+  else{await f.request('dialog.respond',{...identity,answers:[{questionId:'format',optionIds:['web']},{questionId:'features',optionIds:['mobile','offline']}]});await assert.rejects(f.request('dialog.respond',{...identity,answers:[]}),/已结束/);}
+  await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {sessionFile:string};const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));const results=entries.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='friend_questions');assert.equal(results.length,1);const result=JSON.parse(results[0].message.content.find((item:{type:string})=>item.type==='text').text);assert.equal(result.status,stop?'interrupted':'answered');if(!stop)assert.deepEqual(result.answers[2],{questionId:'notes',skipped:true});assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1,'answers are a native tool result, not duplicate user messages');
+ }finally{await f.close();}}}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+
+test('cold restore discards a persisted internal Swarm correction without starting a model or changing status',{timeout:30000},async()=>{
+ const directory=mkdtempSync(join(tmpdir(),'friend-pi-cold-correction-')),dataDir=join(directory,'data'),manager=SessionManager.create(directory,join(dataDir,'sessions'));
+ const text='retained user goal',sessionId=manager.getSessionId(),runId='retained-run';manager.appendMessage({role:'user',content:text,timestamp:Date.now()});manager.appendCustomEntry('friend-pi.input.v1',{entryId:manager.getLeafId(),textEnd:text.length,hash:digest(text),runId});manager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId,mode:'swarm',planMode:false,requiresSwarm:true});
+ manager.appendCustomEntry('friend-pi.swarm.correction.v1',{v:1,runId,generation:0,id:'swarm-correction:'+runId});
+ const wake=new RecordStore('runtime-wake',dataDir),ids=['swarm-correction:'+runId,'member-request:old:body','goal:old','job:old:completed','swarm:old','restore:old'];for(const id of ids){wake.put(`seen:${sessionId}:${id}`,{generation:0,at:new Date().toISOString()});wake.put(`queue:${sessionId}:${id}`,{id,generation:0,...(id.startsWith('goal:')?{}:{runId}),message:'must never reach a model after cold restore',createdAt:new Date().toISOString()});}
+ const f=await start({directory,sessionFile:manager.getSessionFile(),status:'interrupted',executionMode:'swarm'});
+ try{await f.request('queue',{action:'resume'});await f.wait(()=>!wake.list(`queue:${sessionId}:`).length);const state=await f.request('state') as {lifecycleStatus:string;isRunning:boolean};assert.equal(state.lifecycleStatus,'interrupted');assert.equal(state.isRunning,false);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);assert.equal(f.events.some(event=>event.event?.type==='notice'&&event.event.data.level==='error'),false);const entries=readFileSync(manager.getSessionFile()!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.status==='not-run').length,ids.length);}
+ finally{wake.close();await f.close();}
 });

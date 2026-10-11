@@ -1,0 +1,11 @@
+.memory-manager .memory-scope-filter{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.memory-manager .memory-scope-filter button{padding:6px 11px;font-size:12px}
+.memory-manager .memory-scope-filter button[aria-pressed=true]{background:#edf5f0;border-color:#b9d2c3;color:#306e5b}
+.memory-manager .memory-item{padding:14px 0;border-bottom:1px solid #e8ecea}
+.memory-manager .memory-summary{margin:8px 0;color:#65746b;font-size:13px;overflow-wrap:anywhere}
+.memory-manager .memory-record-details>summary{color:#306e5b;font-size:12px;cursor:pointer;width:fit-content;padding:3px 0}
+.memory-manager .memory-record-details[open]>.markdown{margin-top:10px}
+.memory-manager .memory-record-details .button-row{flex-wrap:wrap;margin-top:12px}
+.memory-manager .memory-candidates>summary{cursor:pointer;font-weight:600}
+.memory-manager .memory-candidates .memory-item:last-child{border-bottom:0}
+.memory-manager .memory-record-details>summary:focus-visible,.memory-manager .memory-candidates>summary:focus-visible{outline:2px solid #6c8e7b;outline-offset:3px;border-radius:3px}

@@ -1,10 +1,11 @@
+import type {QuestionBatchDialog} from '../question-batch.js';
 import type {PermissionMode} from '@friend-pi/core';
 export type {PermissionMode};
 import type { WorkspaceRef } from '../workspaces.js';
 export type { WorkspaceRef };
 export interface Project { id: string; path: string; name: string }
 export interface SessionSummary { id: string; projectId: string; name: string; path: string; updatedAt: string;status?:string;modelId?:string;archived?:boolean }
-export interface Message { senderLabel?:string;role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;timestamp?:number;provider?:string;model?:string;durationMs?:number;usage?:JsonObject;stopReason?:string;errorMessage?:string }
+export interface Message { background?:boolean; senderLabel?:string;role: string; text: string; id?: string;userText?:string;parts?:JsonObject[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;timestamp?:number;provider?:string;model?:string;durationMs?:number;usage?:JsonObject;stopReason?:string;errorMessage?:string }
 export interface Model { id: string; provider: string; name: string; reasoning: boolean; contextWindow: number;thinkingLevels?:string[];input?:string[];ready?:boolean;connectionStatus?:string;testedAt?:string;baseUrl?:string;api?:string }
 export interface Preferences {defaultLayoutMode?:import('../session-view.js').LayoutMode;defaultBrowserScope?:import('../session-view.js').BrowserScope;defaultModelId:string;defaultThinkingLevel:string;defaultPlugins:PluginName[];defaultMode:'single'|'team'|'swarm';defaultPlanMode:boolean;defaultPermissionMode?:PermissionMode;defaultWorkspaceDir?:string;contextMode:'native'|'infinite';backgroundModelId:string}
 export interface AppState {
@@ -12,7 +13,7 @@ export interface AppState {
   revision?:number;createdSessionId?:string;activities?:import('../session-attention.js').AttentionActivity[];
   projects: Project[];
   sessions: SessionSummary[];
-  current: { dialogs?:DialogRequest[];lifecycleStatus?:string;todo?:import('../task-todo.js').TaskTodo;queue?:import('../message-queue.js').QueueSnapshot&{suspendedGoal?:{objective:string}};sideDraft?:import('../message-queue.js').InputPayload;monitor?:import('../session-monitor.js').SessionMonitor;ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; changes?:import('../run-changes.js').RunChangesSummary[];traceSystems?:import('../message-projection.js').TraceSystem[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
+  current: { piSessionId?:string;dialogs?:DialogRequest[];lifecycleStatus?:string;todo?:import('../task-todo.js').TaskTodo;queue?:import('../message-queue.js').QueueSnapshot&{suspendedGoal?:{objective:string}};sideDraft?:import('../message-queue.js').InputPayload;monitor?:import('../session-monitor.js').SessionMonitor;ui?:import('../session-view.js').SessionViewState;sessionId: string; projectId: string; workspace?:WorkspaceRef;workspacePath?:string; messages: Message[]; changes?:import('../run-changes.js').RunChangesSummary[];traceSystems?:import('../message-projection.js').TraceSystem[]; isRunning: boolean; modelId: string; thinkingLevel: string;thinkingLevels?:string[]; runtime?:JsonObject;navigationLocked?:boolean;plugins: string[];runId?:string;receipts?:JsonObject[];pendingConfiguration?:JsonObject;plan?:JsonObject; planMode?: boolean;permissionMode?:PermissionMode;executionMode?:'single'|'team'|'swarm' } | null;
   models: Model[];
   providers: { id: string; name: string; configured: boolean;supportsApiKey?:boolean }[];
   preferences?:Preferences;
@@ -23,7 +24,8 @@ declare global { interface Window { friendPi: FriendBridge } }
 export type PluginName = 'swarm' | 'expert' | 'memory' | 'topic-rebuild';
 export type WorkspaceTab = 'browser' | PluginName | 'file' | 'diff' | 'settings';
 export type JsonObject = Record<string, unknown>;
-export interface DialogRequest { expiresAt?:number;id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string; message?: string; options?: string[]; prefill?: string }
+export type DialogRequest = QuestionBatchDialog | LegacyDialogRequest;
+export interface LegacyDialogRequest { expiresAt?:number;id: string; kind: 'confirm' | 'input' | 'select' | 'editor'; title: string; message?: string; options?: string[]; prefill?: string }
 export function asObject(value: unknown): JsonObject { return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}; }
 export function asList<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : []; }
 export function errorText(error: unknown): string { return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
