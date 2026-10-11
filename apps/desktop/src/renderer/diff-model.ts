@@ -35,6 +35,30 @@ export function splitDiffRows(items:DiffDisplayItem[]):SplitDiffRow[]{
  }
  return result;
 }
+export const DIFF_PAGE_LINES=2000;
+export interface DiffBlock {key:string;first:number;last:number;additions:number;deletions:number}
+/** Blocks follow the existing three-line folds, independently of expanded context and display mode. */
+export function projectDiffBlocks(lines:DiffLine[]):DiffBlock[]{
+ const blocks:DiffBlock[]=[],changes:IndexedDiffLine[]=[];
+ const finish=()=>{if(!changes.length)return;const first=changes[0].index,last=changes.at(-1)!.index;blocks.push({key:`block:${first}:${last}`,first,last,additions:changes.filter(value=>value.line.kind==='add').length,deletions:changes.filter(value=>value.line.kind==='remove').length});changes.length=0;};
+ for(const item of foldDiffLines(lines)){
+  if(item.kind==='fold'||item.value.line.kind==='meta'&&item.value.line.text.startsWith('@@')){finish();continue;}
+  if(item.kind==='line'&&['add','remove'].includes(item.value.line.kind))changes.push(item.value);
+ }
+ finish();return blocks;
+}
+export function diffBlockLocation(lines:DiffLine[],block:DiffBlock,split:boolean,expanded:ReadonlySet<string>){
+ const items=expandDiffItems(foldDiffLines(lines),expanded);
+ const row=split?splitDiffRows(items).findIndex(value=>value.left?.index===block.first||value.right?.index===block.first):items.findIndex(value=>value.kind==='line'&&value.value.index===block.first);
+ return row<0?undefined:{row,page:Math.floor(row/DIFF_PAGE_LINES)};
+}
+export function diffFileStatus(file:{status:string;oldPath?:string}){return file.status==='??'||file.status.includes('A')?'新增':file.status.includes('D')?'删除':file.oldPath?'重命名':'修改';}
+export function diffFileRatio(file:{additions?:number;deletions?:number}){
+ const known=typeof file.additions==='number'&&Number.isFinite(file.additions)&&file.additions>=0&&typeof file.deletions==='number'&&Number.isFinite(file.deletions)&&file.deletions>=0;
+ if(!known)return undefined;const total=file.additions!+file.deletions!;return {additions:file.additions!,deletions:file.deletions!,addedPercent:total?file.additions!/total*100:0,removedPercent:total?file.deletions!/total*100:0};
+}
+/** An owner change uses its own initial index before effects or old file reads can run. */
+export function selectedDiffIndex(owner:string,selection:{owner:string;index:number}|undefined,count:number,initial=0){const index=selection?.owner===owner?selection.index:initial;return count?Math.max(0,Math.min(Number.isSafeInteger(index)?index:0,count-1)):-1;}
 export const DIFF_SCOPES=[['run','上一轮'],['workspace','未提交'],['unstaged','未暂存'],['staged','已暂存'],['committed','已提交'],['branch','分支比较']] as const;
 
 /** A stale completion cannot change either the visible data or another request's pending state. */
