@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {RecordStore,requireSchemaWriter} from '../src/index.js';
+import {RecordStore,requireSchemaWriter,LearningBudget} from '../src/index.js';
 
 test('writer upgrade fences old documents and tables without a metadata downgrade reopening them',()=>{
  const dir=mkdtempSync(join(tmpdir(),'friend-writer-v4-')),store=new RecordStore('memory',dir);
@@ -24,4 +24,9 @@ test('writer upgrade fences old documents and tables without a metadata downgrad
   assert.equal(JSON.parse(String(row?.json)).minWriter,4);
   assert.equal(store.get<{proposalLedger:unknown[]}>('job')?.value.proposalLedger.length,1);
  }finally{legacy?.close();store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('an explicit budget increase preserves cumulative calls and unknown receipts',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'friend-budget-increase-')),store=new RecordStore('runtime',dir);
+ try{const ledger=new LearningBudget(store),budget=ledger.create({projectId:'p',sourceRunId:'r',maxCalls:1}),call=ledger.begin({budgetId:budget.budgetId,operationId:'uncertain',promptHash:'a'});ledger.finish({budgetId:budget.budgetId,operationId:'uncertain',callId:call.callId,state:'unknown'});assert.throws(()=>ledger.begin({budgetId:budget.budgetId,operationId:'next',promptHash:'b'}));const next=ledger.increaseLimit(budget.budgetId,2);assert.equal(next.calls,1);assert.equal(next.usageUnknown,true);assert.equal(ledger.readCall(budget.budgetId,'uncertain')?.state,'unknown');assert.throws(()=>ledger.increaseLimit(budget.budgetId,1));assert.equal(ledger.increaseLimit(budget.budgetId,2).calls,1);ledger.begin({budgetId:budget.budgetId,operationId:'new',promptHash:'b'});assert.equal(ledger.read(budget.budgetId).calls,2);}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
