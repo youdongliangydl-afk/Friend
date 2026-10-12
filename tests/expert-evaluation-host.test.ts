@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,rmSync,readFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -52,9 +52,9 @@ async function fixture(options:FixtureOptions={}){
  },emit:()=>{},notify:()=>{},appendEntry:()=>{}};
  const host=createExpertEvaluationHost({context:()=>ctx,runtime,canAdmit:()=>true});
  async function catalog(scenario:ExpertScenario,tools=options.toolFirst?['write']:[]){const suite=await host.catalog({scenario,baseline,candidate,modelId:ctx.modelId!,thinkingLevel:'off',tools});assert.ok(suite);return suite;}
- async function request(scenario:ExpertScenario,limit=64){
-  const suite=await catalog(scenario),account=budget.create({projectId:'project',sourceRunId:'run',maxCalls:limit}),example=suite.validation[0];
-  const request:HostEvalRequest={v:1,operationId:'operation-'+scenario,budgetId:account.budgetId,sourceRunId:'run',suiteId:suite.suiteId,suiteHash:suite.suiteHash,phase:'validation',caseId:example.id,taskRef:example.taskRef,repetition:0,side:'baseline',method:{...baseline,body:bodies.get('baseline:1')!},baseline,candidate,modelId:ctx.modelId!,thinkingLevel:'off',tools:options.toolFirst?['write']:[],environmentHash:suite.environmentHash,checkerHash:suite.checkerHash,promptHash:suite.promptHash,roleHash:suite.roleHash,materialsHash:suite.materialsHash,timeoutMs:10000};return request;
+ async function request(scenario:ExpertScenario,limit=64,selection:{phase:'validation'|'release';index:number}={phase:'validation',index:0}){
+  const suite=await catalog(scenario),account=budget.create({projectId:'project',sourceRunId:'run',maxCalls:limit}),example=suite[selection.phase][selection.index];
+  const request:HostEvalRequest={v:1,operationId:'operation-'+scenario,budgetId:account.budgetId,sourceRunId:'run',suiteId:suite.suiteId,suiteHash:suite.suiteHash,phase:selection.phase,caseId:example.id,taskRef:example.taskRef,repetition:0,side:'baseline',method:{...baseline,body:bodies.get('baseline:1')!},baseline,candidate,modelId:ctx.modelId!,thinkingLevel:'off',tools:options.toolFirst?['write']:[],environmentHash:suite.environmentHash,checkerHash:suite.checkerHash,promptHash:suite.promptHash,roleHash:suite.roleHash,materialsHash:suite.materialsHash,timeoutMs:10000};return request;
  }
  function checkCount(){const checks=new RecordStore('checks',dataDir);try{return checks.list('check:').length;}finally{checks.close();}}
  return {dir,ctx,host,request,catalog,registered,operation,budget,policy,store,baseline,candidate,role,methodReads,checkCount,calls:()=>calls,prompts,providerUsers,onFirst(callback:()=>void|Promise<void>){afterFirst=callback;},withdrawSource(){sourceAvailable=false;},changeRoute(){route='https://evaluation-fixture.invalid/changed';},close(){store.close();rmSync(dir,{recursive:true,force:true});}};
@@ -162,4 +162,14 @@ test('Expert controller freezes, schedules and advances all 36 public SDK tasks 
   const hostStore=new RecordStore('expert-evaluation-host',f.ctx.dataDir);try{const operations=hostStore.list<HostOperation>('operation:project:');assert.equal(operations.length,36);assert.equal(new Set(operations.map(row=>row.value.sessionId)).size,36);}finally{hostStore.close();}
   assert.equal(f.store.list(`learning-call:${job.budgetId}:`).length,36);
  }finally{releaseLearningLease(controller.store,lease);controller.dispose();f.close();}
+});
+
+test('a rejected outside-scope tool attempt fails its native boundary check despite a correct final JSON',async()=>{
+ const f=await fixture({toolFirst:true});try{
+  const request=await f.request('structured-delivery',64,{phase:'release',index:2}),result=await f.host.advance(request);
+  assert.equal(result.status,'completed');assert.equal(f.calls(),2);assert.equal(result.usage.providerRequests,2);assert.equal(f.budget.read(request.budgetId).calls,2);
+  assert.equal(result.checks.find(check=>check.id==='outside-boundary')!.passed,true);const boundary=result.checks.find(check=>check.id==='no-out-of-scope-tool-attempts');assert.ok(boundary);assert.equal(boundary.critical,true);assert.equal(boundary.passed,false);assert.equal(f.policy.readCheck(boundary.ref!,'project').passed,false);
+  const operation=f.operation(request),entries=SessionManager.open(operation.nativeFile!).getEntries();assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.isError));assert.equal(existsSync(join(f.ctx.dataDir,'expert-evaluations','project',digest(request.operationId),'work','result.json')),false);
+  assert.deepEqual(await f.host.advance(request),result);assert.equal(f.calls(),2);
+ }finally{f.close();}
 });
