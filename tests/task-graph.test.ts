@@ -5,7 +5,8 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {createElement,type ComponentType} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {projectTaskGraphs,projectSessionTaskGraphs} from '../apps/desktop/src/renderer/task-graph-model.js';
+import {TaskEvidenceSummary} from '../apps/desktop/src/renderer/TaskGraph.js';
+import {projectTaskGraphs,projectSessionTaskGraphs,taskEvidence,capabilityReceiptRows} from '../apps/desktop/src/renderer/task-graph-model.js';
 import {centerTaskGraph,fitTaskGraph,graphMiniMap,layoutTaskGraph,zoomTaskGraph} from '../apps/desktop/src/renderer/task-graph-layout.js';
 
 const node=(id:string,dependencies:string[]=[],extra:Record<string,unknown>={})=>({id,title:id,prompt:'Inspect '+id,mode:'read',dependencies,status:'pending',...extra});
@@ -109,4 +110,22 @@ test('TaskPanel uses native Pi identity while desktop routing keeps its separate
 test('paused materialized workflow does not hide an unknown native execution behind stale running state',()=>{
  const [g]=project([graph({workflowId:'f',status:'paused',tasks:[node('a',[],{status:'unknown',currentAttempt:'a1'})],attempts:[{id:'a1',taskId:'a',status:'unknown'}]})],[flow({status:'paused'})]);
  assert.equal(g.nodes[0].status,'unknown');assert.match(g.nodes[0].waitingReason,/待核对/);assert.match(g.warning,/流程状态待同步/);
+});
+test('task details separate actual execution, bound checks, independent review and application without promoting legacy receipts',()=>{
+ const integration={candidateDigest:'candidate',checks:[{exitCode:0}],verification:{candidateDigest:'candidate',status:'passed'},review:{approved:true,candidateDigest:'candidate',resultVersions:{a:2}}};
+ const task=node('a',[],{status:'completed',currentAttempt:'a2',resultRevision:2}),attempt={id:'a2',taskId:'a',status:'completed',summary:'Current conclusion',handoffRead:{status:'native-full-read',entries:[{entryId:'r1'}]},frozen:{memoryRefs:[{id:'memory',version:3,hash:'mh'}]}};
+ const [current]=project([graph({status:'ready',tasks:[task],attempts:[attempt],integration,contract:{verification:'V1'},budget:{tokenUsed:900,tokenUnknown:true}})]);const evidence=taskEvidence(current.nodes[0]);assert.deepEqual(evidence.stages.map(s=>s.state),['passed','passed','passed','pending']);assert.match(evidence.usage,/另有未知用量/);assert.equal(evidence.adopted[0].version,3);assert.ok(evidence.basis.some(line=>line.includes('交接全文')));
+ const [stale]=project([graph({tasks:[task],attempts:[attempt],integration:{...integration,review:{...integration.review,resultVersions:{a:1}}}})]);assert.equal(taskEvidence(stale.nodes[0]).stages[2].state,'unknown');
+ const [legacy]=project([graph({tasks:[task],attempts:[attempt],integration:{checks:[{exitCode:0}],review:{approved:true}}})]);assert.deepEqual(taskEvidence(legacy.nodes[0]).stages.slice(1,3).map(s=>s.state),['unknown','unknown']);
+});
+test('structured resource/member/concurrency/budget waiting is visible without inventing timing',()=>{
+ for(const kind of ['resource','member','concurrency','budget']){const [g]=project([graph({tasks:[node('a',[],{waiting:{kind,message:'Original wait reason',blockingTaskId:'owner'}})]})]);assert.match(g.nodes[0].waitingReason,/Original wait reason/);assert.match(g.nodes[0].waitingReason,/owner/);assert.doesNotMatch(g.nodes[0].waitingReason,/预计|秒|分钟/);}
+});
+test('capability receipts keep selected, context, request and checks distinct and exclude other runs or frozen catalogs',()=>{
+ const receipts=[{id:'s',customType:'friend-pi.memory.usage:v1',data:{runId:'r',stage:'prepared',records:[{id:'m',revision:2,contentHash:'mh'}]}},{id:'c',customType:'friend-pi.memory.usage:v1',data:{runId:'r',stage:'injected-to-context',records:[{id:'m',revision:2}]}},{id:'q',customType:'friend-pi.expert.evidence',data:{runId:'r',stage:'request-prepared',dependencies:[{capability:'expert',id:'e',version:5,hash:'eh'}]}},{id:'old',customType:'friend-pi.memory.usage:v1',data:{runId:'other',stage:'tool-read',records:[{id:'foreign'}]}},{id:'catalog',customType:'friend-pi.expert.run',data:{runId:'r',frozen:{experts:[{id:'unused'}]}}}];
+ const rows=capabilityReceiptRows(receipts,'r');assert.deepEqual(rows.map(row=>row.stage),['已选中','已进入上下文','已进入请求准备']);assert.equal(rows[2].refs[0].version,5);assert.equal(rows.some(row=>row.entryId==='old'||row.entryId==='catalog'),false);assert.equal(rows.some(row=>row.stage==='已登记检查'),false);
+});
+test('current failed objective checks stay failed and task evidence opens with concise conclusion/basis/gaps',()=>{
+ const [g]=project([graph({tasks:[node('a',[],{status:'completed',currentAttempt:'a2',resultRevision:2})],attempts:[{id:'a2',taskId:'a',status:'completed',summary:'Saved result',requiredHandoff:{id:'handoff'},handoffRead:{status:'native-full-read',entries:[{entryId:'native'}]},frozen:{memoryRefs:[{id:'m',version:2,hash:'mh'}]}}],integration:{candidateDigest:'candidate',checks:[{exitCode:1}],verification:{candidateDigest:'candidate',status:'failed'}},contract:{verification:'V1'}})]);assert.equal(taskEvidence(g.nodes[0]).stages[1].state,'failed');
+ const markup=renderToStaticMarkup(createElement(TaskEvidenceSummary,{node:g.nodes[0],onOpenCapability(){throw new Error('Rendering cannot navigate');}}));for(const text of ['结论','依据','缺口','执行结束','客观检查','独立复核','成果应用','原始附件已读全','不能证明模型采纳或答案正确'])assert.ok(markup.includes(text));assert.match(markup,/<details><summary>采用版本与交接收据/);assert.doesNotMatch(markup,/<details open/);
 });

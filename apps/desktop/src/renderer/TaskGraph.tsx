@@ -1,13 +1,22 @@
 import {useEffect,useId,useLayoutEffect,useMemo,useRef,useState,type PointerEvent as ReactPointerEvent} from 'react';
 import {Empty,JsonView,Markdown} from './ui.js';
 import {statusLabels} from './types.js';
-import type {TaskGraph,TaskGraphNode} from './task-graph-model.js';
+import {taskEvidence,type TaskGraph,type TaskGraphNode} from './task-graph-model.js';
 import {centerTaskGraph,fitTaskGraph,graphMiniMap,layoutTaskGraph,zoomTaskGraph,type GraphViewport,type TaskGraphLayout} from './task-graph-layout.js';
 
 const label=(status:string)=>({unknown:'结果待核对',unavailable:'状态待核对',skipped:'已跳过',waiting_review:'等待复核'}[status]||statusLabels[status]||status||'状态待核对');
 const color=(status:string)=>status==='completed'?'#4b8068':status==='running'?'#659f89':['failed','blocked','unknown'].includes(status)?'#bd8c58':'#b8c8bc';
 
-export function TaskGraphCanvas({graphs,onOpenMember,loading=false,error}:{graphs:TaskGraph[];onOpenMember(memberId:string):void;loading?:boolean;error?:string}){
+export function TaskEvidenceSummary({node,onOpenCapability}:{node:TaskGraphNode;onOpenCapability?(page:'memory'|'expert'):void}){
+ const evidence=taskEvidence(node),labels={passed:'已通过',pending:'待完成',failed:'未通过',unknown:'待核对','not-required':'本任务无需'};
+ return <div className="task-evidence-summary"><h4>结论</h4><Markdown text={evidence.conclusion}/><ol className="task-evidence-stages" aria-label="执行与验收阶段">{evidence.stages.map(stage=><li data-state={stage.state} key={stage.label}><span>{stage.label}</span><strong>{stage.state==='passed'?(stage.label==='执行结束'?'已结束':stage.label==='成果应用'?'已整合':'已通过'):labels[stage.state]}</strong></li>)}</ol>
+  <h4>依据</h4>{evidence.basis.length?<ul>{evidence.basis.map(item=><li key={item}>{item}</li>)}</ul>:<p>尚无与当前版本绑定的完成依据。</p>}
+  <h4>缺口</h4>{evidence.gaps.length?<ul>{evidence.gaps.map(item=><li key={item}>{item}</li>)}</ul>:<p>当前登记的执行与验收阶段已齐备。</p>}<p className="hint">{evidence.usage}。读取收据不能证明模型采纳或答案正确。</p>
+  {(evidence.adopted.length>0||Object.keys(evidence.handoff).length>0)&&<details><summary>采用版本与交接收据</summary>{evidence.adopted.map((ref,index)=><p key={index}>{String(ref.capability)} · {String(ref.id)} v{String(ref.version)} <code>{String(ref.hash||'摘要待核对')}</code></p>)}<p>冻结引用仅说明采用登记；进入上下文、请求和实际检查分别以原生收据核对。</p>{Object.keys(evidence.handoff).length>0&&<><p>交接全文读取不等于原始附件已读全，也不证明理解或结论正确。</p><JsonView value={evidence.handoff}/></>}{onOpenCapability&&<div className="button-row"><button onClick={()=>onOpenCapability('memory')}>在 Memory 查看原记录</button><button onClick={()=>onOpenCapability('expert')}>在 Expert 查看方法</button></div>}</details>}
+ </div>;
+}
+
+export function TaskGraphCanvas({graphs,onOpenMember,onOpenCapability,loading=false,error}:{graphs:TaskGraph[];onOpenMember(memberId:string):void;onOpenCapability?(page:'memory'|'expert'):void;loading?:boolean;error?:string}){
  const [choice,setChoice]=useState(''),[selection,setSelection]=useState<{key:string;id:string}>(),[view,setView]=useState<GraphViewport>({x:0,y:0,zoom:1}),[size,setSize]=useState({width:0,height:0}),[dragging,setDragging]=useState(false);
  const graph=graphs.find(item=>item.key===choice)||graphs[0],selected=graph&&selection?.key===graph.key?graph.nodes.find(node=>node.id===selection.id):undefined;
  const layouts=useRef(new Map<string,{structure:string;layout:TaskGraphLayout}>());
@@ -62,9 +71,8 @@ export function TaskGraphCanvas({graphs,onOpenMember,loading=false,error}:{graph
    {selected&&<aside className="task-graph-detail" ref={detail} tabIndex={-1} aria-label={'任务详情 '+selected.title} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeDetail();}}}>
     <header><h3>{selected.title}</h3><button aria-label="关闭任务详情" onClick={closeDetail}>×</button></header><p className="task-graph-detail-status">{label(selected.status)} · {selected.mode==='write'?'写入任务':selected.mode==='read'?'只读任务':'执行范围待核对'}</p>{selected.waitingReason&&<p>{selected.waitingReason}</p>}
     {selected.memberId&&<button onClick={()=>onOpenMember(selected.memberId!)}>打开{selected.memberName||'队友'}会话 ↗</button>}
-    <h4>任务要求</h4><Markdown text={selected.prompt||'尚无可读任务要求'}/><h4>前置任务</h4><p>{selected.dependencies.map(id=>byId.get(id)?.title||id).join('、')||'无'}</p>
-    {selected.writeScopes.length>0&&<><h4>写入范围</h4><p>{selected.writeScopes.join('、')}</p></>}
-    <h4>{selected.status==='unknown'?'已保存成果（需核对）':'当前成果'}{selected.resultRevision?` · v${selected.resultRevision}`:''}</h4><Markdown text={selected.summary||selected.error||'尚未形成已保存成果；查看不会启动执行。'}/>
+    <TaskEvidenceSummary node={selected} onOpenCapability={onOpenCapability}/>
+    <details><summary>任务要求与成果全文{selected.resultRevision?` · v${selected.resultRevision}`:''}</summary><h4>任务要求</h4><Markdown text={selected.prompt||'尚无可读任务要求'}/><h4>前置任务</h4><p>{selected.dependencies.map(id=>byId.get(id)?.title||id).join('、')||'无'}</p>{selected.writeScopes.length>0&&<><h4>写入范围</h4><p>{selected.writeScopes.join('、')}</p></>}<h4>{selected.status==='unknown'?'已保存成果（需核对）':'当前成果全文'}</h4><Markdown text={selected.summary||selected.error||'尚未形成已保存成果；查看不会启动执行。'}/></details>
     <details><summary>任务与当前尝试记录</summary><JsonView value={Object.fromEntries(Object.entries(selected.detail).filter(([key])=>!['checks','review'].includes(key)))}/></details>
     {(selected.detail.checks!==undefined||selected.detail.review!==undefined)&&<details><summary>整图检查与复核</summary><JsonView value={{checks:selected.detail.checks,review:selected.detail.review}}/></details>}
    </aside>}
