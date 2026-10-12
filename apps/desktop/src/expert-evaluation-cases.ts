@@ -1,6 +1,9 @@
 import {digest,type ExpertScenario} from '@friend-pi/core';
 import {isDeepStrictEqual} from 'node:util';
 
+// Bump when checker semantics change; bundled symbol aliases are not an identity.
+export const EVALUATION_CHECKER_VERSION='initial-finite-contracts-v1';
+
 export interface RegisteredEvaluationCase {
   id:string;kind:'positive'|'negative';families:string[];critical:boolean;
   prompt:string;materials:Record<string,string>;outputPaths:string[];

@@ -828,3 +828,17 @@ for(const parallel of [false,true])test(`${parallel?'same-batch':'late'} direct 
   const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{attempts:unknown[]}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].attempts.length,0);
  }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
 });
+
+for(const sameBatch of [false,true])test(`Swarm readonly strategy rejects a ${sameBatch?'same-batch':'later'} main-agent command before it can write`,{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  for await(const _ of req){}const ordinal=++calls,plan={index:0,id:'read-plan',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Read source documents without commands',strategy:'collaboration',reason:'Two independent source reads',risk:'low',checks:[],tasks:[{id:'read-source',title:'Read source',prompt:'Read the source only',mode:'read',dependencies:[],writeScopes:[]}]}})}},command={index:sameBatch?1:0,id:'forbidden-command',type:'function',function:{name:'bash',arguments:JSON.stringify({command:'printf forbidden > forbidden-command.txt'})}};
+  const toolCalls=ordinal===1?(sameBatch?[plan,command]:[plan]):!sameBatch&&ordinal===2?[command]:[],delta=toolCalls.length?{role:'assistant',tool_calls:toolCalls}:{role:'assistant',content:'No command was required.'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:toolCalls.length?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'read-command',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'read-command-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'Read only; no commands.',mode:'swarm'});
+  await f.wait(()=>calls===(sameBatch?3:4)&&f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+  assert.equal(existsSync(join(f.directory,'forbidden-command.txt')),false);const state=await f.request('state') as {messages:{role:string;text:string;toolCallId?:string}[]};const result=state.messages.find(message=>message.role==='toolResult'&&message.toolCallId==='forbidden-command');assert.ok(result);assert.match(result.text,/先校验|本轮是只读协作/);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
+});

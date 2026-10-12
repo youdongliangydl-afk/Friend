@@ -310,10 +310,16 @@ function guard():ExtensionFactory{return pi=>{
     if(plan.strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size)){captureRunPolicy(true);return;}
     captureRunPolicy(plan.strategy!=='direct');
     if(plan.strategy==='direct')correctionEligibleRun=undefined;
-    session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:plan.strategy,reason:plan.reason,risk:plan.risk,verificationRequired:plan.verificationRequired,checks:plan.checks,planHash:digest(plan),toolCallId:event.toolCallId});
+    session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:plan.strategy,readOnlyCollaboration:plan.strategy==='collaboration'&&Array.isArray(plan.tasks)&&plan.tasks.length>0&&plan.tasks.every(task=>object(task).mode==='read'),reason:plan.reason,risk:plan.risk,verificationRequired:plan.verificationRequired,checks:plan.checks,planHash:digest(plan),toolCallId:event.toolCallId});
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
+    if(executionMode==='swarm'&&!planMode&&(['bash','write','edit'].includes(event.toolName)||event.toolName==='friend_terminal'&&!['list','read'].includes(String(input.action))||event.toolName==='friend_jobs'&&!['list','read','logs','status'].includes(String(input.action)))){
+      const receipt=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.plan.v1'&&object(entry.data).runId===runId),plan=receipt?.type==='custom'?object(receipt.data):undefined,graphs=[...runGraphIds].map(id=>swarmGraphs.get(id)).filter(Boolean);
+      if(!plan&&!graphs.length)return {block:true,reason:'先校验本轮 Swarm 执行策略，再开始命令或文件修改'};
+      const readOnly=graphs.length?graphs.every(graph=>Array.isArray(graph?.tasks)&&graph.tasks.every(task=>object(task).mode==='read')):plan?.readOnlyCollaboration===true;
+      if(readOnly)return {block:true,reason:'本轮是只读协作，主 Agent 使用读取工具，不运行命令或修改文件'};
+    }
     if(event.toolName==='friend_swarm'&&input.action==='plan.validate'&&object(input.input).strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size))return {block:true,reason:'本轮已有协作图，不能以直接策略绕过原图核验'};
     if(swarmCorrectionActive){
       if(event.toolName==='friend_swarm'){

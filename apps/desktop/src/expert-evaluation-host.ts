@@ -6,13 +6,13 @@ import {Type} from 'typebox';
 import {CapabilityError,RecordStore,SourcePolicy,LearningBudget,digest,visibleText,parseModelJson,modelTokenUsage,registerSourceSession,historyItems,learningRequestSnapshot,type PluginContext,type ExpertEvaluationHost,type HostEvaluationSuite,type HostEvalRequest,type HostEvalResult,type ExpertScenario,type SourceRef,type SourceFence} from '@friend-pi/core';
 import {requireReadyModel} from './model-readiness.js';
 import {projectCodeVersion} from '../../../packages/core/src/code-version.js';
-import {initialEvaluationSuite,checkEvaluationOutput,type RegisteredEvaluationSuite,type RegisteredEvaluationCase} from './expert-evaluation-cases.js';
+import {initialEvaluationSuite,checkEvaluationOutput,EVALUATION_CHECKER_VERSION,type RegisteredEvaluationSuite,type RegisteredEvaluationCase} from './expert-evaluation-cases.js';
 
 const scenarios=new Set<ExpertScenario>(['code-development','code-repair','source-research','structured-delivery']);
 const plain=(value:unknown):Record<string,unknown>=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const stamp=()=>new Date().toISOString();
 const promptContractHash=(role:unknown)=>digest({v:1,role,format:'json-delivery-v1',permissions:'explicit-paths-optional-files-v1'});
-const checkerContractHash=(registered:RegisteredEvaluationSuite)=>digest({implementation:checkEvaluationOutput.toString(),nativeBoundary:'no-out-of-scope-tool-attempts-v1',checks:[registered.validation,registered.release].flat().map(example=>example.checks)});
+const checkerContractHash=(registered:RegisteredEvaluationSuite)=>digest({implementation:EVALUATION_CHECKER_VERSION,nativeBoundary:'no-out-of-scope-tool-attempts-v1',checks:[registered.validation,registered.release].flat().map(example=>example.checks)});
 interface FrozenHostSuite {
   projectId:string;sessionId:string;public:HostEvaluationSuite;registered:RegisteredEvaluationSuite;
   modelId:string;thinkingLevel:string;tools:string[];role:unknown;
@@ -63,7 +63,7 @@ export function createExpertEvaluationHost(options:HostOptions):ExpertEvaluation
       const allowsResult=(scopes:unknown)=>!Array.isArray(scopes)||scopes.some(scope=>scope==='.'||scope==='result.json');
       if(input.tools.includes('write')&&(!allowsResult(record.effectiveWriteScopes)||!allowsResult(ctx.policy?.writeScopes)))return undefined;
       await methodVersions(ctx,role.otherMethods as FrozenHostSuite['baseline'][],input.tools);
-      const actual=await environment(ctx,input.modelId),roleHash=digest(role),promptHash=promptContractHash(role),catalogKey=`catalog:${ctx.projectId}:${ctx.sessionId}:${digest({...input,environmentHash:actual.hash,roleHash,promptHash,checker:checkEvaluationOutput.toString()})}`,priorCatalog=store.get<string>(catalogKey),previous=priorCatalog?.value;
+      const actual=await environment(ctx,input.modelId),roleHash=digest(role),promptHash=promptContractHash(role),catalogKey=`catalog:${ctx.projectId}:${ctx.sessionId}:${digest({...input,environmentHash:actual.hash,roleHash,promptHash,checker:EVALUATION_CHECKER_VERSION})}`,priorCatalog=store.get<string>(catalogKey),previous=priorCatalog?.value;
       if(previous){const frozen=store.get<FrozenHostSuite>(`suite:${ctx.projectId}:${previous}`)?.value;if(frozen&&frozen.public.promptHash===promptHash&&frozen.public.checkerHash===checkerContractHash(frozen.registered)){const priorFence=frozen.sourceFence;frozen.sourceFence=new SourcePolicy(store).renew(priorFence);if(frozen.sourceFence!==priorFence)store.put(`suite:${ctx.projectId}:${previous}`,frozen);return frozen.public;}}
       const registered=initialEvaluationSuite(input.scenario,randomBytes(16).toString('hex')),materialsHash=digest([registered.validation,registered.release].flat().map(example=>example.materials));
       const checkerHash=checkerContractHash(registered);
