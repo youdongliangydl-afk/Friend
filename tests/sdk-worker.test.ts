@@ -274,20 +274,20 @@ test('read-only correction results cannot wake writable member, goal or job cont
 
 test('corrected Goals pause after verification and queued restoration; explicit user resume authorises fresh execution',{timeout:50000},async()=>{
  for(const queued of [false,true]){
-  let memberHeld=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
+  let memberHeld=false,verificationGraphId='',release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
   const server=createServer(async(req,res)=>{
    let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
     if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'friend_goal',input:{action:'create',input:{objective:'Retain the original delivery and verify with Swarm'}}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
-    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}
+    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running')){verificationGraphId=graph.id;call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}}
     else if(body.includes('继续目标：')){
      if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};
-     else if(recent.length===1)call={name:'friend_swarm',input:{action:'create',input:{goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
-     else if(recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
-     else if(recent.length===3)call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
-     else if(recent.length===4)call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};
+     else if(recent.length===1)call={name:'friend_swarm',input:{action:queued?'append':'create',input:{...(queued?{graphId:verificationGraphId}:{}),goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
+     else if(!queued&&recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
+     else if(recent.length===(queued?2:3))call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
+     else if(recent.length===(queued?3:4))call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};
     }
     else if(body.includes('QUEUE_B'))reply='Independent queued user request completed';
     else throw Error('Unexpected automatic Goal continuation: '+body);
