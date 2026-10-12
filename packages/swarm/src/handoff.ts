@@ -22,7 +22,8 @@ export function readHandoff(store:RecordStore,graphId:string,ref:HandoffRef,offs
   if(!Number.isSafeInteger(offset)||Number(offset)<0||!Number.isSafeInteger(maxChars)||Number(maxChars)<1||Number(maxChars)>8000)throw new CapabilityError('VALIDATION_ERROR','交接读取范围无效');
   const saved=store.get<{ref:HandoffRef;content:string}>(`handoff:${graphId}:${ref.id}:1`)?.value;
   if(!saved||digest(saved.content)!==ref.hash||digest(saved.ref)!==digest(ref))throw new CapabilityError('SOURCE_UNAVAILABLE','交接版本、长度或摘要已变化');
-  if(Number(offset)>=ref.length)throw new CapabilityError('VALIDATION_ERROR','交接读取起点越界');const end=Math.min(ref.length,Number(offset)+Number(maxChars));
+  if(Number(offset)>=ref.length)throw new CapabilityError('VALIDATION_ERROR','交接读取起点越界');let end=Math.min(ref.length,Number(offset)+Number(maxChars));
+  if(end<ref.length&&/[\uD800-\uDBFF]/.test(saved.content[end-1])&&/[\uDC00-\uDFFF]/.test(saved.content[end])){if(end===Number(offset)+1)throw new CapabilityError('VALIDATION_ERROR','Unicode字符需要至少2个UTF16单元');end--;}
   return {ref,offset:Number(offset),end,content:saved.content.slice(Number(offset),end),complete:end===ref.length};
 }
 /** Controlled read coverage; end-of-file alone cannot count as a full read. */
