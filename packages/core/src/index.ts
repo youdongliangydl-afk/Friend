@@ -11,6 +11,8 @@ import {getSupportedThinkingLevels,normalizeContext,type ProviderHeaders,type Pr
 import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCapabilityError,restrictedSourceItem,readRegisteredArtifact,type ArtifactRef,type EvidenceReceipt,type LearningLeaseToken} from './capability-services.js';
 export * from './capability-services.js';
 export * from './collaboration-services.js';
+export * from './expert-evaluation.js';
+import type {ExpertEvaluationHost} from './expert-evaluation.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
@@ -38,6 +40,7 @@ export interface PluginContext {
   learningModel?:{modelId:string;thinkingLevel:string};
   learning?:{budgetId:string;sourceRunId:string;lease:LearningLeaseToken;canAdmit():boolean};
   hostOperations?:{prepare(input:JsonObject):Promise<JsonObject>;dispatch(input:JsonObject):Promise<JsonObject>;reconcile(input:JsonObject):Promise<JsonObject>};
+  expertEvaluation?:ExpertEvaluationHost;
   executionMode?:ExecutionMode; policy?:HostPolicy;availableTools?:string[]; availableModels?:{id:string;thinkingLevels:string[]}[];
   approvePermission?(request:PermissionRequest):Promise<boolean>;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
