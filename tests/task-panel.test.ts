@@ -99,7 +99,7 @@ test('completed goals retain their evidence without active goal controls or a ne
 
 test('Team results and existing review controls remain available without manual task creation',async()=>{
  const f=fixture({mode:'team',graphs:[{id:'team-graph',executionStyle:'team',status:'completed',goal:'已有 Team 成果',tasks:[{id:'a',title:'成员成果',status:'completed'}]}]});await f.flush();
- const markup=f.markup();assert.match(markup,/Team 成果/);assert.match(markup,/成员成果/);assert.match(markup,/查看成果/);assert.match(markup,/检查与复核/);assert.match(markup,/整合已复核成果/);assert.match(markup,/停止成员/);assert.doesNotMatch(markup,forbidden);
+ const markup=f.markup();assert.match(markup,/Team 成果/);assert.match(markup,/成员成果/);assert.match(markup,/查看成果/);assert.match(markup,/准备验证/);assert.match(markup,/整合成果/);assert.match(markup,/停止成员/);assert.doesNotMatch(markup,forbidden);
  f.button('查看成果').props.onClick();await f.flush();assert.match(f.markup(),/Retained team result/);
 });
 const recoveryPreview=(binding:string,unknown=false)=>({v:1,readOnly:true,binding,sourceValidity:{valid:true},nodes:[{id:'a',decision:unknown?'check':'redo',reasons:[unknown?'副作用未知，必须核对后明确确认':'相关代码变化']}]});

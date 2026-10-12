@@ -464,7 +464,7 @@ test('native Swarm completion automatically continues a waiting Goal without pol
   if(names.includes('swarm_review_result')){if(!messages.some(message=>message.role==='tool'))call={name:'swarm_review_result',input:{approved:true,findings:'Independent loopback reviewer inspected both read outcomes'}};}
   else if(names.includes('friend_swarm')){
    const user=messages.findLastIndex(message=>message.role==='user'),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
-   if(latest.includes('Swarm 任务图')&&latest.includes('已通过检查')){
+   if(latest.includes('Swarm 任务图')&&latest.includes('已整合')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
     if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
     else if(goal.status!=='completed')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
