@@ -721,12 +721,56 @@ test('completed changed-files metadata and native trajectory survive a cold work
 
 test('native Bash and background jobs omit inherited credentials while inference stays authenticated',{timeout:30000},async()=>{
  const credential='synthetic-local-inference-only';let authenticated=0,calls=0;
+ const visibleProviderText=(content:any)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const observations:{at:string;authenticated:boolean;bodySha256:string;bodyContainsCredential:boolean;latestUserTextPrefix:string;messages:{role:string;contentSha256:string;toolCallId?:string;toolCallIds?:string[]}[];response:'tool_calls'|'stop';finished?:boolean;closed?:boolean}[]=[];
  const command="'"+process.execPath.replaceAll("'","'\\''")+"' -e 'console.log(JSON.stringify({credentialPresent:!!process.env.FRIEND_QA_API_KEY,normal:process.env.FRIEND_QA_NORMAL}))'";
- const server=createServer(async(req,res)=>{for await(const _ of req){}if(req.headers.authorization==='Bearer '+credential)authenticated++;const tool=calls++===0;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');res.end('data: [DONE]\n\n');});
- await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained'}});
- try{await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string};const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);assert.equal(authenticated,2);assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
- const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
- }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),authorized=req.headers.authorization==='Bearer '+credential;
+  if(authorized)authenticated++;const tool=calls++===0;
+  const observation:typeof observations[number]={at:new Date().toISOString(),authenticated:authorized,bodySha256:digest(raw),bodyContainsCredential:raw.includes(credential),latestUserTextPrefix:visibleProviderText(payload.messages?.findLast((message:any)=>message.role==='user')?.content).replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]').slice(0,240),messages:(payload.messages||[]).map((message:any)=>({role:message.role,contentSha256:digest(message.content),toolCallId:message.tool_call_id,toolCallIds:message.tool_calls?.map((call:any)=>call.id)})),response:tool?'tool_calls':'stop'};
+  observations.push(observation);res.on('finish',()=>{observation.finished=true;});res.on('close',()=>{observation.closed=true;});
+  res.writeHead(200,{'Content-Type':'text/event-stream'});
+  const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ // Expert can legitimately infer after agent_settled; this fixture isolates native Bash/core jobs.
+ const f=await start({permissionMode:'allPermissions',env:{FRIEND_PI_PLUGINS:'[]',FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained'}});
+ try{
+  assert.deepEqual((await f.request('state') as {plugins:string[]}).plugins,[]);
+  await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});
+  await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string;plugins:string[]};assert.deepEqual(state.plugins,[]);
+  const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);
+  const native=readFileSync(state.sessionFile,'utf8');assert.equal(native.includes(credential),false);
+  const entries=native.trim().split('\n').map(line=>JSON.parse(line)),users=entries.filter(entry=>entry.message?.role==='user'),assistants=entries.filter(entry=>entry.message?.role==='assistant');
+  assert.equal(users.length,1);assert.equal(visibleProviderText(users[0].message.content),'Check native command environment');
+  assert.deepEqual(assistants.map(entry=>entry.message.stopReason),['toolUse','stop'],'the two authenticated requests are the actual native Bash turn and its continuation');
+  const nativeCalls=assistants.flatMap(entry=>entry.message.content.filter((part:any)=>part.type==='toolCall'));assert.equal(nativeCalls.length,1);assert.equal(nativeCalls[0].name,'bash');assert.deepEqual(nativeCalls[0].arguments,{command});
+  const nativeResults=entries.filter(entry=>entry.message?.role==='toolResult');assert.equal(nativeResults.length,1);assert.equal(nativeResults[0].message.toolCallId,nativeCalls[0].id);assert.equal(nativeResults[0].message.isError,false);
+  assert.equal(calls,2);assert.equal(authenticated,2);assert.ok(observations.every(request=>request.authenticated&&!request.bodyContainsCredential),'every inference request has authentication only at the transport boundary');
+  assert.equal(observations[0].messages.findLast(message=>message.role==='user')?.contentSha256,digest(users[0].message.content));
+  const next=observations[1].messages,callIndex=next.findIndex(message=>message.toolCallIds?.includes(nativeCalls[0].id)),resultIndex=next.findIndex(message=>message.toolCallId===nativeCalls[0].id);
+  assert.ok(callIndex>=0&&resultIndex>callIndex);assert.equal(next[resultIndex].contentSha256,digest(visibleProviderText(nativeResults[0].message.content)),'the second authenticated request contains the correlated native Bash result');
+  assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='auto_retry_start'),false);
+  const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};
+  let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}
+  assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
+  await f.wait(()=>f.events.some(event=>event.event?.type==='jobs.changed'&&JSON.stringify(event.event.data).includes(job.id)&&JSON.stringify(event.event.data).includes('"status":"completed"')));
+  assert.equal((await f.request('runtime',{action:'jobs.status',input:{id:job.id}}) as {status:string}).status,'completed');
+  assert.equal(calls,2,'a non-continuing core job must not create an inference request');assert.equal(authenticated,calls);assert.ok(observations.every(request=>request.authenticated&&!request.bodyContainsCredential));assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
+ }finally{
+  try{
+  const diagnostics=process.env.FRIEND_SECURITY_DIAGNOSTICS_DIR;
+  if(diagnostics){
+   const state=await f.request('state') as {sessionFile:string;plugins:string[]};const native=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   writeFileSync(join(diagnostics,'security-observations.json'),JSON.stringify({authenticated,calls,plugins:state.plugins,observations,native:native.map(entry=>({id:entry.id,parentId:entry.parentId,timestamp:entry.timestamp,type:entry.type,customType:entry.customType,runId:entry.data?.runId,eventId:entry.data?.eventId,message:entry.message?{role:entry.message.role,contentSha256:digest(entry.message.content),stopReason:entry.message.stopReason,errorMessage:entry.message.errorMessage?.replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]'),toolCallId:entry.message.toolCallId,toolName:entry.message.toolName,toolCalls:Array.isArray(entry.message.content)?entry.message.content.filter((part:any)=>part.type==='toolCall').map((part:any)=>({id:part.id,name:part.name,argumentsSha256:digest(part.arguments)})):undefined}:undefined})),events:f.events.filter(event=>event.event?.type==='pi').map(event=>({type:event.event!.data.type,attempt:event.event!.data.attempt,willRetry:event.event!.data.willRetry,delayMs:event.event!.data.delayMs,errorMessage:typeof event.event!.data.errorMessage==='string'?event.event!.data.errorMessage.replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]'):undefined}))},null,2)+'\n',{flag:'wx',mode:0o600});
+  }
+  }finally{
+   try{await f.close();}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+  }
+ }
 });
 
 test('Todo is permission-neutral in Plan/ask, recovers natively and resets on a new run',{timeout:30000},async()=>{
