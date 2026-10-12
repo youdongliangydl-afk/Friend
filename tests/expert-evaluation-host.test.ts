@@ -70,17 +70,37 @@ test('four registered scenarios run public Pi sessions with exact methods, autho
    await assert.rejects(f.host.advance({...request,method:{...request.method,body:'tampered'}}),/operationId/);
   }
   assert.equal(f.calls(),4);assert.ok(f.methodReads.length>=8);assert.ok(f.methodReads.every(ref=>ref.version===1&&['baseline','candidate'].includes(ref.id)));
+  assert.ok(f.prompts.every(prompt=>prompt.includes('许可读取路径：[]。许可写入路径：[]。')&&prompt.includes('无需为形式读写文件')));
+ }finally{f.close();}
+});
+
+test('an old host prompt contract cannot be reused or dispatched after a host upgrade',async()=>{
+ const f=await fixture();try{
+  const request=await f.request('code-development'),store=new RecordStore('expert-evaluation-host',f.ctx.dataDir);
+  try{const row=store.get<any>(`suite:project:${request.suiteId}`)!;row.value.public.promptHash='old-contract';store.put(row.key,row.value,row.revision);}finally{store.close();}
+  await assert.rejects(f.host.advance({...request,promptHash:'old-contract'}),/契约已变化/);assert.equal(f.calls(),0);assert.equal(f.budget.read(request.budgetId).calls,0);
+  const suite=await f.host.catalog({scenario:'code-development',baseline:f.baseline,candidate:f.candidate,modelId:f.ctx.modelId!,thinkingLevel:'off',tools:[]});assert.ok(suite);assert.notEqual(suite.suiteId,request.suiteId);assert.notEqual(suite.promptHash,'old-contract');
+ }finally{f.close();}
+});
+
+test('old completed evidence stays readable but cannot advance promotion under a changed host contract',async()=>{
+ const f=await fixture();try{
+  const request=await f.request('code-repair'),result=await f.host.advance(request),store=new RecordStore('expert-evaluation-host',f.ctx.dataDir);
+  try{const row=store.get<any>(`suite:project:${request.suiteId}`)!;row.value.public.promptHash='old-contract';store.put(row.key,row.value,row.revision);}finally{store.close();}
+  assert.deepEqual(await f.host.read({operationId:request.operationId}),result);await assert.rejects(f.host.advance({...request,promptHash:'old-contract'}),/operationId/);await assert.rejects(f.host.advance(request),/契约已变化/);assert.equal(f.calls(),1);
  }finally{f.close();}
 });
 
 test('one-to-two provider budget continues the same native session without replaying its first request',async()=>{
  const f=await fixture({toolFirst:true});try{
   const request=await f.request('structured-delivery',1),first=await f.host.advance(request,{queuedAt:new Date(Date.now()-20).toISOString()});assert.equal(first.status,'waiting');assert.match(first.reason||'',/预算/);assert.equal(f.calls(),1);assert.equal(first.usage.providerRequests,1);assert.equal(first.checks.length,0);assert.equal(f.checkCount(),0);assert.ok(first.nativeEvidence.length);
+  assert.ok(f.prompts[0].includes('许可写入路径：["result.json"]'));
   const initial=f.operation(request),prefix=readFileSync(initial.nativeFile!,'utf8'),receipt=structuredClone(f.budget.readCall(request.budgetId,`${request.operationId}:provider:0`));assert.equal(initial.safeContinuation,true);assert.equal(receipt!.state,'complete');
   assert.deepEqual(await f.host.advance(request),first);assert.equal(f.calls(),1);f.budget.increaseLimit(request.budgetId,2);
   const completed=await f.host.advance(request);assert.equal(completed.status,'completed');assert.ok(completed.checks.every(check=>check.passed));assert.equal(completed.usage.providerRequests,2);assert.equal(f.calls(),2);assert.equal(f.budget.read(request.budgetId).calls,2);
   const final=f.operation(request);assert.equal(final.sessionId,initial.sessionId);assert.equal(final.nativeFile,initial.nativeFile);assert.ok(readFileSync(final.nativeFile!,'utf8').startsWith(prefix));assert.deepEqual(f.budget.readCall(request.budgetId,`${request.operationId}:provider:0`),receipt);assert.equal(f.budget.readCall(request.budgetId,`${request.operationId}:provider:1`)!.state,'complete');
   assert.equal(f.providerUsers[1].length,2);assert.equal(f.providerUsers[1][0],f.providerUsers[0][0]);assert.match(f.providerUsers[1][1],/继续同一冻结任务/);assert.equal(completed.timing.admittedAt,first.timing.admittedAt);assert.equal(completed.timing.queueWaitKnown,true);assert.ok(completed.timing.queueWaitMs>=0);
+  assert.ok(f.providerUsers[1][1].includes('许可写入路径：["result.json"]'));
   assert.deepEqual(await f.host.advance(request),completed);assert.equal(f.calls(),2);
  }finally{f.close();}
 });

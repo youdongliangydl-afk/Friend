@@ -32,6 +32,8 @@ Quality growth retains the strict-gain route. Efficiency growth requires both va
 
 The default 64-provider-request budget covers both sides, stages, turns and retries. It is not a task count and cannot be reset to finish a sample set. Unknown usage/results, insufficient samples or exhausted request budgets retain trial/waiting. Use Pi `totalTokens` once; cache/reasoning are not added again. Learning and evaluation costs are reported separately from delivery costs. First baselines are the four accepted initial scenario templates; subsequent baselines are the scenario's validated stable method.
 
+The host explicitly lists permitted read/write paths and accepts final JSON without ceremonial file operations. A changed host prompt/check contract requires a newly frozen suite; existing budget usage remains cumulative. Historical receipts stay readable, but a completed receipt from an incompatible contract cannot advance promotion. Task-trace collection retains complete native input/result references rather than splitting JSON into sentence references. User references require a verified original-input boundary and exclude unverified attachment input.
+
 ## Diagnostics, migration and release
 
 Enhance existing task details with conclusion, basis and gaps; fold raw receipts and link their authoritative pages. Execution end, objective check, independent review and application are separate states. Selection, inclusion in context/request and answer correctness are separate claims. Read-only Memory impact/recovery previews bind revisions and sources and become stale after changes; existing controllers still own mutations.

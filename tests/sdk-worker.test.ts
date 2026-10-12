@@ -668,7 +668,7 @@ test('native Bash and background jobs omit inherited credentials while inference
  const credential='synthetic-local-inference-only';let authenticated=0,calls=0;
  const command="'"+process.execPath.replaceAll("'","'\\''")+"' -e 'console.log(JSON.stringify({credentialPresent:!!process.env.FRIEND_QA_API_KEY,normal:process.env.FRIEND_QA_NORMAL}))'";
  const server=createServer(async(req,res)=>{for await(const _ of req){}if(req.headers.authorization==='Bearer '+credential)authenticated++;const tool=calls++===0;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');res.end('data: [DONE]\n\n');});
- await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained'}});
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained',FRIEND_PI_LEARNING_ROLE:'producer'}});
  try{await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string};const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);assert.equal(authenticated,2);assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
  const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
  }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
@@ -791,11 +791,11 @@ test('cold restore discards a persisted internal Swarm correction without starti
 });
 
 
-test('a validated direct strategy stays in Swarm without inventing members or triggering graph correction',{timeout:30000},async()=>{
+for(const corrected of [false,true])test(`a ${corrected?'late':'first-step'} validated direct strategy stays in Swarm without inventing members`,{timeout:30000},async()=>{
  let calls=0;const server=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);calls++;
   assert.ok(payload.messages.some((message:{role:string;content:unknown})=>message.role==='system'&&JSON.stringify(message.content).includes('plan.validate')));
-  const call=!payload.messages.some((message:{role:string})=>message.role==='tool');
+  const call=!(corrected&&calls===1)&&!payload.messages.some((message:{role:string})=>message.role==='tool');
   const delta=call?{role:'assistant',tool_calls:[{index:0,id:'direct-plan',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Explain a simple arithmetic result',reason:'One main-agent calculation suffices; no independent write tasks',strategy:'direct',tasks:[],checks:[],risk:'low'}})}}]}:{role:'assistant',content:'The checked result is 4. Main agent completed this directly; no members ran.'};
   res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'direct',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
  });
@@ -803,8 +803,28 @@ test('a validated direct strategy stays in Swarm without inventing members or tr
  try{
   await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'direct-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'What is 2+2? Check it directly if no division of work is needed.',mode:'swarm'});
   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='completed'&&!event.event.data.isRunning));
-  const state=await f.request('state') as {executionMode:string;sessionFile:string};assert.equal(state.executionMode,'swarm');assert.equal(calls,2);
-  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),false);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.plan.v1').length,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,false);
+  const state=await f.request('state') as {executionMode:string;sessionFile:string};assert.equal(state.executionMode,'swarm');assert.equal(calls,corrected?3:2);
+  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),corrected);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.plan.v1').length,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,false);
   const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};assert.equal(snapshot.graphs.length,0);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+for(const parallel of [false,true])test(`${parallel?'same-batch':'late'} direct validation cannot dismiss a graph created during correction`,{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  for await(const _ of req){}const ordinal=++calls;
+  const action=ordinal===2?'create':!parallel&&ordinal===3?'plan.validate':undefined;
+  const input=action==='create'?{goal:'Verify the existing sum',checks:[],maxWorkers:1,tasks:[{id:'verify',title:'Verify sum',instruction:'Read-only verification of 2+2=4',mode:'read',dependencies:[]}]}:{goal:'Verify the existing sum',strategy:'direct',reason:'Already answered',tasks:[],checks:[],risk:'low'};
+  const toolCalls=[{index:0,id:`late-graph-${ordinal}`,type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action,input})}}];
+  if(parallel&&action==='create')toolCalls.push({index:1,id:'same-batch-direct',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Verify the existing sum',strategy:'direct',reason:'Already answered',tasks:[],checks:[],risk:'low'}})}});
+  const delta=action?{role:'assistant',tool_calls:toolCalls}:{role:'assistant',content:'4'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:action?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'late-graph',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'late-graph-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'Verify 2+2 without writes.',mode:'swarm'});
+  await f.wait(()=>calls===(parallel?3:4)&&f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+  const state=await f.request('state') as {sessionFile:string;messages:{role:string;text:string}[]};if(!parallel)assert.ok(state.messages.some(message=>message.role==='toolResult'&&message.text.includes('不能以直接策略绕过原图核验')));
+  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,true);assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.plan.v1'&&entry.data.strategy==='direct'),false);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{attempts:unknown[]}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].attempts.length,0);
  }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
 });

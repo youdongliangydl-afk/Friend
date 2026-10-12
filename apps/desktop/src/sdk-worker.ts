@@ -10,10 +10,11 @@ import { mkdirSync,writeFileSync,existsSync,readFileSync,realpathSync,openSync,c
 import { join,resolve,relative } from 'node:path';
 import { createAgentSession,createBashToolDefinition,DefaultResourceLoader,SessionManager,SettingsManager,ModelRuntime,createEventBus,initTheme,type AgentSession,type ExtensionUIContext,type ExtensionFactory,type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { SourcePolicy,sourceFactRefs,isDerivedCapabilityInput,modelTokenUsage,type ArtifactRef,type EvidenceReceipt,shellEnvironment,dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest,type WakeFrame } from '@friend-pi/core';
+import { SourcePolicy,isDerivedCapabilityInput,modelTokenUsage,type ArtifactRef,type EvidenceReceipt,shellEnvironment,dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest,type WakeFrame } from '@friend-pi/core';
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
+import {expertTraceSources} from './expert-trace-evidence.js';
 import {MessageQueue,type InputPayload,type QueuedInput} from './message-queue.js';
 import {TODO_TYPE,SIDECHAT_TYPE,todoItems,projectTodo,ownedEntries,stableForkLeaf} from './task-todo.js';
 import {providerSystems,projectMessages,projectTeammateMessages,projectTraceSystems,traceJSON} from './message-projection.js';
@@ -178,7 +179,7 @@ function correctMissingSwarm(){
  const id='swarm-correction:'+runId,generation=services.generation();
  session.sessionManager.appendCustomEntry('friend-pi.swarm.correction.v1',{v:1,runId,generation,id});
  swarmCorrectionPending=true;
- const added=services.enqueue(id,'用户已选择 Swarm。本轮尚未建立任务图，请在后台补全协作核验，不要求用户处理。不要重放已完成工具或修改文件。使用 friend_swarm create，明确 checks:[]，所有 tasks.mode="read"，不提供 contract，创建最小只读图核验当前已有成果与原用户目标；随后 start。若成果有缺口，如实报告，不把核验等同于已完成原目标。不要运行命令、修改目标或重新执行写入。',{generation,runId});
+ const added=services.enqueue(id,'用户已选择 Swarm。本轮尚未记录执行策略，请在后台核对已有结果，不要求用户处理。简单任务先使用 friend_swarm plan.validate，strategy:"direct",tasks:[]，说明直接处理的依据及检查结果；验证通过即可保留主 Agent 的直接结果，无需为形式创建成员。确实需要独立协作核验时才使用 friend_swarm create，明确 checks:[]，所有 tasks.mode="read"，不提供 contract，创建最小只读图核验当前已有成果与原用户目标；随后 start。不要重放已完成工具、运行命令或修改文件。若成果有缺口，如实报告，不把核验等同于已完成原目标。',{generation,runId});
  if(!added){swarmCorrectionPending=false;return false;}return true;
 }
 function current(){const entries=session.sessionManager.getBranch(),owned=ownedEntries(entries),sdkStats=session.getSessionStats(),context=sdkStats.contextUsage;return {todo:projectTodo(entries,runId),queue:queueState(),sideDraft:inputQueue?.store.get<InputPayload>(`draft:${session.sessionId}`)?.value,monitor:projectSessionMonitor(session.sessionManager.getEntries(),sdkStats,context),sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(owned),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert|attachments)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context,sessionFile:session.sessionFile,runId};}
@@ -232,7 +233,9 @@ async function enqueueExpertTrace(){
  const outcome=incomplete?(cancelRequested||lastAssistant?.stopReason==='aborted'?'cancelled':'unknown'):status;
  if(outcome)try{await requestPlugin(bus,'expert','trial.observe',{runId:observedRunId,checks,outcome,key:`settled:${observedRunId}:${digest([outcome,checks])}`},3000);}catch(error){if(!disposed)publish('notice',{level:'warning',message:'专家试用等待核对：'+publicError(error)});}
  if(!status||disposed||runId!==observedRunId||session.sessionId!==observedSessionId)return;
- const evidence:unknown[]=items.flatMap(item=>sourceFactRefs(item,session.sessionId).map(source=>({kind:'pi',projectId:projectIdentity(cwd),source})));for(const check of checks)evidence.push({kind:'check',projectId:projectIdentity(cwd),check});
+ const unverifiedUserEntries=new Set(branch.flatMap(entry=>entry.type==='custom'&&entry.customType==='friend-pi.attachments.v1'&&object(entry.data).stage==='unverified'&&typeof object(entry.data).entryId==='string'?[String(object(entry.data).entryId)]:[]));
+ let sources:ReturnType<typeof expertTraceSources>;try{sources=expertTraceSources(items,session.sessionId,unverifiedUserEntries);}catch(error){publish('notice',{level:'warning',message:'专家学习未入队：'+publicError(error)});return;}
+ const evidence:unknown[]=sources.map(source=>({kind:'pi',projectId:projectIdentity(cwd),source}));for(const check of checks)evidence.push({kind:'check',projectId:projectIdentity(cwd),check});
  const version=parseInt(digest([observedRunId,tasks.map(task=>[task.id,task.revision]),items.map(item=>[item.id,digest(item.text)])]).slice(0,10),16);
  try{await requestPlugin(bus,'expert','taskTraceReady',{runId:observedRunId,taskResultVersion:version,taskResult:{status,tasks:tasks.map(task=>({id:task.id,status:task.status,result:task.result,checkRefs:task.checkRefs})),goal:snapshot.goal?{id:snapshot.goal.id,status:snapshot.goal.status}:undefined},evidence},3000);}catch(error){if(!disposed)publish('notice',{level:'warning',message:'专家学习未入队：'+publicError(error)});}
 }
@@ -301,20 +304,23 @@ function guard():ExtensionFactory{return pi=>{
     return instructions||workspaceInstructions||todoInstruction||branchInstructions?{systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}\n${todoInstruction}\n${branchInstructions}\n${recallInstructions}`}:undefined;
   });
   pi.on('tool_result',event=>{
-    if(event.toolName!=='friend_swarm'||event.isError||event.input.action!=='plan.validate'||!runId||executionMode!=='swarm'||planMode||swarmCorrectionActive)return;
+    if(event.toolName!=='friend_swarm'||event.isError||event.input.action!=='plan.validate'||!runId||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed)return;
     const plan=object(event.details);
     if(plan.v!==1||plan.valid!==true||plan.mode!=='swarm'||!['direct','collaboration'].includes(String(plan.strategy)))return;
+    if(plan.strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size)){captureRunPolicy(true);return;}
     captureRunPolicy(plan.strategy!=='direct');
     if(plan.strategy==='direct')correctionEligibleRun=undefined;
     session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:plan.strategy,reason:plan.reason,risk:plan.risk,verificationRequired:plan.verificationRequired,checks:plan.checks,planHash:digest(plan),toolCallId:event.toolCallId});
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
+    if(event.toolName==='friend_swarm'&&input.action==='plan.validate'&&object(input.input).strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size))return {block:true,reason:'本轮已有协作图，不能以直接策略绕过原图核验'};
     if(swarmCorrectionActive){
       if(event.toolName==='friend_swarm'){
         const data=object(input.input),tasks=Array.isArray(data.tasks)?data.tasks.map(object):[];
+        if(input.action==='plan.validate'&&(data.strategy!=='direct'||tasks.length||data.contract!==undefined))return {block:true,reason:'策略补核只允许直接处理已有结果，不改变任务或授权'};
         if(input.action==='create'&&(!tasks.length||tasks.some(task=>task.mode!=='read')||!Array.isArray(data.checks)||data.checks.length||data.contract!==undefined))return {block:true,reason:'协作核验只能创建 read 任务和 checks:[]，不能重放写入或命令'};
-        if(!['create','start','snapshot','result','member.history','member.list','prepare','review','integrate'].includes(String(input.action)))return {block:true,reason:'协作核验只补全当前只读任务图'};
+        if(!['plan.validate','create','start','snapshot','result','member.history','member.list','prepare','review','integrate'].includes(String(input.action)))return {block:true,reason:'协作核验只补全当前只读任务图'};
         if(input.action!=='create'&&data.graphId&&!runGraphIds.has(String(data.graphId)))return {block:true,reason:'协作核验不能启动或修改其他轮次的任务图'};
       }else if(!['read','ls','grep','find','read_document','friend_todo'].includes(event.toolName))return {block:true,reason:'协作核验只允许读取现有成果，不重放写入、命令或目标操作'};
     }
@@ -466,7 +472,7 @@ async function initialize(){
       const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit===true)continue;
       // A snapshot is not evidence of execution. Relate new graphs to the open
       // foreground run, and old graphs only to an actual execution transition.
-      if(foregroundOpen&&!baselineGraphIds.has(id)&&Date.parse(String(graph.createdAt))>=runStartedAt)runGraphIds.add(id);
+      if(foregroundOpen&&!baselineGraphIds.has(id)&&Date.parse(String(graph.createdAt))>=runStartedAt){runGraphIds.add(id);if(executionMode==='swarm'&&!planMode&&!runRequiresSwarm)captureRunPolicy(true);}
       if(busyGraphStatuses.has(String(graph.status))&&(activeGraphIds.has(id)||pendingSwarmGraphIds.has(id)||foregroundOpen&&Date.parse(String(graph.updatedAt))>=runStartedAt))activeGraphIds.add(id);
     }
     auditRunning=graphs.some(graph=>graph.audit===true&&busyGraphStatuses.has(String(graph.status)));swarmRunning=[...activeGraphIds].some(id=>busyGraphStatuses.has(String(swarmGraphs.get(id)?.status)));

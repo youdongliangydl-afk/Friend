@@ -11,6 +11,8 @@ import {initialEvaluationSuite,checkEvaluationOutput,type RegisteredEvaluationSu
 const scenarios=new Set<ExpertScenario>(['code-development','code-repair','source-research','structured-delivery']);
 const plain=(value:unknown):Record<string,unknown>=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const stamp=()=>new Date().toISOString();
+const promptContractHash=(role:unknown)=>digest({v:1,role,format:'json-delivery-v1',permissions:'explicit-paths-optional-files-v1'});
+const checkerContractHash=(registered:RegisteredEvaluationSuite)=>digest({implementation:checkEvaluationOutput.toString(),nativeBoundary:'no-out-of-scope-tool-attempts-v1',checks:[registered.validation,registered.release].flat().map(example=>example.checks)});
 interface FrozenHostSuite {
   projectId:string;sessionId:string;public:HostEvaluationSuite;registered:RegisteredEvaluationSuite;
   modelId:string;thinkingLevel:string;tools:string[];role:unknown;
@@ -61,15 +63,15 @@ export function createExpertEvaluationHost(options:HostOptions):ExpertEvaluation
       const allowsResult=(scopes:unknown)=>!Array.isArray(scopes)||scopes.some(scope=>scope==='.'||scope==='result.json');
       if(input.tools.includes('write')&&(!allowsResult(record.effectiveWriteScopes)||!allowsResult(ctx.policy?.writeScopes)))return undefined;
       await methodVersions(ctx,role.otherMethods as FrozenHostSuite['baseline'][],input.tools);
-      const actual=await environment(ctx,input.modelId),roleHash=digest(role),catalogKey=`catalog:${ctx.projectId}:${ctx.sessionId}:${digest({...input,environmentHash:actual.hash,roleHash})}`,previous=store.get<string>(catalogKey)?.value;
-      if(previous){const frozen=store.get<FrozenHostSuite>(`suite:${ctx.projectId}:${previous}`)?.value;if(frozen){const priorFence=frozen.sourceFence;frozen.sourceFence=new SourcePolicy(store).renew(priorFence);if(frozen.sourceFence!==priorFence)store.put(`suite:${ctx.projectId}:${previous}`,frozen);return frozen.public;}}
+      const actual=await environment(ctx,input.modelId),roleHash=digest(role),promptHash=promptContractHash(role),catalogKey=`catalog:${ctx.projectId}:${ctx.sessionId}:${digest({...input,environmentHash:actual.hash,roleHash,promptHash,checker:checkEvaluationOutput.toString()})}`,priorCatalog=store.get<string>(catalogKey),previous=priorCatalog?.value;
+      if(previous){const frozen=store.get<FrozenHostSuite>(`suite:${ctx.projectId}:${previous}`)?.value;if(frozen&&frozen.public.promptHash===promptHash&&frozen.public.checkerHash===checkerContractHash(frozen.registered)){const priorFence=frozen.sourceFence;frozen.sourceFence=new SourcePolicy(store).renew(priorFence);if(frozen.sourceFence!==priorFence)store.put(`suite:${ctx.projectId}:${previous}`,frozen);return frozen.public;}}
       const registered=initialEvaluationSuite(input.scenario,randomBytes(16).toString('hex')),materialsHash=digest([registered.validation,registered.release].flat().map(example=>example.materials));
-      const checkerHash=digest({implementation:checkEvaluationOutput.toString(),nativeBoundary:'no-out-of-scope-tool-attempts-v1',checks:[registered.validation,registered.release].flat().map(example=>example.checks)}),promptHash=digest({v:1,role,format:'json-delivery-v1'});
+      const checkerHash=checkerContractHash(registered);
       const identity={projectId:ctx.projectId,sessionId:ctx.sessionId,registered,modelId:input.modelId,thinkingLevel:input.thinkingLevel,tools:input.tools,baseline:input.baseline,candidate:input.candidate,environmentHash:actual.hash,roleHash,materialsHash,checkerHash,promptHash},suiteHash=digest(identity),suiteId=digest([ctx.projectId,registered.id,suiteHash]);
       const cases=(phase:'validation'|'release')=>registered[phase].map(example=>({id:example.id,kind:example.kind,families:example.families.map(family=>digest(['host-family',family])),inputHash:digest({prompt:example.prompt,materials:example.materials}),critical:example.critical,taskRef:digest([suiteHash,phase,example.id])}));
       const result:HostEvaluationSuite={v:1,scenario:input.scenario,suiteId,suiteHash,environmentHash:actual.hash,checkerHash,promptHash,roleHash,materialsHash,validation:cases('validation'),release:cases('release')};
       const key=`suite:${ctx.projectId}:${suiteId}`,old=store.get<FrozenHostSuite>(key);
-      if(!old){const sourceFence=new SourcePolicy(store).capture({projectId:ctx.projectId,sources:[],dependencies:[input.baseline,input.candidate,...role.otherMethods as FrozenHostSuite['baseline'][]].map(ref=>({capability:'expert' as const,...ref,relation:'adopted' as const}))});store.transaction(()=>{store.put(key,{projectId:ctx.projectId,sessionId:ctx.sessionId,public:result,registered,role,modelId:input.modelId,thinkingLevel:input.thinkingLevel,tools:input.tools,baseline:input.baseline,candidate:input.candidate,sourceFence} satisfies FrozenHostSuite,null);store.put(catalogKey,suiteId,null);});}
+      if(!old){const sourceFence=new SourcePolicy(store).capture({projectId:ctx.projectId,sources:[],dependencies:[input.baseline,input.candidate,...role.otherMethods as FrozenHostSuite['baseline'][]].map(ref=>({capability:'expert' as const,...ref,relation:'adopted' as const}))});store.transaction(()=>{store.put(key,{projectId:ctx.projectId,sessionId:ctx.sessionId,public:result,registered,role,modelId:input.modelId,thinkingLevel:input.thinkingLevel,tools:input.tools,baseline:input.baseline,candidate:input.candidate,sourceFence} satisfies FrozenHostSuite,null);store.put(catalogKey,suiteId,priorCatalog?.revision??null);});}
       return result;
     });},
     async read(input){return withStore(async(store,ctx)=>{
@@ -82,18 +84,20 @@ export function createExpertEvaluationHost(options:HostOptions):ExpertEvaluation
       const requestHash=digest(request),key=`operation:${ctx.projectId}:${request.operationId}`,savedRow=store.get<Operation>(key),saved=savedRow?.value;
       if(saved){
         if(saved.requestHash!==requestHash)throw new CapabilityError('VERSION_CONFLICT','评测 operationId 已绑定不同冻结输入');
-        if(saved.result&&!(saved.result.status==='waiting'&&saved.safeContinuation))return structuredClone(saved.result);
-        if(!saved.safeContinuation)throw new CapabilityError('OPERATION_UNKNOWN','原评测尚未确认，必须只读核对，不得重放');
+        if(saved.result&&saved.result.status!=='completed'&&!(saved.result.status==='waiting'&&saved.safeContinuation))return structuredClone(saved.result);
+        if(!saved.result&&!saved.safeContinuation)throw new CapabilityError('OPERATION_UNKNOWN','原评测尚未确认，必须只读核对，不得重放');
       }
       if(request.v!==1||!Number.isSafeInteger(request.repetition)||request.repetition<0||request.repetition>2||!Number.isSafeInteger(request.timeoutMs)||request.timeoutMs<1||request.timeoutMs>300000)throw new CapabilityError('VALIDATION_ERROR','宿主评测请求无效');
       const frozen=store.get<FrozenHostSuite>(`suite:${ctx.projectId}:${request.suiteId}`)?.value;
       if(!frozen||frozen.projectId!==ctx.projectId||frozen.sessionId!==ctx.sessionId)throw new CapabilityError('SOURCE_UNAVAILABLE','宿主没有登记本项目及会话的评测集');
       const manifest=frozen.public,phase=request.phase,publicCase=manifest[phase]?.find(example=>example.id===request.caseId),example=frozen.registered[phase]?.find(example=>example.id===request.caseId);
+      if(manifest.promptHash!==promptContractHash(frozen.role)||manifest.checkerHash!==checkerContractHash(frozen.registered))throw new CapabilityError('VERSION_CONFLICT','宿主提示或检查契约已变化，须重新冻结评测；原预算不重置');
       if(!publicCase||!example||request.taskRef!==publicCase.taskRef||request.suiteHash!==manifest.suiteHash||request.modelId!==frozen.modelId||request.thinkingLevel!==frozen.thinkingLevel||digest(request.tools)!==digest(frozen.tools)||digest(request.baseline)!==digest(frozen.baseline)||digest(request.candidate)!==digest(frozen.candidate)||['environmentHash','roleHash','materialsHash','checkerHash','promptHash'].some(field=>request[field as keyof HostEvalRequest]!==manifest[field as keyof HostEvaluationSuite]))throw new CapabilityError('VERSION_CONFLICT','评测任务或冻结条件已变化');
       const method=request.side==='baseline'?request.baseline:request.candidate;
       if(!['baseline','candidate'].includes(request.side)||request.method.id!==method.id||request.method.version!==method.version||request.method.hash!==method.hash||digest(request.method.body)!==method.hash)throw new CapabilityError('VERSION_CONFLICT','评测方法与冻结版本不一致');
       const assertAuthority=async()=>{const latest=options.context();if(latest.projectId!==ctx.projectId||latest.sessionId!==ctx.sessionId||digest(await roleSnapshot(latest,[request.baseline.id,request.candidate.id]))!==manifest.roleHash||(await environment(latest,request.modelId)).hash!==manifest.environmentHash)throw new CapabilityError('VERSION_CONFLICT','角色、父权限、模型路由或环境已变化');await methodVersions(latest,[request.baseline,request.candidate,...plain(frozen.role).otherMethods as FrozenHostSuite['baseline'][]],request.tools);const priorFence=frozen.sourceFence;frozen.sourceFence=new SourcePolicy(store).renew(priorFence);if(frozen.sourceFence!==priorFence)store.put(`suite:${ctx.projectId}:${request.suiteId}`,frozen);};
       await assertAuthority();
+      if(saved?.result&&!(saved.result.status==='waiting'&&saved.safeContinuation))return structuredClone(saved.result);
       new SourcePolicy(store).assert(frozen.sourceFence);
       const runtime=new RecordStore('runtime',ctx.dataDir),budget=new LearningBudget(runtime),account=budget.read(request.budgetId);
       try{
@@ -131,7 +135,8 @@ export function createExpertEvaluationHost(options:HostOptions):ExpertEvaluation
               return stream;
             }catch(error){budget.finish({budgetId:request.budgetId,operationId,callId:call.callId,state:'unknown'});call.settled=true;throw error;}
           };
-          const prompt=continuation?'继续同一冻结任务，保留既有许可材料与成果，完成原要求并提交最终JSON；不改变目标或读取其他材料。':example.prompt+Object.entries(example.materials).map(([id,body])=>`\n许可材料 ${id}:\n${body}`).join('');
+          const permittedPaths=`\n许可读取路径：${request.tools.includes('read')?JSON.stringify(Object.keys(example.materials)):'[]'}。许可写入路径：${request.tools.includes('write')?JSON.stringify(example.outputPaths):'[]'}。最终答案通过回复提交；无需为形式读写文件。不得猜测或访问其他路径。`;
+          const prompt=(continuation?'继续同一冻结任务，保留既有许可材料与成果，完成原要求并提交最终JSON；不改变目标或读取其他材料。':example.prompt+Object.entries(example.materials).map(([id,body])=>`\n许可材料 ${id}:\n${body}`).join(''))+permittedPaths;
           const abortSession=()=>void session?.abort();controller.signal.addEventListener('abort',abortSession,{once:true});
           try{await session.prompt(prompt);}finally{controller.signal.removeEventListener('abort',abortSession);}
         }catch(error){failure=error;}finally{
