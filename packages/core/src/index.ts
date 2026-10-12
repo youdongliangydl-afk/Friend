@@ -92,7 +92,7 @@ export class RecordStore {
   constructor(readonly namespace: string, readonly dataDir = dataDirectory()) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dataDir, 'plugins.sqlite'));
-    this.db.function('friend_pi_writer_version',{deterministic:true},()=>3);
+    this.db.function('friend_pi_writer_version',{deterministic:true},()=>4);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON');if(this.db.prepare('PRAGMA journal_mode').get()?.journal_mode!=='wal')this.db.exec('PRAGMA journal_mode=WAL');if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").get())this.db.exec('CREATE TABLE documents(namespace TEXT NOT NULL,key TEXT NOT NULL,revision INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(namespace,key))');
   }
   get<T>(key: string): StoredDocument<T> | undefined {

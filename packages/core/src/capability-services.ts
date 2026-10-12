@@ -161,6 +161,18 @@ export function restrictedSourceItem(item:HistoryItem,source:SourceRef):HistoryI
 
 /** Older packaged cores lack this connection function and therefore cannot mutate upgraded state. */
 export function requireSchemaWriter(store:RecordStore,namespace:'memory'|'expert'|'swarm',version=3,tables:string[]=[]):void {
- if(!Number.isSafeInteger(version)||version<1||version>3||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
- store.transaction(()=>{for(const action of ['INSERT','UPDATE','DELETE']){const row=action==='DELETE'?'OLD':'NEW',name=`friend_${namespace}_writer_${action.toLowerCase()}`;store.db.exec(`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${action} ON documents WHEN ${row}.namespace='${namespace}' BEGIN SELECT CASE WHEN friend_pi_writer_version()<${version} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}for(const table of tables){if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;for(const action of ['INSERT','UPDATE','DELETE'])store.db.exec(`CREATE TRIGGER IF NOT EXISTS friend_${table}_writer_${action.toLowerCase()} BEFORE ${action} ON ${table} BEGIN SELECT CASE WHEN friend_pi_writer_version()<${version} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}put(store,'schema-policy',namespace,{minWriter:version,at:new Date().toISOString()});});
+ if(!Number.isSafeInteger(version)||version<1||version>4||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
+ store.transaction(()=>{
+  version=Math.max(version,get<{minWriter:number}>(store,'schema-policy',namespace)?.minWriter||0);
+  const install=(name:string,body:(minimum:number)=>string)=>{
+   const existing=store.db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.sql;
+   const minimum=Number(String(existing||'').match(/friend_pi_writer_version\(\)<(\d+)/)?.[1]||0);
+   version=Math.max(version,minimum);
+   if(existing&&minimum>=version)return;
+   store.db.exec(`DROP TRIGGER IF EXISTS ${name}`);store.db.exec(body(version));
+  };
+  for(const action of ['INSERT','UPDATE','DELETE']){const row=action==='DELETE'?'OLD':'NEW',name=`friend_${namespace}_writer_${action.toLowerCase()}`;install(name,minimum=>`CREATE TRIGGER ${name} BEFORE ${action} ON documents WHEN ${row}.namespace='${namespace}' BEGIN SELECT CASE WHEN friend_pi_writer_version()<${minimum} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}
+  for(const table of tables){if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;for(const action of ['INSERT','UPDATE','DELETE']){const name=`friend_${table}_writer_${action.toLowerCase()}`;install(name,minimum=>`CREATE TRIGGER ${name} BEFORE ${action} ON ${table} BEGIN SELECT CASE WHEN friend_pi_writer_version()<${minimum} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}}
+  put(store,'schema-policy',namespace,{minWriter:version,at:new Date().toISOString()});
+ });
 }
