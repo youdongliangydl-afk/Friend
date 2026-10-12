@@ -44,7 +44,8 @@ const getProviderRuntime=()=>providerRuntime||=(async()=>{const runtime=await cr
 function requireActive(){if(shuttingDown)throw new Error('应用正在退出');}
 async function loadProviderMetadata(){const runtime=await getProviderRuntime();requireActive();await runtime.refresh({allowNetwork:false});requireActive();const metadata=await configuredModelMetadata(runtime,dataDir);models=metadata.models;providers=metadata.providers;}
 async function settings(projectId?:string){await loadProviderMetadata();return {preferences:preferences(projectId),globalPreferences:preferences(),projectOverrides:projectId?store.get(`preferences:${projectId}`)?.value:undefined,models,providers,paths:{dataDir},piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit};}
-interface Worker {generation:string;child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';terminalEpoch?:number;terminalRequests?:Map<string,object>;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
+const startupPhaseLabels={'provider-runtime':'加载模型运行时','model-selection':'选择模型','resources':'加载扩展和项目资源','native-session':'读取会话历史','agent-session':'创建会话运行时','extensions':'初始化扩展','restore':'恢复会话状态','metadata':'读取模型状态'} as const;
+interface Worker {generation:string;child:ChildProcess;record:SessionRecord;state:Record<string,unknown>;ready:Promise<void>;rejectReady:(error:Error)=>void;phase:'starting'|'ready'|'stopping'|'exited';startupPhase?:keyof typeof startupPhaseLabels;terminalEpoch?:number;terminalRequests?:Map<string,object>;exited:boolean;groupOwned:boolean;startupTimer?:ReturnType<typeof setTimeout>;termination?:Promise<void>;pending:Map<string,{resolve:(data:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>}
 const documentReader=createDocumentReader();
 const attention=new AttentionRegistry();
 const workers=new Map<string,Worker>();const liveWorkers=new Set<Worker>();const dialogOwners=new Map<string,string>();let currentId=store.get<string>('current')?.value;let selectedWorkspace:string|undefined;let window:BrowserWindow;let shuttingDown=false;let quitComplete=false;let storeClosed=false;
@@ -138,7 +139,9 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
   // Keep the persisted configuration visible while native Pi history is loading.
   const worker:Worker={generation:randomUUID(),child,record,state:{isRunning:false,messages:[],modelId:record.modelId,thinkingLevel:record.thinkingLevel,plugins:record.plugins||pluginNames,planMode:record.planMode||false,permissionMode:record.permissionMode||'auto',executionMode:['team','swarm'].includes(record.executionMode||'')?record.executionMode:'single',lifecycleStatus:record.status||'idle'},ready,rejectReady,phase:'starting',exited:false,groupOwned,pending:new Map()};workers.set(record.id,worker);attention.register(record.id,worker.generation);liveWorkers.add(worker);let supervisedReady=false;
   worker.startupTimer=setTimeout(()=>{
-    const error=new Error('Pi 初始化超时；请检查系统文件访问授权，重新打开会话后显式继续');
+    if(worker.phase!=='starting'||workers.get(record.id)!==worker)return;
+    const stage=worker.startupPhase?startupPhaseLabels[worker.startupPhase]:'启动运行时';
+    const error=new Error(`Pi 初始化超时（${stage}）；历史已保留，请重新打开会话后显式继续`);
     retireWorker(worker,error,true);void terminateWorker(worker).catch(()=>{});if(!shuttingDown)publishState();
   },45000);
   child.on('message',raw=>{
@@ -146,7 +149,10 @@ async function startWorker(record:SessionRecord):Promise<Worker>{
     if(message.type==='supervisor.await'){if(supervisedReady&&child.connected&&!shuttingDown&&!storeClosed&&worker.phase==='starting'&&workers.get(record.id)===worker&&!store.get(`deleting:${record.id}`))child.send({type:'supervisor.ready'});else{retireWorker(worker,new Error('启动授权已失效，未恢复会话'),true);void terminateWorker(worker).catch(()=>{});}return;}
     if(message.type==='event'){const event=object(message.event),plugin=object(event.data);if(event.type==='plugin'&&['swarm.process','runtime.process'].includes(String(plugin.pluginEvent))){const data=object(plugin.data);if(data.action==='started'&&data.groupOwned===true)try{captureOwned(worker,Number(data.pid));}catch{} }}
     if(worker.phase==='stopping'||worker.phase==='exited'||workers.get(record.id)!==worker||store.get(`deleting:${record.id}`))return;
-    if(message.type==='ready'){
+    if(message.type==='startup.phase'){
+      if(worker.phase!=='starting'||shuttingDown||typeof message.phase!=='string'||!Object.hasOwn(startupPhaseLabels,message.phase))return;
+      worker.startupPhase=message.phase as keyof typeof startupPhaseLabels;worker.state.startupPhase=worker.startupPhase;return;
+    }else if(message.type==='ready'){
       if(worker.phase!=='starting'||shuttingDown)return;
       clearTimeout(worker.startupTimer);worker.phase='ready';worker.state=object(message.state);persistWorker(worker);resolveReady();publishState();
     }else if(message.type==='response'){
@@ -429,9 +435,9 @@ else {
       if(event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame)throw new Error('请求来源无效');if(typeof method!=='string'||!allowed.has(method))throw new Error('客户端操作无效');return await handle(method,object(raw||{}));
     });
     await window.loadFile(join(__dirname,'renderer','index.html'));
-    const previous=currentId?store.get<SessionRecord>(`session:${currentId}`)?.value:undefined;if(previous&&!previous.archived&&!store.get(`deleting:${previous.id}`))void startWorker(previous).catch(error=>publish('notice',{level:'error',message:String(error)},previous.id));else {selectCurrent(undefined);store.remove('current');}
+    const previous=currentId?store.get<SessionRecord>(`session:${currentId}`)?.value:undefined;if(previous&&!previous.archived&&!store.get(`deleting:${previous.id}`))void startWorker(previous).catch(error=>publish('notice',{level:'error',message:error instanceof Error?error.message:String(error)},previous.id));else {selectCurrent(undefined);store.remove('current');}
     if(shuttingDown)return;
-    if(currentId){const record=store.get<SessionRecord>(`session:${currentId}`)?.value;if(record)try{await startWorker(record);}catch(error){publish('notice',{level:'error',message:String(error)});}}
+    if(currentId){const record=store.get<SessionRecord>(`session:${currentId}`)?.value;if(record)try{await startWorker(record);}catch(error){publish('notice',{level:'error',message:error instanceof Error?error.message:String(error)});}}
     publishState();
   }).catch(error=>{if(!shuttingDown){dialog.showErrorBox('Friend-Pi 启动失败',String(error));app.quit();}});
   app.on('window-all-closed',()=>{});

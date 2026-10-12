@@ -43,3 +43,19 @@ test('actual send finally reconciles a fast command terminal before the dispatch
   acknowledge({runId:'command'});await sending;assert.equal(f.localRunning,false);assert.equal(f.lastSubmitted.current.accepted,true);assert.equal(f.lastSubmitted.current.runId,'command');
  }
 });
+
+test('successful session recovery clears its stale error while failed recovery keeps the new failure visible',async()=>{
+ const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
+ for(const [name,endMarker] of [['newSession','  const selectedModelId='],['openSession','  const traverseSession='],['traverseSession','  useEffect(()=>{if(!requestedSession']] as const)for(const outcome of ['success','failure','new-warning']){
+  const oldNotice={message:'old initialization timeout',error:true},newNotice={...oldNotice};
+  const ctx:any={navigating:false,sending:false,allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:new Map()},projectId:'project',pendingModel:'model',permissionMode:'auto',ownerKey:'pending',notice:oldNotice,errorText:(error:Error)=>error.message,setNavigating:(value:boolean)=>{ctx.navigating=value;},setNotice:(value:any)=>{ctx.notice=typeof value==='function'?value(ctx.notice):value;},setDraftOwner:()=>{},applyState:()=>{},restoreDialogs:()=>{},setMaterial:()=>{},report:(message:string)=>{ctx.notice={message,error:true};}};
+  const attempt=async()=>{if(outcome==='failure'){ctx.notice={message:'current recovery failed',error:true};throw Error('current recovery failed');}if(outcome==='new-warning')ctx.notice=newNotice;return {createdSessionId:'session',current:{sessionId:'session'}};};
+  ctx.invoke=attempt;ctx.window={friendPi:{request:attempt}};vm.createContext(ctx);
+  const begin=source.indexOf('  const '+name+'=async'),end=source.indexOf(endMarker,begin);assert.ok(begin>=0&&end>begin);
+  vm.runInContext(stripTypeScriptTypes(source.slice(begin,end)+'\nglobalThis.recover='+name+';'),ctx);
+  await ctx.recover(name==='traverseSession'?1:'session');
+  if(outcome==='failure')assert.deepEqual(ctx.notice,{message:'current recovery failed',error:true});
+  else assert.equal(ctx.notice,outcome==='new-warning'?newNotice:null,name+' clears only the old notice, preserving even a new notice with identical text');
+  assert.equal(ctx.navigating,false);
+ }
+});
