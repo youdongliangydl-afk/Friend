@@ -883,7 +883,7 @@ export class MemoryController implements PluginController {
         if(proposal?.supersedes?.length&&(!authoritative||conflicts.length||canonicalCorrection))throw new CapabilityError('VALIDATION_ERROR','更正尚未通过发布权威性或冲突检查');
         if(authoritative&&conflicts.length)for(const conflict of conflicts)this.write({...conflict,revision:conflict.revision+1,conflictIds:[...new Set([...conflict.conflictIds||[],record.id])],updatedAt:now()},ctx,conflict.revision);
         const status=authoritative&&!conflicts.length&&!canonicalCorrection?'active':'candidate';
-        const held=canonicalCorrection?'同一用户更正已生效；派生提案的适用条件不同，保留候选待核验':conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
+        const held=canonicalCorrection?'同一用户更正已生效；派生提案保留候选，不改变已确认事实':conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
         record=this.write({...record,revision:record.revision+1,status,confidence:status==='active'?'supported':'ambiguous',confirmedAt:status==='active'?now():undefined,confirmedBy:status==='active'?'system':undefined,conflictIds:conflicts.map(item=>item.id),invalidatedReason:held,updatedAt:now()},ctx,record.revision);
         if(proposal){proposal.state=record.status==='active'?'published':'candidate';proposal.reason=held;}
       }
