@@ -25,7 +25,7 @@ test('integrated Swarm wakes matching graph, native task, logical step and ledge
   f.controller.goals.update({progress:'Members running',continuation:{kind:'wait',taskId:waitFor}},f.ctx);f.controller.settled('running');
   const complete={...f.graph,status:'integrated',tasks:f.graph.tasks.map(task=>({...task,status:'completed'}))};
   f.controller.observeSwarm({graphs:[complete]});f.setBusy(false);f.setIdle(true);await flush();await flush();
-  assert.equal(f.controller.currentGoal()?.status,'active');assert.equal(f.controller.tasks.list(f.ctx,f.goal.id)[0].status,'completed');assert.equal(f.sent.length,1);
+  assert.equal(f.controller.currentGoal()?.status,'active');assert.equal(f.controller.tasks.list(f.ctx,f.goal.id)[0].status,'completed');assert.equal(f.sent.length,1);assert.match((f.sent[0] as {message:string}).message,/已整合/);assert.doesNotMatch((f.sent[0] as {message:string}).message,/已通过检查与独立复核/);
   f.controller.observeSwarm({graphs:[complete]});await flush();assert.equal(f.sent.length,1);
  }finally{await f.close();}}
 });

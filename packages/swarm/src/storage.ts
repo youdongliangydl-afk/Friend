@@ -8,6 +8,7 @@ export class SwarmStorage {
     const exists=store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='swarm_schema_migrations'").get();
     // SQLite's own snapshot includes committed WAL pages; a raw main-file copy does not.
     if(!exists)store.db.prepare('VACUUM INTO ?').run(join(store.dataDir,`swarm-pre-v3-${randomUUID()}.sqlite`));
+    if(exists&&!store.db.prepare('SELECT 1 FROM swarm_schema_migrations WHERE version=4').get())store.db.prepare('VACUUM INTO ?').run(join(store.dataDir,`swarm-pre-v4-${randomUUID()}.sqlite`));
     store.transaction(()=>store.db.exec(`CREATE TABLE IF NOT EXISTS swarm_schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL,source_digest TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS swarm_action_receipts(project_id TEXT NOT NULL,session_id TEXT NOT NULL,operation_id TEXT NOT NULL,request_digest TEXT NOT NULL,status TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(project_id,session_id,operation_id));
 CREATE TABLE IF NOT EXISTS swarm_outbox(event_id TEXT PRIMARY KEY,aggregate_id TEXT NOT NULL,revision INTEGER NOT NULL,payload TEXT NOT NULL,delivered_at TEXT);
@@ -21,7 +22,8 @@ CREATE TABLE IF NOT EXISTS swarm_budget_usage(budget_id TEXT NOT NULL,receipt_id
 CREATE TABLE IF NOT EXISTS swarm_verification(verification_id TEXT PRIMARY KEY,graph_id TEXT NOT NULL,candidate_digest TEXT NOT NULL,contract_digest TEXT NOT NULL,status TEXT NOT NULL,json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS swarm_verification_candidate ON swarm_verification(graph_id,candidate_digest);
 CREATE VIRTUAL TABLE IF NOT EXISTS swarm_search USING fts5(graph_id UNINDEXED,kind UNINDEXED,record_id UNINDEXED,text);
-INSERT OR IGNORE INTO swarm_schema_migrations VALUES(3,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'friend-pi-swarm-v3');`));requireSchemaWriter(store,'swarm',3,['swarm_schema_migrations','swarm_action_receipts','swarm_outbox','swarm_artifact_versions','swarm_file_applications','swarm_operations','swarm_budget_usage','swarm_verification']);
+INSERT OR IGNORE INTO swarm_schema_migrations VALUES(3,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'friend-pi-swarm-v3');
+INSERT OR IGNORE INTO swarm_schema_migrations VALUES(4,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'friend-pi-swarm-handoff-wait-v4');`));requireSchemaWriter(store,'swarm',4,['swarm_schema_migrations','swarm_action_receipts','swarm_outbox','swarm_artifact_versions','swarm_file_applications','swarm_operations','swarm_budget_usage','swarm_verification']);
   }
   async action(action:string,input:JsonObject,ctx:PluginContext,run:()=>Promise<unknown>):Promise<unknown>{
     const operationId=input.operationId;if(operationId===undefined)return run();if(typeof operationId!=='string'||!operationId.trim()||operationId.length>200)throw new CapabilityError('VALIDATION_ERROR','operationId无效');

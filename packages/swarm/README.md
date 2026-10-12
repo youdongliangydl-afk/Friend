@@ -36,6 +36,8 @@ Git 写入成员使用独立 worktree；依赖成果通过明确的提交应用�
 
 `prepare` 启动后台复核并立即返回任务图状态；通过 `snapshot` 跟踪进度。重复点击不会同时开启第二次复核。模型回答出现、复核已排队或单个工具完成都不代表任务图已经整合。
 
+全部任务均为 `mode:read` 时，Agent 或插件不能在 `graph.checks` 或 `contract.checks[kind=command]` 中安排命令检查；只读图也不会默认注入 `npm test`。计划、创建、追加、任务修改和旧图启动/恢复/准备均重新检查此边界。保留 read/grep/find/ls、声明式检查，以及合同要求的独立 reviewer/verifier，无需把资料阅读改成写入任务。可信宿主标识为用户明确操作的检查沿用原有权限、临时目录审批和未知副作用围栏；工具输入中的 `origin` 不能取得该身份。包含 write 任务的图仍沿用既有检查规则；此边界依据已声明任务模式，不声称能普遍识别自然语言中的只读约束。
+
 消息区分已持久化、已投递和已纳入成员上下文；不将队列接收描述为模型理解。共享材料使用短事务锁、版本 CAS、不可变版本文件和原子写入，模型思考不占锁。停止、进程丢失或会话关闭标记副作用未知；显式接续创建新的 attempt，不重放旧工具。
 
 `pause/stop` 先进入 `stopping`，取消成员、客观检查、独立复核和隔离/整合中的 Git 进程，再等待实际关闭收据。每个受管进程拥有宿主新建的 POSIX 进程组；强制退出只针对这些组。`Graph.stopReceipt.objects` 逐项区分 `terminated/unknown`，没有完整回执时暂停，不能称已经停止。已终止也不表示撤销已经发生的效果；中断尝试仍保留为 unknown，用户检查后显式接续。停止途中崩溃不重放，冷启动恢复为暂停和未知回执。宿主可订阅 `swarm.process` 的 started/closed 事件，为 SDK 强制退出登记其实际创建的子组。
@@ -107,3 +109,14 @@ Memory 缺席时无需加载它；启用时完整选择正文及 conditions 进�
 受管 `swarm-views/<project>/<session>` 是只读 Markdown 投影，带 graph revision/hash manifest，可重建，不读取为新指令或业务状态。任务/共享材料检索使用 SQLite FTS5 和确定性中文词元，无 embedding 模型。迁移前使用 SQLite 快照，失败事务回滚并保留原记录；不重写 Pi 历史。升级表和 namespace 使用最小 writer 版本围栏，旧连接没有版本函数时只能读取，不能写入新 UNKNOWN 状态；本地反例模拟旧 writer，不能冒充完整旧二进制验收。旧 v1/v2 fixture 和新 schema3 证据等级分别保留。
 
 本地 focused tests 覆盖 fake provider、真实 Pi + 本地 HTTP fixture、SQLite 并发/迁移/故障注入。商业模型质量、外部授权测试资源、打包客户端 Computer Use 和最终整合验收由集成会话另行执行，不能以这些本地测试替代。
+
+## 协作优化（writer 4；图合同仍为 schema 3）
+
+- **规划校验**：只在用户选择 Swarm 后使用 `plan.validate {goal,reason,strategy,tasks,maxWorkers?,risk?,checks?,contract?,budget?}`。`direct` 使用空任务，允许主 Agent 在 Swarm 内直接完成简单任务，必要检查与独立复核仍保留；`collaboration` 使用 1–64 任务。此动作不调用模型、不保存图、不预占预算；返回权限、依赖、冲突和预算依据，未知时间/费用不估造。`create/start/append/update_task` 重新确定性校验，计划不能扩大权限。
+- **图校验**：一次校验内缓存祖先集合，覆盖流程条件、并行写范围和同目标产物冲突；定义变更重新计算，没有跨图缓存，也不降低 64 节点容量或合法密集 DAG 的边数。
+- **等待**：`snapshot.graphs[].tasks[].waiting` 区分依赖、队友、固定并发、流程门闸、资源、预算和暂停。宿主明确 `VERSION_CONFLICT + details.waitSafe:true` 的局部占用仅等待当前任务，继续按定义顺序启动其他独立 ready 任务；释放后定时重验，不调整并发、不改变队列排序。未知副作用、权限/来源变化或全局预算耗尽仍安全暂停。
+- **结构化交接**：任务可带 `constraints`、`unresolved`。交接包含目标、当前完整要求、全部祖先约束/未决问题、真实提交和产物版本、原生会话以及精确来源/Memory/Expert/Skill 引用。默认正文 8000 字符；超限保存不可变 `{id,version,hash,length,mustRead:true}` 引用，不截断约束。成员 `swarm_handoff_read` 连续受控完整读取前，其他工具与成果提交都被阻断；父端再次读回当前尝试 Pi 原生工具调用/结果并核对全文 hash，保存 `attempt.handoffRead`。读取收据仅证明完整正文进入原生工具结果，不能宣称理解或答案正确；明确要求完整阅读的原始附件仍须完整阅读。
+- **恢复预览**：`swarm resume.preview {graphId}` 和 `workflow resume.preview {workflowId}` 只读返回 `keep/redo/check`、原因、revision、来源有效性及输入/成果摘要。Workflow 另绑定定义和相关代码字节，传播上游失效。预览不修改状态、水位或修复次数。`resume` 可携带 `previewBinding`，操作前重算；过期拒绝并返回新预览，实际恢复重新验证。未知副作用仍需用户明确确认；原有重试上限不重置。
+- **迁移**：已有 v3 数据首次升级前使用 SQLite `VACUUM INTO` 保存 `swarm-pre-v4-*.sqlite`，一次升级记录和 namespace/表的 writer 4 围栏防止旧 writer 覆盖新增等待或交接状态。功能关闭不等于可降级数据库；备份也不能自动覆盖运行中的新数据。
+
+上述协议通过原版本化 Pi bus 和同一 controller 提供，不引入跨插件单例或复制 Pi transcript。最终包、真实外部模型与 Computer Use 的结果由集成候选另外绑定；本包开发测试不代表最终客户端验收。

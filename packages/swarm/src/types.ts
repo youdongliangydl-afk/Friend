@@ -3,6 +3,8 @@ export type GraphStatus = 'created'|'running'|'stopping'|'paused'|'completed'|'a
 export type TaskStatus = 'pending'|'running'|'completed'|'skipped'|'unknown'|'blocked'|'cancelled';
 export interface Check { command: string; args: string[] }
 export interface Task {
+  waiting?:TaskWait;
+  constraints?:string[];unresolved?:string[];
   contract?:TaskContract;
   memberId?: string; memberName?: string; resumeFromAttempt?:string;
   id: string; title: string; prompt: string; dependencies: string[]; mode: 'read'|'write';
@@ -12,6 +14,8 @@ export interface Task {
   originalPrompt?:string; requirementVersions?:{version:number;prompt:string;reason?:string;automatic?:boolean;at:string}[];
 }
 export interface Attempt {
+  requiredHandoff?:import('./handoff.js').HandoffRef;
+  handoffRead?:ReturnType<typeof import('./handoff.js').verifyHandoffRead>;
   nativeChecks?:CheckRef[];trialTerminalOutcome?:'completed'|'failed'|'cancelled'|'unknown';trialObservation?:{key:string;outcome:'completed'|'failed'|'cancelled'|'unknown';status:'observed'|'waiting';attempts?:number;retryAt?:number;error?:string;result?:unknown};
   childCreationStarted?:boolean;exitReceipt?:StopObject;reservationsReleased?:boolean;startPromptDigest?:string;frozen?:FrozenExecution;sourceFence?:SourceFence;resourceReservationId?:string;budgetReservationId?:string;targetBaselines?:Record<string,string>;inputBaselines?:Record<string,string>;dependencyResults?:{taskId:string;resultRevision:number;commit?:string;artifactDigest?:string}[];
   memberId?: string; generation?: number; retainedFrom?:string;
@@ -28,6 +32,7 @@ export interface CheckResult { command: string; args: string[]; exitCode: number
 export interface StopObject {id:string;kind:'member'|'check'|'git'|'activity';status:'terminated'|'unknown';pid?:number;exitCode?:number|null;signal?:string|null;detail?:string}
 export interface StopReceipt {operationId:string;requestedAt:string;finishedAt:string;objects:StopObject[];unknownAttemptIds:string[]}
 export interface Graph {
+  planning?:{reason:string;strategy:'collaboration';estimatesKnown:false};
   schemaVersion?:3;contract?:TaskContract;budget?:BudgetSnapshot;sourceFence?:SourceFence;pauseReason?:{code:ErrorCode;message:string;operationId?:string};failureFingerprints?:string[];cumulativeTaskCount?:number;
   collaborationVersion?: 2;
   id: string; projectId: string; sessionId: string; projectDir: string; goal: string; status: GraphStatus;
@@ -39,6 +44,7 @@ export interface Graph {
   executionStyle?:'team'|'swarm';workflowId?:string;deferPreparation?:boolean;integratedTaskIds?:string[];parentTools?:string[];permissionMode?:PermissionMode;temporaryWriteRoot?:string;goalId?:string;audit?:boolean;auditEvidence?:unknown;
   reviews?:Review[];reviewAttempts?:ReviewAttempt[];
 }
+export interface TaskWait {kind:'dependency'|'member'|'concurrency'|'resource'|'budget'|'workflow'|'paused';message:string;dependencyIds?:string[];memberId?:string;reservationId?:string;resourceKeys?:string[];blockingTaskId?:string;blockingGraphId?:string}
 export interface MemberMessage {id: string; graphId: string; from: string; to: string; body: string; createdAt: string; deliveredAt?: string; processedAt?: string; attemptId?: string; memberId?:string; sequence?:number; receivedAt?:string; nativeEntryId?:string; bodyDigest?:string; generation?:number; senderMemberId?:string; kind?:'constraint'|'discussion';contextKind?:'constraint'|'discussion';contextGraphId?:string;contextTaskId?:string}
 export interface Teammate {
   id:string; projectId:string; rootSessionId:string; name:string; description:string; key?:string;
@@ -50,6 +56,7 @@ export interface Teammate {
 export interface SharedDocument { graphId: string; name: string; content: string; file: string; version: number; digest: string; updatedAt: string;origin?:{taskId?:string;attemptId?:string;operationId?:string};merged?:boolean;mergeSources?:{revision:number;digest:string}[] }
 export interface SharedConflict {id:string;graphId:string;name:string;status:'pending'|'resolved'|'paused'|'cancelled';base?:SharedDocument;latest?:SharedDocument;proposed:string;proposedDigest:string;origin?:SharedDocument['origin'];reason?:string;createdAt:string;resolvedRevision?:number;ownerPid?:number}
 export interface MemberStart {
+  requiredHandoff?:import('./handoff.js').HandoffRef;
   resourceReservationId?:string;sourceFence?:SourceFence;candidateDigest?:string;verificationKind?:'reviewer'|'verifier';frozen?:FrozenExecution;
   v: 1|2; type: 'start'; graphId: string; taskId: string; attemptId: string; cwd: string; dataDir: string;
   agentDir: string; sessionDir: string; modelId?: string; thinkingLevel?: string; prompt: string;
@@ -70,7 +77,7 @@ export type MemberOutput = ({memberId?:string;generation?:number;attemptId?:stri
   | {v:1|2;type:'context';messageId:string;nativeEntryId:string}
   | {v:1|2;type:'usage';entryId:string;tokens?:number}
   | {v:1|2;type:'native.check';entryId:string;operationId:string}
-  | {v:1|2;type:'request';requestId:string;action:'lease.check'|'send'|'shared.read'|'shared.write'|'expert.adopt'|'expert.confirm';input:Record<string,unknown>}
+  | {v:1|2;type:'request';requestId:string;action:'lease.check'|'handoff.read'|'send'|'shared.read'|'shared.write'|'expert.adopt'|'expert.confirm';input:Record<string,unknown>}
   | {v:1|2;type:'expert.adopted';adoption:unknown;toolScope?:string[]}
   | {v:1|2;type:'confirm';requestId:string;title:string;message:string}));
 export interface MemberHandle { send(message: MemberInput): void; stop(): void|Promise<StopObject>;pid?:number;groupOwned?:boolean;closed?:Promise<StopObject> }

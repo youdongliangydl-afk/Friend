@@ -8,8 +8,9 @@ import * as jsxRuntime from 'react/jsx-runtime';
 import {renderToStaticMarkup} from 'react-dom/server';
 import * as rendererTypes from '../apps/desktop/src/renderer/types.js';
 import * as ui from '../apps/desktop/src/renderer/ui.js';
-import {TaskGraphCanvas} from '../apps/desktop/src/renderer/TaskGraph.js';
-import {projectSessionTaskGraphs} from '../apps/desktop/src/renderer/task-graph-model.js';
+import {TaskGraphCanvas,TaskEvidenceSummary} from '../apps/desktop/src/renderer/TaskGraph.js';
+import * as graphModel from '../apps/desktop/src/renderer/task-graph-model.js';
+import {openTool} from '../apps/desktop/src/renderer/view-tabs.js';
 import type {AppState,JsonObject} from '../apps/desktop/src/renderer/types.js';
 
 type Node={type:unknown;props:Record<string,any>};
@@ -19,7 +20,7 @@ const forbidden=/长期目标|可选令牌预算|开始目标|工作目标|生�
 const compiled=transformSync(readFileSync('apps/desktop/src/renderer/task-panel.tsx','utf8'),{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code;
 
 /** Load the production panel through its snapshot IPC, then SSR its real status cards and graph. */
-function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure}:{runtime?:JsonObject;graphs?:JsonObject[];flows?:JsonObject[];mode?:'single'|'team'|'swarm';failure?:string}={}){
+function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure,previews=[],receipts=[],confirm=()=>true,failOnce=false}:{runtime?:JsonObject;graphs?:JsonObject[];flows?:JsonObject[];mode?:'single'|'team'|'swarm';failure?:string;previews?:JsonObject[];receipts?:JsonObject[];confirm?:()=>boolean;failOnce?:boolean}={}){
  let cursor=0;const slots:any[]=[],effects:(()=>void)[]=[],requests:{method:string;input:JsonObject}[]=[],reports:string[]=[];
  const same=(a:unknown[]|undefined,b:unknown[]|undefined)=>!!a&&!!b&&a.length===b.length&&a.every((value,index)=>Object.is(value,b[index]));
  const hooks={
@@ -29,16 +30,19 @@ function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure}:{runtime?:
   useMemo(callback:()=>unknown,deps:unknown[]){const index=cursor++;if(!slots[index]||!same(slots[index].deps,deps))slots[index]={value:callback(),deps};return slots[index].value;},
   useEffect(callback:()=>void|(()=>void),deps?:unknown[]){const index=cursor++;if(slots[index]&&same(slots[index].deps,deps))return;slots[index]={deps};effects.push(()=>{callback();});},
  };
- const state:AppState={projects:[],sessions:[],models:[],providers:[],current:{sessionId:'desktop-session',piSessionId:'native-session',projectId:'project',messages:[],isRunning:false,modelId:'fixture/model',thinkingLevel:'off',plugins:['swarm'],executionMode:mode,runId:'run'}};
+ const state:AppState={projects:[],sessions:[],models:[],providers:[],current:{sessionId:'desktop-session',piSessionId:'native-session',projectId:'project',messages:[],isRunning:false,modelId:'fixture/model',thinkingLevel:'off',plugins:['swarm'],executionMode:mode,runId:'run',receipts}};let failures=0,previewIndex=0;
  const context:any={module:{exports:{}},require(name:string){
   if(name==='react')return hooks;if(name==='react/jsx-runtime')return jsxRuntime;
   if(name==='./types.js')return rendererTypes;if(name==='./ui.js')return ui;
-  if(name==='./TaskGraph.js')return {TaskGraphCanvas};if(name==='./task-graph-model.js')return {projectSessionTaskGraphs};
+  if(name==='./TaskGraph.js')return {TaskGraphCanvas,TaskEvidenceSummary};if(name==='./task-graph-model.js')return graphModel;if(name==='./view-tabs.js')return {openTool};
   if(name==='./Teammates.js')return {TeammateRoster:({rootSessionId}:{rootSessionId:string})=>createElement('div',{'data-members-for':rootSessionId}),openTeammate(){throw new Error('SSR must not open a teammate');}};
   throw new Error('Unexpected panel import: '+name);
- },window:{confirm:()=>true,friendPi:{onEvent:()=>()=>{},request(method:string,input:JsonObject){
+ },window:{confirm,friendPi:{onEvent:()=>()=>{},request(method:string,input:JsonObject){
   requests.push({method,input});if(input.action==='snapshot')return Promise.resolve(method==='runtime.call'?runtime:input.plugin==='swarm'?{graphs,teammates:[]}:{workflows:flows,templates:[{id:'saved-template',definition:{title:'Old template'}}]});
-  if(input.action===failure)return Promise.reject(new Error('预算耗尽，请明确增加预算'));
+  if(method==='session.ui.get')return Promise.resolve({version:1,mode:'fullscreen',tabs:[{id:'existing',kind:'browser',url:'https://example.com'}],active:'existing',sidebar:true,composerCollapsed:false,browserScope:'session'});
+  if(method==='session.ui.update')return Promise.resolve(input.ui);
+  if(input.action==='resume.preview')return Promise.resolve(previews[Math.min(previewIndex++,previews.length-1)]||{});
+  if(input.action===failure&&(!failOnce||failures++===0))return Promise.reject(new Error('预算耗尽，请明确增加预算'));
   if(input.action==='jobs.logs')return Promise.resolve({output:'Retained log'});
   if(input.action==='result')return Promise.resolve({summary:'Retained team result'});
   return Promise.resolve({});
@@ -95,6 +99,24 @@ test('completed goals retain their evidence without active goal controls or a ne
 
 test('Team results and existing review controls remain available without manual task creation',async()=>{
  const f=fixture({mode:'team',graphs:[{id:'team-graph',executionStyle:'team',status:'completed',goal:'已有 Team 成果',tasks:[{id:'a',title:'成员成果',status:'completed'}]}]});await f.flush();
- const markup=f.markup();assert.match(markup,/Team 成果/);assert.match(markup,/成员成果/);assert.match(markup,/查看成果/);assert.match(markup,/检查与复核/);assert.match(markup,/整合已复核成果/);assert.match(markup,/停止成员/);assert.doesNotMatch(markup,forbidden);
+ const markup=f.markup();assert.match(markup,/Team 成果/);assert.match(markup,/成员成果/);assert.match(markup,/查看成果/);assert.match(markup,/准备验证/);assert.match(markup,/整合成果/);assert.match(markup,/停止成员/);assert.doesNotMatch(markup,forbidden);
  f.button('查看成果').props.onClick();await f.flush();assert.match(f.markup(),/Retained team result/);
+});
+const recoveryPreview=(binding:string,unknown=false)=>({v:1,readOnly:true,binding,sourceValidity:{valid:true},nodes:[{id:'a',decision:unknown?'check':'redo',reasons:[unknown?'副作用未知，必须核对后明确确认':'相关代码变化']}]});
+test('resume first shows a readonly preview; unknown side effects retain human confirmation and bind the explicit attempt',async()=>{
+ let confirmations=0;const f=fixture({graphs:[{id:'g',sessionId:'native-session',runId:'run',goal:'恢复当前任务',status:'paused',tasks:[{id:'a',status:'unknown',mode:'read',dependencies:[]}],attempts:[]}],previews:[recoveryPreview('frozen-binding',true)],confirm:()=>{confirmations++;return true;}});await f.flush();f.button('接续成员').props.onClick();await f.flush();assert.match(f.markup(),/恢复范围预览/);assert.match(f.markup(),/待核对 · a/);assert.equal(f.requests.filter(r=>r.input.action==='resume').length,0);assert.equal(confirmations,0);
+ f.button('确认此预览并接续').props.onClick();await f.flush();const request=f.requests.find(r=>r.input.action==='resume');assert.ok(request);assert.deepEqual(JSON.parse(JSON.stringify(request.input.input)),{graphId:'g',previewBinding:'frozen-binding',confirmUnknown:true});assert.equal(confirmations,1);
+});
+test('stale recovery errors refresh the preview without replay and use the new binding only after another click',async()=>{
+ const f=fixture({graphs:[{id:'g',sessionId:'native-session',runId:'run',goal:'恢复漂移候选',status:'paused',tasks:[],attempts:[]}],previews:[recoveryPreview('old-binding'),recoveryPreview('new-binding')],failure:'resume',failOnce:true});await f.flush();f.button('接续成员').props.onClick();await f.flush();f.button('确认此预览并接续').props.onClick();await f.flush();assert.match(f.markup(),/预览已更新/);assert.equal(f.requests.filter(r=>r.input.action==='resume').length,1);assert.equal(f.requests.filter(r=>r.input.action==='resume.preview').length,2);
+ f.button('确认此预览并接续').props.onClick();await f.flush();const calls=f.requests.filter(r=>r.input.action==='resume');assert.equal(calls.length,2);assert.equal(rendererTypes.asObject(calls[1].input.input).previewBinding,'new-binding');
+});
+test('declining unknown side-effect confirmation does not dispatch recovery',async()=>{
+ const f=fixture({graphs:[{id:'g',sessionId:'native-session',runId:'run',goal:'未知恢复',status:'paused',tasks:[{id:'a',status:'unknown'}],attempts:[]}],previews:[recoveryPreview('binding',true)],confirm:()=>false});await f.flush();f.button('接续成员').props.onClick();await f.flush();f.button('确认此预览并接续').props.onClick();await f.flush();assert.equal(f.requests.filter(r=>r.input.action==='resume').length,0);assert.match(f.markup(),/恢复范围预览/);
+});
+test('workflow recovery previews preserve definition identity and capability receipts expose distinct native stages',async()=>{
+ const receipts=[{id:'selected-entry',customType:'friend-pi.memory.usage:v1',data:{runId:'run',stage:'prepared',records:[{id:'memory',revision:2,contentHash:'mh'}]}},{id:'request-entry',customType:'friend-pi.expert.evidence',data:{runId:'run',stage:'request-prepared',dependencies:[{capability:'expert',id:'method',version:4,hash:'eh'}]}}];const f=fixture({flows:[flow('paused','paused')],previews:[{...recoveryPreview('workflow-binding'),definitionRevision:3}],receipts});await f.flush();const markup=f.markup();assert.match(markup,/Memory · 已选中/);assert.match(markup,/Expert · 已进入请求准备/);assert.match(markup,/原生收据与条目引用/);assert.match(markup,/不推断模型采纳或答案正确/);f.button('接续',f.section('阶段 paused')).props.onClick();await f.flush();assert.match(f.markup(),/定义 v3/);f.button('确认此预览并接续').props.onClick();await f.flush();const request=f.requests.find(r=>r.input.action==='resume');assert.equal(request?.input.plugin,'workflow');assert.deepEqual(JSON.parse(JSON.stringify(request?.input.input)),{workflowId:'paused',previewBinding:'workflow-binding'});
+});
+test('capability source link reuses the current desktop session and retains existing fullscreen tabs',async()=>{
+ const f=fixture({receipts:[{id:'native-entry',customType:'friend-pi.memory.usage:v1',data:{runId:'run',stage:'tool-read',records:[{id:'m',revision:1}]}}]});await f.flush();f.button('在 Memory 查看原记录').props.onClick();await f.flush();const request=f.requests.find(r=>r.method==='session.ui.update');assert.ok(request);assert.equal(request.input.sessionId,'desktop-session');const next=rendererTypes.asObject(request.input.ui),tabs=rendererTypes.asList<JsonObject>(next.tabs);assert.equal(next.mode,'fullscreen');assert.ok(tabs.some(t=>t.id==='existing'));assert.ok(tabs.some(t=>t.id===next.active&&t.page==='memory'));assert.ok(!f.requests.some(r=>r.input.action==='create'||r.input.action==='resume'));
 });

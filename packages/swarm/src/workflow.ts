@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { ConflictError, RecordStore, digest, object, text, type JsonObject, type PluginContext } from '@friend-pi/core';
+import { CapabilityError,ConflictError, RecordStore, SourcePolicy,digest, object, text, type JsonObject, type PluginContext,type SourceFence } from '@friend-pi/core';
 import { workflowCodeDigest } from './workflow-code.js';
+import { graphReachability } from './reachability.js';
 
 export type WorkflowValue=null|boolean|number|string|WorkflowValue[]|{[key:string]:WorkflowValue};
 export type WorkflowPredicate={taskId:string;path?:string[];op:'eq'|'ne'|'exists';value?:WorkflowValue}|{all:WorkflowPredicate[]}|{any:WorkflowPredicate[]}|{not:WorkflowPredicate};
@@ -11,7 +12,7 @@ export interface WorkflowNode {
   codePaths:string[];when?:WorkflowPredicate;retryWhen?:WorkflowPredicate;maxRetries:number;
 }
 export interface WorkflowDefinition {v:1;title:string;goal:string;nodes:WorkflowNode[];parameters:WorkflowValue;maxWorkers:number}
-export interface WorkflowBackend {dispatch(action:string,input:JsonObject,context:PluginContext):unknown|Promise<unknown>}
+export interface WorkflowBackend {dispatch(action:string,input:JsonObject,context:PluginContext):unknown|Promise<unknown>;readRecoveryGraph?(graphId:string,context:PluginContext):BackendGraph}
 export type WorkflowNodeStatus='pending'|'running'|'completed'|'skipped'|'failed'|'unknown';
 export interface WorkflowNodeState {
   id:string;status:WorkflowNodeStatus;materialized:boolean;retries:number;result?:WorkflowValue;
@@ -27,7 +28,8 @@ export interface WorkflowRun {
 export interface WorkflowTemplate {v:1;id:string;version:number;definition:WorkflowDefinition;hash:string;createdAt:string}
 interface BackendTask {id:string;status:string;currentAttempt?:string;resultRevision?:number;rework?:number;workflowHeld?:boolean}
 interface BackendAttempt {id:string;taskId:string;status:string;summary?:string;commit?:string;sessionId?:string;sessionFile?:string}
-interface BackendGraph {id:string;status:string;tasks:BackendTask[];attempts:BackendAttempt[];error?:string}
+interface BackendGraph {id:string;revision?:number;status:string;tasks:BackendTask[];attempts:BackendAttempt[];error?:string;sourceFence?:SourceFence}
+export interface WorkflowResumePreview {v:1;readOnly:true;workflowId:string;definitionRevision:number;definitionHash:string;graphId?:string;graphRevision?:number;binding:string;sourceValidity:{valid:boolean;reason?:string};nodes:{id:string;decision:'keep'|'redo'|'check';reasons:string[];inputHash:string;dependencyHash:string;codeHash:string;resultHash?:string;retries:number}[]}
 const now=()=>new Date().toISOString();
 const id=(value:unknown)=>{const result=text(value,'流程标识',100);if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(result))throw new Error('流程标识仅支持字母、数字、下划线和短横线');return result;};
 const integer=(value:unknown,fallback:number,min:number,max:number,label:string)=>{const result=value===undefined?fallback:value;if(typeof result!=='number'||!Number.isInteger(result)||result<min||result>max)throw new Error(`${label}必须在 ${min}–${max} 之间`);return result;};
@@ -73,8 +75,8 @@ export function validateWorkflowDefinition(value:unknown):WorkflowDefinition {
   const visiting=new Set<string>(),visited=new Set<string>();
   function visit(node:WorkflowNode):void {if(visiting.has(node.id))throw new Error('流程依赖存在循环');if(visited.has(node.id))return;visiting.add(node.id);for(const dep of node.dependencies){const target=byId.get(dep);if(!target)throw new Error(`流程依赖 ${dep} 不存在`);visit(target);}visiting.delete(node.id);visited.add(node.id);}
   nodes.forEach(visit);
-  function ancestors(node:WorkflowNode):Set<string>{const result=new Set<string>();for(const dep of node.dependencies){result.add(dep);for(const inherited of ancestors(byId.get(dep)!))result.add(inherited);}return result;}
-  for(const node of nodes){const available=ancestors(node);if(node.when&&predicateSources(node.when).some(source=>!available.has(source)))throw new Error('分支条件必须引用本节点的前置成果');if(node.retryWhen&&predicateSources(node.retryWhen).some(source=>source!==node.id&&!available.has(source)))throw new Error('重试条件必须引用当前节点或前置成果');}
+  const reachability=graphReachability(nodes);
+  for(const node of nodes){if(!node.when&&!node.retryWhen)continue;const available=reachability.ancestors(node.id);if(node.when&&predicateSources(node.when).some(source=>!available.has(source)))throw new Error('分支条件必须引用本节点的前置成果');if(node.retryWhen&&predicateSources(node.retryWhen).some(source=>source!==node.id&&!available.has(source)))throw new Error('重试条件必须引用当前节点或前置成果');}
   const definition:WorkflowDefinition={v:1,title:text(raw.title,'流程名称',200),goal:text(raw.goal,'流程目标',100000),nodes,parameters:plain(raw.parameters??{}),maxWorkers:integer(raw.maxWorkers,4,1,16,'流程并发')};
   if(JSON.stringify(definition).length>512000)throw new Error('流程定义超过 512 KB');return definition;
 }
@@ -125,8 +127,9 @@ export class DynamicWorkflowController {
     const workflowId=id(input.workflowId);this.contexts.set(`${ctx.dataDir}:${workflowId}`,ctx);
     return this.serial(`${ctx.dataDir}:${workflowId}`,async()=>{
       const run=this.get(workflowId,ctx);
+      if(action==='resume.preview')return this.resumePreview(run,ctx);
       if(action==='status'){if(run.status==='running'||run.status==='waiting_review')await this.progress(run,ctx);return this.get(workflowId,ctx);}
-      this.mode(ctx);this.owner(run,ctx);
+      this.mode(ctx);if(action==='resume'&&input.previewBinding!==undefined){const preview=await this.resumePreview(run,ctx);if(input.previewBinding!==preview.binding)throw new CapabilityError('VERSION_CONFLICT','恢复预览已过期，请核对新预览',{preview});}this.owner(run,ctx);
       if(action==='start'){
         if(run.status!=='created')throw new Error('已有流程请通过 resume 接续');run.modelId=ctx.modelId;run.thinkingLevel=ctx.thinkingLevel;run.status='running';this.save(run,ctx);await this.progress(run,ctx);return this.get(workflowId,ctx);
       }
@@ -169,8 +172,8 @@ export class DynamicWorkflowController {
   private inputHash(run:WorkflowRun,node:WorkflowNode):string {return digest({node,parameters:run.definition.parameters,modelId:node.modelId||run.modelId,thinkingLevel:node.thinkingLevel||run.thinkingLevel});}
   private dependencyHash(run:WorkflowRun,node:WorkflowNode):string {return digest(node.dependencies.map(dep=>{const state=run.nodes.find(item=>item.id===dep)!;return {id:dep,status:state.status,result:state.receipt?.resultHash,input:state.receipt?.inputHash};}));}
   private resultHash(task:BackendTask,attempt:BackendAttempt):string {return digest({resultRevision:task.resultRevision,attemptId:attempt.id,summary:attempt.summary,commit:attempt.commit,sessionId:attempt.sessionId,sessionFile:attempt.sessionFile});}
-  private async synchronize(run:WorkflowRun,ctx:PluginContext):Promise<BackendGraph|undefined> {
-    const graph=await this.graph(run,ctx);if(run.graphId&&!graph)throw new Error('原 Swarm 任务图缺失，不能创建替代历史');if(!graph)return undefined;
+  private async synchronize(run:WorkflowRun,ctx:PluginContext,recoveryGraph?:BackendGraph):Promise<BackendGraph|undefined> {
+    const graph=recoveryGraph??await this.graph(run,ctx);if(run.graphId&&!graph)throw new Error('原 Swarm 任务图缺失，不能创建替代历史');if(!graph)return undefined;
     for(const state of run.nodes.filter(item=>item.materialized)){
       const task=graph.tasks.find(item=>item.id===state.id);if(!task)throw new Error('已派发流程节点在 Swarm 中缺失');const attempt=graph.attempts.find(item=>item.id===task.currentAttempt);
       state.retries=Math.max(state.retries,task.rework||0);
@@ -200,18 +203,26 @@ export class DynamicWorkflowController {
     state.status='pending';state.result=undefined;state.receipt=undefined;state.launch=undefined;state.error=undefined;
   }
   private async invalidateChanged(run:WorkflowRun,ctx:PluginContext,confirmUnknown=false):Promise<void> {
-    const graph=await this.graph(run,ctx);const invalid=new Set<string>();
-    for(const state of run.nodes){const node=this.node(run,state.id);
-      if(state.status==='completed'&&state.receipt){const task=graph?.tasks.find(item=>item.id===state.id),attempt=graph?.attempts.find(item=>item.id===task?.currentAttempt);
-        if(state.receipt.inputHash!==this.inputHash(run,node)||state.receipt.dependencyHash!==this.dependencyHash(run,node)||state.receipt.codeHash!==workflowCodeDigest(ctx.projectDir,node.codePaths,ctx.dataDir)||!task||!attempt||state.receipt.resultHash!==this.resultHash(task,attempt))invalid.add(state.id);
-      }
-      if(state.status!=='completed'&&state.materialized&&state.launch&&state.launch.inputHash!==this.inputHash(run,node))invalid.add(state.id);
-      if(state.status==='skipped')invalid.add(state.id);
-      if(state.status==='unknown')invalid.add(state.id);
-    }
-    let changed=true;while(changed){changed=false;for(const node of run.definition.nodes)if(!invalid.has(node.id)&&node.dependencies.some(dep=>invalid.has(dep))){invalid.add(node.id);changed=true;}}
+    const preview=await this.resumePreview(run,ctx);if(!preview.sourceValidity.valid)throw new CapabilityError('SOURCE_UNAVAILABLE',preview.sourceValidity.reason||'来源不可用');const resetReasons=new Set(['缺少成果绑定收据','输入或定义变化','前置成果变化','相关代码变化','成果摘要或版本变化','派发输入变化','分支条件须重新判断','副作用未知，必须核对后明确确认','上游变化，不能沿用旧成果']);const invalid=new Set(preview.nodes.filter(node=>node.reasons.some(reason=>resetReasons.has(reason))).map(node=>node.id));
     for(const node of run.definition.nodes.filter(item=>invalid.has(item.id)))await this.reset(run,run.nodes.find(state=>state.id===node.id)!,ctx,'输入、依赖、成果或相关代码摘要变化，重新验证',confirmUnknown);
     this.save(run,ctx);
+  }
+  private async resumePreview(original:WorkflowRun,ctx:PluginContext):Promise<WorkflowResumePreview> {
+    const run=structuredClone(original),recoveryGraph=run.graphId&&this.backend.readRecoveryGraph?this.backend.readRecoveryGraph(run.graphId,ctx):undefined,graph=await this.synchronize(run,ctx,recoveryGraph),sourceValidity:{valid:boolean;reason?:string}={valid:true};
+    if(graph?.sourceFence){const store=new RecordStore('swarm',ctx.dataDir);try{new SourcePolicy(store).assert(graph.sourceFence);}catch(error){sourceValidity.valid=false;sourceValidity.reason=error instanceof Error?error.message:String(error);}finally{store.close();}}
+    const invalid=new Set<string>();
+    const nodes=run.nodes.map(state=>{const node=this.node(run,state.id),task=graph?.tasks.find(item=>item.id===state.id),attempt=graph?.attempts.find(item=>item.id===task?.currentAttempt),inputHash=this.inputHash(run,node),dependencyHash=this.dependencyHash(run,node),codeHash=workflowCodeDigest(ctx.projectDir,node.codePaths,ctx.dataDir),resultHash=task&&attempt?this.resultHash(task,attempt):undefined,reasons:string[]=[];
+      if(state.status==='completed'){
+        if(!state.receipt)reasons.push('缺少成果绑定收据');else {if(state.receipt.inputHash!==inputHash)reasons.push('输入或定义变化');if(state.receipt.dependencyHash!==dependencyHash)reasons.push('前置成果变化');if(state.receipt.codeHash!==codeHash)reasons.push('相关代码变化');if(state.receipt.resultHash!==resultHash)reasons.push('成果摘要或版本变化');}
+      }else if(state.materialized&&state.launch?.inputHash!==undefined&&state.launch.inputHash!==inputHash)reasons.push('派发输入变化');
+      if(state.status==='skipped')reasons.push('分支条件须重新判断');if(state.status==='unknown')reasons.push('副作用未知，必须核对后明确确认');
+      if(reasons.length)invalid.add(state.id);
+      const decision:'keep'|'redo'|'check'=state.status==='unknown'||state.status==='failed'||!sourceValidity.valid?'check':reasons.length||state.status==='pending'?'redo':state.status==='completed'?'keep':'check';
+      return {id:state.id,decision,reasons:reasons.length?reasons:[state.status==='completed'?'绑定仍有效':state.status==='pending'?'尚未执行':state.status==='failed'?'重试额度及失败需核对':'执行尚未结束'],inputHash,dependencyHash,codeHash,resultHash,retries:state.retries};
+    });
+    let changed=true;while(changed){changed=false;for(const node of run.definition.nodes)if(!invalid.has(node.id)&&node.dependencies.some(dep=>invalid.has(dep))){invalid.add(node.id);const preview=nodes.find(item=>item.id===node.id)!;preview.reasons.push('上游变化，不能沿用旧成果');if(preview.decision==='keep')preview.decision='redo';changed=true;}}
+    const body={v:1 as const,readOnly:true as const,workflowId:run.id,definitionRevision:run.definitionRevision,definitionHash:digest(run.definition),graphId:run.graphId,graphRevision:graph?.revision,sourceValidity,nodes};
+    return {...body,binding:digest({body,run:{...run,owner:undefined,updatedAt:undefined},graph})};
   }
   private async progress(run:WorkflowRun,ctx:PluginContext):Promise<void> {
     this.mode(ctx);this.owner(run,ctx);

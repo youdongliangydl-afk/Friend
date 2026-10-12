@@ -35,7 +35,7 @@ export function groupToolActivity(timeline: TimelineMessage[]): ConversationMess
 const labels = {
   read: ['读取文件', '已读取文件'], image: ['读取图片', '已读取图片'], search: ['搜索文件', '已搜索文件'],
   edit: ['修改文件', '修改了文件'], commands: ['运行命令', '执行了命令'], web: ['浏览网页', '已浏览网页'],
-  agents: ['调用队友', '已调用队友'], plan: ['更新计划', '已更新计划'], tools: ['调用工具', '调用了工具'],
+  agents: ['调用队友', '已调用队友'], strategy: ['校验协作策略', '已校验协作策略'], plan: ['更新计划', '已更新计划'], tools: ['调用工具', '调用了工具'],
 } as const;
 export function toolCategory(tool: ToolRun): keyof typeof labels {
   if (tool.name === 'read_image' || tool.name === 'read' && /\.(png|jpe?g|gif|webp)$/i.test(toolDetail(tool))) return 'image';
@@ -44,7 +44,11 @@ export function toolCategory(tool: ToolRun): keyof typeof labels {
   if (['write', 'edit', 'apply_patch'].includes(tool.name)) return 'edit';
   if (['bash', 'pwsh', 'exec_command', 'write_stdin', 'friend_terminal'].includes(tool.name) || tool.name.startsWith('terminal_')) return 'commands';
   if (['web_search', 'web_fetch'].includes(tool.name)) return 'web';
-  if (tool.name === 'friend_swarm' || tool.name.startsWith('subagent')) return 'agents';
+  if (tool.name === 'friend_swarm') {
+    const action = (tool.input as {action?:unknown} | undefined)?.action;
+    return action === 'plan.validate' ? 'strategy' : ['start', 'resume', 'member.send'].includes(String(action)) ? 'agents' : 'tools';
+  }
+  if (tool.name.startsWith('subagent')) return 'agents';
   if (['todo_write', 'friend_todo', 'create_goal', 'update_goal', 'get_goal', 'friend_goal'].includes(tool.name)) return 'plan';
   return 'tools';
 }

@@ -139,6 +139,11 @@ test('runtime task metadata does not invalidate code while project Pi agent conf
   assert.equal(workflowCodeDigest(f.project,['.']),before);writeFileSync(join(f.project,'.pi','tasks','run.json'),'metadata tick');assert.equal(workflowCodeDigest(f.project,['.']),before);
   mkdirSync(join(f.project,'.pi','agents'),{recursive:true});writeFileSync(join(f.project,'.pi','agents','reviewer.md'),'changed actual agent guidance');assert.notEqual(workflowCodeDigest(f.project,['.']),before);
 }finally{await f.cleanup();}});
+test('recovery code digests bind same-root business files and preserve data-ancestor business names while excluding host migration backups',async()=>{const f=fixture();try{
+  const first=workflowCodeDigest(f.project,['.'],f.project);writeFileSync(join(f.project,'plugins.sqlite'),'host state');writeFileSync(join(f.project,'swarm-pre-v4-1234-abcd.sqlite'),'host backup');for(const name of ['expert-migration-backups','expert-evaluations']){mkdirSync(join(f.project,name));writeFileSync(join(f.project,name,'private.json'),'private host data');}assert.equal(workflowCodeDigest(f.project,['.'],f.project),first);
+  writeFileSync(join(f.project,'a.txt'),'business bytes changed');assert.notEqual(workflowCodeDigest(f.project,['.'],f.project),first);
+  const ancestor=workflowCodeDigest(f.project,['.'],f.root);writeFileSync(join(f.project,'plugins.sqlite'),'business file when host data is ancestor');assert.notEqual(workflowCodeDigest(f.project,['.'],f.root),ancestor);
+}finally{await f.cleanup();}});
 test('real backend accepts append while original members run without changing old nodes or duplicate dispatch',async()=>{
   const f=fixture(),starts:string[]=[];const workers=new Map<string,{finish:()=>void}>();
   const launcher:MemberLauncher=(start,output)=>{
@@ -175,3 +180,14 @@ test('real Swarm backend coordinates staged fixture member receipts and independ
     assert.deepEqual(starts,['a','b','independent-review']);const graph=backend.snapshot(ctx) as {graphs:{tasks:{status:string}[];attempts:{sessionId?:string}[];status:string}[]};assert.equal(graph.graphs.length,1);assert.equal(graph.graphs[0].status,'integrated');assert.ok(graph.graphs[0].attempts.every(attempt=>attempt.sessionId?.startsWith('fixture-')));
   }finally{await controller.dispose();await backend.dispose();await f.cleanup();}
 });
+
+test('recovery preview does not mutate nodes, definition revision, retry budget or backend tasks; stale source bytes reject before reset',async()=>{const f=fixture();try{
+  const workflowId=await start(f,[node('a'),node('b',['a'])]);f.backend.complete('a',{result:1});await f.controller.advance(f.context);f.backend.complete('b',{result:2});await f.controller.advance(f.context);await f.controller.dispatch('pause',{workflowId},f.context);
+  const before=structuredClone(current(f)),backendBefore=structuredClone(f.backend.graph);
+  const preview=await f.controller.dispatch('resume.preview',{workflowId},f.context) as {binding:string;definitionRevision:number;nodes:{id:string;decision:string}[]};
+  assert.deepEqual(preview.nodes.map(node=>node.decision),['keep','keep']);assert.deepEqual(current(f),before);assert.deepEqual(f.backend.graph,backendBefore);
+  writeFileSync(join(f.project,'a.txt'),'changed after preview');const updates=f.backend.calls.filter(call=>call.action==='update_task').length;
+  await assert.rejects(f.controller.dispatch('resume',{workflowId,previewBinding:preview.binding},f.context),/预览已过期/);assert.equal(f.backend.calls.filter(call=>call.action==='update_task').length,updates);assert.deepEqual(current(f).nodes,before.nodes);assert.equal(current(f).definitionRevision,before.definitionRevision);
+  const next=await f.controller.dispatch('resume.preview',{workflowId},f.context) as {binding:string;nodes:{decision:string;reasons:string[]}[]};assert.deepEqual(next.nodes.map(node=>node.decision),['redo','redo']);assert.match(next.nodes[1].reasons.join(','),/上游变化/);
+  await f.controller.dispatch('resume',{workflowId,previewBinding:next.binding},f.context);assert.equal(current(f).nodes[0].retries,1);assert.equal(current(f).nodes[1].retries,1);
+}finally{await f.cleanup();}});

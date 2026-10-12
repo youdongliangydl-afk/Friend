@@ -87,6 +87,13 @@ test('equal assistant timestamps never share thinking or group disclosure state'
   assert.notEqual(items[0].items[0].key, items[1].items[0].key);
 });
 
+test('Swarm strategy validation and inspection do not claim a teammate was called', () => {
+  for (const [action, title] of [['plan.validate', '已校验协作策略'], ['snapshot', '调用了工具'], ['create', '调用了工具'], ['start', '已调用队友']]) {
+    const group = activity([{ kind: 'tool', key: action, tool: { id: action, name: 'friend_swarm', input: { action }, status: 'completed' } }]);
+    assert.equal(activitySummary(group).title, title);
+  }
+});
+
 test('tool bodies mount only on item expansion and render image parts without base64 JSON', () => {
   const group = activity([{ kind: 'tool', key: 'image', tool: { id: 'image', name: 'read', input: { path: 'image.png' }, status: 'completed', output: [{ type: 'text', text: 'preview' }, { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }] } }]);
   const render = (expanded: Record<string, boolean>) => renderToStaticMarkup(React.createElement(ActivityView, { group, thinking: false, expanded, onToggle: () => {} }));

@@ -99,6 +99,8 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
    assert.equal(snapshot.graphs[0]?.status,'integrated');
    const after=await fixture.request('state') as {lifecycleStatus:string;isRunning:boolean};
    assert.equal(after.lifecycleStatus,'stopped');assert.equal(after.isRunning,false);
+   await assert.rejects(fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'单人模式不能组织协作',tasks:[{id:'denied',title:'不创建',prompt:'只读检查',mode:'read'}]}}),/single/);
+   await fixture.request('configure',{executionMode:'swarm'});
    await fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'只创建待启动的手动图',tasks:[{id:'manual',title:'待启动',prompt:'只读检查',mode:'read',dependencies:[]}]}});
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a manual unstarted graph cannot overwrite a cold terminal record');
    await fixture.request('configure',{executionMode:'swarm'});
@@ -179,7 +181,7 @@ test('a missing Swarm graph gets one read-only correction, with final payload pr
    let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
    if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
    else if(names.includes('friend_swarm')){
-    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('不能因任务简单而自行改为 Single')));
+    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('简单任务可 strategy:')));
     if(body.includes('用户已选择 Swarm')){
      if(!recent.length){corrections++;if(scenario==='stop'){blocked=true;await held;}}
      if(scenario==='recover'||scenario==='queued'){
@@ -209,7 +211,7 @@ test('a missing Swarm graph gets one read-only correction, with final payload pr
    const state=await f.request('state') as {sessionFile:string;messages:{role:string;background?:boolean}[];lifecycleStatus:string},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
    assert.equal(corrections,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(state.messages.filter(message=>message.role==='user').length,scenario==='queued'?2:1);assert.equal(state.messages.filter(message=>message.role==='automatic').length,1);assert.equal(state.messages.find(message=>message.role==='automatic')?.background,true);
    assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original delivery');
-   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('不能因任务简单而自行改为 Single')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
+   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('简单任务可 strategy:')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
    if(['recover','queued'].includes(scenario)){
     assert.equal(existsSync(join(f.directory,'must-not-exist')),false);
     assert.ok(entries.some(entry=>entry.message?.toolName==='friend_swarm'&&entry.message.isError));
@@ -272,15 +274,21 @@ test('read-only correction results cannot wake writable member, goal or job cont
 
 test('corrected Goals pause after verification and queued restoration; explicit user resume authorises fresh execution',{timeout:50000},async()=>{
  for(const queued of [false,true]){
-  let memberHeld=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
+  let memberHeld=false,verificationGraphId='',release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
   const server=createServer(async(req,res)=>{
    let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
     if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'friend_goal',input:{action:'create',input:{objective:'Retain the original delivery and verify with Swarm'}}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
-    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}
-    else if(body.includes('继续目标：')){if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};else if(recent.length===1)call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};}
+    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running')){verificationGraphId=graph.id;call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}}
+    else if(body.includes('继续目标：')){
+     if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};
+     else if(recent.length===1)call={name:'friend_swarm',input:{action:queued?'append':'create',input:{...(queued?{graphId:verificationGraphId}:{}),goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
+     else if(!queued&&recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
+     else if(recent.length===(queued?2:3))call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
+     else if(recent.length===(queued?3:4))call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};
+    }
     else if(body.includes('QUEUE_B'))reply='Independent queued user request completed';
     else throw Error('Unexpected automatic Goal continuation: '+body);
    }else{if(queued){memberHeld=true;await held;}if(!recent.length)call={name:'read',input:{path:'delivery.txt'}};}
@@ -298,7 +306,7 @@ test('corrected Goals pause after verification and queued restoration; explicit 
    if(queued){const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(entries.some(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.eventId.startsWith('queue-resume:')&&entry.data.status==='not-run'));}
    await f.request('runtime',{action:'goal.pause',input:{goalId:paused.runtime.goal.id}});await f.request('runtime',{action:'goal.resume',input:{goalId:paused.runtime.goal.id}});
    await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='waiting'));
-   const final=await f.request('state') as {isRunning:boolean;runtime:{pendingWakes:unknown[]}};assert.equal(final.isRunning,false);assert.deepEqual(final.runtime.pendingWakes,[]);const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.message?.toolName==='write'&&!entry.message.isError).length,2);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);
+   const final=await f.request('state') as {isRunning:boolean;runtime:{pendingWakes:unknown[]}};assert.equal(final.isRunning,false);assert.deepEqual(final.runtime.pendingWakes,[]);const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.message?.toolName==='write'&&!entry.message.isError).length,2);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(existsSync(join(f.directory,'forbidden-after-resume.txt')),false);assert.ok(entries.some(entry=>entry.message?.toolName==='write'&&entry.message.isError&&JSON.stringify(entry.message).includes('本轮是只读协作')));
   }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
  }
 });
@@ -456,7 +464,7 @@ test('native Swarm completion automatically continues a waiting Goal without pol
   if(names.includes('swarm_review_result')){if(!messages.some(message=>message.role==='tool'))call={name:'swarm_review_result',input:{approved:true,findings:'Independent loopback reviewer inspected both read outcomes'}};}
   else if(names.includes('friend_swarm')){
    const user=messages.findLastIndex(message=>message.role==='user'),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
-   if(latest.includes('Swarm 任务图')&&latest.includes('已通过检查')){
+   if(latest.includes('Swarm 任务图')&&latest.includes('已整合')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
     if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
     else if(goal.status!=='completed')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
@@ -666,7 +674,7 @@ test('native Bash and background jobs omit inherited credentials while inference
  const credential='synthetic-local-inference-only';let authenticated=0,calls=0;
  const command="'"+process.execPath.replaceAll("'","'\\''")+"' -e 'console.log(JSON.stringify({credentialPresent:!!process.env.FRIEND_QA_API_KEY,normal:process.env.FRIEND_QA_NORMAL}))'";
  const server=createServer(async(req,res)=>{for await(const _ of req){}if(req.headers.authorization==='Bearer '+credential)authenticated++;const tool=calls++===0;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');res.end('data: [DONE]\n\n');});
- await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained'}});
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained',FRIEND_PI_LEARNING_ROLE:'producer'}});
  try{await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string};const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);assert.equal(authenticated,2);assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
  const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
  }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
@@ -786,4 +794,57 @@ test('cold restore discards a persisted internal Swarm correction without starti
  const f=await start({directory,sessionFile:manager.getSessionFile(),status:'interrupted',executionMode:'swarm'});
  try{await f.request('queue',{action:'resume'});await f.wait(()=>!wake.list(`queue:${sessionId}:`).length);const state=await f.request('state') as {lifecycleStatus:string;isRunning:boolean};assert.equal(state.lifecycleStatus,'interrupted');assert.equal(state.isRunning,false);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);assert.equal(f.events.some(event=>event.event?.type==='notice'&&event.event.data.level==='error'),false);const entries=readFileSync(manager.getSessionFile()!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.status==='not-run').length,ids.length);}
  finally{wake.close();await f.close();}
+});
+
+
+for(const corrected of [false,true])test(`a ${corrected?'late':'first-step'} validated direct strategy stays in Swarm without inventing members`,{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);calls++;
+  assert.ok(payload.messages.some((message:{role:string;content:unknown})=>message.role==='system'&&JSON.stringify(message.content).includes('plan.validate')));
+  const call=!(corrected&&calls===1)&&!payload.messages.some((message:{role:string})=>message.role==='tool');
+  const delta=call?{role:'assistant',tool_calls:[{index:0,id:'direct-plan',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Explain a simple arithmetic result',reason:'One main-agent calculation suffices; no independent write tasks',strategy:'direct',tasks:[],checks:[],risk:'low'}})}}]}:{role:'assistant',content:'The checked result is 4. Main agent completed this directly; no members ran.'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'direct',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'direct-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'What is 2+2? Check it directly if no division of work is needed.',mode:'swarm'});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='completed'&&!event.event.data.isRunning));
+  const state=await f.request('state') as {executionMode:string;sessionFile:string};assert.equal(state.executionMode,'swarm');assert.equal(calls,corrected?3:2);
+  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),corrected);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.plan.v1').length,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,false);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};assert.equal(snapshot.graphs.length,0);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+for(const parallel of [false,true])test(`${parallel?'same-batch':'late'} direct validation cannot dismiss a graph created during correction`,{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  for await(const _ of req){}const ordinal=++calls;
+  const action=ordinal===2?'create':!parallel&&ordinal===3?'plan.validate':undefined;
+  const input=action==='create'?{goal:'Verify the existing sum',checks:[],maxWorkers:1,tasks:[{id:'verify',title:'Verify sum',instruction:'Read-only verification of 2+2=4',mode:'read',dependencies:[]}]}:{goal:'Verify the existing sum',strategy:'direct',reason:'Already answered',tasks:[],checks:[],risk:'low'};
+  const toolCalls=[{index:0,id:`late-graph-${ordinal}`,type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action,input})}}];
+  if(parallel&&action==='create')toolCalls.push({index:1,id:'same-batch-direct',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Verify the existing sum',strategy:'direct',reason:'Already answered',tasks:[],checks:[],risk:'low'}})}});
+  const delta=action?{role:'assistant',tool_calls:toolCalls}:{role:'assistant',content:'4'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:action?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'late-graph',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'late-graph-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'Verify 2+2 without writes.',mode:'swarm'});
+  await f.wait(()=>calls===(parallel?3:4)&&f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+  const state=await f.request('state') as {sessionFile:string;messages:{role:string;text:string}[]};if(!parallel)assert.ok(state.messages.some(message=>message.role==='toolResult'&&message.text.includes('不能以直接策略绕过原图核验')));
+  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,true);assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.plan.v1'&&entry.data.strategy==='direct'),false);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{attempts:unknown[]}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].attempts.length,0);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+for(const sameBatch of [false,true])test(`Swarm readonly strategy rejects a ${sameBatch?'same-batch':'later'} main-agent command before it can write`,{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  for await(const _ of req){}const ordinal=++calls,plan={index:0,id:'read-plan',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Read source documents without commands',strategy:'collaboration',reason:'Two independent source reads',risk:'low',checks:[],tasks:[{id:'read-source',title:'Read source',prompt:'Read the source only',mode:'read',dependencies:[],writeScopes:[]}]}})}},command={index:sameBatch?1:0,id:'forbidden-command',type:'function',function:{name:'bash',arguments:JSON.stringify({command:'printf forbidden > forbidden-command.txt'})}};
+  const toolCalls=ordinal===1?(sameBatch?[plan,command]:[plan]):!sameBatch&&ordinal===2?[command]:[],delta=toolCalls.length?{role:'assistant',tool_calls:toolCalls}:{role:'assistant',content:'No command was required.'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:toolCalls.length?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'read-command',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'read-command-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'Read only; no commands.',mode:'swarm'});
+  await f.wait(()=>calls===(sameBatch?3:4)&&f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+  assert.equal(existsSync(join(f.directory,'forbidden-command.txt')),false);const state=await f.request('state') as {messages:{role:string;text:string;toolCallId?:string}[]};const result=state.messages.find(message=>message.role==='toolResult'&&message.toolCallId==='forbidden-command');assert.ok(result);assert.match(result.text,/先校验|本轮是只读协作/);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
 });

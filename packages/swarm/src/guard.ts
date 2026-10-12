@@ -18,6 +18,7 @@ export const destructiveCommand=sharedDestructiveCommand;
 export function guardMember(start: MemberStart, confirm: (title:string,message:string)=>Promise<boolean>): ExtensionFactory {
   return pi => {
     pi.on('tool_call',async event => {
+      if(event.toolName==='swarm_handoff_read'&&start.requiredHandoff)return;
       if(event.toolName==='swarm_review_result'&&start.reviewResult)return;
       if(start.discussion&&!['read','grep','find','ls','swarm_message'].includes(event.toolName))return {block:true,reason:'已完成成果的补充讨论只读；修改须由主 Agent 安排新尝试'};
       const input = event.input as Record<string,unknown>;

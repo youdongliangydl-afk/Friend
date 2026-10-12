@@ -11,6 +11,8 @@ import {getSupportedThinkingLevels,normalizeContext,type ProviderHeaders,type Pr
 import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCapabilityError,restrictedSourceItem,readRegisteredArtifact,type ArtifactRef,type EvidenceReceipt,type LearningLeaseToken} from './capability-services.js';
 export * from './capability-services.js';
 export * from './collaboration-services.js';
+export * from './expert-evaluation.js';
+import type {ExpertEvaluationHost} from './expert-evaluation.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
@@ -38,6 +40,7 @@ export interface PluginContext {
   learningModel?:{modelId:string;thinkingLevel:string};
   learning?:{budgetId:string;sourceRunId:string;lease:LearningLeaseToken;canAdmit():boolean};
   hostOperations?:{prepare(input:JsonObject):Promise<JsonObject>;dispatch(input:JsonObject):Promise<JsonObject>;reconcile(input:JsonObject):Promise<JsonObject>};
+  expertEvaluation?:ExpertEvaluationHost;
   executionMode?:ExecutionMode; policy?:HostPolicy;availableTools?:string[]; availableModels?:{id:string;thinkingLevels:string[]}[];
   approvePermission?(request:PermissionRequest):Promise<boolean>;
   history(): HistoryItem[]; readSource(source: SourceRef): HistoryItem;
@@ -89,7 +92,7 @@ export class RecordStore {
   constructor(readonly namespace: string, readonly dataDir = dataDirectory()) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dataDir, 'plugins.sqlite'));
-    this.db.function('friend_pi_writer_version',{deterministic:true},()=>3);
+    this.db.function('friend_pi_writer_version',{deterministic:true},()=>4);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON');if(this.db.prepare('PRAGMA journal_mode').get()?.journal_mode!=='wal')this.db.exec('PRAGMA journal_mode=WAL');if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").get())this.db.exec('CREATE TABLE documents(namespace TEXT NOT NULL,key TEXT NOT NULL,revision INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(namespace,key))');
   }
   get<T>(key: string): StoredDocument<T> | undefined {
@@ -219,6 +222,8 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   // A host answers through its own Pi bus. Native packages remain independent
   // when no desktop host is present; no module singleton carries authority.
   pi.events?.emit('friend-pi:v1:policy',{v:1,sessionId,reply:(value:HostPolicy)=>{policy=value;}});
+  let expertEvaluation:ExpertEvaluationHost|undefined;
+  pi.events?.emit('friend-pi:v1:expert-evaluation',{v:1,sessionId,reply:(value:ExpertEvaluationHost)=>{if(value?.v===1&&typeof value.catalog==='function'&&typeof value.advance==='function'&&typeof value.read==='function')expertEvaluation=value;}});
   const availableModels=(ctx.modelRegistry?.getAvailable?.()||[]).filter(item=>process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'||savedModelIds(dataDir).includes(`${item.provider}/${item.id}`)).map(item=>({id:`${item.provider}/${item.id}`,thinkingLevels:getSupportedThinkingLevels(item)}));
   if (sessionFile) {
     const registry = new RecordStore('sessions',dataDir);try{const old=registry.get<{path:string;projectDir:string}>(sessionId)?.value;if(old?.path!==sessionFile||old?.projectDir!==ctx.cwd)registry.put(sessionId,{path:sessionFile,projectDir:ctx.cwd});}finally{registry.close();}
@@ -227,7 +232,7 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   return {
     origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
     modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,runId:process.env.FRIEND_PI_RUN_ID,
-    policy,executionMode:policy?.executionMode,availableTools:pi.getAllTools?.().map(tool=>tool.name)||[],availableModels,learningModel,
+    policy,executionMode:policy?.executionMode,availableTools:pi.getAllTools?.().map(tool=>tool.name)||[],availableModels,learningModel,expertEvaluation,
     applyModel:async(modelId,level)=>{
       if(!policy?.canSwitchRole||policy.unsettledTools)throw new Error('型号切换未到宿主安全阶段');
       const slash=modelId.indexOf('/'),target=ctx.modelRegistry.find(modelId.slice(0,slash),modelId.slice(slash+1));
@@ -305,7 +310,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent',trusted?:TrustedPluginContext) => {
     const base = makeContext(pi,ctx,origin);const context:PluginContext=trusted?{...base,runId:trusted.runId,memberId:trusted.memberId,taskId:trusted.taskId,taskScope:trusted.taskScope,inputHash:trusted.inputHash,findJournalEntry:trusted.findJournalEntry}:base; const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
-    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
+    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around','plan.validate','resume.preview','handoff.read','impact.preview','diagnostics','source.read','read.range','learning.status','validation.read','skill.read','skill.versions','catalog.search']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
   pi.on('before_agent_start',(_event,ctx) => { current = ctx; });
@@ -375,10 +380,11 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(content.includes('提炼一个文本方法候选'))return fauxAssistantMessage('{"method":null}');
     if(content.includes('仅输出JSON。任务'))return fauxAssistantMessage('{"result":true}');
     if(content.includes('把目标拆为可交付成果任务'))return fauxAssistantMessage(JSON.stringify({tasks:[{id:'task-1',title:'执行离线验证',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']}]}));
-    if(content.includes('请用 friend_swarm create/start')){
+    if(content.includes('请用 friend_swarm create/start')||content.includes('先用 friend_swarm plan.validate')){
       const results=messages.filter(message=>message.role==='toolResult'&&message.toolName==='friend_swarm');
-      if(!results.length)return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'create',input:content.includes('QA_PERSISTENT_TEAM')?{goal:'QA_PERSISTENT_TEAM 持续团队界面验收',tasks:[{id:'writer',title:'文档队友',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'reader',title:'阅读队友',prompt:'QA_TIMELINE',dependencies:[],mode:'read',writeScopes:['.']},{id:'sleeper',title:'分析队友',prompt:'QA_SLOW',dependencies:[],mode:'read',writeScopes:['.']}]}:{goal:'离线 Swarm SDK 验证',tasks:[{id:'implementation',title:'执行',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'inspect',title:'检查',prompt:'只读说明当前项目',dependencies:[],mode:'read',writeScopes:['.']}]}}),{stopReason:'toolUse'});
-      try{const result=JSON.parse(visibleText(results.at(-1)!.content));if(result.id&&result.status==='created')return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'start',input:{graphId:result.id}}),{stopReason:'toolUse'});}catch{}
+      const draft=content.includes('QA_PERSISTENT_TEAM')?{goal:'QA_PERSISTENT_TEAM 持续团队界面验收',tasks:[{id:'writer',title:'文档队友',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'reader',title:'阅读队友',prompt:'QA_TIMELINE',dependencies:[],mode:'read',writeScopes:['.']},{id:'sleeper',title:'分析队友',prompt:'QA_SLOW',dependencies:[],mode:'read',writeScopes:['.']}]}:{goal:'离线 Swarm SDK 验证',tasks:[{id:'implementation',title:'执行',prompt:'QA_WRITE',dependencies:[],mode:'write',writeScopes:['.']},{id:'inspect',title:'检查',prompt:'只读说明当前项目',dependencies:[],mode:'read',writeScopes:['.']}]};
+      if(!results.length)return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'plan.validate',input:{...draft,strategy:'collaboration',reason:'离线受控写入与独立只读检查',risk:'medium'}}),{stopReason:'toolUse'});
+      try{const result=JSON.parse(visibleText(results.at(-1)!.content));if(result.valid===true)return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'create',input:{...draft,contract:result.contract}}),{stopReason:'toolUse'});if(result.id&&result.status==='created')return fauxAssistantMessage(fauxToolCall('friend_swarm',{action:'start',input:{graphId:result.id}}),{stopReason:'toolUse'});}catch{}
       return fauxAssistantMessage('离线 Swarm 已派发。成员执行和复核状态以任务图为准。');
     }
     if(content.includes('QA_TERMINAL')&&!hasResult)return fauxAssistantMessage(fauxToolCall('friend_terminal',{action:'create',name:'QA Agent service',command:"printf '%s%s\\n' 'AGENT_' 'SERVICE_OK'"}),{stopReason:'toolUse'});

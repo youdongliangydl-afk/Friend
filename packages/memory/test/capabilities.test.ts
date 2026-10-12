@@ -372,13 +372,15 @@ test('negative, unknown or conditional source statements cannot authorize affirm
  }finally{await f.close();}}
 });
 
-test('ordinary preferences need independent native entries; personal grants expose only exact supported span (08-10)',async()=>{
+test('repeated observations do not become long-term instructions; explicit user preference grants exact supported spans (08-10)',async()=>{
  const f=fixture();try{
   f.items[0].text='中文解释便于我理解。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user1'],sourceQuotes:{user1:f.items[0].text}}]});
   await f.c.settled(f.ctx);await drain(f.c,f.ctx);assert.equal((f.c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);
   f.items.push({id:'user2',parentId:'user1',type:'message',role:'user',timestamp:new Date().toISOString(),text:'采用中文说明更便于阅读。'});
   f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user2'],sourceQuotes:{user2:f.items[1].text}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
-  const personal=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(personal.scope,'personal');assert.equal(personal.sources.length,2);
+  assert.equal((f.c.snapshot(f.ctx).memories as MemoryRecord[]).length,0);
+  f.items.push({id:'user3',parentId:'user2',type:'message',role:'user',timestamp:new Date().toISOString(),text:'今后我更喜欢中文说明，请保存为长期偏好。'});f.ctx.complete=async()=>JSON.stringify({memories:[{title:'说明语言',content:'用户喜欢中文说明',kind:'preference',subject:'language',sourceEntryIds:['user3'],sourceQuotes:{user3:f.items[2].text}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
+  const personal=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(personal.scope,'personal');assert.equal(personal.sources.length,3);
   const host=new RecordStore('host',f.dir),policy=new SourcePolicy(host);assert.equal(policy.canReadPersonalSource(personal.sources[0]),true);assert.equal(policy.canReadPersonalSource({sessionId:'s',entryId:'user1'}),false);host.close();
   assert.equal(f.c.search({query:'中文'},{...f.ctx,projectId:'another'})[0].id,personal.id);
  }finally{await f.close();}

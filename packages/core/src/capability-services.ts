@@ -63,8 +63,10 @@ export class SourcePolicy {
    put(this.store,policyNS,`fence:${fence.id}`,{hash:digest(fence)});return fence;
   });
  }
- assert(fence:SourceFence,lease?:LearningLeaseToken):void {
-  if(!fence||fence.v!==1||fence.expiresAt<Date.now()||get<{hash:string}>(this.store,policyNS,`fence:${fence.id}`)?.hash!==digest(fence))throw new CapabilityError('VERSION_CONFLICT','来源围栏已过期或不匹配');
+ assert(fence:SourceFence,lease?:LearningLeaseToken):void {this.checkFence(fence,lease,false);}
+ renew(fence:SourceFence,lease?:LearningLeaseToken):SourceFence {return this.store.transaction(()=>{this.checkFence(fence,lease,true);return fence.expiresAt<Date.now()?this.capture({projectId:fence.projectId,sources:fence.sources,artifacts:fence.artifacts,dependencies:fence.dependencies}):fence;});}
+ private checkFence(fence:SourceFence,lease:LearningLeaseToken|undefined,allowExpired:boolean):void {
+  if(!fence||fence.v!==1||!allowExpired&&fence.expiresAt<Date.now()||get<{hash:string}>(this.store,policyNS,`fence:${fence.id}`)?.hash!==digest(fence))throw new CapabilityError('VERSION_CONFLICT','来源围栏已过期或不匹配');
   if((get<number>(this.store,policyNS,'policyEpoch')||0)!==fence.policyEpoch)throw new CapabilityError('SOURCE_UNAVAILABLE','来源策略已变化');
   for(const entry of fence.states){const state=this.state(entry.key);if(!state.valid||state.epoch!==entry.epoch)throw new CapabilityError('SOURCE_UNAVAILABLE',state.reason||'来源或依赖版本已变化');}
   for(const source of fence.sources)this.assertSource(source);
@@ -131,6 +133,7 @@ export class LearningBudget {
  constructor(readonly store:RecordStore){}
  create(input:{budgetId?:string;projectId:string;sourceRunId:string;maxCalls:number;tokenLimit?:number}):LearningBudgetRecord {if(!input.projectId||!input.sourceRunId||!Number.isSafeInteger(input.maxCalls)||input.maxCalls<1||input.tokenLimit!==undefined&&(!Number.isSafeInteger(input.tokenLimit)||input.tokenLimit<1))throw new CapabilityError('VALIDATION_ERROR','后台预算无效');return this.store.transaction(()=>{const budgetId=input.budgetId||randomUUID(),key=`learning-budget:${budgetId}`,old=get<LearningBudgetRecord>(this.store,'runtime',key);if(old){if(old.projectId!==input.projectId||old.sourceRunId!==input.sourceRunId||old.maxCalls!==input.maxCalls||old.tokenLimit!==input.tokenLimit)throw new CapabilityError('VERSION_CONFLICT','预算身份已经用于不同配置');return old;}const result={...input,budgetId,calls:0,tokens:0,usageUnknown:false};put(this.store,'runtime',key,result);return result;});}
  read(budgetId:string):LearningBudgetRecord {const record=get<LearningBudgetRecord>(this.store,'runtime',`learning-budget:${budgetId}`);if(!record)throw new CapabilityError('BUDGET_EXHAUSTED','未登记独立后台预算');return record;}
+ increaseLimit(budgetId:string,maxCalls:number):LearningBudgetRecord {return this.store.transaction(()=>{const old=this.read(budgetId);if(!Number.isSafeInteger(maxCalls)||maxCalls<old.maxCalls)throw new CapabilityError('VALIDATION_ERROR','累计预算只允许显式提高上限');if(maxCalls===old.maxCalls)return old;const next={...old,maxCalls};put(this.store,'runtime',`learning-budget:${budgetId}`,next);return next;});}
  readCall(budgetId:string,operationId:string):{callId:string;state:'dispatched'|'complete'|'failed'|'unknown';result?:string;tokens?:number;stage?:string;requestHash?:string;response?:JsonObject}|undefined {return get(this.store,'runtime',`learning-call:${budgetId}:${operationId}`);}
  begin(input:{budgetId:string;operationId:string;callId?:string;stage?:string;promptHash:string;requestHash?:string}):{callId:string;result?:string} {return this.store.transaction(()=>{
   if(input.requestHash!==undefined&&(typeof input.requestHash!=='string'||!/^[a-f0-9]{64}$/.test(input.requestHash)))throw new CapabilityError('VALIDATION_ERROR','后台请求身份摘要无效');
@@ -161,6 +164,21 @@ export function restrictedSourceItem(item:HistoryItem,source:SourceRef):HistoryI
 
 /** Older packaged cores lack this connection function and therefore cannot mutate upgraded state. */
 export function requireSchemaWriter(store:RecordStore,namespace:'memory'|'expert'|'swarm',version=3,tables:string[]=[]):void {
- if(!Number.isSafeInteger(version)||version<1||version>3||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
- store.transaction(()=>{for(const action of ['INSERT','UPDATE','DELETE']){const row=action==='DELETE'?'OLD':'NEW',name=`friend_${namespace}_writer_${action.toLowerCase()}`;store.db.exec(`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${action} ON documents WHEN ${row}.namespace='${namespace}' BEGIN SELECT CASE WHEN friend_pi_writer_version()<${version} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}for(const table of tables){if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;for(const action of ['INSERT','UPDATE','DELETE'])store.db.exec(`CREATE TRIGGER IF NOT EXISTS friend_${table}_writer_${action.toLowerCase()} BEFORE ${action} ON ${table} BEGIN SELECT CASE WHEN friend_pi_writer_version()<${version} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}put(store,'schema-policy',namespace,{minWriter:version,at:new Date().toISOString()});});
+ if(!Number.isSafeInteger(version)||version<1||version>4||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
+ store.transaction(()=>{
+  version=Math.max(version,get<{minWriter:number}>(store,'schema-policy',namespace)?.minWriter||0);
+  const prefixes=[`friend_${namespace}_writer_`,...tables.map(table=>`friend_${table}_writer_`)];
+  const fences=store.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all();
+  for(const row of fences)if(prefixes.some(prefix=>String(row.name).startsWith(prefix)))version=Math.max(version,Number(String(row.sql||'').match(/friend_pi_writer_version\(\)<(\d+)/)?.[1]||0));
+  const install=(name:string,body:(minimum:number)=>string)=>{
+   const existing=store.db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.sql;
+   const minimum=Number(String(existing||'').match(/friend_pi_writer_version\(\)<(\d+)/)?.[1]||0);
+   version=Math.max(version,minimum);
+   if(existing&&minimum>=version)return;
+   store.db.exec(`DROP TRIGGER IF EXISTS ${name}`);store.db.exec(body(version));
+  };
+  for(const action of ['INSERT','UPDATE','DELETE']){const row=action==='DELETE'?'OLD':'NEW',name=`friend_${namespace}_writer_${action.toLowerCase()}`;install(name,minimum=>`CREATE TRIGGER ${name} BEFORE ${action} ON documents WHEN ${row}.namespace='${namespace}' BEGIN SELECT CASE WHEN friend_pi_writer_version()<${minimum} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}
+  for(const table of tables){if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;for(const action of ['INSERT','UPDATE','DELETE']){const name=`friend_${table}_writer_${action.toLowerCase()}`;install(name,minimum=>`CREATE TRIGGER ${name} BEFORE ${action} ON ${table} BEGIN SELECT CASE WHEN friend_pi_writer_version()<${minimum} THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;`);}}
+  put(store,'schema-policy',namespace,{minWriter:version,at:new Date().toISOString()});
+ });
 }
