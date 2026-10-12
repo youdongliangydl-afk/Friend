@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { SourcePolicy,RecordStore,object,text,projectIdentity,digest,isSessionDeleted,installFixtureProvider,parsePermissionMode,type PermissionMode } from '@friend-pi/core';
+import { SourcePolicy,RecordStore,object,text,projectIdentity,digest,isSessionDeleted,installFixtureProvider,parsePermissionMode,readCustomInstructions,saveCustomInstructions,type PermissionMode } from '@friend-pi/core';
 import {importAttachments,inspectAttachment} from './attachment-input.js';
 import {fileReferences,referencePath,sessionReference} from './material-references.js';
 import {readDocument,createDocumentReader,documentManifest,paginateDocument,renderPdfPage} from './document-reader.js';
@@ -60,6 +60,7 @@ function startLearning(){if(shuttingDown||learning)return;processSnapshot();lear
 async function learningRequest(method:string,input:Record<string,unknown>={},timeoutMs=15000):Promise<unknown>{if(learning&&!learningReady){const child=learning;await new Promise<void>((yes,no)=>{const cleanup=()=>{clearTimeout(timer);child.off('friend-ready',ready);child.off('exit',failed);};const ready=()=>{cleanup();yes();};const failed=()=>{cleanup();no(new Error('后台服务未能启动'));};const timer=setTimeout(failed,timeoutMs);child.once('friend-ready',ready);child.once('exit',failed);});}if(!learning?.connected)return Promise.reject(new Error('后台服务尚未就绪'));const id=randomUUID();return new Promise((resolveResult,reject)=>{const timer=setTimeout(()=>{learningPending.delete(id);reject(new Error('后台服务操作超时'));},timeoutMs);learningPending.set(id,{resolve:resolveResult,reject,timer});learning!.send({type:'request',id,method,input});});}
 const allowed=new Set(['app.state','settings.get','settings.update','project.open','project.select','session.new','session.changes.read','session.open','session.rename','session.send','session.stop','session.configure','session.archive','session.delete.preview','session.delete','session.relocate','plugin.call','runtime.call','workflow.generate','file.pick','file.read','file.tree','file.open','git.diff','provider.save','dialog.respond','dialog.status','plan.read','plan.approve','plan.reject','plan.revise','learning.pause','learning.resume','learning.state']);
 allowed.add('attention.dismiss');
+allowed.add('instructions.get');allowed.add('instructions.update');
 for(const method of ['project.create','session.reorder','navigation.go'])allowed.add(method);
 for(const method of ['attachment.import','attachment.inspect','reference.list','document.read','document.section','document.pdf.page','external.call'])allowed.add(method);
 allowed.add('link.open');allowed.add('model.test');
@@ -244,6 +245,8 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     browserHost?.removeSession(record.id);const mark:Deletion={id:record.id,piSessionId:nativeId,path:record.path,projectId:sessionWorkspace(store,record).id,workspaceDir:sessionWorkspace(store,record).path,listProjectId:record.projectId,state:'preparing',token:String(input.token),at:new Date().toISOString()};store.put(`deleting:${record.id}`,mark);const result=await finishDeletion(mark);publishState();return result;
   }
   if(method==='session.relocate'){const navigation=++navigationGeneration,{record}=idleRecord(input);const result=await dialog.showOpenDialog(window,{title:'重新定位 Pi 原始历史',properties:['openFile'],filters:[{name:'Pi历史',extensions:['jsonl']}]});if(result.canceled)return {cancelled:true};const prior=workers.get(record.id);if(prior){try{await request(prior,'shutdown',{},3000);}catch{}retireWorker(prior,new Error('重新定位原史'));await terminateWorker(prior);}await startWorker({...record,path:result.filePaths[0]});if(navigation===navigationGeneration){selectCurrent(record.id);store.put('current',record.id);visitSelection();}publishState();return state();}
+  if(method==='instructions.get')return readCustomInstructions(dataDir);
+  if(method==='instructions.update'){requireActive();return saveCustomInstructions(dataDir,input);}
   if(method==='settings.get')return await settings(typeof input.projectId==='string'?input.projectId:undefined);
   if(method==='settings.update'){
     const projectId=typeof input.projectId==='string'?input.projectId:undefined;if(projectId&&!store.get(`project:${projectId}`))throw new Error('项目不存在');const key=projectId?`preferences:${projectId}`:'preferences';

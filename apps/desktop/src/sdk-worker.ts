@@ -19,7 +19,7 @@ import {TODO_TYPE,SIDECHAT_TYPE,todoItems,projectTodo,ownedEntries,stableForkLea
 import {providerSystems,projectMessages,projectTeammateMessages,projectTraceSystems,traceJSON} from './message-projection.js';
 import {RunChangesTracker,projectRunChanges,RUN_CHANGES_TYPE} from './run-changes.js';
 import {SessionMetricRecorder,projectSessionMonitor,SESSION_METRIC_TYPE} from './session-monitor.js';
-import {guardDesktopModelRequests} from '@friend-pi/core';
+import {guardDesktopModelRequests,customInstructionsExtension} from '@friend-pi/core';
 import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 
@@ -336,7 +336,7 @@ async function initialize(){
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
   guardDesktopModelRequests(runtime,dataDir);
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[customInstructionsExtension(dataDir),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
   await loader.reload({resolveProjectTrust:async()=>true});
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
   if(priorFile){if(!existsSync(priorFile))throw new Error('原始会话历史缺失，未创建替代历史');const raw=readFileSync(priorFile,'utf8');if(!raw.trim())throw new Error('原始历史为空，不能恢复');const entries=raw.trim().split('\n').map(line=>JSON.parse(line));if(entries[0]?.type!=='session'||typeof entries[0].id!=='string')throw new Error('原始历史头部无效，未创建替代历史');const known=new Set<string>();for(const entry of entries.slice(1)){if(!entry||typeof entry.type!=='string'||typeof entry.id!=='string'||!entry.id||known.has(entry.id)||typeof entry.timestamp!=='string'||!Number.isFinite(Date.parse(entry.timestamp))||entry.parentId!==null&&(typeof entry.parentId!=='string'||!known.has(entry.parentId))||entry.type==='message'&&(!entry.message||typeof entry.message.role!=='string'))throw new Error('原始历史条目损坏，索引保留，未创建替代历史');known.add(entry.id);}}

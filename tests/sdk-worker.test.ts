@@ -14,7 +14,7 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
-import { RecordStore,projectIdentity,digest } from '../packages/core/src/index.js';
+import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
@@ -786,4 +786,52 @@ test('cold restore discards a persisted internal Swarm correction without starti
  const f=await start({directory,sessionFile:manager.getSessionFile(),status:'interrupted',executionMode:'swarm'});
  try{await f.request('queue',{action:'resume'});await f.wait(()=>!wake.list(`queue:${sessionId}:`).length);const state=await f.request('state') as {lifecycleStatus:string;isRunning:boolean};assert.equal(state.lifecycleStatus,'interrupted');assert.equal(state.isRunning,false);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);assert.equal(f.events.some(event=>event.event?.type==='notice'&&event.event.data.level==='error'),false);const entries=readFileSync(manager.getSessionFile()!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.status==='not-run').length,ids.length);}
  finally{wake.close();await f.close();}
+});
+
+test('custom instructions reach final provider payload after edit, clear, cold restore and Team inheritance',{timeout:45000},async()=>{
+ type Payload={messages:{role:string;content:unknown}[];tools?:{function:{name:string}}[]};
+ const payloads:Payload[]=[];
+ const server=createServer(async(req,res)=>{
+  let body='';for await(const chunk of req)body+=String(chunk);payloads.push(JSON.parse(body) as Payload);
+  res.writeHead(200,{'Content-Type':'text/event-stream'});
+  for(const choice of [{delta:{role:'assistant',content:'Read-only fixture outcome'},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:'custom-instructions-fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ let f=await start({temporary:true});
+ const system=(payload:Payload)=>payload.messages.filter(message=>message.role==='system').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
+ const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
+ const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});
+ const round=async(label:string)=>{
+  const beforeEvents=f.events.length,beforePayloads=payloads.length;await f.request('send',{text:label,mode:'single',planMode:false});
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const requests=payloads.slice(beforePayloads);assert.equal(requests.length,1,'each plain-text round reaches the actual loopback provider once');
+  const prompt=system(requests[0]);assert.ok(prompt.includes('所有任务产物默认写入当前会话目录'));assert.ok(prompt.includes('权限策略不能免除该要求'));
+  assert.ok(prompt.includes('friend_questions'));return prompt;
+ };
+ try{
+  await f.request('configure',{plugins:[]});
+  await f.request('provider.save',{provider:'custom-instructions-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  assert.ok(!(await round('CUSTOM_EMPTY_ROUND')).includes('<friend_custom_instructions>'));
+  save(alpha);const first=await round('CUSTOM_ADD_ROUND');assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
+  assert.ok(first.includes('本轮用户的明确要求优先于这些偏好'));
+  save(beta);const edited=await round('CUSTOM_EDIT_ROUND');assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
+  save('');const cleared=await round('CUSTOM_CLEAR_ROUND');assert.ok(!cleared.includes(beta));assert.ok(!cleared.includes('<friend_custom_instructions>'));
+  save(persisted);const before=await f.request('state') as {sessionFile:string;sessionId:string};const oldPid=f.child.pid,directory=f.directory;
+  await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture',temporary:true});
+  await f.request('configure',{plugins:[]});assert.notEqual(f.child.pid,oldPid);
+  const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);
+  const cold=await round('CUSTOM_COLD_ROUND');assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
+
+  await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
+  await f.request('configure',{plugins:['swarm']});await f.request('configure',{executionMode:'team'});
+  const beforeTeam=payloads.length,beforeEvents=f.events.length;
+  await f.request('plugin',{plugin:'team',action:'delegate',input:{tasks:[{id:'custom-reader',title:'Custom reader',prompt:'CUSTOM_TEAM_MEMBER inspect the current project without modifying files',mode:'read',dependencies:[]}]}});
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='team.result'));
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const memberPayloads=payloads.slice(beforeTeam).filter(payload=>payload.tools?.some(tool=>tool.function.name==='team_message'));
+  assert.ok(memberPayloads.length>0,'actual Team worker must reach the loopback provider');
+  for(const payload of memberPayloads){const prompt=system(payload);assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
+  const team=await f.request('plugin',{plugin:'team',action:'list'}) as {graphs:{status:string}[]};assert.equal(team.graphs[0].status,'completed');
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });

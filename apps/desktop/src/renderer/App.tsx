@@ -34,6 +34,7 @@ import {ProviderPanel} from './ProviderPanel.js';
 import {ModelPicker} from './model-picker.js';
 import {PlanPreview} from './plan-preview.js';
 import {TerminalPanel} from './TerminalPanel.js';
+import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -48,7 +49,7 @@ function pickedPaths(value: unknown): string[] {
 
 
 interface SettingsData {preferences:Preferences;models:AppState['models'];providers:AppState['providers'];paths:{dataDir:string};piSource:string}
-type SettingsPage='general'|'models'|'memory'|'extensions';
+type SettingsPage='general'|'models'|'instructions'|'memory'|'extensions';
 export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClose,onBusy}:{onBusy(busy:boolean):void;page:SettingsPage;setPage(page:SettingsPage):void;onClose():void;projectId?:string;state:AppState;report(message:string,error?:boolean):void;refresh():Promise<AppState>}) {
   const defaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:[...plugins],defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',defaultWorkspaceDir:'~/Documents/Friend',contextMode:'native',backgroundModelId:''};
   const [settings,setSettings]=useState<SettingsData>({preferences:state.preferences||defaults,models:state.models,providers:state.providers,paths:{dataDir:''},piSource:''});
@@ -56,7 +57,8 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
   const load=useCallback(async()=>{const generation=++loadGeneration.current;setSettingsReady(false);const next=await window.friendPi.request<SettingsData>('settings.get',{projectId:scope==='project'?projectId:undefined});if(generation!==loadGeneration.current)return;setSettings(next);setForm(next.preferences);setSettingsReady(true);},[scope,projectId]);
   useEffect(()=>{void load().catch(error=>report(errorText(error),true));return()=>{loadGeneration.current++;};},[load,report]);
   const providerRefresh=async()=>{const next=await refresh();setSettings(await window.friendPi.request<SettingsData>('settings.get',{projectId:scope==='project'?projectId:undefined}));return next;};
-  useEffect(()=>onBusy(providerBusy||saving),[providerBusy,saving,onBusy]);
+  const [instructionsBusy,setInstructionsBusy]=useState(false);
+  useEffect(()=>onBusy(providerBusy||saving||instructionsBusy),[providerBusy,saving,instructionsBusy,onBusy]);
   useEffect(()=>{for(const field of settingsRoot.current?.querySelector('[data-settings-general]')?.querySelectorAll<HTMLElement>('.field,.switch-row,fieldset')||[])field.hidden=!!query&&!field.textContent?.toLowerCase().includes(query.toLowerCase());},[query]);
   useEffect(()=>{void window.friendPi.request('learning.state').then(raw=>setLearning(asObject(raw))).catch(()=>{});},[]);
   const toggleCapability=async(plugin:'expert'|'memory',enabled:boolean)=>{
@@ -72,7 +74,7 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
   const defaultModel=settings.models.find(model=>model.id===form.defaultModelId)||(!form.defaultModelId?settings.models.find(model=>model.ready):undefined);
   const pageScroll=useRef<Partial<Record<SettingsPage,number>>>({});const pageBody=useRef<HTMLDivElement>(null);const previousPage=useRef(page);
   useEffect(()=>{previousPage.current=page;if(pageBody.current)pageBody.current.scrollTop=pageScroll.current[page]||0;},[page]);
-  return <div className="settings-shell"><nav className="settings-nav" aria-label="设置分类">{([['general','常规'],['models','模型'],['memory','记忆'],['extensions','扩展']] as const).map(([id,label])=><button key={id} aria-current={page===id?'page':undefined} onClick={()=>setPage(id)}>{label}</button>)}</nav><div ref={pageBody} className="settings-body" onScroll={e=>{pageScroll.current[previousPage.current]=e.currentTarget.scrollTop;}}><div ref={settingsRoot} className="panel-content settings-panel"><div data-settings-general hidden={page!=='general'}><input aria-label="搜索设置" placeholder="搜索设置…" value={query} onChange={event=>setQuery(event.target.value)}/><Field label="设置作用域"><select value={scope} disabled={saving} onChange={event=>{setSettingsReady(false);setScope(event.target.value);}}><option value="global">全局默认</option><option value="project" disabled={!projectId}>当前项目覆盖</option></select></Field><div className="panel-intro"><h2>设置</h2><p>模型与权限默认值用于新会话；上下文策略在安全边界应用。</p></div>
+  return <div className="settings-shell"><nav className="settings-nav" aria-label="设置分类">{([['general','常规'],['models','模型'],['instructions','自定义指令'],['memory','记忆'],['extensions','扩展']] as const).map(([id,label])=><button key={id} aria-current={page===id?'page':undefined} onClick={()=>setPage(id)}>{label}</button>)}</nav><div ref={pageBody} className="settings-body" onScroll={e=>{pageScroll.current[previousPage.current]=e.currentTarget.scrollTop;}}><div ref={settingsRoot} className="panel-content settings-panel"><div data-settings-general hidden={page!=='general'}><input aria-label="搜索设置" placeholder="搜索设置…" value={query} onChange={event=>setQuery(event.target.value)}/><Field label="设置作用域"><select value={scope} disabled={saving} onChange={event=>{setSettingsReady(false);setScope(event.target.value);}}><option value="global">全局默认</option><option value="project" disabled={!projectId}>当前项目覆盖</option></select></Field><div className="panel-intro"><h2>设置</h2><p>模型与权限默认值用于新会话；上下文策略在安全边界应用。</p></div>
     <section className="card"><h3>新会话默认值</h3><form onSubmit={event=>{event.preventDefault();if(!settingsReady||saving)return;setSaving(true);void window.friendPi.request<SettingsData>('settings.update',{...form,defaultPlugins:form.contextMode==='infinite'?[...new Set([...form.defaultPlugins,'topic-rebuild'])]:form.defaultPlugins,projectId:scope==='project'?projectId:undefined}).then(async next=>{setSettings(next);setForm(next.preferences);await refresh();report('设置已保存；模型默认值用于新会话，能力与上下文在安全边界生效');}).catch(error=>report(errorText(error),true)).finally(()=>setSaving(false));}}>
       <Field label="默认模型"><select value={form.defaultModelId||''} onChange={event=>{const id=event.target.value;const model=settings.models.find(model=>model.id===id);setForm({...form,defaultModelId:id,defaultThinkingLevel:model?.thinkingLevels?.includes(form.defaultThinkingLevel)?form.defaultThinkingLevel:model?.thinkingLevels?.[0]||'off'});}}><option value="">自动选择已验证模型</option>{settings.models.map(model=><option disabled={!model.ready} value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
       <Field label="默认思考等级"><select value={form.defaultThinkingLevel} onChange={event=>setForm({...form,defaultThinkingLevel:event.target.value})}>{[['off','不思考'],['minimal','最少'],['low','低'],['medium','中'],['high','高'],['xhigh','最高']].filter(([value])=>(defaultModel?.thinkingLevels||['off']).includes(value)).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></Field>
@@ -90,9 +92,10 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
     <section className="card environment-card"><h3>本地环境</h3><Field label="数据目录"><code>{settings.paths.dataDir||'读取中…'}</code></Field><Field label="Pi 源码版本"><code>{settings.piSource||'读取中…'}</code></Field></section></div>
     <div hidden={page!=='memory'}><section className="card"><label className="switch-row"><span>启用记忆</span><input type="checkbox" role="switch" disabled={saving||!settingsReady} checked={settings.preferences.defaultPlugins.includes('memory')} onChange={event=>void toggleCapability('memory',event.target.checked)}/></label></section><section className="card"><h3>自动学习</h3><p>项目经验和个人偏好由常驻后台串行整理，前台可以同时工作。</p><p className="hint">{learning.alive?'后台服务在线':'等待后台服务'} · {learning.paused?'已暂停':'自动学习'}</p><button onClick={()=>void window.friendPi.request(learning.paused?'learning.resume':'learning.pause').then(()=>window.friendPi.request('learning.state')).then(raw=>setLearning(asObject(raw))).catch(error=>report(String(error),true))}>{learning.paused?'恢复学习':'暂停学习'}</button></section>
     {state.current?.plugins.includes('memory')&&<MemoryPanel sessionId={state.current.sessionId} report={report}/>}</div>
+    <div hidden={page!=='instructions'}><CustomInstructionsPanel onBusy={setInstructionsBusy}/></div>
     <div hidden={page!=='models'}><ProviderPanel state={{...state,models:settings.models,providers:settings.providers}} report={report} refresh={providerRefresh} onBusy={setProviderBusy}/></div>
     <div hidden={page!=='extensions'}>{state.current?<CapabilitiesPanel sessionId={state.current.sessionId} report={report}/>:<Empty title="打开会话后配置 MCP 与外部工具"/>}</div>
-  </div></div><footer className="settings-footer"><span>{page==='models'?'保存并测试通过后，模型可用于对话':'Friend · Pi'}</span><button className="primary" disabled={providerBusy||saving} onClick={onClose}>{page==='models'?'完成并返回对话':'完成'}</button></footer></div>;
+  </div></div><footer className="settings-footer"><span>{instructionsBusy?'请先保存或取消自定义指令的修改':page==='models'?'保存并测试通过后，模型可用于对话':'Friend · Pi'}</span><button className="primary" disabled={providerBusy||saving||instructionsBusy} onClick={onClose}>{page==='models'?'完成并返回对话':'完成'}</button></footer></div>;
 }
 
 

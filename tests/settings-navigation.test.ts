@@ -97,7 +97,7 @@ test('Settings retain only General Expert switch and external Extensions capabil
   const html=renderToStaticMarkup(f.render());assert.match(html,/外部能力设置/);assert.match(html,/连接你的工具服务/);
   assert.doesNotMatch(html,/Swarm|上下文高级诊断|专家库与版本管理|专家库|方法候选/);
   const nav=nodes(f.render()).find(node=>node.type==='nav')!;
-  assert.equal(text(nav),'常规模型记忆扩展');
+  assert.equal(text(nav),'常规模型自定义指令记忆扩展');
   f.props.page='general';const tree=f.render();const general=nodes(tree).find(node=>node.type==='div'&&'data-settings-general' in node.props)!;
   assert.equal(general.props.hidden,false);
   const expertRows=nodes(general).filter(node=>node.type==='label'&&text(node)==='启用 Expert');
