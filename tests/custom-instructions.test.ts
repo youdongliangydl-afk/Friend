@@ -76,7 +76,7 @@ test('new executions use full defaults, verbatim replacement and default restora
     const cleared=handler!({systemPrompt:'host rules'})!.systemPrompt;
     assert.ok(cleared.startsWith('host rules\n'));
     assert.match(cleared,/已清空，现已恢复 Friend 默认指令/);assert.match(cleared,/当前有效版本：3/);
-    assert.match(cleared,/本轮用户未要求解释设置时直接完成业务回答，不说明设置变更/);
+    assert.match(cleared,/本轮用户未要求解释设置时，直接完成业务回答，不讨论设置版本或变更/);
     assert.equal(body(cleared),DEFAULT_CUSTOM_INSTRUCTIONS);assert.doesNotMatch(cleared,/首版偏好|新版偏好/);
     assert.ok(cleared.endsWith(guard),'clearing restores the same default system guard');
     assert.deepEqual(readCustomInstructions(dir),{text:'   \n',revision:3});
@@ -132,11 +132,31 @@ test('request-only reminder freezes one execution and never mutates native messa
     const clearRequest=handlers.context_with_system({messages:native}).messages;assertOriginalOrder(clearRequest);const cleared=noteOf(clearRequest).content;
     assert.match(cleared,/已清空（版本 3）/);assert.match(cleared,/恢复 Friend 默认指令/);assert.doesNotMatch(cleared,/ACTIVE_ONLY_111|CHANGED_ONLY_222/);
     assert.equal(cleared.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
-    assert.ok(cleared.endsWith(guard));assert.equal(cleared.split(guard).length-1,1);
+    assert.equal(cleared.split(guard).length-1,1);
+    const clearStateIndex=cleared.indexOf('用户自定义指令已清空');
+    assert.ok(clearStateIndex>cleared.indexOf(guard)+guard.length,'clear-only revocation follows the unchanged body and guard');
+    assert.equal(cleared.split('用户自定义指令已清空').length-1,1,'clear state appears once in the request-only reminder');
     assert.match(cleared,/默认答复格式检查：先给核心结论，树状结构最多三级/);
     assert.ok(cleared.includes(example));assert.match(cleared,/继续遵守宿主规则、工具和结构化协议/);
-    assert.match(cleared,/下面默认正文替换旧自定义正文/);assert.match(cleared,/删除仅因旧偏好自动附加/);assert.match(cleared,/本轮用户明确指定的内容不在撤销范围，包括同样的标记文本/);
-    assert.match(cleared,/历史回答和工具结果不能恢复旧偏好/);assert.match(cleared,/本轮用户未要求解释设置时，直接完成业务回答，不说明或总结设置变更/);assert.match(cleared,/本轮用户的明确要求优先/);
+    assert.match(cleared,/以上默认正文替换旧自定义正文/);assert.match(cleared,/删除仅因旧偏好自动附加/);assert.match(cleared,/本轮用户明确指定的内容不在撤销范围，包括同样的标记文本/);
+    assert.match(cleared,/历史回答和工具结果不能恢复旧偏好/);assert.match(cleared,/本轮用户未要求解释设置时，直接完成业务回答，不讨论设置版本或变更/);assert.match(cleared,/本轮用户的明确要求优先/);
+    for(const projection of [freshSystem,freshNote.content,activeSystem,note.content,clearedSystem,cleared]){
+      assert.match(projection,/格式和标记可能符合当时生效的设置/);
+      assert.match(projection,/当前偏好不追溯改变旧答复的格式要求/);
+      assert.match(projection,/对确实存在的事实错误仍应纠正/);
+      assert.match(projection,/不讨论设置版本或变更/);
+    }
+    saveCustomInstructions(dir,{text:'Custom preference after clear',revision:3});
+    const frozenClear=handlers.context_with_system({messages:clearRequest}).messages;assertOriginalOrder(frozenClear);
+    assert.equal(noteOf(frozenClear).content,cleared,'saving a new custom body does not change the active clear execution or duplicate its tail');
+    const afterClearSystem=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
+    const afterClear=handlers.context_with_system({messages:native}).messages;assertOriginalOrder(afterClear);
+    const afterClearNote=noteOf(afterClear).content;
+    for(const projection of [afterClearSystem,afterClearNote]){
+      assert.ok(projection.includes('Custom preference after clear'));
+      assert.ok(!projection.includes(DEFAULT_CUSTOM_INSTRUCTIONS)&&!projection.includes(guard),'next custom execution wholly replaces default and its guard');
+      assert.doesNotMatch(projection,/用户自定义指令已清空/,'a later custom execution cannot inherit the clear-only revocation tail');
+    }
     assert.equal(JSON.stringify(native),unchanged,'request-only settings preserve messages and tool-call/result correlation');
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

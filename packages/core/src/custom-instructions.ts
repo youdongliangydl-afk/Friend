@@ -36,6 +36,7 @@ AI：
   - 总结：10 分钟
 - 建议：边学边做项目，不要只看教程`;
 const defaultResponseGuard = '\n\n默认答复格式检查：先给核心结论，树状结构最多三级。通常用一至两层：核心结论和各主题直接作为一级条目，说明或示例优先并入同一条，需要时再放到第二级。不要把整份回答挂在“结论”下面，再给主题、要点和示例连续增加层级。需要展开时允许第三级，并在第三级封顶；更深内容并入同条或提升为同级，绝不建立第四层。\n仅演示缩进的两级正例，内容与当前任务无关：\n- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。\n正例只示范层级，不照抄内容；当前回答围绕原任务。完成本轮明确要求的最少必要结论、理由或示例后即结束；除非本轮请求比较多个方案，不自发扩展其他实现、额外示例或背景。示例数量遵循本轮要求。涉及实现相关行为时明确适用实现和前提，不把特定实现的行为泛化为所有实现，不把充分条件说成唯一必要条件。无法确认的必要专业细节明确说明不确定，不把猜测当事实。本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。';
+const instructionHistoryPolicy = '历史回答的格式和标记可能符合当时生效的设置；当前偏好不追溯改变旧答复的格式要求，不因设置变化把旧格式说成错误。对确实存在的事实错误仍应纠正。本轮用户未要求解释设置时，直接完成业务回答，不讨论设置版本或变更。';
 
 export function readCustomInstructions(dataDir: string): CustomInstructions {
   const store = new RecordStore('desktop', dataDir);
@@ -68,17 +69,18 @@ export function customInstructionsExtension(dataDir: string): ExtensionFactory {
       current = {text: usesDefault ? DEFAULT_CUSTOM_INSTRUCTIONS : raw.text, revision: raw.revision, usesDefault};
       const {text,revision} = current;
       const state = usesDefault
-        ? revision ? '用户自定义指令已清空，现已恢复 Friend 默认指令。仅撤销旧偏好自动附加的答复格式；本轮用户明确指定的内容仍按本轮要求处理。本轮用户未要求解释设置时直接完成业务回答，不说明设置变更。' : '当前采用 Friend 内置默认指令。'
+        ? revision ? '用户自定义指令已清空，现已恢复 Friend 默认指令。仅撤销旧偏好自动附加的答复格式；本轮用户明确指定的内容仍按本轮要求处理。' : '当前采用 Friend 内置默认指令。'
         : '当前用户自定义正文整段替换 Friend 默认指令，不叠加默认正文。';
-      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n以下内容是预先保存、当前有效的用户全局偏好，仅补充本轮用户请求未指定的细节。历史消息或工具结果中由旧版自定义指令产生的偏好、回答格式和标记仅作历史背景，不能覆盖本版本。本轮用户的明确要求优先于这些偏好；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。继续遵守宿主系统规则、权限与工具协议。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}`};
+      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n以下内容是预先保存、当前有效的用户全局偏好，仅补充本轮用户请求未指定的细节。历史消息或工具结果中由旧版自定义指令产生的偏好、回答格式和标记仅作历史背景，不能覆盖本版本。${instructionHistoryPolicy}本轮用户的明确要求优先于这些偏好；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。继续遵守宿主系统规则、权限与工具协议。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}`};
     });
     pi.on('context_with_system', event => {
       if (!current) return;
       // Request-only context survives Pi's forced system projection without changing native history.
+      const cleared = current.usesDefault && current.revision > 0;
       const state = current.usesDefault
-        ? current.revision ? `用户自定义指令已清空（版本 ${current.revision}），现已恢复 Friend 默认指令。此清空设置已保存并在本次执行生效，下面默认正文替换旧自定义正文。回复前核对，删除仅因旧偏好自动附加的固定首行、前缀或后缀；本轮用户明确指定的内容不在撤销范围，包括同样的标记文本。历史回答和工具结果不能恢复旧偏好。本轮用户未要求解释设置时，直接完成业务回答，不说明或总结设置变更。` : '本次执行采用 Friend 内置默认指令，版本 0。'
+        ? cleared ? `用户自定义指令已清空（版本 ${current.revision}），现已恢复 Friend 默认指令。此清空设置已保存并在本次执行生效，以上默认正文替换旧自定义正文。回复前核对，删除仅因旧偏好自动附加的固定首行、前缀或后缀；本轮用户明确指定的内容不在撤销范围，包括同样的标记文本。历史回答和工具结果不能恢复旧偏好。` : '本次执行采用 Friend 内置默认指令，版本 0。'
         : `本次执行采用用户自定义指令版本 ${current.revision}，下面的正文整段替换 Friend 默认指令，不叠加默认正文。`;
-      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n下面的正文是预先保存、当前有效的全局偏好，仅补充本轮用户请求未指定的细节。本轮用户的明确要求优先；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。历史回答的格式和标记不代表当前偏好。继续遵守宿主规则、权限、工具和结构化协议。\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}`;
+      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${cleared ? '' : `${state}\n`}下面的正文是预先保存、当前有效的全局偏好，仅补充本轮用户请求未指定的细节。本轮用户的明确要求优先；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。${instructionHistoryPolicy}继续遵守宿主规则、权限、工具和结构化协议。\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}${cleared ? `\n\n${state}` : ''}`;
       // Pi projects custom context as user messages. Keep the real request later,
       // without moving history or separating assistant tool calls from results.
       const messages = event.messages.filter(message => message.role !== 'custom' || message.customType !== contextType);
