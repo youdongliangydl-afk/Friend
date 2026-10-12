@@ -7,7 +7,7 @@ import {PiDialog} from './PiDialog.js';
 import {permissionOptions} from './composer-permissions.js';
 import type {PermissionMode} from './types.js';
 import {initialView,browserUrl,browserScopeNames,type SessionViewState,type ToolPage,type BrowserScope} from '../session-view.js';
-import {openTool,toggleTrace,addNewTab,closeViewTab,visibleSessionView} from './view-tabs.js';
+import {openTool,toggleTrace,toggleTerminal,addNewTab,closeViewTab,visibleSessionView} from './view-tabs.js';
 import {TerminalNotice} from './TerminalNotice.js';
 import {SessionTabs,NewTabPage} from './SessionTabs.js';
 import {SessionComposer,type ComposerSnapshot,type ComposerAction} from './SessionComposer.js';
@@ -232,11 +232,13 @@ export default function App() {
   };
   const openToolView=async(page:ToolPage)=>{if(page==='terminal')return showTerminal();await writeView(openTool(viewRef.current,page));};
   const showTerminal=async()=>{
+    const next=toggleTerminal(viewRef.current);
+    if(next.active==='conversation'){try{await writeView(next);}catch(error){report(errorText(error),true);}return;}
     if(terminalOpening.current)return;terminalOpening.current=true;const epoch=navigationEpoch.current;
     try{
-      await writeView(openTool(viewRef.current,'terminal'));
+      await writeView(next);
       const id=viewOwner.current;if(!id)return;
-      if(stateRef.current.current?.sessionId!==id||epoch!==navigationEpoch.current||stateRef.current.sessions.find(session=>session.id===id)?.archived)return;
+      if(stateRef.current.current?.sessionId!==id||epoch!==navigationEpoch.current||!viewRef.current.tabs.some(tab=>tab.id===next.active&&tab.kind==='tool'&&tab.page==='terminal')||stateRef.current.sessions.find(session=>session.id===id)?.archived)return;
       const terminal=await window.friendPi.request<{id:string}>('terminal.open',{sessionId:id});
       if(stateRef.current.current?.sessionId===id&&epoch===navigationEpoch.current)setTerminalTarget({sessionId:id,id:terminal.id});
     }catch(error){report(errorText(error),true);}finally{terminalOpening.current=false;}
@@ -295,7 +297,7 @@ export default function App() {
   const activeNotice=notice&&<div className={'notice '+(notice.error?'error':'')} style={{flexShrink:0,WebkitAppRegion:'no-drag'} as React.CSSProperties} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>;
   return <div className={'app friend-layout session-fullscreen '+(sidebar?'':'sidebar-hidden ')+(toolActive?'full-tool-active ':'')} style={{'--sidebar-width':sidebarWidth+'px'} as React.CSSProperties}>
     <header className="topbar project-topbar"><nav className="session-navigation" aria-label="会话导航"><button aria-label="后退到上一个会话" title="后退 · ⌘[" disabled={navigating||sending||!state.navigation?.back} onClick={()=>void traverseSession(-1)}><Icon name="back" size={17}/></button><button aria-label="前进到下一个会话" title="前进 · ⌘]" disabled={navigating||sending||!state.navigation?.forward} onClick={()=>void traverseSession(1)}><Icon name="forward" size={17}/></button><button aria-label={sidebar?'收起会话侧栏':'展开会话侧栏'} aria-pressed={sidebar} onClick={()=>{const next=!sidebar;setSidebar(next);if(sessionId)void writeView({...viewRef.current,sidebar:next});}}><Icon name="sidebar" size={17}/></button></nav><div className="workspace-tabs-bar"><SessionTabs view={sessionView} onSelect={id=>{if(id==='conversation')restoreDialogs();void writeView({...viewRef.current,active:id});}} onClose={id=>void closeView(id)} onNew={()=>void openNewView()}/>
-      <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label={activeViewTab?.page==='trace'?'关闭轨迹并返回会话':'打开轨迹'} title={activeViewTab?.page==='trace'?'返回会话':'轨迹'} aria-pressed={toolActive&&activeViewTab?.page==='trace'} onClick={()=>void writeView(toggleTrace(viewRef.current))}><Icon name="trace" size={18}/></button><button aria-label="内嵌终端" title="终端" aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}><Icon name="terminal" size={18}/></button></div></div>
+      <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label={activeViewTab?.page==='trace'?'关闭轨迹并返回会话':'打开轨迹'} title={activeViewTab?.page==='trace'?'返回会话':'轨迹'} aria-pressed={toolActive&&activeViewTab?.page==='trace'} onClick={()=>void writeView(toggleTrace(viewRef.current))}><Icon name="trace" size={18}/></button><button aria-label={activeViewTab?.page==='terminal'?'关闭终端并返回会话':'打开终端'} title={activeViewTab?.page==='terminal'?'返回会话':'终端'} aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}><Icon name="terminal" size={18}/></button></div></div>
     </header>
     <aside className="sidebar" aria-label="项目与会话">
       <div className="sidebar-new"><button className="new-chat" disabled={navigating||sending} onClick={()=>void newSession()}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button className="new-project-button" aria-label="打开项目" title="打开项目" disabled={navigating||sending} onClick={()=>void openProject()}><Icon name="folder" size={19}/></button></div>
