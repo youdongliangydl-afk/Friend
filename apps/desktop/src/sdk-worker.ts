@@ -425,7 +425,8 @@ async function initialize(){
     if(event.pluginEvent==='swarm.member-supplement'){const data=object(event.data);session.sessionManager.appendCustomEntry('friend-pi.swarm.supplement',{v:1,memberId:data.memberId,messageId:data.messageId,graphId:data.graphId});return;}
     if(event.pluginEvent==='swarm.member-request'){
       const data=object(event.data),graph=swarmGraphs.get(String(data.graphId)),sourceRun=typeof graph?.runId==='string'?graph.runId:undefined;
-      const frame={id:'member-request:'+String(data.attemptId)+':'+digest(data.body),generation:services.generation(),runId:sourceRun,message:'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body),createdAt:new Date().toISOString()};
+      const createdAt=new Date().toISOString(),graphState={id:graph?.id,status:graph?.status,updatedAt:graph?.updatedAt,asOf:createdAt};
+      const frame={id:'member-request:'+String(data.attemptId)+':'+digest(data.body),generation:services.generation(),runId:sourceRun,message:'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body)+'\n来源任务图事实快照（通知生成时）：'+JSON.stringify(graphState)+'\n讨论本身不改变正式成果或任务图状态；历史记录中的状态只反映当时时点。如需报告此后最新状态，先调用 friend_swarm snapshot 读取该来源图。',createdAt};
       if(!graph||graph.sessionId!==session.sessionId||!sourceRun||![sourceRun,runId].includes(String(data.runId))||cancelRequested||stopping){skipRuntimeWake(frame,'stale-member-source');return;}
       if(correctedRun(sourceRun)){skipRuntimeWake(frame,sourceRun===runId?'correction-member-source':'stale-member-source');return;}
       if(data.runId!==runId){skipRuntimeWake(frame,'stale-member-source');return;}

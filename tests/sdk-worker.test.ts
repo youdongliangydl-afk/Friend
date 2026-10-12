@@ -17,7 +17,7 @@ import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
 import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
 import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
-function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));}
+function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：'));}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
  const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,...options.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_TEMPORARY_WRITE_ROOT:options.temporary?directory:undefined,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_MODE:options.executionMode,FRIEND_PI_STATUS:options.status,FRIEND_PI_PERMISSION_MODE:options.permissionMode,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined,FRIEND_PI_SUPERVISED:options.supervised?'1':undefined}});
@@ -618,10 +618,25 @@ test('persistent member GUI bridge displays native history, wakes read-only disc
   await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
   await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(event.event.data.data).includes('"status":"integrated"')));
   const memberId=graph.tasks[0].memberId;
+  const integrated=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{id:string;status:string;updatedAt:string}[]};
+  const sourceGraph=integrated.graphs.find(source=>source.id===graph.id)!;assert.equal(sourceGraph.status,'integrated');
   const before=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string;state:string};messages:DisplayMessage[]};assert.ok(before.messages.some(message=>message.role==='assistant'));assert.equal(before.member.state,'idle');
+  const discussionSentAt=Date.now(),discussionEvents=f.events.length;
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'gui-supplement',body:'请补充解释，保留已完成成果'}});
-  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-request'));
+  await f.wait(()=>f.events.slice(discussionEvents).some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-request'));
+  await f.wait(()=>f.events.slice(discussionEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   await f.wait(()=>f.events.slice(-5).some(event=>event.event?.type==='state'&&event.event.data.isRunning===false));
+  const root=await f.request('state') as {sessionFile:string};
+  const entries=readFileSync(root.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  const wake=entries.find(entry=>entry.customType==='friend-pi.runtime-wake'&&String(entry.data.eventId).startsWith('member-request:'));
+  assert.ok(wake,'the actual public SDK ran a member-notification continuation');
+  const automatic=entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').find(entry=>JSON.stringify(entry.message.content).includes('来源任务图事实快照（通知生成时）'));
+  assert.ok(automatic,'the actual native business user contains source facts, not only UI or test metadata');
+  const automaticText=typeof automatic.message.content==='string'?automatic.message.content:automatic.message.content.filter((part:any)=>part.type==='text').map((part:any)=>part.text).join('\n');
+  const facts=JSON.parse(automaticText.match(/来源任务图事实快照（通知生成时）：([^\n]+)/)![1]) as {id:string;status:string;updatedAt:string;asOf:string};
+  assert.deepEqual({id:facts.id,status:facts.status,updatedAt:facts.updatedAt},{id:sourceGraph.id,status:sourceGraph.status,updatedAt:sourceGraph.updatedAt},'the continuation uses the exact integrated controller graph and retained timestamp');
+  assert.ok(Number.isFinite(Date.parse(facts.asOf))&&Date.parse(facts.asOf)>=discussionSentAt&&Date.parse(facts.asOf)<=Date.parse(wake.timestamp)&&Date.parse(wake.timestamp)<=Date.parse(automatic.timestamp),'notification asOf is bounded by the real discussion send and native continuation');
+  assert.match(automaticText,/讨论本身不改变正式成果或任务图状态/);assert.match(automaticText,/先调用 friend_swarm snapshot/);
   const after=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string};messages:DisplayMessage[];inbox:{nativeEntryId?:string}[]};assert.equal(after.member.sessionId,before.member.sessionId);assert.ok(after.inbox[0].nativeEntryId);assert.equal(after.messages.find(message=>message.id===after.inbox[0].nativeEntryId)?.userText,'请补充解释，保留已完成成果');
   await f.request('stop');const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string}[];teammates:{state:string}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].status,'integrated');assert.equal(snapshot.teammates[0].state,'paused');
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'saved-after-stop',body:'停止后保留的要求'}});const queued=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string};inbox:{id:string;nativeEntryId?:string}[]};assert.equal(queued.member.state,'paused');assert.equal(queued.inbox.find(message=>message.id==='saved-after-stop')?.nativeEntryId,undefined);
@@ -830,25 +845,37 @@ test('cold restore discards a persisted internal Swarm correction without starti
  finally{wake.close();await f.close();}
 });
 
-test('custom instructions reach final provider payload with full defaults, override, clear, cold restore and Team inheritance',{timeout:45000},async()=>{
- type Payload={messages:{role:string;content:unknown}[];tools?:{function:{name:string}}[]};
+test('custom instructions reach final provider payload before business user with defaults, frozen tool continuation, queued refresh, clear, cold restore and Team inheritance',{timeout:60000},async()=>{
+ type WireMessage={role:string;content:unknown;tool_calls?:{id:string;type:string;function:{name:string;arguments:string}}[];tool_call_id?:string};
+ type Payload={messages:WireMessage[];tools?:{function:{name:string}}[]};
  const payloads:Payload[]=[];
+ const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const frozenTask='CUSTOM_FROZEN_TOOL_ROUND',queuedTask='CUSTOM_QUEUED_AFTER_FROZEN';
+ const toolCalls=[{id:'call_custom_left',name:'read',path:'custom-left.txt',result:'LEFT=7\n'},{id:'call_custom_right',name:'read',path:'custom-right.txt',result:'RIGHT=11\n'}];
+ let frozenStarted=false,releaseFrozen!:()=>void;
+ const frozenGate=new Promise<void>(done=>{releaseFrozen=done;});
  const server=createServer(async(req,res)=>{
-  let body='';for await(const chunk of req)body+=String(chunk);payloads.push(JSON.parse(body) as Payload);
+  let body='';for await(const chunk of req)body+=String(chunk);const payload=JSON.parse(body) as Payload;payloads.push(payload);
+  const taskIndex=providerTaskIndex(payload.messages),task=messageText(payload.messages[taskIndex]?.content);
+  const callTools=task===frozenTask&&!payload.messages.slice(taskIndex+1).some(message=>message.role==='tool');
+  if(callTools){frozenStarted=true;await frozenGate;}
   res.writeHead(200,{'Content-Type':'text/event-stream'});
-  for(const choice of [{delta:{role:'assistant',content:'Read-only fixture outcome'},finish_reason:null},{delta:{},finish_reason:'stop'}])res.write(`data: ${JSON.stringify({id:'custom-instructions-fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+  const delta=callTools?{role:'assistant',tool_calls:toolCalls.map((tool,index)=>({index,id:tool.id,type:'function',function:{name:tool.name,arguments:JSON.stringify({path:tool.path})}}))}:{role:'assistant',content:'Read-only fixture outcome'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:callTools?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'custom-instructions-fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
   res.end('data: [DONE]\n\n');
  });
  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
  let f=await start({temporary:true});
  const system=(payload:Payload)=>payload.messages.filter(message=>message.role==='system').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
  const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
- const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
- const assertSettingsContext=(payload:Payload,expected:string)=>{
-  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));
+ const assertSettingsContext=(payload:Payload,expected:string,businessTask:string,revision=readCustomInstructions(f.dataDir).revision)=>{
+  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 当前有效的用户设置指令：'));
   assert.equal(notes.length,1,'each final provider request contains exactly one settings reminder');
-  assert.equal(notes[0],payload.messages.at(-1),'settings reminder reaches the end of the actual provider request');
-  const note=messageText(notes[0].content);assert.ok(note.includes(`版本 ${readCustomInstructions(f.dataDir).revision}`));
+  const businessIndex=providerTaskIndex(payload.messages),business=payload.messages[businessIndex];
+  assert.ok(business&&messageText(business.content).includes(businessTask),'the actual business task remains visible in the provider request');
+  assert.equal(payload.messages.indexOf(notes[0]),businessIndex-1,'request-only settings immediately precede the actual business user, rather than override it as a later user');
+  assert.equal(payload.messages.findLast(message=>message.role==='user'),business,'the current business request remains the final provider user message even during tool continuations');
+  const note=messageText(notes[0].content);assert.ok(note.includes(`版本 ${revision}`));
   const prompt=system(payload),tagged=[...prompt.matchAll(/<friend_custom_instructions>\n([\s\S]*?)\n<\/friend_custom_instructions>/g)];
   assert.equal(tagged.length,1,'the system prompt contains exactly one current instruction block');
   assert.equal(tagged[0][1],expected,'the current block contains the complete effective body without appending defaults');
@@ -864,7 +891,7 @@ test('custom instructions reach final provider payload with full defaults, overr
   await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const requests=payloads.slice(beforePayloads);assert.equal(requests.length,1,'each plain-text round reaches the actual loopback provider once');
   const prompt=system(requests[0]);assert.ok(prompt.includes('所有任务产物默认写入当前会话目录'));assert.ok(prompt.includes('权限策略不能免除该要求'));
-  assert.ok(prompt.includes('friend_questions'));assertSettingsContext(requests[0],expected);return prompt;
+  assert.ok(prompt.includes('friend_questions'));assertSettingsContext(requests[0],expected,label);return prompt;
  };
  try{
   await f.request('configure',{plugins:[]});
@@ -873,7 +900,21 @@ test('custom instructions reach final provider payload with full defaults, overr
   const defaults=await round('CUSTOM_EMPTY_ROUND');assert.ok(defaults.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'fresh raw empty settings use the complete default body');
   save(alpha);const first=await round('CUSTOM_ADD_ROUND',alpha);assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
   assert.ok(first.includes('本轮用户的明确要求优先于这些偏好'));
-  save(beta);const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
+  for(const tool of toolCalls)writeFileSync(join(f.directory,tool.path),tool.result);
+  const frozenRevision=readCustomInstructions(f.dataDir).revision,beforeFrozen=payloads.length,beforeFrozenEvents=f.events.length;
+  await f.request('send',{text:frozenTask,mode:'single',planMode:false});await f.wait(()=>frozenStarted);
+  save(beta);await f.request('queue',{action:'add',text:queuedTask,mode:'single',planMode:false});releaseFrozen();
+  await f.wait(()=>f.events.slice(beforeFrozenEvents).filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=2);
+  const frozenRequests=payloads.slice(beforeFrozen).filter(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===frozenTask);
+  assert.equal(frozenRequests.length,2,'both actual provider requests execute the same tool-bearing business turn');
+  for(const payload of frozenRequests)assertSettingsContext(payload,alpha,frozenTask,frozenRevision);
+  const continuation=frozenRequests[1],businessIndex=providerTaskIndex(continuation.messages),later=continuation.messages.slice(businessIndex+1);
+  assert.deepEqual(later.map(message=>message.role),['assistant','tool','tool'],'settings insertion preserves the assistant/tool-result sequence after the business user');
+  assert.deepEqual(later[0].tool_calls?.map(tool=>({id:tool.id,name:tool.function.name,input:JSON.parse(tool.function.arguments)})),toolCalls.map(tool=>({id:tool.id,name:tool.name,input:{path:tool.path}})));
+  assert.deepEqual(later.slice(1).map(message=>({id:message.tool_call_id,result:messageText(message.content)})),toolCalls.map(tool=>({id:tool.id,result:tool.result})),'actual wire tool results retain their original call IDs, order and contents');
+  const queuedRequests=payloads.slice(beforeFrozen).filter(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===queuedTask);
+  assert.equal(queuedRequests.length,1);assertSettingsContext(queuedRequests[0],beta,queuedTask);
+  const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
   save('');assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:3});
   const cleared=await round('CUSTOM_CLEAR_ROUND');assert.ok(cleared.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'clearing restores the complete default body');assert.ok(!cleared.includes(alpha)&&!cleared.includes(beta));
   save(persisted);const before=await f.request('state') as {sessionFile:string;sessionId:string};const oldPid=f.child.pid,directory=f.directory;
@@ -882,7 +923,7 @@ test('custom instructions reach final provider payload with full defaults, overr
   const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);assert.equal(readCustomInstructions(f.dataDir).text,persisted);
   const cold=await round('CUSTOM_COLD_ROUND',persisted);assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
   const native=readFileSync(restored.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
-  assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,5,'request-only settings reminders do not create native user turns');
+  assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,7,'request-only settings reminders do not create native user turns');
   assert.ok(!native.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
 
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
@@ -893,7 +934,16 @@ test('custom instructions reach final provider payload with full defaults, overr
   await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const memberPayloads=payloads.slice(beforeTeam).filter(payload=>payload.tools?.some(tool=>tool.function.name==='team_message'));
   assert.ok(memberPayloads.length>0,'actual Team worker must reach the loopback provider');
-  for(const payload of memberPayloads){const prompt=system(payload);assertSettingsContext(payload,persisted);assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
-  const team=await f.request('plugin',{plugin:'team',action:'list'}) as {graphs:{status:string}[]};assert.equal(team.graphs[0].status,'completed');
- }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+  for(const payload of memberPayloads){const prompt=system(payload);assertSettingsContext(payload,persisted,'CUSTOM_TEAM_MEMBER');assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
+  const team=await f.request('plugin',{plugin:'team',action:'list'}) as {graphs:{status:string;attempts:{sessionFile:string}[]}[]};assert.equal(team.graphs[0].status,'completed');
+  for(const attempt of team.graphs[0].attempts){
+   const memberNative=readFileSync(attempt.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   assert.ok(!memberNative.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'member request-only settings never become native history');
+   const memberUsers=memberNative.filter(entry=>entry.type==='message'&&entry.message.role==='user').map(entry=>messageText(entry.message.content));
+   assert.equal(memberUsers.length,1);assert.ok(memberUsers[0].includes('CUSTOM_TEAM_MEMBER'));
+   assert.ok(memberPayloads.some(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===memberUsers[0]),'the final member provider business user is the exact native user, with no settings appended');
+  }
+  const rootAfterTeam=readFileSync(before.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.ok(!rootAfterTeam.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'automatic Team result follow-ups also keep request settings out of root native history');
+ }finally{releaseFrozen();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });

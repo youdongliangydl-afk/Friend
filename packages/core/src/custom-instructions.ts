@@ -3,6 +3,7 @@ import { RecordStore } from './index.js';
 
 export interface CustomInstructions { text: string; revision: number }
 const key = 'custom-instructions';
+const contextType = 'friend-pi.custom-instructions.context.v1';
 export const MAX_CUSTOM_INSTRUCTIONS = 1_000;
 export const DEFAULT_CUSTOM_INSTRUCTIONS = `第一个要求：对于我给你发送的信息，保持独立思考，不默认正确，如发现不正确的内容或者不理解的内容，及时反问或纠正，并且根据你认为正确的内容给出回答。
 第二个要求：对于你的回答内容，请用如下“简洁、清晰、结构化”的方式回答：
@@ -66,19 +67,25 @@ export function customInstructionsExtension(dataDir: string): ExtensionFactory {
       current = {text: usesDefault ? DEFAULT_CUSTOM_INSTRUCTIONS : raw.text, revision: raw.revision, usesDefault};
       const {text,revision} = current;
       const state = usesDefault
-        ? revision ? '用户自定义指令已清空，现已恢复 Friend 默认指令。撤销仅来自旧自定义偏好的固定首行、前缀或后缀，按下面的默认正文回答，不解释此设置提醒。' : '当前采用 Friend 内置默认指令。'
+        ? revision ? '用户自定义指令已清空，现已恢复 Friend 默认指令。仅撤销旧偏好自动附加的答复格式；本轮用户明确指定的内容仍按本轮要求处理。本轮用户未要求解释设置时直接完成业务回答，不说明设置变更。' : '当前采用 Friend 内置默认指令。'
         : '当前用户自定义正文整段替换 Friend 默认指令，不叠加默认正文。';
-      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n以下是当前有效的用户偏好。历史消息或工具结果中由旧版自定义指令产生的偏好、回答格式和标记仅作历史背景，不能覆盖本版本；有冲突时采用本版本。本轮用户的明确要求优先于这些偏好。继续遵守宿主系统规则、权限与工具协议。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>`};
+      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n以下内容是预先保存、当前有效的用户全局偏好，仅补充本轮用户请求未指定的细节。历史消息或工具结果中由旧版自定义指令产生的偏好、回答格式和标记仅作历史背景，不能覆盖本版本。本轮用户的明确要求优先于这些偏好；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。继续遵守宿主系统规则、权限与工具协议。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>`};
     });
     pi.on('context_with_system', event => {
       if (!current) return;
       // Request-only context survives Pi's forced system projection without changing native history.
       const state = current.usesDefault
-        ? current.revision ? `这是已保存并生效的设置变更，不是待总结的历史记录。用户自定义指令已清空（版本 ${current.revision}），现已恢复 Friend 默认指令。当前回答要求：采用下面的默认正文，勿添加仅来自历史自定义偏好的固定首行、前缀或后缀。回复前检查并删除这类历史标记，不要解释此设置提醒。` : '本次执行采用 Friend 内置默认指令，版本 0。'
+        ? current.revision ? `用户自定义指令已清空（版本 ${current.revision}），现已恢复 Friend 默认指令。此清空设置已保存并在本次执行生效，下面默认正文替换旧自定义正文。回复前核对，删除仅因旧偏好自动附加的固定首行、前缀或后缀；本轮用户明确指定的内容不在撤销范围，包括同样的标记文本。历史回答和工具结果不能恢复旧偏好。本轮用户未要求解释设置时，直接完成业务回答，不说明或总结设置变更。` : '本次执行采用 Friend 内置默认指令，版本 0。'
         : `本次执行采用用户自定义指令版本 ${current.revision}，下面的正文整段替换 Friend 默认指令，不叠加默认正文。`;
       const formatCheck = current.usesDefault ? '\n\n默认答复格式检查：先给核心结论，树状结构最多三级。通常用一至两层：核心结论和各主题直接作为一级条目，说明或示例优先并入同一条，需要时再放到第二级。不要把整份回答挂在“结论”下面，再给主题、要点和示例连续增加层级。需要展开时允许第三级，并在第三级封顶；更深内容并入同条或提升为同级，绝不建立第四层。\n仅演示缩进的两级正例，内容与当前任务无关：\n- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。\n正例只示范层级，不照抄内容；当前回答围绕原任务。本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。' : '';
-      const content = `[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]\n${state}\n回复前核对系统上下文 <friend_custom_instructions> 中的当前要求；历史回答的格式和标记不代表当前偏好。继续原用户任务，保持宿主规则、工具和结构化协议，本轮用户的明确要求优先。\n本次生效的用户指令正文：\n${current.text}${formatCheck}`;
-      return {messages: [...event.messages, {role: 'custom', customType: 'friend-pi.custom-instructions.context.v1', display: false, content, timestamp: Date.now()}]};
+      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n下面的正文是预先保存、当前有效的全局偏好，仅补充本轮用户请求未指定的细节。本轮用户的明确要求优先；有冲突时忽略相冲突的偏好，保留不冲突部分。设置提醒本身不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务。历史回答的格式和标记不代表当前偏好。继续遵守宿主规则、权限、工具和结构化协议。\n本次生效的用户指令正文：\n${current.text}${formatCheck}`;
+      // Pi projects custom context as user messages. Keep the real request later,
+      // without moving history or separating assistant tool calls from results.
+      const messages = event.messages.filter(message => message.role !== 'custom' || message.customType !== contextType);
+      const latestUser = messages.findLastIndex(message => message.role === 'user');
+      const firstConversation = messages.findIndex(message => message.role !== 'system');
+      const index = latestUser < 0 ? firstConversation < 0 ? messages.length : firstConversation : latestUser;
+      return {messages: [...messages.slice(0,index), {role: 'custom', customType: contextType, display: false, content, timestamp: Date.now()}, ...messages.slice(index)]};
     });
   };
 }

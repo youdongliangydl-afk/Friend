@@ -10,7 +10,9 @@ import {registerPlugin,CapabilityError} from '../src/index.js';
 test('collaboration command notices summarize actual state without exposing the graph object',()=>{
   const graph={status:'running',goal:'fixture',attempts:[{internal:'RAW_GRAPH_PRIVATE_DATA'.repeat(1000)}],toJSON(){throw Error('must not serialize graph');}};
   const notice=commandNotice('swarm','start',graph);
-  assert.equal(notice.level,'info');assert.match(notice.message,/Swarm 任务正在执行/);assert.match(notice.message,/队友会话或执行轨迹/);
+  assert.equal(notice.level,'info');assert.match(notice.message,/Swarm 任务已启动/);assert.match(notice.message,/队友会话或执行轨迹/);
+  assert.match(commandNotice('swarm','resume',graph).message,/已启动/);
+  assert.match(commandNotice('swarm','snapshot',graph).message,/正在执行/);
   assert.doesNotMatch(notice.message,/RAW_GRAPH_PRIVATE_DATA|attempts|fixture|已完成/);assert.ok(notice.message.length<100);
   for(const [status,expected] of [['created','尚未启动'],['awaiting_review','等待复核'],['ready','等待整合'],['integrated','整合至工作区']])assert.ok(commandNotice('swarm','start',{status}).message.includes(expected));
   assert.match(commandNotice('swarm','start',{}).message,/执行状态尚未确认/);
@@ -44,7 +46,7 @@ test('registered commands use readable notices while tool results and rejected c
   const ctx={cwd:directory,sessionManager:SessionManager.inMemory(directory),isIdle:()=>true,ui:{notify:(message:string,level:string)=>notices.push({message,level})}} as unknown as ExtensionContext;
   try{
     registerPlugin(pi,'swarm',{snapshot:()=>result,dispatch:()=>{if(rejection)throw rejection;return result;}},'Swarm');
-    await command.handler('start {"graphId":"full-graph-id"}',ctx);assert.equal(notices.length,1);assert.match(notices[0].message,/正在执行/);assert.doesNotMatch(notices[0].message,/FULL_TOOL_DETAIL|attempts/);
+    await command.handler('start {"graphId":"full-graph-id"}',ctx);assert.equal(notices.length,1);assert.match(notices[0].message,/已启动/);assert.doesNotMatch(notices[0].message,/FULL_TOOL_DETAIL|attempts/);
     const response=await tool.execute('call',{action:'snapshot',input:{}},undefined,undefined,ctx);assert.equal(response.details,result);assert.deepEqual(JSON.parse(response.content[0].text),result);
     rejection=new CapabilityError('PERMISSION_DENIED','权限未批准');await assert.rejects(command.handler('start {}',ctx),error=>error===rejection);assert.equal(notices.length,1,'a rejected command cannot emit a success notice');
   }finally{bus.clear();if(prior===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=prior;rmSync(directory,{recursive:true,force:true});}

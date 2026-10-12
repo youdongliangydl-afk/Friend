@@ -350,7 +350,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
   const respond: Parameters<typeof fixture.setResponses>[0][number] = (context,options) => {
     fixture.appendResponses([respond]);
     // Route this synthetic provider by the business task; keep the real provider context unchanged.
-    const messages=context.messages.filter(message=>!('customType' in message&&message.customType==='friend-pi.custom-instructions.context.v1')&&!(message.role==='user'&&visibleText(message.content).startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]')));const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
+    const messages=context.messages.filter(message=>!('customType' in message&&message.customType==='friend-pi.custom-instructions.context.v1')&&!(message.role==='user'&&visibleText(message.content).startsWith('[Friend 当前有效的用户设置指令：')));const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
     const latestUser=visibleText([...messages].reverse().find(message=>message.role==='user')?.content);
     if(latestUser.includes('QA_TOOL_GROUPS')){

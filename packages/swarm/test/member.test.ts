@@ -21,7 +21,7 @@ type ModelRequest=Record<string,unknown>;
 // Settings remain in the provider request; fixture routing follows the task user.
 function isTaskUser(message:{role:string;content?:unknown}):boolean {
   const content=typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
-  return message.role==='user'&&!content.startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]');
+  return message.role==='user'&&!content.startsWith('[Friend 当前有效的用户设置指令：');
 }
 function reviewResponse(input:ModelRequest):LocalResponse|undefined {
   const tools=input.tools as {function:{name:string}}[]|undefined;

@@ -28,7 +28,7 @@ export function commandNotice(name:string,action:string,result:unknown):{message
   if(value.approved===false||value.blocked===true||value.cancelled===true){
     return {message:`${title}${value.cancelled?'操作已取消':value.blocked?'执行受阻':'请求被拒绝'}。${hint}`,level:'warning'};
   }
-  if(state)return {message:`${title}${state[0]}。${hint}`,level:state[1]};
+  if(state){const feedback=status==='running'&&['start','resume'].includes(action)?'已启动':state[0];return {message:`${title}${feedback}。${hint}`,level:state[1]};}
   if(Array.isArray(result))return {message:`已读取 ${result.length} 项结果。${hint}`,level:'info'};
   const reading=['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history'].includes(action);
   return {message:`${title}${reading?'已读取当前结果':action==='start'||action==='resume'?'启动请求已处理，执行状态尚未确认':'请求已处理'}。${hint}`,level:'info'};
