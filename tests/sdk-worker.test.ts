@@ -932,8 +932,8 @@ test('custom instructions reach final provider payload before business user with
    const clearIndex=note.indexOf('用户自定义指令已清空');
    assert.ok(clearIndex>note.indexOf('继续遵守宿主规则、工具和结构化协议。'),'cleared settings revoke old automatic formats after the full default and guard');
    assert.equal(note.split('用户自定义指令已清空').length-1,1);
-   assert.match(note.slice(clearIndex),/删除仅因旧偏好自动附加/);
-  }else assert.doesNotMatch(note,/用户自定义指令已清空/,'fresh or custom executions do not inherit a clear-only reminder');
+   assert.match(note.slice(clearIndex),/删除仅因旧偏好自动附加/);assert.match(note.slice(clearIndex),/不讨论设置版本或变更/);
+  }else assert.doesNotMatch(note,/用户自定义指令已清空|不讨论设置版本或变更/,'fresh or custom executions do not inherit a clear-only reminder or response restriction');
   for(const old of [alpha,beta,persisted])if(old!==expected){assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');assert.ok(!prompt.includes(old),'system prompt cannot resurrect an old instruction body');}
  };
  const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});

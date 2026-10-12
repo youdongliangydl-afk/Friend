@@ -144,9 +144,8 @@ test('request-only reminder freezes one execution and never mutates native messa
       assert.match(projection,/格式和标记可能符合当时生效的设置/);
       assert.match(projection,/当前偏好不追溯改变旧答复的格式要求/);
       assert.match(projection,/对确实存在的事实错误仍应纠正/);
-      assert.match(projection,/不讨论设置版本或变更/);
     }
-    saveCustomInstructions(dir,{text:'Custom preference after clear',revision:3});
+    saveCustomInstructions(dir,{text:'每次回答说明当前生效的偏好版本。Custom preference after clear',revision:3});
     const frozenClear=handlers.context_with_system({messages:clearRequest}).messages;assertOriginalOrder(frozenClear);
     assert.equal(noteOf(frozenClear).content,cleared,'saving a new custom body does not change the active clear execution or duplicate its tail');
     const afterClearSystem=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
@@ -155,7 +154,7 @@ test('request-only reminder freezes one execution and never mutates native messa
     for(const projection of [afterClearSystem,afterClearNote]){
       assert.ok(projection.includes('Custom preference after clear'));
       assert.ok(!projection.includes(DEFAULT_CUSTOM_INSTRUCTIONS)&&!projection.includes(guard),'next custom execution wholly replaces default and its guard');
-      assert.doesNotMatch(projection,/用户自定义指令已清空/,'a later custom execution cannot inherit the clear-only revocation tail');
+      assert.doesNotMatch(projection,/用户自定义指令已清空|不讨论设置版本或变更/,'a later custom execution cannot inherit the clear-only revocation or response restriction');
     }
     assert.equal(JSON.stringify(native),unchanged,'request-only settings preserve messages and tool-call/result correlation');
   } finally {rmSync(dir,{recursive:true,force:true});}
