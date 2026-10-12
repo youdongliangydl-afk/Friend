@@ -954,7 +954,12 @@ export class MemoryController implements PluginController {
         const retired=[...new Map([...(old?.sources||[]),...(uniqueHistory?group.map(value=>value.source):[])].map(ref=>[preciseKey(ref),ref])).values()];
         if(!old&&!retired.length)continue;
         const personal=old?.scope==='personal';const ids=old?[old.id,...this.invalidateChildren(old,'父记忆已纠正',ctx)]:[];let revision=0;
-        if(old){this.suppress(old,'corrected',ctx);const next=this.write({...old,revision:old.revision+1,status:'active',enabled:true,...(old.subject?.startsWith('project-rule:')?{title:redactMemorySecrets(content).slice(0,200)}:{}),content:redactMemorySecrets(content),fingerprint:digest(normalize(redactMemorySecrets(content))),sources:[source],confirmedBy:'user',conflictIds:[],invalidatedReason:undefined,updatedAt:now()},ctx,old.revision);revision=next.revision;}
+        if(old){
+          // The current fact and its support must change together. Old evidence
+          // remains in memory_versions; it cannot support the replacement quote.
+          const evidence:MemoryEvidence[]=[{kind:'pi',evidenceId:digest([preciseKey(source),'corrects']),relation:'corrects',observedAt:item.timestamp||now(),source,sourceRole:'user',visibility:'native-text'}];
+          this.suppress(old,'corrected',ctx);const next=this.write({...old,revision:old.revision+1,status:'active',enabled:true,...(old.subject?.startsWith('project-rule:')?{title:redactMemorySecrets(content).slice(0,200)}:{}),content:redactMemorySecrets(content),fingerprint:digest(normalize(redactMemorySecrets(content))),sources:[source],evidence,confirmedBy:'user',conflictIds:[],invalidatedReason:undefined,updatedAt:now()},ctx,old.revision);revision=next.revision;
+        }
         // Retire the original fact even if no long-term record has been extracted
         // yet. This marker/epoch fences a captured Reflection without promoting
         // the replacement (or every task constraint) into long-term memory.
