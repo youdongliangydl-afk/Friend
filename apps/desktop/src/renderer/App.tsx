@@ -35,6 +35,7 @@ import {ModelPicker} from './model-picker.js';
 import {PlanPreview} from './plan-preview.js';
 import {TerminalPanel} from './TerminalPanel.js';
 import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
+import {submissionSettled} from './submission-state.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -130,7 +131,7 @@ export default function App() {
   const project=state.projects.find(p=>p.id===projectId),activeSession=state.sessions.find(s=>s.id===sessionId);
   const workspace=state.current?.workspace||(projectId?{kind:'project' as const,projectId}:undefined),workspaceKey=state.current?.workspacePath||project?.path||'';
   const ownerKey=sessionId||'pending:'+(projectId||'temporary'),ownerRef=useRef(ownerKey);ownerRef.current=ownerKey;
-  const [draftOwner,setDraftOwner]=useState(ownerKey),lastSubmitted=useRef<{sessionId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}|null>(null);
+  const [draftOwner,setDraftOwner]=useState(ownerKey),lastSubmitted=useRef<{sessionId?:string;previousRunId?:string;runId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}|null>(null);
   const [permissionMode,setPermissionMode]=useState<PermissionMode>('auto'),[permissionExplicit,setPermissionExplicit]=useState(false),permissionExplicitRef=useRef(false);
   const sessionView=visibleSessionView(viewOwner.current===sessionId?view:state.current?.ui||initialView());viewRef.current=sessionView;
   const activeViewTab=sessionView.tabs.find(t=>t.id===sessionView.active),toolActive=sessionView.active!=='conversation';
@@ -144,7 +145,7 @@ export default function App() {
   useEffect(()=>{const live=new Set((state.activities||[]).filter(activity=>activity.kind==='dialog'&&activity.dialog?.kind==='questionBatch').map(activity=>activity.dialog!.id));for(const key of questionDrafts.current.keys())if(!live.has(JSON.parse(key)[2]))questionDrafts.current.delete(key);},[state.activities]);
   const restoreDialogs=useCallback(()=>{deferredDialogs.current.clear();setDialogs(stateRef.current.current?.dialogs||[]);},[]);
   useEffect(()=>{if(sessionView.active==='conversation')restoreDialogs();},[sessionId,sessionView.active,restoreDialogs]);
-  const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);},[]);
+  const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);if(submissionSettled(lastSubmitted.current,next.current))setLocalRunning(false);},[]);
   const refresh=useCallback(async()=>{const next=await window.friendPi.request<AppState>('app.state');applyState(next);return next;},[applyState]);
   const invoke=useCallback(async(method:string,input:JsonObject={})=>{try{const result=await window.friendPi.request(method,input);await refresh();return result;}catch(error){report(errorText(error),true);throw error;}},[refresh,report]);
   useEffect(()=>{void refresh().catch(error=>report(errorText(error),true)).finally(()=>setBooting(false));return window.friendPi.onEvent(event=>{
@@ -199,7 +200,7 @@ export default function App() {
   const send=async()=>{
     if(sendLock.current||allocationLock.current||navigating||migratingDraft.current||!draftRef.current.trim()&&!attachmentsRef.current.length||activeSession?.archived||!selectedModel?.ready){if(!sendLock.current)setSubmissionRevision(old=>old+1);return;}
     sendLock.current=true;setSending(true);setNotice(null);
-    const submitted={sessionId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
+    const submitted:{sessionId?:string;previousRunId?:string;runId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}={sessionId,previousRunId:state.current?.runId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
     const epoch=navigationEpoch.current;
     try{
       let target=sessionId;
@@ -208,11 +209,11 @@ export default function App() {
       const queued=running||!!state.current?.queue?.items.length||!!state.current?.sideDraft||hasQueueIntent(target,{text:submitted.text,attachments:submitted.attachments,mode,planMode});
       if(!queued){setLocalRunning(true);setTools([]);setLive(null);followScroll.current=true;}
       if(queued){const payload={text:submitted.text,attachments:submitted.attachments,mode,planMode},intent=queueIntent(target,payload);await window.friendPi.request('session.queue',{sessionId:target,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state.current?.sideDraft});acknowledgeQueueIntent(intent);}
-      else await window.friendPi.request('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});submitted.accepted=true;
+      else {const response=await window.friendPi.request<{runId?:string}>('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});if(typeof response?.runId==='string')submitted.runId=response.runId;}submitted.accepted=true;
       try{const remaining={text:draftRef.current===submitted.text?'':draftRef.current,attachments:JSON.stringify(attachmentsRef.current.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};localStorage.setItem('friend-pi.draft.v1:'+target,JSON.stringify(remaining));if(submitted.owner!==target)localStorage.removeItem('friend-pi.draft.v1:'+submitted.owner);}catch{}
       if(ownerRef.current===submitted.owner||ownerRef.current===target){if(draftRef.current===submitted.text)setDraft('');setAttachments(old=>JSON.stringify(old.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:old);setDraftOwner(target);}
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
-    finally{sendLock.current=false;setSending(false);setSubmissionRevision(old=>old+1);}
+    finally{sendLock.current=false;setSending(false);if(submissionSettled(submitted,stateRef.current.current))setLocalRunning(false);setSubmissionRevision(old=>old+1);}
   };
   const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});restoreDialogs();setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   const openProject=async(create=false)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke(create?'project.create':'project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};

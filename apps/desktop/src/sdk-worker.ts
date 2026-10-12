@@ -589,6 +589,8 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(queued&&(input.admissionEpoch!==queueEpoch||stopping))throw new Error('消息交付已取消');
     const inputRecord:PendingInput={attachmentMetadata:attachments.map(({text,image,...metadata})=>({...metadata,image:!!image})),id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
     if(queued)inputQueue.handoff(queued.id);
+    // Native commands can request approval before emitting any agent event.
+    publish('state',current());
     void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
       if(sendEpoch!==queueEpoch||stopping||disposed)throw new Error('消息交付已取消');
       if(result==='started'){inputRecord.preflightStarted=true;startedInputId=inputRecord.id;}

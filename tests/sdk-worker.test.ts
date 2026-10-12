@@ -14,6 +14,7 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
+import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
 import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));}
@@ -32,6 +33,44 @@ async function start(options:{directory?:string;sessionFile?:string;modelId?:str
  return {directory,dataDir,events,child,initial,request,wait,close};
 }
 test('four public Pi extensions are loaded and GUI commands reach their controllers', {timeout:30000},async()=>{const fixture=await start();try{for(const plugin of ['swarm','expert','memory','topic-rebuild']){const state=await fixture.request('plugin',{plugin,action:'snapshot'}) as Record<string,unknown>;assert.equal(typeof state,'object');}await fixture.request('plugin',{plugin:'memory',action:'save',input:{title:'项目约束',content:'必须保留中文字段',scope:'project',explicitRemember:true}});const result=await fixture.request('plugin',{plugin:'memory',action:'search',input:{query:'中文字段'}}) as unknown;assert.ok(JSON.stringify(result).includes('必须保留中文字段'));}finally{await fixture.close();}});
+test('public native Swarm snapshot settles without a model run, native user or correction graph',{timeout:30000},async()=>{
+ const f=await start();try{
+  const sent=await f.request('send',{text:'/swarm snapshot',mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.lifecycleStatus==='completed'));
+  const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;runId:string};
+  assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');assert.equal(state.runId,sent.runId);
+  assert.equal(f.events.some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
+  const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.some(e=>e.type==='message'),false);assert.equal(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.swarm.correction.v1'),false);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[]);
+ }finally{await f.close();}
+});
+test('public native Swarm start publishes its new run before approval and integrates the existing graph',{timeout:40000},async()=>{
+ const f=await start({temporary:true});try{
+  const prior=await f.request('send',{text:'/swarm snapshot',mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===prior.runId&&e.event.data.lifecycleStatus==='completed'));
+  const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{collaborationVersion:1,goal:'retained readonly command graph',checks:[],tasks:[{id:'read',title:'Read',prompt:'Read only',mode:'read',dependencies:[]}]}}) as {id:string;runId:string};
+  assert.equal(graph.runId,prior.runId);
+  const attention=new AttentionRegistry(),owner={sessionId:'desktop-command',generation:'worker-command'};
+  attention.register(owner.sessionId,owner.generation);attention.observeState({...owner,runId:prior.runId},{runId:prior.runId,isRunning:false,lifecycleStatus:'completed'});
+  let captured:boolean|undefined;f.child.on('message',(raw:any)=>{
+   if(raw.type!=='event')return;const event=raw.event;
+   if(event.type==='state')attention.observeState({...owner,runId:event.data.runId},event.data);
+   if(event.type==='dialog')captured=attention.captureDialog({...owner,runId:event.runId},event.data);
+  });
+  const offset=f.events.length,sent=await f.request('send',{text:'/swarm start '+JSON.stringify({graphId:graph.id}),mode:'swarm'}) as {runId:string};
+  await f.wait(()=>captured!==undefined);assert.equal(captured,true,'the host must retain the new-run approval before any model event');
+  const prompt=f.events.slice(offset).find(e=>e.event?.type==='dialog')!.event!.data;
+  assert.equal(attention.snapshot().filter(activity=>activity.kind==='dialog').length,1);assert.match(String(prompt.message),/git rev-parse --show-toplevel/);
+  assert.notEqual(sent.runId,prior.runId);assert.equal(f.events.slice(offset).some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
+  await f.request('dialog.respond',{id:prompt.id,confirmed:true});
+  await f.wait(()=>f.events.slice(offset).some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(e.event.data.data).includes('"status":"integrated"')),25000);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{id:string;runId:string;status:string;attempts:{status:string;sessionId?:string}[];reviewAttempts:{status:string}[];integration:{review:{approved:boolean;sessionId:string;sessionFile:string}}}[]};
+  assert.equal(snapshot.graphs.length,1);const integrated=snapshot.graphs[0];assert.equal(integrated.id,graph.id);assert.equal(integrated.runId,prior.runId);assert.equal(integrated.status,'integrated');assert.equal(integrated.attempts[0].status,'completed');assert.equal(integrated.integration.review.approved,true);assert.equal(integrated.reviewAttempts.at(-1)?.status,'completed');assert.ok(integrated.integration.review.sessionFile);assert.notEqual(integrated.integration.review.sessionId,integrated.attempts[0].sessionId);
+  const state=await f.request('state') as {isRunning:boolean;lifecycleStatus:string;sessionFile:string};assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');
+  assert.equal(f.events.slice(offset).some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
+  const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.some(e=>e.type==='message'),false);assert.ok(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.permission.decision'&&(e.data as {approved?:boolean}).approved===true));
+ }finally{await f.close();}
+});
 test('Pi SDK executes a real tool, persists native JSONL, and settles without fake task authority',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('send',{text:'QA_WRITE：写验证成果',mode:'single'});await fixture.wait(()=>fixture.events.some(event=>event.type==='event'&&event.event?.type==='pi'&&event.event.data.type==='agent_settled'));assert.ok(existsSync(join(fixture.directory,'fixture-result.txt')));assert.match(readFileSync(join(fixture.directory,'fixture-result.txt'),'utf8'),/SDK tool execution/);const state=await fixture.request('state') as {sessionFile:string;messages:{id:string;role:string;text:string}[];isRunning:boolean;lifecycleStatus:string;changes:{changeId?:string;unavailable?:string;files:{path:string;status:string}[]}[]};assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');assert.ok(state.messages.some(message=>message.role==='toolResult'));assert.ok(state.messages.every(message=>!!message.id));assert.ok(existsSync(state.sessionFile));assert.match(readFileSync(state.sessionFile,'utf8'),/toolResult/);assert.equal(state.changes.length,1);assert.equal(state.changes[0].unavailable,undefined);assert.ok(state.changes[0].changeId);assert.deepEqual(state.changes[0].files.map(file=>[file.path,file.status]),[['fixture-result.txt','A']]);}finally{await fixture.close();}});
 test('desktop plugin toggles really reload and disabled plugin cannot be called',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('configure',{plugins:['expert']});await assert.rejects(fixture.request('plugin',{plugin:'memory',action:'snapshot'}),/不可用|超时/);const state=await fixture.request('state') as {plugins:string[]};assert.deepEqual(state.plugins,['expert']);}finally{await fixture.close();}});
 test('session monitor binds public timing to native steps and restores totals on cold restart',{timeout:30000},async()=>{
