@@ -8,6 +8,7 @@ export function workflowCodeDigest(projectDir:string, paths:string[], dataDir?:s
   const hash=createHash('sha256');let files=0,bytes=0;
   const visited=new Set<string>();
   const ignored=new Set(['.git','node_modules','.cache','.artifacts','dist','.friendData']);
+  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
   const inside=(path:string)=>path===root||path.startsWith(root+sep);
   function visit(path:string):void {
     const logical=relative(root,path);
@@ -16,7 +17,8 @@ export function workflowCodeDigest(projectDir:string, paths:string[], dataDir?:s
     if(!existsSync(path)){hash.update(`missing:${logical}\n`);return;}
     const physical=realpathSync(path);
     if(!inside(physical))throw new Error('流程代码摘要不能读取项目之外的符号链接');
-    if(excluded&&(physical===excluded||physical.startsWith(excluded+sep)))return;
+    if(excluded&&excluded!==root&&inside(excluded)&&(physical===excluded||physical.startsWith(excluded+sep)))return;
+    if(excluded===root){const first=relative(root,physical).split(sep)[0];if(hostEntries.has(first)||/^swarm-pre-v[34]-[a-f0-9-]+\.sqlite$/.test(first))return;}
     if(visited.has(physical))return;visited.add(physical);
     const info=lstatSync(physical);
     if(info.isDirectory()){

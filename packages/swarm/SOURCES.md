@@ -16,3 +16,5 @@ Adapted source map (all at `5badb15009ae1756c3afe0ae0cef1faafc290ccc`, Copyright
 - `packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx` -> Desktop `Teammates.tsx`: roster states, member navigation and disclosure interaction adapted to Friend components.
 
 The public worker protocol v2 adds identity/generation fences and durable receipt events. Legacy v1 graphs and workers retain their existing semantics. The desktop and standalone Swarm package both distribute DEEPSEEK-LICENSE.
+
+Capability optimization: validation-local DAG reachability, deterministic plan checks, explicit local resource waiting, immutable structured handoffs, native full-read receipts and read-only recovery previews are new Friend-Pi code. They reuse the pinned Pi public SDK and native tool result history above; no scheduler or Agent loop was copied from another project. No new runtime dependency is introduced.

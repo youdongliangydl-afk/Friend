@@ -15,6 +15,7 @@ import {MemberInbox} from './member-inbox.js';
 import {teamMessageText} from './teammates.js';
 import {memberRole,roleInstructions,memberPrompt,validateMemberDelivery} from './member-role.js';
 import type { MemberInput, MemberOutput, MemberStart } from './types.js';
+import {HandoffReadCoverage,type HandoffRef} from './handoff.js';
 
 let session: AgentSession | undefined;
 let started = false;
@@ -29,7 +30,7 @@ const requests = new Map<string,{resolve:(value:unknown)=>void;reject:(error:Err
 function envelope(message:MemberOutput):MemberOutput{return currentStart?.v===2?{...message,v:2,protocol:2,memberId:currentStart.memberId,generation:currentStart.generation,attemptId:currentStart.attemptId}:message;}
 function output(message:MemberOutput):void{if(process.connected)process.send?.(envelope(message));}
 async function terminalOutput(message:MemberOutput):Promise<void>{if(!process.connected||!process.send)throw new Error('成员协调连接已结束');await new Promise<void>((done,fail)=>process.send!(envelope(message),error=>error?fail(error):done()));}
-function request(action:'lease.check'|'send'|'shared.read'|'shared.write'|'expert.adopt'|'expert.confirm',input:Record<string,unknown>):Promise<unknown> {
+function request(action:'lease.check'|'handoff.read'|'send'|'shared.read'|'shared.write'|'expert.adopt'|'expert.confirm',input:Record<string,unknown>):Promise<unknown> {
   if (stopped || !process.connected) return Promise.reject(new Error('协调者连接已结束'));
   const requestId=randomUUID();return new Promise((resolveResult,reject)=>{
     const timer=setTimeout(()=>{requests.delete(requestId);reject(new Error('协作请求超时'));},60000);
@@ -92,6 +93,12 @@ async function run(start:MemberStart): Promise<void> {
   if (!model) throw new Error(`成员模型不可用：${start.modelId}`);
   if(process.env.FRIEND_PI_TEST_PROVIDER!=='1'&&!(await runtime.getAvailable()).some(available=>available.provider===model.provider&&available.id===model.id))throw new Error('成员冻结的模型没有可用的已配置凭据');
   const expert = start.expert && typeof start.expert === 'object' ? start.expert as Record<string,unknown> : undefined;
+  const handoff=start.requiredHandoff?new HandoffReadCoverage(start.requiredHandoff):undefined;
+  const handoffReader:ExtensionFactory=pi=>{
+    if(!handoff)return;
+    pi.on('tool_call',event=>{if(event.toolName!=='swarm_handoff_read'&&!handoff.complete)return {block:true,reason:`先完整读取必读交接，下一 offset:${handoff.next()}；不能跳过完整约束`};});
+    pi.registerTool({name:'swarm_handoff_read',label:'完整读取交接',description:'按offset连续完整读取当前尝试冻结的必读交接；内容包括完整约束、未决问题和精确版本引用。每次最多8000字符。不得仅凭目录或最后一段开始执行。',parameters:Type.Object({offset:Type.Integer({minimum:0}),maxChars:Type.Optional(Type.Integer({minimum:1,maximum:8000}))},{additionalProperties:false}),async execute(_id,params){if(params.offset!==handoff.next())throw new Error(`必须连续读取，下一offset:${handoff.next()}`);const result=object(await request('handoff.read',params));if(typeof result.content!=='string'||typeof result.offset!=='number'||typeof result.end!=='number')throw new Error('交接读取响应无效');handoff.accept({ref:result.ref as HandoffRef,offset:result.offset,end:result.end,content:result.content});return {content:[{type:'text',text:result.content}],details:{ref:result.ref,offset:result.offset,end:result.end,fullRead:handoff.complete,nextOffset:handoff.next()}};}});
+  };
   const role=memberRole(expert);
   const allowed=start.mode === 'read' ? ['read','grep','find','ls'] : ['read','write','edit','bash'];
   const scope=Array.isArray(expert?.toolScope) ? expert.toolScope as unknown[] : undefined;
@@ -116,7 +123,7 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(handoff?['swarm_handoff_read']:[]),...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
@@ -126,7 +133,7 @@ async function run(start:MemberStart): Promise<void> {
     pi.on('tool_call',event=>{if(event.toolName!=='bash')return;const entries=session!.sessionManager.getEntries(),callIndex=entries.findLastIndex(e=>e.type==='message'&&e.message.role==='assistant'&&e.message.content.some(p=>p.type==='toolCall'&&p.id===event.toolCallId)),adoptions=[...confirmedTrials.values()].filter(a=>{const index=entries.findIndex(e=>e.id===a.journalEntryId);return index>=0&&index<callIndex;}).map(a=>({operationId:String(a.operationId),journalEntryId:String(a.journalEntryId),skillsHash:digest(a.skills)}));nativeCalls.set(event.toolCallId,{commandHash:digest(event.input.command),adoptions});});
     pi.on('tool_result',event=>{const call=nativeCalls.get(event.toolCallId);nativeCalls.delete(event.toolCallId);if(event.toolName!=='bash'||!call?.adoptions.length||!event.structuredContent||typeof event.structuredContent!=='object')return;const result=object(event.structuredContent);if(typeof result.exit_code!=='number'||!Number.isSafeInteger(result.exit_code))return;nativeChecks.set(event.toolCallId,{...call,exitCode:result.exit_code,outputHash:digest(visibleText(event.content))});});
   };
-  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[checks,pi=>{pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
+  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[handoffReader,checks,pi=>{pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools],customTools:[createBashToolDefinition(start.cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});
   session = created.session;
@@ -143,7 +150,7 @@ async function run(start:MemberStart): Promise<void> {
     // Raw transcript lives in Pi JSONL, never copied to Swarm records.
     if (event.type === 'tool_execution_start' || event.type === 'tool_execution_update' || event.type === 'tool_execution_end' || event.type === 'agent_settled' || start.v===2&&['message_start','message_update','message_end'].includes(event.type)) output({v:1,type:'event',event});
     if (event.type === 'agent_settled') settled=true;
-    if(event.type==='message_end'&&event.message.role==='user'&&start.frozen&&!firstReported)queueMicrotask(()=>{const entries=session!.sessionManager.getEntries(),runIndex=entries.findLastIndex(e=>e.type==='custom'&&e.customType===nativeRunType&&object(e.data).runId===start.attemptId),entry=entries.find((e,i)=>i>runIndex&&e.type==='message'&&e.message.role==='user'&&visibleText(e.message.content)===initialPrompt);if(entry&&session!.sessionFile){session!.sessionManager.appendCustomEntry(nativeUserType,{v:1,runId:start.attemptId,entryId:entry.id,promptDigest:digest(initialPrompt)});const fd=openSync(session!.sessionFile,'r');try{fsyncSync(fd);}finally{closeSync(fd);}firstReported=true;output({v:1,type:'started',entryId:entry.id,promptDigest:digest(initialPrompt),snapshotDigest:digest(start.frozen)});}});
+    if(event.type==='message_end'&&event.message.role==='user'&&(start.frozen||start.requiredHandoff)&&!firstReported)queueMicrotask(()=>{const entries=session!.sessionManager.getEntries(),runIndex=entries.findLastIndex(e=>e.type==='custom'&&e.customType===nativeRunType&&object(e.data).runId===start.attemptId),entry=entries.find((e,i)=>i>runIndex&&e.type==='message'&&e.message.role==='user'&&visibleText(e.message.content)===initialPrompt);if(entry&&session!.sessionFile){session!.sessionManager.appendCustomEntry(nativeUserType,{v:1,runId:start.attemptId,entryId:entry.id,promptDigest:digest(initialPrompt)});const fd=openSync(session!.sessionFile,'r');try{fsyncSync(fd);}finally{closeSync(fd);}firstReported=true;output({v:1,type:'started',entryId:entry.id,promptDigest:digest(initialPrompt),snapshotDigest:digest(start.frozen??null)});}});
     if(event.type==='message_end'){queueMicrotask(()=>{if(shutdown)return;if(start.v===2)inbox?.reconcile();if(event.message.role==='assistant'){const entry=session!.sessionManager.getEntries().find(item=>item.type==='message'&&item.message===event.message);if(entry)output({v:1,type:'usage',entryId:entry.id,tokens:modelTokenUsage(event.message.usage)});}});}
     if(event.type==='message_end'&&event.message.role==='toolResult'){
       const message=event.message;
@@ -165,6 +172,7 @@ async function run(start:MemberStart): Promise<void> {
   await journalTail;if(journalError)throw journalError;
   // prompt resolves when Pi is idle; session's agent_settled event is emitted before completion.
   if (stopped) throw new Error('成员已停止，现场保留，需要显式接续');
+  if(handoff&&!handoff.complete)throw new Error('必读交接未完整读取，不能接受本次成果');
   const last = [...session.messages].reverse().find(message => message.role === 'assistant');
   if (last && 'stopReason' in last && (last.stopReason === 'error' || last.stopReason === 'aborted')) throw new Error('errorMessage' in last ? String(last.errorMessage) : '成员未正常结束');
   if (!settled || !session.isIdle) throw new Error('Pi 成员尚未达到真正结束边界');

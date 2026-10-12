@@ -14,7 +14,7 @@ function walk(root:string,excluded?:string,stagingRoots:string[]=[]):string[]{
   const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
   const visit=(path:string)=>{for(const entry of readdirSync(path,{withFileTypes:true})){
     const file=join(path,entry.name);
-    if(entry.name==='.git'||hidden.has(file)||path===data&&(hostEntries.has(entry.name)||/^swarm-pre-v3-[a-f0-9-]+\.sqlite$/.test(entry.name)))continue;
+    if(entry.name==='.git'||hidden.has(file)||path===data&&(hostEntries.has(entry.name)||/^swarm-pre-v[34]-[a-f0-9-]+\.sqlite$/.test(entry.name)))continue;
     if(entry.isSymbolicLink())throw new CapabilityError('VALIDATION_ERROR','非Git暂存不接受符号链接');
     if(entry.isDirectory())visit(file);else if(entry.isFile())out.push(relative(root,file));
   }};visit(root);return out.sort();

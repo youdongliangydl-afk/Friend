@@ -7,7 +7,7 @@ import type { ExtensionFactory,ExtensionContext } from '@earendil-works/pi-codin
 import { registerSourceSession,TaskLedger,RuntimeCapabilityServices,CapabilityError,normalizeCapabilityError,SourcePolicy,agentDirectory, assertTemporaryArtifactPath,ConflictError, digest, object, parseModelJson, RecordStore, registerPlugin, text,makeContext,visibleText } from '@friend-pi/core';
 import type { CapabilityDependency,JsonObject, PluginContext, PluginController, StoredDocument } from '@friend-pi/core';
 import { contains, destructiveCommand } from './guard.js';
-import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task,StopObject } from './types.js';
+import type { Attempt, Baseline, Check, CheckResult, Graph, MemberHandle, MemberLauncher, MemberMessage, MemberOutput, MemberStart, Review, SharedDocument, Task,StopObject,TaskWait } from './types.js';
 import {managedCommand,ownChild,checkCancelled,CancelledError} from './managed.js';
 import {SharedMaterials} from './shared.js';
 import {memberPrompt} from './member-role.js';
@@ -15,7 +15,7 @@ import {TeammateStore,nativeBranch} from './teammates.js';
 import type {Teammate} from './types.js';
 import {DynamicWorkflowController} from './workflow.js';
 import {SwarmStorage} from './storage.js';
-import {Artifacts} from './artifacts.js';
+import {Artifacts,fileDigest} from './artifacts.js';
 import {Operations} from './operations.js';
 import {Budget} from './budget.js';
 import {contract} from './contracts.js';
@@ -24,7 +24,10 @@ import type {BudgetSnapshot,VerificationRecord,ArtifactVersion} from './types.js
 import {projectSwarmToolResult} from './tool-result.js';
 import {nativeCheckType,memberNativeInput,readMemberChecks,trialAdoptions} from './member-checks.js';
 import {graphReachability} from './reachability.js';
+import {prepareHandoff,readHandoff,verifyHandoffRead} from './handoff.js';
 export {DynamicWorkflowController} from './workflow.js';
+export type {WorkflowResumePreview} from './workflow.js';
+export type {HandoffRef,StructuredHandoff} from './handoff.js';
 export type * from './types.js';
 
 const now = () => new Date().toISOString();
@@ -73,7 +76,7 @@ function taskSpec(raw:unknown,index:number): Task {
   const scopes=item.writeScopes === undefined ? ['.'] : strings(item.writeScopes,`任务 ${id} 的写入范围：`);
   if (mode==='write'&&!scopes.length)throw new Error(`任务 ${id}：写入任务必须提供非空 writeScopes`);
   if (scopes.some(path=>isAbsolute(path) || !contains('/scope',resolve('/scope',path)))) throw new Error(`任务 ${id}：写入范围必须相对于成员工作区，不能越出工作区`);
-  const prompt=text(item.prompt || item.title,'任务要求');return {memberId:item.memberId?text(item.memberId,'队友标识',100):undefined,memberName:item.memberName?text(item.memberName,'队友名称',80):undefined,id,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
+  const prompt=text(item.prompt || item.title,'任务要求');return {constraints:item.constraints===undefined?undefined:strings(item.constraints).map(value=>text(value,'完整约束',100000)),unresolved:item.unresolved===undefined?undefined:strings(item.unresolved).map(value=>text(value,'未决问题',100000)),memberId:item.memberId?text(item.memberId,'队友标识',100):undefined,memberName:item.memberName?text(item.memberName,'队友名称',80):undefined,id,title:text(item.title,'任务标题',500),prompt,originalPrompt:prompt,requirementVersions:[{version:1,prompt,at:now()}],dependencies:item.dependencies === undefined ? [] : strings(item.dependencies),mode,expertId:item.expertId ? text(item.expertId,'专家标识',100):undefined,roleId:item.roleId?text(item.roleId,'角色标识',100):undefined,logicalStepId:item.logicalStepId?text(item.logicalStepId,'逻辑步骤标识',300):undefined,workflowHeld:item.workflowHeld===true,modelId:item.modelId?text(item.modelId,'模型标识',200):undefined,thinkingLevel:thinkingLevel(item.thinkingLevel),writeScopes:scopes,status:'pending',rework:0,resultRevision:0};
 }
 export function validateDAG(tasks:Task[]): void {
   const map=new Map(tasks.map(task=>[task.id,task]));if (map.size!==tasks.length) throw new Error('任务标识重复');
@@ -86,10 +89,11 @@ export function validateDAG(tasks:Task[]): void {
   for (const task of tasks) visit(task.id);
 }
 export function validateWriteRanges(tasks:Task[]):void {
-  const {depends}=graphReachability(tasks),writers=tasks.filter(task=>task.mode==='write');
+  const {depends}=graphReachability(tasks),writers=tasks.filter(task=>task.mode==='write'&&task.status!=='skipped');
   for(let i=0;i<writers.length;i++)for(let j=i+1;j<writers.length;j++){
     const a=writers[i],b=writers[j];
-    if(!depends(a.id,b.id)&&!depends(b.id,a.id)&&a.writeScopes.some(x=>b.writeScopes.some(y=>contains(resolve('/scope',x),resolve('/scope',y))||contains(resolve('/scope',y),resolve('/scope',x)))))throw new CapabilityError('VALIDATION_ERROR','并行写任务范围重叠，请声明依赖或缩小范围');
+    const overlaps=a.writeScopes.flatMap(x=>b.writeScopes.filter(y=>contains(resolve('/scope',x),resolve('/scope',y))||contains(resolve('/scope',y),resolve('/scope',x))).map(y=>[x,y]));
+    if(overlaps.length&&!depends(a.id,b.id)&&!depends(b.id,a.id))throw new CapabilityError('VALIDATION_ERROR','并行写任务范围重叠，请声明依赖或缩小范围',{v:1,taskIds:[a.id,b.id],overlappingScopes:overlaps});
   }
 }
 function checkSpecs(input:unknown): Check[] {
@@ -126,6 +130,7 @@ export class SwarmController implements PluginController {
   private readonly leaseHeartbeats=new Map<string,ReturnType<typeof setInterval>>();
   private readonly members=new Map<string,{handle:MemberHandle;graphId:string;context:PluginContext}>();
   private readonly pumping=new Set<string>();
+  private readonly resourceRetries=new Map<string,ReturnType<typeof setTimeout>>();
   private readonly releasingAttempts=new Map<string,Promise<void>>();
   private readonly trialObserving=new Map<string,Promise<void>>();
   private readonly trialRetries=new Map<string,ReturnType<typeof setTimeout>>();
@@ -345,14 +350,17 @@ export class SwarmController implements PluginController {
   snapshot(ctx:PluginContext): unknown {
     if(this.disposed)throw new Error('Swarm 已关闭');
     const store=this.store(ctx);const graphs=store.list<Graph>(`graph:${ctx.projectId}:`).filter(doc=>doc.value.sessionId===ctx.sessionId).map(doc=>({...doc.value,revision:doc.revision}));
+    for(const graph of graphs)for(const task of graph.tasks)task.waiting=this.taskWait(graph,task,ctx);
     for(const graph of graphs)for(const attempt of graph.attempts){const pending=attempt.trialObservation;if(pending?.status==='waiting'&&pending.retryAt&&(pending.attempts||0)<3)this.retryMemberTrial(graph.id,attempt.id,pending.outcome,pending.retryAt,ctx);}
     const ids=new Set(graphs.map(graph=>graph.id));const projection=this.storage(ctx).projectionStatus(ctx,graphs);if(projection.drift)this.storage(ctx).projection(ctx,graphs);this.storage(ctx).flush(ctx);const artifacts=graphs.flatMap(g=>this.artifacts(ctx).list(g.id));const fileApplications=store.db.prepare('SELECT * FROM swarm_file_applications').all().filter(r=>graphs.some(g=>String(r.operation_id).startsWith(`apply:${g.id}:`)));const operations=[...graphs.flatMap(g=>this.operations(ctx).list(g.id)),...fileApplications.map(r=>({id:r.operation_id,graphId:graphs.find(g=>String(r.operation_id).startsWith(`apply:${g.id}:`))!.id,connector:'file',target:r.target,status:r.status==='unknown'?'unknown':r.status==='applied'?'confirmed':'prepared',payloadDigest:r.digest,expectedTargetVersion:r.baseline}))];const verifications=store.db.prepare('SELECT json FROM swarm_verification').all().map(r=>JSON.parse(String(r.json))).filter(r=>ids.has(r.graphId));
     return {projection:{...projection,rebuilt:projection.drift},fileApplications,artifacts,operations,verifications,budgets:graphs.filter(g=>g.budget).map(g=>({graphId:g.id,...g.budget})),teammates:this.roster(ctx).list(ctx),graphs,members:graphs.flatMap(graph=>graph.attempts.map(attempt=>({...attempt,graphId:graph.id}))),messages:[...store.list<MemberMessage>('message:').map(doc=>doc.value).filter(msg=>ids.has(msg.graphId)),...store.list<MemberMessage>('teammate-message:'+ctx.sessionId+':').map(doc=>doc.value).filter(msg=>ids.has(msg.graphId))],shared:store.list<SharedDocument>('shared:').map(doc=>({...doc.value,revision:doc.revision})).filter(item=>ids.has(item.graphId)),sharedConflicts:store.list('shared-conflict:').map(doc=>doc.value).filter(raw=>raw&&typeof raw==='object'&&'graphId' in raw&&ids.has(String(raw.graphId))),confirmations:[...this.confirmations.keys()],status:graphs.some(graph=>['running','stopping','awaiting_review','ready'].includes(graph.status)||graph.attempts.some(attempt=>attempt.status==='running'))||this.roster(ctx).list(ctx).some(member=>['provisioning','running','stopping'].includes(member.state))?'running':'idle'};
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
+    if(this.disposed)throw new Error('Swarm 已关闭');
+    if(action==='resume.preview'){const preview=this.resumePreview(text(input.graphId,'任务图标识',100),ctx);if(input.expectedRevision!==undefined&&input.expectedRevision!==preview.graphRevision)throw new CapabilityError('VERSION_CONFLICT','任务图版本已变化',{preview});return preview;}
     if(input.expectedRevision!==undefined&&!action.startsWith('shared.')&&input.revision===undefined)input={...input,revision:input.expectedRevision};
     for(const field of ['confirmUnknown','accepted','deferPreparation','workflowHeld','gateOnly','repair','automatic'])if(input[field]!==undefined&&typeof input[field]!=='boolean')throw new CapabilityError('VALIDATION_ERROR',`${field}必须为布尔值`);
-    const read=['snapshot','history','member.list','member.history','shared.read','shared.readVersion','shared.conflicts','artifact.list','artifact.read','budget.read','search'];
+    const read=['plan.validate','resume.preview','handoff.read','snapshot','history','member.list','member.history','shared.read','shared.readVersion','shared.conflicts','artifact.list','artifact.read','budget.read','search'];
     return read.includes(action)||action.startsWith('operation.')?this.dispatchInternal(action,input,ctx):this.storage(ctx).action(action,input,ctx,()=>this.dispatchInternal(action,input,ctx));
   }
   private async dispatchInternal(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
@@ -363,6 +371,7 @@ export class SwarmController implements PluginController {
     if(action.startsWith('team.'))return this.team(action.slice(5),input,ctx);
     if(action==='audit')return this.audit(input,ctx);
     if (action==='snapshot') return this.snapshot(ctx);
+    if(action==='plan.validate')return this.validatePlan(input,ctx);
     if(action==='search'){const graphs=(this.snapshot(ctx) as {graphs:Graph[]}).graphs;this.store(ctx).transaction(()=>{for(const g of graphs){for(const task of g.tasks)this.storage(ctx).index(g.id,'task',task.id,`${task.title} ${task.requirementVersions?.at(-1)?.prompt||task.prompt}`);for(const row of this.store(ctx).list<SharedDocument>(`shared:${g.id}:`))this.storage(ctx).index(g.id,'shared',row.value.name,row.value.content);}});const terms=text(input.query).replace(/([\p{Script=Han}])/gu,' $1 ').match(/[\p{L}\p{N}_]+/gu)||[];if(!terms.length)return {matches:[]};const query=terms.map(term=>`"${term}"`).join(' ');return {matches:graphs.flatMap(g=>this.store(ctx).db.prepare('SELECT kind,record_id,text FROM swarm_search WHERE graph_id=? AND swarm_search MATCH ? ORDER BY bm25(swarm_search) LIMIT 20').all(g.id,query))};}
     if (action==='history') return {graphs:this.store(ctx).list<Graph>(`graph:${ctx.projectId}:`).map(doc=>({...doc.value,revision:doc.revision})),readOnly:true};
     if (action==='create') return this.create(input,ctx);
@@ -371,6 +380,8 @@ export class SwarmController implements PluginController {
     if(action==='artifact.list'){this.get(id,ctx);return {artifacts:this.artifacts(ctx).list(id)};}
     if(action==='artifact.read'){this.get(id,ctx);return this.artifacts(ctx).read(id,text(input.artifactId),input.revision===undefined?undefined:number(input.revision,1,1,1000000));}
     if(action==='budget.read')return this.get(id,ctx).value.budget??{available:false,tokenUnknown:true};
+    if(action==='resume.preview')return this.resumePreview(id,ctx);
+    if(action==='handoff.read'){const graph=this.get(id,ctx).value,attempt=graph.attempts.find(a=>a.id===input.attemptId);if(!attempt?.requiredHandoff)throw new CapabilityError('SOURCE_UNAVAILABLE','本尝试没有必读交接');this.fence(graph,ctx);return readHandoff(this.store(ctx),id,attempt.requiredHandoff,input.offset,input.maxChars);}
     if(action.startsWith('operation.')){const graph=this.get(id,ctx).value;this.fence(graph,ctx);const operations=this.operations(ctx);if(action==='operation.prepare'){const task=graph.tasks.find(t=>t.id===input.taskId),attempt=graph.attempts.find(a=>a.id===input.attemptId);if(!task||!attempt||attempt.taskId!==task.id)throw new CapabilityError('PERMISSION_DENIED','操作必须绑定当前任务尝试');const op=await operations.prepare(input,ctx);if(op.status==='prepared'&&!op.resourceReservationId){const reservation=object(await this.runtimeRequest(ctx,'resource.reserve',{graphId:id,taskId:op.taskId,attemptId:op.attemptId,ownerRuntime:this.runtime,generation:attempt.generation||1,resources:[{kind:'external',key:op.target,access:'write'}]}));return operations.bindResource(op.id,text(reservation.reservationId),ctx);}return op;}if(action==='operation.dispatch'){const op=operations.read(text(input.operationId),ctx);if(op.status==='confirmed'||op.status==='rejected')return op;if(!op.resourceReservationId)throw new CapabilityError('CAPABILITY_UNAVAILABLE','外部写入缺少宿主资源预约');await this.runtimeRequest(ctx,'resource.check',{reservationId:op.resourceReservationId});const result=await this.track(id,operations.dispatch(op.id,input.revision,ctx));if(result.status==='confirmed'||result.status==='rejected')await this.runtimeRequest(ctx,'resource.release',{reservationId:op.resourceReservationId});return result;}if(action==='operation.reconcile'){const result=await this.track(id,operations.reconcile(text(input.operationId),ctx));if(result.resourceReservationId&&(result.status==='confirmed'||result.status==='rejected'))try{await this.runtimeRequest(ctx,'resource.release',{reservationId:result.resourceReservationId});}catch(error){if(error instanceof CapabilityError&&error.code==='OPERATION_UNKNOWN'&&result.reconciliation?.receiptId)await this.runtimeRequest(ctx,'resource.reconcile',{reservationId:result.resourceReservationId,operationId:result.id,receiptId:result.reconciliation.receiptId});else throw error;}return result;}}
     if(!['pause','stop','shared.read','shared.readVersion','shared.conflicts'].includes(action))assertOrdinaryGraph(this.get(id,ctx).value);
     if(['start','resume','prepare','review','integrate','rework','append','update_task','workflow_skip'].includes(action))assertExecution(ctx,this.get(id,ctx).value.executionStyle||'swarm');
@@ -384,6 +395,7 @@ export class SwarmController implements PluginController {
     if (action==='pause' || action==='stop')return this.stop(id,ctx,action==='pause');
     if (action==='resume') {
       const graph=this.get(id,ctx).value;
+      const preview=this.resumePreview(id,ctx);if(input.previewBinding!==undefined&&input.previewBinding!==preview.binding)throw new CapabilityError('VERSION_CONFLICT','恢复预览已过期，请重新核对',{preview});if(!preview.sourceValidity.valid)throw new CapabilityError('SOURCE_UNAVAILABLE',preview.sourceValidity.reason||'来源不可用');if(preview.nodes.some(node=>node.decision==='redo'&&graph.tasks.find(task=>task.id===node.id)?.status==='completed'))throw new CapabilityError('VERSION_CONFLICT','保留成果已变化，请通过任务修复重新验证',{preview});
       if(graph.status==='stopping'||this.execution(id).activities.size||this.execution(id).operations.size)throw new Error('停止尚未到安全边界，请等待退出收据');
       if (graph.status==='integrated') throw new Error('已整合任务不能重新执行');
       if(graph.reworkRound>=2&&graph.tasks.some(task=>task.status==='blocked'))throw new CapabilityError('BUDGET_EXHAUSTED','任务图已达2波返工上限');
@@ -444,7 +456,7 @@ export class SwarmController implements PluginController {
     if(current.executionOwner&&current.executionOwner.runtime!==this.runtime&&alive(current.executionOwner.pid)&&['running','awaiting_review','stopping'].includes(current.status))throw new Error('任务仍由另一个运行时持有，不能追加执行');
     if(['stopping','paused','stopped','awaiting_review'].includes(current.status)||this.preparing.has(id))throw new Error('任务图未到可追加的安全边界');
     const tasks=input.tasks.map((raw,index)=>taskSpec(raw,current.tasks.length+index));for(const task of tasks){if(current.executionStyle==='team'&&!task.roleId){task.modelId??=ctx.modelId;task.thinkingLevel??=ctx.thinkingLevel;}boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,current.modelId,current.thinkingLevel);}
-    if((current.cumulativeTaskCount??current.tasks.length)+tasks.length>64)throw new Error('任务图累计任务上限为 64');validateDAG([...current.tasks,...tasks]);
+    if((current.cumulativeTaskCount??current.tasks.length)+tasks.length>64)throw new Error('任务图累计任务上限为 64');validateDAG([...current.tasks,...tasks]);if(current.schemaVersion===3)validateWriteRanges([...current.tasks,...tasks]);
     if(tasks.some(task=>task.mode==='write')){
       const baseline=current.baseline??await this.baseline(id,ctx.projectDir,ctx);
       if(current.schemaVersion!==3&&current.executionStyle==='team'&&!baseline){this.update(id,ctx,g=>{g.tasks.push(...tasks);g.status='paused';g.error='Team 写入委派需要 Git 隔离工作树；新增任务保留，未启动成员';});this.changed(ctx);throw new Error('Team 写入委派需要 Git 隔离工作树');}
@@ -461,7 +473,7 @@ export class SwarmController implements PluginController {
     if(input.gateOnly===true){if(!current.workflowId||!['pending','skipped'].includes(previous.status)||typeof input.workflowHeld!=='boolean'||Object.keys(input).some(key=>!['graphId','taskId','workflowHeld','gateOnly','revision'].includes(key)))throw new Error('工作流门闸只可切换等待节点，不能修改要求');const gated=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();const task=g.tasks.find(item=>item.id===taskId)!;task.workflowHeld=input.workflowHeld===true;if(!task.workflowHeld)task.status='pending';});this.changed(ctx);if(gated.status==='running')void this.track(id,this.pump(id,ctx));return gated;}
     if(current.status==='running'||current.status==='stopping'||current.status==='awaiting_review'||this.execution(id).operations.size||this.execution(id).activities.size)throw new Error('先停止成员并等待安全边界，才能修改任务要求');
     if(currentUnknown(current)&&(input.confirmUnknown!==true||ctx.origin!=='user'))throw new Error('存在未知副作用，需用户检查并确认 confirmUnknown:true');
-    const changed=taskSpec({...previous,...input,id:taskId,logicalStepId:previous.logicalStepId},0);boundTaskPolicy(changed,ctx);validateTaskModel(changed,ctx,current.modelId,current.thinkingLevel);validateDAG(current.tasks.map(task=>task.id===taskId?changed:task));
+    const changed=taskSpec({...previous,...input,id:taskId,logicalStepId:previous.logicalStepId},0);boundTaskPolicy(changed,ctx);validateTaskModel(changed,ctx,current.modelId,current.thinkingLevel);const changedTasks=current.tasks.map(task=>task.id===taskId?changed:task);validateDAG(changedTasks);if(current.schemaVersion===3)validateWriteRanges(changedTasks);
     const reason=text(input.reason,'修改依据');if(input.repair===true||previous.status==='blocked')await this.claimRepair(current,[taskId],reason,ctx);
     const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();if(input.repair===true||previous.status==='blocked')g.reworkRound++;const target=g.tasks.find(task=>task.id===taskId)!;const versions=target.requirementVersions||[{version:1,prompt:target.prompt,at:g.createdAt}];const repair=target.rework;Object.assign(target,changed,{originalPrompt:target.originalPrompt||target.prompt,requirementVersions:[...versions,{version:versions.at(-1)!.version+1,prompt:changed.prompt,reason,at:now()}],rework:repair,resultRevision:target.resultRevision});const affected=new Set([taskId]);let grew=true;while(grew){grew=false;for(const task of g.tasks)if(!affected.has(task.id)&&task.dependencies.some(dep=>affected.has(dep))){affected.add(task.id);grew=true;}}for(const task of g.tasks)if(affected.has(task.id)){task.status='pending';task.currentAttempt=undefined;if(g.workflowId)task.workflowHeld=true;}g.integratedTaskIds=g.integratedTaskIds?.filter(task=>!affected.has(task));g.integration=undefined;g.status='paused';g.error=undefined;});
     this.executions.delete(id);this.changed(ctx);return graph;
@@ -477,10 +489,40 @@ export class SwarmController implements PluginController {
     try {const review=await this.track(created.id,this.reviewer(this.get(created.id,ctx).value,ctx.projectDir,context));const receipt={...review,at:now()};this.update(created.id,ctx,g=>{g.reviews=[...(g.reviews||[]),receipt];g.integration!.review=receipt;g.status=review.approved?'completed':'paused';g.error=review.approved?undefined:review.findings;});this.changed(ctx);return {...review,goalId,independent:true,source:{graphId:created.id,attemptId:review.attemptId,sessionId:review.sessionId,sessionFile:review.sessionFile}};}
     catch(error){this.update(created.id,ctx,g=>{g.status='paused';g.error=errorText(error);});this.changed(ctx);throw error;}
   }
+  private validatePlan(input:JsonObject,ctx:PluginContext):unknown {
+    assertExecution(ctx,'swarm');const goal=text(input.goal,'目标'),reason=text(input.reason,'分工或直接执行依据',8000),strategy=input.strategy??'collaboration';
+    if(strategy!=='direct'&&strategy!=='collaboration')throw new CapabilityError('VALIDATION_ERROR','未知Swarm内执行策略');
+    if(!Array.isArray(input.tasks)||input.tasks.length>64||strategy==='collaboration'&&!input.tasks.length||strategy==='direct'&&input.tasks.length)throw new CapabilityError('VALIDATION_ERROR','协作需要1–64任务；直接完成不派发任务');
+    const tasks=input.tasks.map(taskSpec);if(input.tasks.some(raw=>!['read','write'].includes(String(object(raw).mode))))throw new CapabilityError('VALIDATION_ERROR','必须明确任务mode');
+    validateDAG(tasks);validateWriteRanges(tasks);for(const task of tasks){boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,ctx.modelId,ctx.thinkingLevel);}
+    const checks=checkSpecs(input.checks),risk=input.risk??object(input.contract??{}).risk??(tasks.some(task=>task.mode==='write')?'medium':'low');if(!['low','medium','high'].includes(String(risk)))throw new CapabilityError('VALIDATION_ERROR','风险等级无效');
+    const frozenContract=tasks.length?contract({...object(input.contract??{}),risk},goal,tasks):undefined;
+    if(frozenContract?.verification==='V2'&&!checks.length&&!frozenContract.checks.length)throw new CapabilityError('VALIDATION_ERROR','V2必须声明宿主目标oracle检查');
+    const budget=input.budget===undefined?{}:object(input.budget);if(budget.tokenLimit!==undefined&&(!Number.isSafeInteger(budget.tokenLimit)||Number(budget.tokenLimit)<1))throw new CapabilityError('VALIDATION_ERROR','tokenLimit必须为正整数');
+    return {v:1,valid:true,mode:'swarm',strategy,reason,goal,risk,tasks,dependencies:tasks.map(task=>({taskId:task.id,dependsOn:task.dependencies})),conflicts:[],permissions:{tools:ctx.policy?.tools??[],writeScopes:ctx.policy?.writeScopes??[],expandsAuthority:false},checks,contract:frozenContract,budget:{tokenLimit:budget.tokenLimit,maxWorkers:number(input.maxWorkers,4,1,16),maxTasks:64,estimatesKnown:false},executionRequiresValidation:true,verificationRequired:risk==='high'?'objective-and-independent-review':'objective-checks-as-applicable'};
+  }
+  private withRecoveryStore<T>(ctx:PluginContext,read:(store:RecordStore)=>T):T {
+    const known=this.stores.get(ctx.dataDir);if(known)return read(known);if(!existsSync(join(ctx.dataDir,'plugins.sqlite')))throw new CapabilityError('SOURCE_UNAVAILABLE','原任务数据库不存在');const store=new RecordStore('swarm',ctx.dataDir);try{return read(store);}finally{store.close();}
+  }
+  /** Preview cold state without running startup recovery or installing a new writer fence. */
+  readRecoveryGraph(id:string,ctx:PluginContext):Graph&{revision:number} {
+    return this.withRecoveryStore(ctx,store=>{const document=store.get<Graph>(graphKey(ctx.projectId,id));if(!document||document.value.sessionId!==ctx.sessionId)throw new Error('任务图不存在或不属于当前会话');const graph={...document.value,revision:document.revision};for(const attempt of graph.attempts)if(attempt.status==='running'&&!alive(attempt.ownerPid)){attempt.status='unknown';const task=graph.tasks.find(t=>t.currentAttempt===attempt.id);if(task)task.status='unknown';}return graph;});
+  }
+  private resumePreview(id:string,ctx:PluginContext) {return this.withRecoveryStore(ctx,store=>{
+    const graph=this.readRecoveryGraph(id,ctx),sourceValidity:{valid:boolean;reason?:string}={valid:true};try{if(graph.sourceFence)new SourcePolicy(store).assert(graph.sourceFence);}catch(error){sourceValidity.valid=false;sourceValidity.reason=errorText(error);}
+    const latest=new Map<string,ArtifactVersion>();if(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='swarm_artifact_versions'").get())for(const row of store.db.prepare('SELECT json FROM swarm_artifact_versions WHERE graph_id=? ORDER BY artifact_id,revision').all(id)){const artifact=JSON.parse(String(row.json)) as ArtifactVersion;latest.set(artifact.artifactId,artifact);}const artifacts=[...latest.values()],nodes=graph.tasks.map(task=>{const attempt=graph.attempts.find(a=>a.id===task.currentAttempt),owned=artifacts.filter(a=>a.attemptId===attempt?.id),reasons:string[]=[],actual=owned.map(a=>({artifactId:a.artifactId,revision:a.revision,digest:a.digest,actual:a.stagingPath?fileDigest(a.stagingPath):a.digest}));
+      if(actual.some(a=>a.actual!==a.digest))reasons.push('成果文件摘要变化');if(task.status==='unknown'||attempt?.status==='unknown')reasons.push('副作用未知，必须核对后明确确认');if(!sourceValidity.valid)reasons.push(sourceValidity.reason||'来源不可用');
+      const decision:'keep'|'redo'|'check'=!sourceValidity.valid||task.status==='unknown'||attempt?.status==='unknown'||task.status==='running'?'check':reasons.length||task.status==='pending'||task.status==='blocked'||task.status==='cancelled'?'redo':'keep';
+      return {id:task.id,decision,reasons:reasons.length?reasons:[decision==='keep'?'保留绑定有效':decision==='redo'?'尚未完成，按原依赖和额度继续':'执行尚未结束'],requirementVersion:task.requirementVersions?.at(-1)?.version,inputDigest:digest({prompt:task.prompt,constraints:task.constraints,dependencies:task.dependencies,dependencyResults:attempt?.dependencyResults}),resultRevision:task.resultRevision,resultDigest:digest({attemptId:attempt?.id,summary:attempt?.summary,commit:attempt?.commit,actual}),rework:task.rework};});
+    const operations=store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='swarm_operations'").get()?store.db.prepare('SELECT operation_id,status,revision FROM swarm_operations WHERE graph_id=?').all(id):[];
+    const body={v:1 as const,readOnly:true as const,graphId:id,graphRevision:graph.revision,definitionHash:digest({contract:graph.contract,tasks:graph.tasks.map(task=>({id:task.id,prompt:task.prompt,dependencies:task.dependencies,mode:task.mode,writeScopes:task.writeScopes,constraints:task.constraints,unresolved:task.unresolved}))}),sourceValidity,nodes};return {...body,binding:digest({body,sourceFence:graph.sourceFence,permission:ctx.policy&&{tools:ctx.policy.tools,writeScopes:ctx.policy.writeScopes,permissionMode:ctx.policy.permissionMode},operations})};
+  });
+  }
   private async create(input:JsonObject,ctx:PluginContext,audit=false): Promise<Graph> {
+    const style=input.executionStyle===undefined?'swarm':input.executionStyle;if(style!=='team'&&style!=='swarm')throw new Error('未知协作方式');if(input.collaborationVersion!==1||input.tasks===undefined)assertExecution(ctx,style);
     const goal=text(input.goal || input.text,'目标');let raw=input.tasks;const graphId=randomUUID(),newSchema=input.collaborationVersion!==1&&!audit;let initialBudget:BudgetSnapshot|undefined;if(newSchema)initialBudget=await new Budget(this.store(ctx)).capture(graphId,input.budget,number(input.maxWorkers,4,1,16),ctx);
     if (raw===undefined) {
-      const planningPrompt=`把目标拆为可交付成果任务，输出纯 JSON {"tasks":[{"id":"task-1","title":"...","prompt":"...","dependencies":[],"mode":"read|write","writeScopes":["."]}]}。任务依赖必须是 DAG，避免多成员重复修改相同文件。可用单任务，禁止编造已完成工作。目标：${goal}`;let planned:string;if(initialBudget){const result=await new Budget(this.store(ctx)).complete(initialBudget,graphId,'planner',ctx,planningPrompt,{maxTokens:3000});planned=result.text;initialBudget=result.budget;}else planned=await ctx.complete(planningPrompt,{maxTokens:3000});const plan=parseModelJson(planned);raw=plan.tasks;
+      const planningPrompt=`用户已选择 Swarm。把已授权目标拆为成果任务，输出纯 JSON {"reason":"分工依据与依赖，未知时间费用不能估造","tasks":[{"id":"task-1","title":"...","prompt":"...","dependencies":[],"mode":"read|write","writeScopes":["."]}]}。依赖必须是 DAG，避免重复修改同一文件。不推荐或切换协作模式。简单任务允许主 Agent 直接完成，此处已请求协作则可用单任务。禁止编造已完成工作。目标：${goal}`;let planned:string;if(initialBudget){const result=await new Budget(this.store(ctx)).complete(initialBudget,graphId,'planner',ctx,planningPrompt,{maxTokens:3000});planned=result.text;initialBudget=result.budget;}else planned=await ctx.complete(planningPrompt,{maxTokens:3000});const plan=parseModelJson(planned);raw=plan.tasks;if(typeof plan.reason==='string')input={...input,reason:plan.reason};
     }
     if (!Array.isArray(raw) || raw.length<1 || raw.length>64) throw new Error('任务数必须在 1–64 之间');
     if(newSchema&&raw.some(item=>!['read','write'].includes(String(object(item).mode))))throw new CapabilityError('VALIDATION_ERROR','必须明确每个任务mode');
@@ -490,6 +532,7 @@ export class SwarmController implements PluginController {
     const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
     if (input.checks===undefined && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
     const graph:Graph={schemaVersion:input.collaborationVersion===1||audit?undefined:3,collaborationVersion:executionStyle==='swarm'&&!audit&&input.collaborationVersion!==1?2:undefined,audit:audit||undefined,id:graphId,projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,goalId:ctx.policy?.goalId};
+    if(input.reason!==undefined)graph.planning={reason:text(input.reason,'分工依据',8000),strategy:'collaboration',estimatesKnown:false};
     if(graph.schemaVersion===3){graph.contract=contract(input.contract,goal,tasks);if(graph.contract.verification==='V2'&&!graph.checks.length&&!graph.contract.checks.length)throw new CapabilityError('VALIDATION_ERROR','V2必须声明宿主目标oracle检查');graph.cumulativeTaskCount=tasks.length;graph.budget=initialBudget!;graph.maxWorkers=Math.min(graph.maxWorkers,graph.budget.maxWorkers);const sources=graph.contract.artifacts.flatMap(a=>a.sources||[]);for(const source of sources)ctx.readSource(source);graph.sourceFence=new SourcePolicy(this.store(ctx)).capture({projectId:ctx.projectId,sources});await this.identify(tasks,ctx);}
     this.store(ctx).transaction(()=>{if(graph.collaborationVersion===2)for(const task of tasks)task.memberId=this.roster(ctx).forTask(task,ctx).id;this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);});for(const task of tasks)this.storage(ctx).index(graph.id,'task',task.id,`${task.title} ${task.prompt}`);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
@@ -500,6 +543,7 @@ export class SwarmController implements PluginController {
   }
   private async start(id:string,input:JsonObject,ctx:PluginContext): Promise<void> {
     const current=this.get(id,ctx).value;if(current.schemaVersion===3){if(input.agentDir!==undefined&&(typeof input.agentDir!=='string'||resolve(input.agentDir)!==resolve(ctx.agentDir||agentDirectory())))throw new CapabilityError('PERMISSION_DENIED','成员agentDir必须来自真实宿主');if(input.modelId!==undefined&&(typeof input.modelId!=='string'||input.modelId!==ctx.modelId&&!ctx.availableModels?.some(m=>m.id===input.modelId)))throw new CapabilityError('CAPABILITY_UNAVAILABLE','委派型号未明确配置');}
+    validateDAG(current.tasks);if(current.schemaVersion===3)validateWriteRanges(current.tasks);for(const task of current.tasks){const bounded=structuredClone(task);boundTaskPolicy(bounded,ctx);validateTaskModel(bounded,ctx,current.modelId,current.thinkingLevel);if(digest(bounded.writeScopes)!==digest(task.writeScopes))throw new CapabilityError('PERMISSION_DENIED','权限范围变化，需要明确更新任务后再执行');}
     if (current.status==='running') return;
     assertExecution(ctx,current.executionStyle||'swarm');
     if(current.executionOwner&&current.executionOwner.runtime!==this.runtime&&alive(current.executionOwner.pid)&&(!['paused','stopped'].includes(current.status)||!current.stopReceipt?.objects.every(receipt=>receipt.status==='terminated')))throw new Error('前一运行时仍存活，不能并行接续其未知副作用');
@@ -574,12 +618,11 @@ export class SwarmController implements PluginController {
     this.fence(graph,ctx);if(attempt.resourceReservationId)await this.runtimeRequest(ctx,'resource.check',{reservationId:attempt.resourceReservationId});
     graph=this.update(id,ctx,g=>{const target=g.attempts.find(a=>a.id===attempt.id)!;target.cwd=cwd;target.expert=expert;if(g.schemaVersion===3){target.frozen={schemaVersion:3,graphRevision:this.get(id,ctx).revision,contractDigest:digest(g.contract),modelId:target.modelId,thinkingLevel:target.thinkingLevel,agentDir:g.agentDir||ctx.agentDir||agentDirectory(),parentTools:g.parentTools||[],writeScopes:target.writeScopes,permissionDigest:g.contract!.permissionDigest,memoryRefs:[],expertRefs:[],skillRefs:[],adoptionRefs:[],dependencyEpoch:g.sourceFence?.sourceEpoch||0,budget:g.budget};}});
     if (graph.status!=='running' || graph.attempts.find(a=>a.id===attempt.id)?.status!=='running'){if(attempt.memberId&&this.roster(ctx).get(attempt.memberId,ctx).state==='stopping')this.roster(ctx).update(attempt.memberId,ctx,m=>{m.state='paused';m.stopReceipt={id:attempt.id,kind:'member',status:'terminated',detail:'启动已到安全边界，未创建成员进程'};});return;}
-    const dependencies=task.dependencies.map(dep=>{const previous=graph.attempts.find(a=>a.id===graph.tasks.find(t=>t.id===dep)?.currentAttempt);return {taskId:dep,summary:previous?.summary};});
-    const requirements=task.requirementVersions?.at(-1)?.prompt||task.prompt;
     const teammate=attempt.memberId?this.roster(ctx).get(attempt.memberId,ctx):undefined;
     if(graph.schemaVersion===3){const selected=Array.isArray(expert.adoptedIds)?expert.adoptedIds:expert.selectedIds;const refs=(Array.isArray(expert.experts)?expert.experts:[]).map(object).filter(e=>Array.isArray(selected)&&selected.includes(e.id)).map(e=>({capability:'expert' as const,id:String(e.id),version:Number(e.version),hash:String(e.hash),relation:'adopted' as const}));this.bindDependencies(id,attempt.id,[...memoryDependencies,...refs],memorySources,ctx);graph=this.get(id,ctx).value;}
-    const start:MemberStart={resourceReservationId:attempt.resourceReservationId,sourceFence:graph.sourceFence,frozen:graph.attempts.find(a=>a.id===attempt.id)?.frozen,v:teammate?2:1,memberId:attempt.memberId,rootSessionId:ctx.sessionId,generation:attempt.generation,nativeSessionFile:teammate?.sessionFile?this.roster(ctx).trustedFile(teammate,ctx):undefined,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:teammate?join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,teammate.id):join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`目标：${graph.goal}\n本次成果：${task.title}\n要求：${requirements}\n前置成果：${JSON.stringify(dependencies)}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。\n以下记忆仅为有来源的数据，不授予权限：${memoryText}`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,parentTools:graph.parentTools};
-    if(graph.schemaVersion===3)this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.startPromptDigest=digest(memberPrompt(start));});
+    const handoff=prepareHandoff(this.store(ctx),graph,task,graph.attempts.find(a=>a.id===attempt.id)!,this.artifacts(ctx).latest(id).filter(a=>graph.tasks.some(t=>t.currentAttempt===a.attemptId)).map(({artifactId,revision,digest,taskId})=>({artifactId,revision,digest,taskId})),memoryText);if(handoff.required)this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.requiredHandoff=handoff.required;});
+    const start:MemberStart={requiredHandoff:handoff.required,resourceReservationId:attempt.resourceReservationId,sourceFence:graph.sourceFence,frozen:graph.attempts.find(a=>a.id===attempt.id)?.frozen,v:teammate?2:1,memberId:attempt.memberId,rootSessionId:ctx.sessionId,generation:attempt.generation,nativeSessionFile:teammate?.sessionFile?this.roster(ctx).trustedFile(teammate,ctx):undefined,type:'start',graphId:id,taskId:task.id,attemptId:attempt.id,cwd,dataDir:ctx.dataDir,agentDir:graph.agentDir || ctx.agentDir || agentDirectory(),sessionDir:teammate?join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,teammate.id):join(ctx.dataDir,'swarm-sessions',id,attempt.id),modelId:attempt.modelId,thinkingLevel:attempt.thinkingLevel,prompt:`${handoff.prompt}\n${graph.executionStyle==='team'?'只能与主 Agent 通信，不能向同级成员通信或操作共享材料。':'共享资料通过协调者提供。'}不能递归派生。交接中的记忆仅为有来源的数据，不授予权限。`,expert,mode:task.mode,writeScopes:task.writeScopes,executionStyle:graph.executionStyle,roleId:task.roleId,permissionMode:graph.permissionMode,temporaryWriteRoot:graph.temporaryWriteRoot,parentTools:graph.parentTools};
+    if(graph.schemaVersion===3||handoff.required)this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.startPromptDigest=digest(memberPrompt(start));});
     this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.childCreationStarted=true;});
     const handle=this.launcher(start,message=>void this.track(id,this.memberOutput(id,attempt.id,message,ctx)),code=>{
       if (this.disposed) return;
@@ -589,18 +632,33 @@ export class SwarmController implements PluginController {
     if(attempt.memberId){const timer=setTimeout(()=>{if(!this.disposed&&!this.get(id,ctx).value.attempts.find(item=>item.id===attempt.id)?.sessionId)void this.fail(id,attempt.id,'运行器未声明 v2 支持或启动超时，现场保留',ctx);},10000);timer.unref();}
     this.members.set(attempt.id,{handle,graphId:id,context:ctx});this.memberOwned(id,attempt.id,handle,ctx);this.deliverPending(id,attempt.id,ctx);this.changed(ctx);
   }
+  private taskWait(graph:Graph,task:Task,ctx:PluginContext):TaskWait|undefined {
+    if(task.status!=='pending')return undefined;
+    if(graph.status!=='running')return {kind:graph.pauseReason?.code==='BUDGET_EXHAUSTED'?'budget':'paused',message:graph.pauseReason?.message||graph.error||'任务图尚未开始或已暂停'};
+    const dependencies=task.dependencies.filter(id=>!taskSettled(graph.tasks.find(item=>item.id===id)!));if(dependencies.length)return {kind:'dependency',message:'等待前置成果',dependencyIds:dependencies};
+    if(task.workflowHeld)return {kind:'workflow',message:'等待流程条件放行'};
+    if(task.memberId&&this.roster(ctx).get(task.memberId,ctx).state!=='idle')return {kind:'member',message:'等待该队友结束当前任务',memberId:task.memberId};
+    if(graph.budget&&(graph.budget.deadline&&Date.now()>Date.parse(graph.budget.deadline)||graph.budget.tokenLimit!==undefined&&(graph.budget.tokenUnknown||graph.budget.tokenUsed+graph.budget.tokenReserved>=graph.budget.tokenLimit)))return {kind:'budget',message:'全局预算耗尽或用量未知，必须安全暂停'};
+    if(task.waiting?.kind==='resource')return task.waiting;
+    if(graph.attempts.filter(attempt=>attempt.status==='running').length>=graph.maxWorkers)return {kind:'concurrency',message:'等待固定并发名额'};
+    return undefined;
+  }
+  private retryResources(id:string,ctx:PluginContext):void {
+    if(this.resourceRetries.has(id)||this.disposed)return;
+    const timer=setTimeout(()=>{this.resourceRetries.delete(id);if(!this.disposed&&this.get(id,ctx).value.status==='running')void this.track(id,this.pump(id,ctx));},1000);timer.unref();this.resourceRetries.set(id,timer);
+  }
   private async pump(id:string,ctx:PluginContext): Promise<void> {
     if (this.disposed || this.pumping.has(id)) return;this.pumping.add(id);
-    try {
+    try {const waiting=new Set<string>();
       while (!this.disposed && this.get(id,ctx).value.status==='running') {
         const graph=this.get(id,ctx).value;
         const running=graph.attempts.filter(a=>a.status==='running');
-        const task=graph.tasks.find(t=>t.status==='pending'&&(!t.memberId||this.roster(ctx).get(t.memberId,ctx).state==='idle')&&!t.workflowHeld && t.dependencies.every(dep=>taskSettled(graph.tasks.find(d=>d.id===dep)!)) && (graph.schemaVersion===3 || graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
+        const task=graph.tasks.find(t=>!waiting.has(t.id)&&t.status==='pending'&&(!t.memberId||this.roster(ctx).get(t.memberId,ctx).state==='idle')&&!t.workflowHeld && t.dependencies.every(dep=>taskSettled(graph.tasks.find(d=>d.id===dep)!)) && (graph.schemaVersion===3 || graph.baseline || t.mode==='read' || !running.some(a=>a.mode==='write')));
         if (!task || running.length>=graph.maxWorkers) break;
         let reservations:{attemptId:string;resourceReservationId?:string;budgetReservationId?:string;budget?:BudgetSnapshot}={attemptId:randomUUID()};
-        try{if(graph.schemaVersion===3){this.fence(graph,ctx);if(task.mode==='write'){const r=object(await this.runtimeRequest(ctx,'resource.reserve',{graphId:id,taskId:task.id,attemptId:reservations.attemptId,ownerRuntime:this.runtime,generation:1,resources:graph.contract!.resources.filter(r=>r.kind==='external'||r.kind==='path'&&task.writeScopes.some(scope=>contains(resolve(ctx.projectDir,scope),resolve(ctx.projectDir,r.key))||contains(resolve(ctx.projectDir,r.key),resolve(ctx.projectDir,scope)))).map(r=>({...r,key:r.kind==='path'?resolve(ctx.projectDir,r.key):r.key}))}));reservations.resourceReservationId=text(r.reservationId);}if(graph.budget){const r=await new Budget(this.store(ctx)).reserve(graph.budget,id,task.id,reservations.attemptId,ctx);reservations.budgetReservationId=r.reservationId;reservations.budget=r.budget;}}}catch(error){if(reservations.resourceReservationId)await this.runtimeRequest(ctx,'resource.release',{reservationId:reservations.resourceReservationId});this.pauseError(id,error,ctx);break;}
+        try{if(graph.schemaVersion===3){this.fence(graph,ctx);if(task.mode==='write'){const r=object(await this.runtimeRequest(ctx,'resource.reserve',{graphId:id,taskId:task.id,attemptId:reservations.attemptId,ownerRuntime:this.runtime,generation:1,resources:graph.contract!.resources.filter(r=>r.kind==='external'||r.kind==='path'&&task.writeScopes.some(scope=>contains(resolve(ctx.projectDir,scope),resolve(ctx.projectDir,r.key))||contains(resolve(ctx.projectDir,r.key),resolve(ctx.projectDir,scope)))).map(r=>({...r,key:r.kind==='path'?resolve(ctx.projectDir,r.key):r.key}))}));reservations.resourceReservationId=text(r.reservationId);}if(graph.budget){const r=await new Budget(this.store(ctx)).reserve(graph.budget,id,task.id,reservations.attemptId,ctx);reservations.budgetReservationId=r.reservationId;reservations.budget=r.budget;}}}catch(error){if(reservations.resourceReservationId)await this.runtimeRequest(ctx,'resource.release',{reservationId:reservations.resourceReservationId});const e=normalizeCapabilityError(error);if(e.code==='VERSION_CONFLICT'&&e.details?.v===1&&e.details.waitSafe===true&&!reservations.resourceReservationId&&!reservations.budgetReservationId){const detail=e.details,reason:TaskWait={kind:'resource',message:e.error,reservationId:typeof detail.reservationId==='string'?detail.reservationId:undefined,resourceKeys:Array.isArray(detail.resourceKeys)?detail.resourceKeys.filter((v):v is string=>typeof v==='string'):undefined,blockingTaskId:typeof detail.blockingTaskId==='string'?detail.blockingTaskId:undefined,blockingGraphId:typeof detail.blockingGraphId==='string'?detail.blockingGraphId:undefined};if(digest(task.waiting??null)!==digest(reason)){this.update(id,ctx,g=>{g.tasks.find(t=>t.id===task.id)!.waiting=reason;});this.changed(ctx);}waiting.add(task.id);this.retryResources(id,ctx);continue;}this.pauseError(id,error,ctx);break;}
         let attempt:Attempt;try{attempt=this.claim(id,task.id,ctx,reservations);}catch(error){if(reservations.resourceReservationId)await this.runtimeRequest(ctx,'resource.release',{reservationId:reservations.resourceReservationId});if(graph.budget)await new Budget(this.store(ctx)).release(graph.budget,reservations.budgetReservationId,ctx);throw error;}
-        try {await this.launch(id,attempt,ctx);}catch (error) {if (!this.disposed&&!this.signal(id,ctx).aborted) await this.fail(id,attempt.id,errorText(error),ctx,false,true);break;}
+        this.update(id,ctx,g=>{g.tasks.find(t=>t.id===task.id)!.waiting=undefined;});try {await this.launch(id,attempt,ctx);}catch (error) {if (!this.disposed&&!this.signal(id,ctx).aborted) await this.fail(id,attempt.id,errorText(error),ctx,false,true);break;}
       }
       if (this.disposed) return;
       const graph=this.get(id,ctx).value;
@@ -631,6 +689,7 @@ export class SwarmController implements PluginController {
     if (message.type==='request') {
       try {
         if(message.action==='lease.check'){if(active?.resourceReservationId)await this.runtimeRequest(ctx,'resource.check',{reservationId:active.resourceReservationId});this.fence(this.get(id,ctx).value,ctx);this.members.get(attemptId)?.handle.send({v:1,type:'request.response',requestId:message.requestId,result:{valid:true}});return;}
+        if(message.action==='handoff.read'){if(!active?.requiredHandoff)throw new CapabilityError('SOURCE_UNAVAILABLE','本尝试没有必读交接');this.fence(this.get(id,ctx).value,ctx);const result=readHandoff(this.store(ctx),id,active.requiredHandoff,message.input.offset,message.input.maxChars);this.members.get(attemptId)?.handle.send({v:1,type:'request.response',requestId:message.requestId,result});return;}
         if (!['send','shared.read','shared.write','expert.adopt','expert.confirm'].includes(message.action)) throw new Error('成员协作操作未获允许');
         const attempt=this.get(id,ctx).value.attempts.find(a=>a.id===attemptId)!;
         const graph=this.get(id,ctx).value;if(graph.executionStyle==='team'&&(message.action==='shared.read'||message.action==='shared.write'||message.action==='send'&&message.input.to!=='parent'))throw new Error('Team 成员只能与主 Agent 通信');
@@ -679,6 +738,7 @@ export class SwarmController implements PluginController {
       }
       if (this.disposed) return;checkCancelled(this.signal(id,ctx));
       if(original.schemaVersion===3){if(attempt.memberId&&!this.roster(ctx).get(attempt.memberId,ctx).provisioning?.firstEntryId)throw new CapabilityError('SOURCE_UNAVAILABLE','成员没有首条原生任务对账收据');this.registerChild(result.sessionId||attempt.sessionId,result.sessionFile||attempt.sessionFile,attempt.cwd,ctx,attempt.memberId?join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,attempt.memberId):join(ctx.dataDir,'swarm-sessions',id,attemptId));}
+      if(attempt.requiredHandoff){const file=result.sessionFile||attempt.sessionFile,sessionId=result.sessionId||attempt.sessionId;this.registerChild(sessionId,file,attempt.cwd,ctx,attempt.memberId?join(ctx.dataDir,'swarm-sessions',ctx.projectId,ctx.sessionId,attempt.memberId):join(ctx.dataDir,'swarm-sessions',id,attemptId));const receipt=verifyHandoffRead(this.store(ctx),nativeBranch(file!),original,attempt,sessionId!);this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attemptId)!.handoffRead=receipt;});}
       if(attempt.resourceReservationId){await this.runtimeRequest(ctx,'resource.check',{reservationId:attempt.resourceReservationId});await this.runtimeRequest(ctx,'resource.release',{reservationId:attempt.resourceReservationId});}
       if(original.budget){const budget=await new Budget(this.store(ctx)).release(this.get(id,ctx).value.budget!,attempt.budgetReservationId,ctx);this.update(id,ctx,g=>{g.budget=budget;});}
       this.update(id,ctx,g=>{const a=g.attempts.find(x=>x.id===attemptId)!;const t=g.tasks.find(x=>x.currentAttempt===attemptId);if (!t || a.status!=='running') throw new ConflictError('执行尝试已被中断');a.status='completed';a.trialTerminalOutcome='completed';a.finishedAt=now();a.summary=result.summary.slice(0,100000);a.sessionId=result.sessionId||a.sessionId;a.sessionFile=result.sessionFile||a.sessionFile;a.commit=commit;if(g.schemaVersion===3){this.fence(g,ctx);this.artifacts(ctx).collect(g,a,ctx);}t.status='completed';t.resultRevision=a.resultRevision;});
@@ -870,6 +930,7 @@ export class SwarmController implements PluginController {
   }
   async dispose(): Promise<void> {
     if(this.disposed)return;
+    for(const timer of this.resourceRetries.values())clearTimeout(timer);this.resourceRetries.clear();
     await Promise.allSettled([...this.executions.values()].flatMap(run=>run.context?this.roster(run.context).list(run.context).filter(member=>member.state==='running').map(member=>this.interruptMember(member.id,run.context!)):[]));
     await Promise.allSettled([...this.executions].map(async([id,run])=>{const active=run.operations.size||run.activities.size||(run.context&&['running','awaiting_review','ready','stopping'].includes(this.get(id,run.context).value.status));if(active&&run.context&&this.get(id,run.context).value.status!=='integrated')await this.stop(id,run.context,true);else {run.abort.abort();await Promise.allSettled([...run.operations.values()].map(operation=>operation.stop()));}}));
     // A claimed attempt can be waiting on Expert or worktree creation before its handle exists.
@@ -899,8 +960,10 @@ const extension:ExtensionFactory=pi=>{
   pi.on('session_shutdown',()=>{closed=true;pendingAdvance=false;currentContext=undefined;offWorkflowEvents();});
   registerPlugin(pi,'swarm',{snapshot:ctx=>controller.snapshot(ctx),dispatch:(action,input,ctx)=>controller.dispatch(action,input,ctx),dispose:async()=>{await draining;await workflow.dispose();await controller.dispose();}},'Swarm：成果任务图、隔离成员、消息、共享材料与独立复核',{
     projectToolResult:projectSwarmToolResult,
-    actionEnum:['artifact.list','artifact.read','budget.read','search','operation.prepare','operation.reconcile','create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts','member.create','member.list','member.history','member.send','member.interrupt','member.resume'],
+    actionEnum:['plan.validate','resume.preview','handoff.read','artifact.list','artifact.read','budget.read','search','operation.prepare','operation.reconcile','create','start','snapshot','pause','stop','resume','prepare','integrate','rework','configure','append','update_task','send','shared.read','shared.write','shared.readVersion','shared.conflicts','member.create','member.list','member.history','member.send','member.interrupt','member.resume'],
     toolDescription:`真实 Swarm 协调工具。调用格式始终是 {"action":"合法动作","input":{...}}；所有动作数据必须放 input 对象，不能把 graphId、goal、tasks 放顶层。不要调用不存在的 status 或自行声称成员执行。
+仅在用户已选择 Swarm 后组织协作，不推荐或自动切换模式。先 plan.validate {goal,reason,strategy:"direct"|"collaboration",tasks,maxWorkers?,checks?,risk?,contract?,budget?} 确定性核对草案；direct 传 tasks:[]，主 Agent 直接完成但保留必要客观检查/独立复核；collaboration 传1–64任务，经依赖、权限、冲突、预算检查后create/start自动执行。reason说明分工依据，不编造时间/费用。plan.validate只读，不创建图、不预占预算；create/start重新验证。
+恢复预览：resume.preview {graphId} 只读显示keep/redo/check与绑定；resume可传previewBinding，过期会拒绝并返回新预览。unknown仍需用户明确确认；不能自动重放。snapshot tasks[].waiting显示依赖/成员/并发/资源/预算等待，安全的局部资源占用不阻塞独立任务。handoff.read {graphId,attemptId,offset,maxChars?}可核对不可变交接版本；完整约束不可截断，超8000字的必读引用须受控完整读取后才能执行。
 队友动作：member.create {name,description?}；member.list {}；member.history {memberId}；member.send {memberId,body,messageId?,generation?}；member.interrupt {memberId,generation?}；member.resume {memberId,confirmUnknown?}。任务可携带 memberId 或 memberName 复用当前聊天队友。队友 idle 不是成果完成。成员只读讨论中的修改建议由你创建新尝试，不重放旧工具。
 1. create 的 input={goal,tasks:[{id,title,prompt,dependencies:[],mode:"read"|"write",writeScopes:["."]}],maxWorkers?,checks?:[{command,args:[]}]}。必须明确每个任务的 mode；只读分析任务用 mode:"read"，不能省略后变成写入。需要自动规划且不提供 tasks 时明确传 automatic:true。返回 Graph.id 是完整 UUID，created 只代表计划保存，不代表成员已执行。
 2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
@@ -919,8 +982,8 @@ const extension:ExtensionFactory=pi=>{
     snapshot:ctx=>workflow.snapshot(ctx),
     dispatch:async(action,input,ctx)=>{const native=ctx.executionMode||ctx.policy?ctx:{...ctx,executionMode:'swarm' as const};const result=await workflow.dispatch(action,input,native);if(['create','start','resume','revise'].includes(action))scheduleAdvance();return result;},
   },'Workflow：Swarm 结构化动态流程',{
-    actionEnum:['artifact.list','artifact.read','budget.read','search','operation.prepare','operation.reconcile','create','start','snapshot','list','status','pause','stop','resume','append','revise','template.save','template.list','template.read'],
-    toolDescription:'仅 Swarm 执行的有界结构化流程，格式 {action,input}。create input={definition:{v:1,title,goal,nodes:[{id,title,prompt,mode:"read"|"write",dependencies:[],writeScopes:[],modelId?,thinkingLevel?,when?,retryWhen?,maxRetries?:0|1|2,codePaths?:[]}],maxWorkers?:1..16,parameters?}}，或 {templateId}；自然语言生成计划再存此结构，不执行任意脚本。start/status/resume/pause/stop/revise使用完整workflowId；append input={workflowId,nodes:[新增节点]}。串并行、条件和有限修复由同一Swarm任务图自动推进；节点累计最多64，恢复只复用仍有效成果；未知副作用不得自动重放。写入通过客观检查和独立复核后整合。template.save input={templateId,definition} 保存不可变模板版本。',
+    actionEnum:['resume.preview','artifact.list','artifact.read','budget.read','search','operation.prepare','operation.reconcile','create','start','snapshot','list','status','pause','stop','resume','append','revise','template.save','template.list','template.read'],
+    toolDescription:'仅 Swarm 执行的有界结构化流程，格式 {action,input}。create input={definition:{v:1,title,goal,nodes:[{id,title,prompt,mode:"read"|"write",dependencies:[],writeScopes:[],modelId?,thinkingLevel?,when?,retryWhen?,maxRetries?:0|1|2,codePaths?:[]}],maxWorkers?:1..16,parameters?}}，或 {templateId}；自然语言生成计划再存此结构，不执行任意脚本。start/status/resume/pause/stop/revise使用完整workflowId；resume.preview {workflowId}只读展示保留/重做/待核对、定义revision及输入/成果/代码摘要，不修改水位或重试次数；resume传previewBinding，过期会拒绝并提供新预览。append input={workflowId,nodes:[新增节点]}。串并行、条件和有限修复由同一Swarm任务图自动推进；节点累计最多64，恢复只复用仍有效成果；未知副作用不得自动重放。写入通过客观检查和独立复核后整合。template.save input={templateId,definition} 保存不可变模板版本。',
   });
 };
 export default extension;

@@ -22,5 +22,6 @@ test('parallel write conflict validation keeps serial shared targets and rejects
   const tasks=dense().map(n=>({...n,title:n.id,prompt:n.id,mode:'write',writeScopes:['shared.txt'],status:'pending',rework:0,resultRevision:0})) as Task[];
   validateDAG(tasks);validateWriteRanges(tasks);
   const parallel=[{...tasks[0]},{...tasks[1],dependencies:[]}];assert.throws(()=>validateWriteRanges(parallel),/范围重叠/);
+  validateWriteRanges([{...parallel[0],status:'skipped'},parallel[1]]);
   validateWriteRanges([{...parallel[0],writeScopes:['a.txt']},{...parallel[1],writeScopes:['b.txt']}]);
 });
