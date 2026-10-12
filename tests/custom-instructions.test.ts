@@ -57,11 +57,12 @@ test('request-only reminder freezes one execution and never mutates native messa
     const request=handlers.context_with_system({messages:native}).messages;
     assert.equal(native.length,2);assert.equal(request.length,3);assert.equal(request[0],native[0]);assert.equal(request[1],native[1]);
     assert.equal(request[2].role,'custom');assert.equal(request[2].display,false);
-    assert.match(request[2].content,/非新聊天任务/);assert.match(request[2].content,/版本 1/);assert.doesNotMatch(request[2].content,/版本 2/);
+    assert.match(request[2].content,/对本次答复生效；不新增工作任务/);assert.match(request[2].content,/版本 1/);assert.doesNotMatch(request[2].content,/版本 2/);
     assert.match(request[2].content,/本次生效的用户指令正文：\n当前偏好/);assert.doesNotMatch(request[2].content,/执行中修改/);
     assert.equal(handlers.context_with_system({messages:native}).messages.length,3,'each request adds one reminder without accumulating it');
     saveCustomInstructions(dir,{text:'',revision:2});handlers.before_agent_start({systemPrompt:'host rules'});
     const cleared=handlers.context_with_system({messages:native}).messages[2].content;
     assert.match(cleared,/已清空（版本 3）/);assert.doesNotMatch(cleared,/<friend_custom_instructions>|当前偏好|执行中修改/);
+    assert.match(cleared,/回复前检查并删除这类历史标记/);assert.match(cleared,/本轮用户的明确要求优先/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

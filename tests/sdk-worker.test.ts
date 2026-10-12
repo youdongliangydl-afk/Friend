@@ -803,7 +803,7 @@ test('custom instructions reach final provider payload after edit, clear, cold r
  const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
  const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
  const assertSettingsContext=(payload:Payload,expected?:string)=>{
-  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 用户设置上下文，非新聊天任务]'));
+  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));
   if(expected===undefined){assert.equal(notes.length,0,'never-configured empty settings add no request reminder');return;}
   assert.equal(notes.length,1,'each final provider request contains exactly one settings reminder');
   assert.equal(notes[0],payload.messages.at(-1),'settings reminder reaches the end of the actual provider request');
