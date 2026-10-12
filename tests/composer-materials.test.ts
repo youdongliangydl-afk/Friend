@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 import vm from 'node:vm';
+import {submissionSettled} from '../apps/desktop/src/renderer/submission-state.js';
 
 function between(source: string, start: string, end: string): string {
   const offset = source.indexOf(start), finish = source.indexOf(end, offset);
@@ -58,14 +59,15 @@ function appFixture() {
   const storage = new Map<string, string>(), requests: any[] = [], errors: string[] = [];
   let release!: () => void; const acknowledgement = new Promise<void>(done => {release = done;});
   const attachments = [{path: '/project/original.csv'}];
-  const ctx: any = {errorText: String, asObject: (value: any) => value && typeof value === 'object' ? value : {}, hasQueueIntent: () => false,
+  const ctx: any = {errorText: String, submissionSettled, asObject: (value: any) => value && typeof value === 'object' ? value : {}, hasQueueIntent: () => false,
     localStorage: {getItem: (key: string) => storage.get(key) || null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key)},
     sendLock: {current: false}, allocationLock: {current: false}, migratingDraft: {current: false}, navigating: false, draftRef: {current: 'analyze attached data'}, attachmentsRef: {current: attachments},
     activeSession: {archived: false}, activeMemberRef: {current: null}, selectedModel: {ready: true}, setSending() {}, setSubmissionRevision() {}, setNotice() {}, sessionId: 'native', ownerKey: 'native', attachments,
-    lastSubmitted: {current: null}, navigationEpoch: {current: 4}, running: false, state: {current: {queue: {items: []}}}, setLocalRunning() {}, setTools() {}, setLive() {}, followScroll: {},
+    lastSubmitted: {current: null}, navigationEpoch: {current: 4}, running: false, state: {current: {sessionId: 'native', runId: 'prior-run', isRunning: false, lifecycleStatus: 'completed', queue: {items: []}}}, setLocalRunning() {}, setTools() {}, setLive() {}, followScroll: {},
     mode: 'single', planMode: false, permissionMode: 'auto', permissionExplicit: true, ownerRef: {current: 'native'}, setDraft(value: string) {ctx.draftRef.current = value;},
     setAttachments(value: any) {const next = typeof value === 'function' ? value(ctx.attachmentsRef.current) : value; ctx.attachments = next; ctx.attachmentsRef.current = next;}, setDraftOwner() {},
     report(error: string) {errors.push(error);}, window: {friendPi: {request: async (method: string, input: any) => {requests.push({method, input}); await acknowledgement; return {accepted: true};}}}};
+  ctx.stateRef = {current: ctx.state};
   vm.createContext(ctx); vm.runInContext(stripTypeScriptTypes(send + action + '\nglobalThis.send=send;globalThis.action=composerAction;'), ctx);
   return {ctx, storage, requests, errors, release};
 }
