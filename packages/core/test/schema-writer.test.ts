@@ -12,6 +12,9 @@ test('writer upgrade fences old documents and tables without a metadata downgrad
  try{
   store.db.exec('CREATE TABLE memory_jobs(id TEXT PRIMARY KEY,json TEXT)');
   requireSchemaWriter(store,'memory',3,['memory_jobs']);
+  // A later table fence may be newer than both the metadata and early document fences.
+  store.db.exec("DROP TRIGGER friend_memory_jobs_writer_delete;CREATE TRIGGER friend_memory_jobs_writer_delete BEFORE DELETE ON memory_jobs BEGIN SELECT CASE WHEN friend_pi_writer_version()<4 THEN RAISE(ABORT,'Friend data requires a newer writer') END; END;");
+  requireSchemaWriter(store,'memory',3,['memory_jobs']);
   requireSchemaWriter(store,'memory',4,['memory_jobs']);
   store.put('job',{proposalLedger:[]});
   legacy=new DatabaseSync(join(dir,'plugins.sqlite'));legacy.function('friend_pi_writer_version',()=>3);

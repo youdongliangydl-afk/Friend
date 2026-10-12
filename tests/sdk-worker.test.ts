@@ -179,7 +179,7 @@ test('a missing Swarm graph gets one read-only correction, with final payload pr
    let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
    if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
    else if(names.includes('friend_swarm')){
-    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('不能因任务简单而自行改为 Single')));
+    assert.ok(messages.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('简单任务可 strategy:')));
     if(body.includes('用户已选择 Swarm')){
      if(!recent.length){corrections++;if(scenario==='stop'){blocked=true;await held;}}
      if(scenario==='recover'||scenario==='queued'){
@@ -209,7 +209,7 @@ test('a missing Swarm graph gets one read-only correction, with final payload pr
    const state=await f.request('state') as {sessionFile:string;messages:{role:string;background?:boolean}[];lifecycleStatus:string},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
    assert.equal(corrections,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(state.messages.filter(message=>message.role==='user').length,scenario==='queued'?2:1);assert.equal(state.messages.filter(message=>message.role==='automatic').length,1);assert.equal(state.messages.find(message=>message.role==='automatic')?.background,true);
    assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original delivery');
-   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('不能因任务简单而自行改为 Single')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
+   const traces=entries.filter(entry=>entry.customType==='friend-pi.trace.system.v1'&&entry.data.phase==='provider-payload');assert.ok(traces.some(entry=>entry.data.text.includes('简单任务可 strategy:')));assert.ok(traces.every(entry=>!entry.data.text.includes('test-only-local-credential')));
    if(['recover','queued'].includes(scenario)){
     assert.equal(existsSync(join(f.directory,'must-not-exist')),false);
     assert.ok(entries.some(entry=>entry.message?.toolName==='friend_swarm'&&entry.message.isError));
@@ -786,4 +786,23 @@ test('cold restore discards a persisted internal Swarm correction without starti
  const f=await start({directory,sessionFile:manager.getSessionFile(),status:'interrupted',executionMode:'swarm'});
  try{await f.request('queue',{action:'resume'});await f.wait(()=>!wake.list(`queue:${sessionId}:`).length);const state=await f.request('state') as {lifecycleStatus:string;isRunning:boolean};assert.equal(state.lifecycleStatus,'interrupted');assert.equal(state.isRunning,false);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);assert.equal(f.events.some(event=>event.event?.type==='notice'&&event.event.data.level==='error'),false);const entries=readFileSync(manager.getSessionFile()!,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.status==='not-run').length,ids.length);}
  finally{wake.close();await f.close();}
+});
+
+
+test('a validated direct strategy stays in Swarm without inventing members or triggering graph correction',{timeout:30000},async()=>{
+ let calls=0;const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);calls++;
+  assert.ok(payload.messages.some((message:{role:string;content:unknown})=>message.role==='system'&&JSON.stringify(message.content).includes('plan.validate')));
+  const call=!payload.messages.some((message:{role:string})=>message.role==='tool');
+  const delta=call?{role:'assistant',tool_calls:[{index:0,id:'direct-plan',type:'function',function:{name:'friend_swarm',arguments:JSON.stringify({action:'plan.validate',input:{goal:'Explain a simple arithmetic result',reason:'One main-agent calculation suffices; no independent write tasks',strategy:'direct',tasks:[],checks:[],risk:'low'}})}}]}:{role:'assistant',content:'The checked result is 4. Main agent completed this directly; no members ran.'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'direct',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'direct-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('send',{text:'What is 2+2? Check it directly if no division of work is needed.',mode:'swarm'});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='completed'&&!event.event.data.isRunning));
+  const state=await f.request('state') as {executionMode:string;sessionFile:string};assert.equal(state.executionMode,'swarm');assert.equal(calls,2);
+  const entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),false);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.plan.v1').length,1);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.run.policy.v1').at(-1).data.requiresSwarm,false);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};assert.equal(snapshot.graphs.length,0);
+ }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
 });

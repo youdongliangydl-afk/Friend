@@ -8,10 +8,10 @@ export function projectCodeVersion(projectDir:string,dataDir:string):string{
  const ignored=new Set(['.git','node_modules','.cache','.artifacts','dist']);
  const dataRelative=relative(root,data),nestedData=!!dataRelative&&dataRelative!=='..'&&!dataRelative.startsWith('..'+sep)&&!isAbsolute(dataRelative);
  // These are host roots, never names to ignore throughout a user's project.
- const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
+ const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','expert-migration-backups','expert-evaluations','projections','artifact-versions','attachments','external-capabilities.json']);
  const visit=(dir:string)=>{
   for(const name of readdirSync(dir).sort()){
-   const path=join(dir,name),rel=relative(root,path);if(ignored.has(name)||nestedData&&path===data||dir===data&&(hostEntries.has(name)||/^swarm-pre-v3-[a-f0-9-]+\.sqlite$/.test(name))||/^\.pi\/(?:tasks|worktrees|subagents)(?:\/|$)/.test(rel))continue;
+   const path=join(dir,name),rel=relative(root,path);if(ignored.has(name)||nestedData&&path===data||dir===data&&(hostEntries.has(name)||/^swarm-pre-v[34]-[a-f0-9-]+\.sqlite$/.test(name))||/^\.pi\/(?:tasks|worktrees|subagents)(?:\/|$)/.test(rel))continue;
    const info=lstatSync(path);
    // First process admission creates this container; its user contents still bind below.
    if(rel!=='.pi'||!info.isDirectory())hash.update(rel+'\0'+String(info.mode)+'\0');

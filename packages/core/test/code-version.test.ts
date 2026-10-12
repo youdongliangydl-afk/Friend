@@ -56,11 +56,12 @@ test('same-root host projections and native history do not invalidate business f
  const f=fixture('same-root');try{
   writeFileSync(join(f.project,'result.txt'),'SINGLE_OK\n');
   const version=projectCodeVersion(f.project,f.data);
-  for(const name of ['pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments']){
+  for(const name of ['pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','expert-migration-backups','expert-evaluations','projections','artifact-versions','attachments']){
    mkdirSync(join(f.data,name),{recursive:true});writeFileSync(join(f.data,name,'host.txt'),'host output');
   }
   writeFileSync(join(f.data,'external-capabilities.json'),'{}');
   writeFileSync(join(f.data,'swarm-pre-v3-1234abcd.sqlite'),'migration backup');
+  writeFileSync(join(f.data,'swarm-pre-v4-1234abcd.sqlite'),'migration backup');
   assert.equal(projectCodeVersion(f.project,f.data),version);
   mkdirSync(join(f.project,'deliverables'));writeFileSync(join(f.project,'deliverables','result.txt'),'actual result');
   assert.notEqual(projectCodeVersion(f.project,f.data),version);

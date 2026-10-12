@@ -28,14 +28,14 @@ export interface HostEvalResult {
   status:'completed'|'waiting'|'unknown';
   checks:{id:string;passed:boolean;critical:boolean;ref?:CheckRef}[];
   usage:{totalTokens:number|null;providerRequests:number;unknown:boolean};
-  timing:{admittedAt:string;checkedAt:string;queueWaitMs:number;elapsedMs:number};
+  timing:{admittedAt:string;checkedAt:string;queueWaitMs:number;elapsedMs:number;queueWaitKnown?:boolean;queueWaitScope?:'sdk-task'};
   nativeEvidence:SourceRef[];outputHash:string;reason?:string;
 }
 /** Host closures own hidden tasks/checkers; the plugin receives opaque references. */
 export interface ExpertEvaluationHost {
   v:1;
   catalog(input:{scenario:ExpertScenario;baseline:EvaluationMethodRef;candidate:EvaluationMethodRef;modelId:string;thinkingLevel:string;tools:string[]}):Promise<HostEvaluationSuite|undefined>;
-  advance(request:HostEvalRequest,options?:{signal?:AbortSignal}):Promise<HostEvalResult>;
+  advance(request:HostEvalRequest,options?:{signal?:AbortSignal;queuedAt?:string}):Promise<HostEvalResult>;
   read(input:{operationId:string}):Promise<HostEvalResult|undefined>;
 }
 

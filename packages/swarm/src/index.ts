@@ -969,7 +969,7 @@ const extension:ExtensionFactory=pi=>{
 2. 从 create 返回值复制完整 Graph.id 到 input.graphId，不截断、不使用 task.id。例：start {"action":"start","input":{"graphId":"完整 Graph.id"}}。启动后 snapshot {"action":"snapshot","input":{}} 查询；在返回 graphs 中用 id 匹配该图并读取其 status，不存在 action:"status"。
 3. pause、stop、prepare、integrate 的 input 都必须有 graphId；resume 必须有 graphId，未知副作用时还需用户明确 confirmUnknown:true，模型不能代替用户确认。prepare 仅对全部任务 completed 的图启动异步复核，立即返回保留的状态，再用 snapshot 查询；重复 prepare 不会同时开启复核。integrate 仅对已通过检查/复核的 ready 图整合。
 4. configure input={graphId,maxWorkers:1..16}，只在空闲修改并发。send input={graphId,to:"任务 id",body:"消息"}。shared.read input={graphId,name}；shared.write input={graphId,name,content,expectedRevision}，新材料 expectedRevision:0，更新使用读取到的 revision。
-5. 只有 snapshot 返回的目标 graphs[].status === "integrated" 才可报告 Swarm 完成；pending/running/awaiting_review/created/paused/stopped 均不是完成。遇到错误报告真实状态，不编造两名成员、自检或验收。原项目有未提交改动时，不 stash/reset/clean；写入阻塞应保留改动，只读任务仍可用。`,
+5. 已创建实际协作图时，只有 snapshot 返回的目标 graphs[].status === "integrated" 才可报告该协作图完成；pending/running/awaiting_review/created/paused/stopped 均不是完成。遇到错误报告真实状态，不编造两名成员、自检或验收。原项目有未提交改动时，不 stash/reset/clean；写入阻塞应保留改动，只读任务仍可用。`,
   });
   registerPlugin(pi,'team',{
     snapshot:ctx=>{const snapshot=controller.snapshot(ctx) as {graphs:Graph[]};return {...snapshot,graphs:snapshot.graphs.filter(graph=>graph.executionStyle==='team')};},

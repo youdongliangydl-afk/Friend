@@ -165,6 +165,9 @@ export function requireSchemaWriter(store:RecordStore,namespace:'memory'|'expert
  if(!Number.isSafeInteger(version)||version<1||version>4||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
  store.transaction(()=>{
   version=Math.max(version,get<{minWriter:number}>(store,'schema-policy',namespace)?.minWriter||0);
+  const prefixes=[`friend_${namespace}_writer_`,...tables.map(table=>`friend_${table}_writer_`)];
+  const fences=store.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all();
+  for(const row of fences)if(prefixes.some(prefix=>String(row.name).startsWith(prefix)))version=Math.max(version,Number(String(row.sql||'').match(/friend_pi_writer_version\(\)<(\d+)/)?.[1]||0));
   const install=(name:string,body:(minimum:number)=>string)=>{
    const existing=store.db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.sql;
    const minimum=Number(String(existing||'').match(/friend_pi_writer_version\(\)<(\d+)/)?.[1]||0);
