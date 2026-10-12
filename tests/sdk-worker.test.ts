@@ -34,7 +34,7 @@ async function start(options:{directory?:string;sessionFile?:string;modelId?:str
 }
 test('four public Pi extensions are loaded and GUI commands reach their controllers', {timeout:30000},async()=>{const fixture=await start();try{for(const plugin of ['swarm','expert','memory','topic-rebuild']){const state=await fixture.request('plugin',{plugin,action:'snapshot'}) as Record<string,unknown>;assert.equal(typeof state,'object');}await fixture.request('plugin',{plugin:'memory',action:'save',input:{title:'项目约束',content:'必须保留中文字段',scope:'project',explicitRemember:true}});const result=await fixture.request('plugin',{plugin:'memory',action:'search',input:{query:'中文字段'}}) as unknown;assert.ok(JSON.stringify(result).includes('必须保留中文字段'));}finally{await fixture.close();}});
 test('public native Swarm snapshot settles without a model run, native user or correction graph',{timeout:30000},async()=>{
- const f=await start();try{
+ let f=await start();try{
   const sent=await f.request('send',{text:'/swarm snapshot',mode:'swarm'}) as {runId:string};
   await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.lifecycleStatus==='completed'));
   const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;runId:string};
@@ -42,6 +42,8 @@ test('public native Swarm snapshot settles without a model run, native user or c
   assert.equal(f.events.some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
   const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.some(e=>e.type==='message'),false);assert.equal(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.swarm.correction.v1'),false);
   assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[]);
+  const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:state.sessionFile,status:'completed',executionMode:'swarm'});
+  const reopened=await f.request('state') as {isRunning:boolean;lifecycleStatus:string};assert.equal(reopened.isRunning,false);assert.equal(reopened.lifecycleStatus,'completed','a handled command cannot become a failed model task after reopening');
  }finally{await f.close();}
 });
 test('public native Swarm start publishes its new run before approval and integrates the existing graph',{timeout:40000},async()=>{
