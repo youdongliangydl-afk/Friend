@@ -101,6 +101,11 @@ function checkSpecs(input:unknown): Check[] {
   if (!Array.isArray(input)) throw new Error('checks 必须是数组');
   return input.map(raw=>{const c=object(raw);const command=text(c.command,'检查程序',200);const args=c.args === undefined ? [] : strings(c.args); if (destructiveCommand([command,...args].join(' '))) throw new Error('验证检查不能包含破坏性或发布操作');return {command,args};});
 }
+/** Host context alone can authorize command checks; tool input cannot promote its origin. */
+function assertCheckPolicy(graph:Pick<Graph,'tasks'|'checks'|'contract'>,ctx:PluginContext):void {
+  if(ctx.origin!=='user'&&graph.tasks.length&&graph.tasks.every(task=>task.mode==='read')&&(graph.checks.length||graph.contract?.checks.some(check=>check.kind==='command')))
+    throw new CapabilityError('PERMISSION_DENIED','只读协作不能安排或执行命令检查。保持只读，使用 read/grep/find/ls 与声明式检查核对原文；按合同完成必要的独立复核，不必改成写入任务。');
+}
 function productionLauncher(start:MemberStart,output:(message:MemberOutput)=>void,exited:(code:number|null)=>void): MemberHandle {
   const worker=process.env.FRIEND_PI_MEMBER_WORKER || fileURLToPath(new URL('./member.js',import.meta.url));
   if (!existsSync(worker)) throw new Error(`Swarm 成员运行器不存在：${worker}；请构建或完整安装 Swarm 包`);
@@ -388,13 +393,13 @@ export class SwarmController implements PluginController {
     if(action==='append')return this.appendTasks(id,input,ctx);
     if(action==='update_task')return this.reviseTask(id,input,ctx);
     if(action==='workflow_skip'){
-      const graph=this.get(id,ctx).value,taskId=text(input.taskId),task=graph.tasks.find(item=>item.id===taskId);if(!graph.workflowId||!task||!['pending','skipped'].includes(task.status)||task.rework>=2)throw new Error('只有安全等待中的工作流节点可按条件跳过');
+      const graph=this.get(id,ctx).value;assertCheckPolicy(graph,ctx);const taskId=text(input.taskId),task=graph.tasks.find(item=>item.id===taskId);if(!graph.workflowId||!task||!['pending','skipped'].includes(task.status)||task.rework>=2)throw new Error('只有安全等待中的工作流节点可按条件跳过');
       const skipped=this.update(id,ctx,g=>{g.tasks.find(item=>item.id===taskId)!.status='skipped';});this.changed(ctx);if(skipped.status==='running')void this.track(id,this.pump(id,ctx));return skipped;
     }
     if (action==='start') {await this.track(id,this.start(id,input,ctx));return this.get(id,ctx).value;}
     if (action==='pause' || action==='stop')return this.stop(id,ctx,action==='pause');
     if (action==='resume') {
-      const graph=this.get(id,ctx).value;
+      const graph=this.get(id,ctx).value;assertCheckPolicy(graph,ctx);
       const preview=this.resumePreview(id,ctx);if(input.previewBinding!==undefined&&input.previewBinding!==preview.binding)throw new CapabilityError('VERSION_CONFLICT','恢复预览已过期，请重新核对',{preview});if(!preview.sourceValidity.valid)throw new CapabilityError('SOURCE_UNAVAILABLE',preview.sourceValidity.reason||'来源不可用');if(preview.nodes.some(node=>node.decision==='redo'&&graph.tasks.find(task=>task.id===node.id)?.status==='completed'))throw new CapabilityError('VERSION_CONFLICT','保留成果已变化，请通过任务修复重新验证',{preview});
       if(graph.status==='stopping'||this.execution(id).activities.size||this.execution(id).operations.size)throw new Error('停止尚未到安全边界，请等待退出收据');
       if (graph.status==='integrated') throw new Error('已整合任务不能重新执行');
@@ -417,7 +422,7 @@ export class SwarmController implements PluginController {
     if(action==='shared.conflicts'){this.get(id,ctx);return this.store(ctx).list(`shared-conflict:${id}:`).map(doc=>({...object(doc.value),revision:doc.revision}));}
     if(action==='rework')return this.rework(id,input,ctx);
     if (action==='prepare' || action==='review') {
-      const graph=this.get(id,ctx).value;
+      const graph=this.get(id,ctx).value;assertCheckPolicy(graph,ctx);
       if(!graph.tasks.every(taskSettled))throw new Error('所有成果完成后才能整合复核');
       if(graph.status==='integrated'||graph.status==='ready'||this.preparing.has(id))return graph;if(input.candidateDigest!==undefined&&input.candidateDigest!==this.artifacts(ctx).candidate(graph))throw new CapabilityError('VERSION_CONFLICT','请求候选已过期');
       // The native review may exceed the request bridge timeout. Return its retained state
@@ -457,6 +462,8 @@ export class SwarmController implements PluginController {
     if(['stopping','paused','stopped','awaiting_review'].includes(current.status)||this.preparing.has(id))throw new Error('任务图未到可追加的安全边界');
     const tasks=input.tasks.map((raw,index)=>taskSpec(raw,current.tasks.length+index));for(const task of tasks){if(current.executionStyle==='team'&&!task.roleId){task.modelId??=ctx.modelId;task.thinkingLevel??=ctx.thinkingLevel;}boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,current.modelId,current.thinkingLevel);}
     if((current.cumulativeTaskCount??current.tasks.length)+tasks.length>64)throw new Error('任务图累计任务上限为 64');validateDAG([...current.tasks,...tasks]);if(current.schemaVersion===3)validateWriteRanges([...current.tasks,...tasks]);
+    const combinedTasks=[...current.tasks,...tasks],prospectiveContract=current.schemaVersion===3?contract(input.contract??{...current.contract,verification:current.contract?.verification==='V0'&&tasks.some(t=>t.mode==='write')?'V1':current.contract?.verification},current.goal,combinedTasks):current.contract;
+    assertCheckPolicy({tasks:combinedTasks,checks:current.checks,contract:prospectiveContract},ctx);
     if(tasks.some(task=>task.mode==='write')){
       const baseline=current.baseline??await this.baseline(id,ctx.projectDir,ctx);
       if(current.schemaVersion!==3&&current.executionStyle==='team'&&!baseline){this.update(id,ctx,g=>{g.tasks.push(...tasks);g.status='paused';g.error='Team 写入委派需要 Git 隔离工作树；新增任务保留，未启动成员';});this.changed(ctx);throw new Error('Team 写入委派需要 Git 隔离工作树');}
@@ -465,15 +472,15 @@ export class SwarmController implements PluginController {
     }
     if(current.schemaVersion===3)await this.identify(tasks,ctx);
     if(current.collaborationVersion===2)for(const task of tasks)task.memberId=this.roster(ctx).forTask(task,ctx).id;
-    const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();g.tasks.push(...tasks);if(g.schemaVersion===3){g.contract=contract(input.contract??{...g.contract,verification:g.contract?.verification==='V0'&&tasks.some(t=>t.mode==='write')?'V1':g.contract?.verification},g.goal,g.tasks);g.sourceFence=new SourcePolicy(this.store(ctx)).capture({projectId:ctx.projectId,sources:[...(g.sourceFence?.sources||[]),...g.contract.artifacts.flatMap(a=>a.sources||[])],dependencies:g.sourceFence?.dependencies||[]});}g.cumulativeTaskCount=(g.cumulativeTaskCount??current.tasks.length)+tasks.length;g.integration=undefined;g.error=undefined;if(g.status!=='created')g.status='running';});
+    const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();g.tasks.push(...tasks);if(g.schemaVersion===3){g.contract=contract(input.contract??{...g.contract,verification:g.contract?.verification==='V0'&&tasks.some(t=>t.mode==='write')?'V1':g.contract?.verification},g.goal,g.tasks);assertCheckPolicy(g,ctx);g.sourceFence=new SourcePolicy(this.store(ctx)).capture({projectId:ctx.projectId,sources:[...(g.sourceFence?.sources||[]),...g.contract.artifacts.flatMap(a=>a.sources||[])],dependencies:g.sourceFence?.dependencies||[]});}g.cumulativeTaskCount=(g.cumulativeTaskCount??current.tasks.length)+tasks.length;g.integration=undefined;g.error=undefined;if(g.status!=='created')g.status='running';});
     this.changed(ctx);if(graph.status==='running')void this.track(id,this.pump(id,ctx));return graph;
   }
   private async reviseTask(id:string,input:JsonObject,ctx:PluginContext):Promise<Graph> {
     const current=this.get(id,ctx).value,taskId=text(input.taskId,'任务标识',100),previous=current.tasks.find(task=>task.id===taskId);if(!previous)throw new Error('任务不存在');
-    if(input.gateOnly===true){if(!current.workflowId||!['pending','skipped'].includes(previous.status)||typeof input.workflowHeld!=='boolean'||Object.keys(input).some(key=>!['graphId','taskId','workflowHeld','gateOnly','revision'].includes(key)))throw new Error('工作流门闸只可切换等待节点，不能修改要求');const gated=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();const task=g.tasks.find(item=>item.id===taskId)!;task.workflowHeld=input.workflowHeld===true;if(!task.workflowHeld)task.status='pending';});this.changed(ctx);if(gated.status==='running')void this.track(id,this.pump(id,ctx));return gated;}
+    if(input.gateOnly===true){assertCheckPolicy(current,ctx);if(!current.workflowId||!['pending','skipped'].includes(previous.status)||typeof input.workflowHeld!=='boolean'||Object.keys(input).some(key=>!['graphId','taskId','workflowHeld','gateOnly','revision'].includes(key)))throw new Error('工作流门闸只可切换等待节点，不能修改要求');const gated=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();const task=g.tasks.find(item=>item.id===taskId)!;task.workflowHeld=input.workflowHeld===true;if(!task.workflowHeld)task.status='pending';});this.changed(ctx);if(gated.status==='running')void this.track(id,this.pump(id,ctx));return gated;}
     if(current.status==='running'||current.status==='stopping'||current.status==='awaiting_review'||this.execution(id).operations.size||this.execution(id).activities.size)throw new Error('先停止成员并等待安全边界，才能修改任务要求');
     if(currentUnknown(current)&&(input.confirmUnknown!==true||ctx.origin!=='user'))throw new Error('存在未知副作用，需用户检查并确认 confirmUnknown:true');
-    const changed=taskSpec({...previous,...input,id:taskId,logicalStepId:previous.logicalStepId},0);boundTaskPolicy(changed,ctx);validateTaskModel(changed,ctx,current.modelId,current.thinkingLevel);const changedTasks=current.tasks.map(task=>task.id===taskId?changed:task);validateDAG(changedTasks);if(current.schemaVersion===3)validateWriteRanges(changedTasks);
+    const changed=taskSpec({...previous,...input,id:taskId,logicalStepId:previous.logicalStepId},0);boundTaskPolicy(changed,ctx);validateTaskModel(changed,ctx,current.modelId,current.thinkingLevel);const changedTasks=current.tasks.map(task=>task.id===taskId?changed:task);validateDAG(changedTasks);if(current.schemaVersion===3)validateWriteRanges(changedTasks);assertCheckPolicy({tasks:changedTasks,checks:current.checks,contract:current.contract},ctx);
     const reason=text(input.reason,'修改依据');if(input.repair===true||previous.status==='blocked')await this.claimRepair(current,[taskId],reason,ctx);
     const graph=this.update(id,ctx,g=>{if(input.revision!==undefined&&input.revision!==this.get(id,ctx).revision)throw new ConflictError();if(input.repair===true||previous.status==='blocked')g.reworkRound++;const target=g.tasks.find(task=>task.id===taskId)!;const versions=target.requirementVersions||[{version:1,prompt:target.prompt,at:g.createdAt}];const repair=target.rework;Object.assign(target,changed,{originalPrompt:target.originalPrompt||target.prompt,requirementVersions:[...versions,{version:versions.at(-1)!.version+1,prompt:changed.prompt,reason,at:now()}],rework:repair,resultRevision:target.resultRevision});const affected=new Set([taskId]);let grew=true;while(grew){grew=false;for(const task of g.tasks)if(!affected.has(task.id)&&task.dependencies.some(dep=>affected.has(dep))){affected.add(task.id);grew=true;}}for(const task of g.tasks)if(affected.has(task.id)){task.status='pending';task.currentAttempt=undefined;if(g.workflowId)task.workflowHeld=true;}g.integratedTaskIds=g.integratedTaskIds?.filter(task=>!affected.has(task));g.integration=undefined;g.status='paused';g.error=undefined;});
     this.executions.delete(id);this.changed(ctx);return graph;
@@ -497,6 +504,7 @@ export class SwarmController implements PluginController {
     validateDAG(tasks);validateWriteRanges(tasks);for(const task of tasks){boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,ctx.modelId,ctx.thinkingLevel);}
     const checks=checkSpecs(input.checks),risk=input.risk??object(input.contract??{}).risk??(tasks.some(task=>task.mode==='write')?'medium':'low');if(!['low','medium','high'].includes(String(risk)))throw new CapabilityError('VALIDATION_ERROR','风险等级无效');
     const frozenContract=tasks.length?contract({...object(input.contract??{}),risk},goal,tasks):undefined;
+    assertCheckPolicy({tasks,checks,contract:frozenContract},ctx);
     if(frozenContract?.verification==='V2'&&!checks.length&&!frozenContract.checks.length)throw new CapabilityError('VALIDATION_ERROR','V2必须声明宿主目标oracle检查');
     const budget=input.budget===undefined?{}:object(input.budget);if(budget.tokenLimit!==undefined&&(!Number.isSafeInteger(budget.tokenLimit)||Number(budget.tokenLimit)<1))throw new CapabilityError('VALIDATION_ERROR','tokenLimit必须为正整数');
     return {v:1,valid:true,mode:'swarm',strategy,reason,goal,risk,tasks,dependencies:tasks.map(task=>({taskId:task.id,dependsOn:task.dependencies})),conflicts:[],permissions:{tools:ctx.policy?.tools??[],writeScopes:ctx.policy?.writeScopes??[],expandsAuthority:false},checks,contract:frozenContract,budget:{tokenLimit:budget.tokenLimit,maxWorkers:number(input.maxWorkers,4,1,16),maxTasks:64,estimatesKnown:false},executionRequiresValidation:true,verificationRequired:risk==='high'?'objective-and-independent-review':'objective-checks-as-applicable'};
@@ -530,10 +538,12 @@ export class SwarmController implements PluginController {
     for(const task of tasks){boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,ctx.modelId,ctx.thinkingLevel);}
     let checks=checkSpecs(input.checks);
     const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
-    if (input.checks===undefined && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
+    if (input.checks===undefined && (ctx.origin==='user'||tasks.some(task=>task.mode==='write')) && (executionStyle!=='team'||tasks.some(task=>task.mode==='write')) && existsSync(join(ctx.projectDir,'package.json'))) {try {const pkg=JSON.parse(readFileSync(join(ctx.projectDir,'package.json'),'utf8'));if (pkg.scripts?.test) checks=[{command:'npm',args:['test']}];}catch {}}
     const graph:Graph={schemaVersion:input.collaborationVersion===1||audit?undefined:3,collaborationVersion:executionStyle==='swarm'&&!audit&&input.collaborationVersion!==1?2:undefined,audit:audit||undefined,id:graphId,projectId:ctx.projectId,projectDir:ctx.projectDir,sessionId:ctx.sessionId,goal,status:'created',createdAt:now(),updatedAt:now(),tasks,attempts:[],maxWorkers:number(input.maxWorkers,4,1,16),reworkRound:0,modelId:ctx.modelId,thinkingLevel:thinkingLevel(input.thinkingLevel,ctx.thinkingLevel),checks,executionStyle,workflowId:input.workflowId?text(input.workflowId,'工作流标识',100):undefined,deferPreparation:input.deferPreparation===true,runId:ctx.runId,parentTools:(ctx as ExecutionContext).policy?.tools,permissionMode:ctx.policy?.permissionMode,temporaryWriteRoot:ctx.policy?.temporaryWriteRoot,goalId:ctx.policy?.goalId};
+    if(graph.schemaVersion===3)graph.contract=contract(input.contract,goal,tasks);
+    assertCheckPolicy(graph,ctx);
     if(input.reason!==undefined)graph.planning={reason:text(input.reason,'分工依据',8000),strategy:'collaboration',estimatesKnown:false};
-    if(graph.schemaVersion===3){graph.contract=contract(input.contract,goal,tasks);if(graph.contract.verification==='V2'&&!graph.checks.length&&!graph.contract.checks.length)throw new CapabilityError('VALIDATION_ERROR','V2必须声明宿主目标oracle检查');graph.cumulativeTaskCount=tasks.length;graph.budget=initialBudget!;graph.maxWorkers=Math.min(graph.maxWorkers,graph.budget.maxWorkers);const sources=graph.contract.artifacts.flatMap(a=>a.sources||[]);for(const source of sources)ctx.readSource(source);graph.sourceFence=new SourcePolicy(this.store(ctx)).capture({projectId:ctx.projectId,sources});await this.identify(tasks,ctx);}
+    if(graph.schemaVersion===3){if(graph.contract!.verification==='V2'&&!graph.checks.length&&!graph.contract!.checks.length)throw new CapabilityError('VALIDATION_ERROR','V2必须声明宿主目标oracle检查');graph.cumulativeTaskCount=tasks.length;graph.budget=initialBudget!;graph.maxWorkers=Math.min(graph.maxWorkers,graph.budget.maxWorkers);const sources=graph.contract!.artifacts.flatMap(a=>a.sources||[]);for(const source of sources)ctx.readSource(source);graph.sourceFence=new SourcePolicy(this.store(ctx)).capture({projectId:ctx.projectId,sources});await this.identify(tasks,ctx);}
     this.store(ctx).transaction(()=>{if(graph.collaborationVersion===2)for(const task of tasks)task.memberId=this.roster(ctx).forTask(task,ctx).id;this.store(ctx).put(graphKey(ctx.projectId,graph.id),graph,null);});for(const task of tasks)this.storage(ctx).index(graph.id,'task',task.id,`${task.title} ${task.prompt}`);ctx.appendEntry('friend-pi:swarm-created',{graphId:graph.id,goal});this.changed(ctx);return graph;
   }
   private async baseline(id:string,projectDir:string,ctx:PluginContext): Promise<Baseline|undefined> {
@@ -542,7 +552,7 @@ export class SwarmController implements PluginController {
     return {repoRoot,projectRelative:relative(realpathSync(repoRoot),realpathSync(projectDir)),head,branch};
   }
   private async start(id:string,input:JsonObject,ctx:PluginContext): Promise<void> {
-    const current=this.get(id,ctx).value;if(current.schemaVersion===3){if(input.agentDir!==undefined&&(typeof input.agentDir!=='string'||resolve(input.agentDir)!==resolve(ctx.agentDir||agentDirectory())))throw new CapabilityError('PERMISSION_DENIED','成员agentDir必须来自真实宿主');if(input.modelId!==undefined&&(typeof input.modelId!=='string'||input.modelId!==ctx.modelId&&!ctx.availableModels?.some(m=>m.id===input.modelId)))throw new CapabilityError('CAPABILITY_UNAVAILABLE','委派型号未明确配置');}
+    const current=this.get(id,ctx).value;assertCheckPolicy(current,ctx);if(current.schemaVersion===3){if(input.agentDir!==undefined&&(typeof input.agentDir!=='string'||resolve(input.agentDir)!==resolve(ctx.agentDir||agentDirectory())))throw new CapabilityError('PERMISSION_DENIED','成员agentDir必须来自真实宿主');if(input.modelId!==undefined&&(typeof input.modelId!=='string'||input.modelId!==ctx.modelId&&!ctx.availableModels?.some(m=>m.id===input.modelId)))throw new CapabilityError('CAPABILITY_UNAVAILABLE','委派型号未明确配置');}
     validateDAG(current.tasks);if(current.schemaVersion===3)validateWriteRanges(current.tasks);for(const task of current.tasks){const bounded=structuredClone(task);boundTaskPolicy(bounded,ctx);validateTaskModel(bounded,ctx,current.modelId,current.thinkingLevel);if(digest(bounded.writeScopes)!==digest(task.writeScopes))throw new CapabilityError('PERMISSION_DENIED','权限范围变化，需要明确更新任务后再执行');}
     if (current.status==='running') return;
     assertExecution(ctx,current.executionStyle||'swarm');
@@ -787,6 +797,7 @@ export class SwarmController implements PluginController {
     }
   }
   private async objectiveCheck(id:string,cwd:string,check:Check,ctx:PluginContext): Promise<CheckResult> {
+    assertCheckPolicy({...this.get(id,ctx).value,checks:[check]},ctx);
     let exitCode:number|null=0;let output='';
     try {const result=await managedCommand(check.command,check.args,cwd,this.signal(id,ctx),ctx,id,'check',operation=>this.own(id,operation),512*1024);output=result.stdout+result.stderr;exitCode=result.exitCode;if(result.cancelled)return {command:check.command,args:check.args,exitCode,output:output.slice(-20000),at:now(),cancelled:true};}
     catch (raw) {const error=raw as {code?:number;stdout?:string;stderr?:string;message?:string};exitCode=typeof error.code==='number'?error.code:1;output=(error.stdout||'')+(error.stderr||'')+(error.message||'');}
@@ -824,7 +835,7 @@ export class SwarmController implements PluginController {
   }
   private async prepareCandidate(id:string,ctx:PluginContext): Promise<void> {
     if (this.disposed) return;checkCancelled(this.signal(id,ctx));
-    let graph=this.get(id,ctx).value;
+    let graph=this.get(id,ctx).value;assertCheckPolicy(graph,ctx);
     if (!graph.tasks.every(taskSettled)) throw new Error('所有成果完成后才能整合复核');
     if (graph.status==='integrated' || graph.status==='ready') return;
     if(graph.schemaVersion!==3&&graph.executionStyle==='team'&&!graph.tasks.some(task=>task.mode==='write'&&!graph.integratedTaskIds?.includes(task.id))){this.update(id,ctx,g=>{g.status='completed';});this.changed(ctx);return;}
