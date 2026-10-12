@@ -11,8 +11,8 @@ import {SIDECHAT_TYPE,projectTodo,stableForkLeaf} from '../apps/desktop/src/task
 
 // Exercise the production hook without rebuilding or launching the desktop worker.
 const source=readFileSync('apps/desktop/src/sdk-worker.ts','utf8');
-const start=source.indexOf("  pi.on('before_agent_start',event=>{");
-const end=source.indexOf("  pi.on('tool_call'",start);
+const start=source.search(/  pi\.on\('before_agent_start',(?:async )?event=>\{/);
+const end=source.indexOf("  pi.on('tool_result'",start);
 assert.ok(start>=0&&end>start);
 const registration=source.slice(start,end);
 
@@ -29,7 +29,7 @@ test('native provider receives the frozen-branch boundary while ordinary session
   const fixture=fauxProvider({api:'branch-context-fixture',provider:'branch-context-fixture',models:[{id:'offline',input:['text'],contextWindow:32768,maxTokens:1024}],tokensPerSecond:10000});runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('branch-context-fixture','synthetic-test-only');
   const settings=SettingsManager.inMemory({packages:[],extensions:[],defaultTools:[]});
   const loader=new DefaultResourceLoader({cwd:dir,agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,extensionFactories:[pi=>{
-   vm.runInNewContext(registration,{pi,session:{sessionManager:manager},pendingInputs:[],startedInputId:undefined,runId:undefined,projectTodo,digest,object,SIDECHAT_TYPE,planMode:false,executionMode:'single',temporaryWriteRoot:undefined});
+   vm.runInNewContext(registration,{pi,session:{sessionManager:manager},pendingInputs:[],startedInputId:undefined,runId:undefined,projectTodo,digest,object,SIDECHAT_TYPE,planMode:false,executionMode:'single',enabled:[],temporaryWriteRoot:undefined});
   }]});
   await loader.reload({resolveProjectTrust:async()=>true});initTheme('light',false);
   const {session}=await createAgentSession({cwd:dir,agentDir,resourceLoader:loader,settingsManager:settings,modelRuntime:runtime,model:fixture.getModel('offline'),sessionManager:manager,noTools:'builtin'});
@@ -45,7 +45,7 @@ test('native provider receives the frozen-branch boundary while ordinary session
     assert.ok(context.messages.every(message=>message.role!=='assistant'&&message.role!=='toolResult'),'no parent tool or completion is fabricated');
     return fauxAssistantMessage('new branch request only');
    }]);
-   await session.prompt(latestRequest);assert.equal(requests,1);assert.deepEqual(readFileSync(parentFile),parentBytes);
+   await session.prompt(latestRequest);assert.equal(requests,1);assert.equal(session.messages.findLast(message=>message.role==='assistant')?.stopReason,'stop','provider boundary assertions must not be swallowed as an SDK error response');assert.deepEqual(readFileSync(parentFile),parentBytes);
    assert.equal(manager.getBranch().filter(entry=>entry.type==='message'&&entry.message.role==='user').length,2);
   }finally{session.dispose();rmSync(dir,{recursive:true,force:true});}
  }
