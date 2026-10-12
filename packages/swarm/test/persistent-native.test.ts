@@ -11,12 +11,17 @@ import type {PluginContext} from '@friend-pi/core';
 import {SwarmController,type Graph,type MemberLauncher,type Teammate} from '../src/index.js';
 import {RuntimeController} from '../../../apps/desktop/src/runtime-controller.js';
 
+// Settings remain in the provider request; fixture routing follows the task user.
+function isTaskUser(message:{role:string;content?:unknown}):boolean {
+  const content=typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+  return message.role==='user'&&!content.startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]');
+}
 async function wait(check:()=>boolean){const began=Date.now();while(!check()){if(Date.now()-began>20000)throw Error('native teammate test timed out');await new Promise(done=>setTimeout(done,15));}}
 test('real Pi workers reopen one teammate history across tasks and deliver an idle supplement exactly once',{timeout:60000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'friend-persistent-native-')),project=join(root,'project'),data=join(root,'data'),agent=join(root,'pi');mkdirSync(project);mkdirSync(agent);writeFileSync(join(project,'readme.txt'),'fixture source');for(const args of [['init','-q'],['add','.'],['-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','-qm','baseline']])execFileSync('git',args,{cwd:project});
   const requests:Record<string,unknown>[]=[];
   const server=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;const input=JSON.parse(body);requests.push(input);
-    const reviewer=input.tools?.some((tool:any)=>tool.function.name==='swarm_review_result'),lastUser=input.messages.findLastIndex((message:any)=>message.role==='user'),submitted=input.messages.slice(lastUser+1).some((message:any)=>message.role==='tool'),writer=input.tools?.some((tool:any)=>tool.function.name==='write');
+    const reviewer=input.tools?.some((tool:any)=>tool.function.name==='swarm_review_result'),lastUser=input.messages.findLastIndex(isTaskUser),submitted=input.messages.slice(lastUser+1).some((message:any)=>message.role==='tool'),writer=input.tools?.some((tool:any)=>tool.function.name==='write');
     const file=JSON.stringify(input.messages[lastUser]).includes('second assignment')?'second.txt':'first.txt';
     const delta=writer&&!submitted?{role:'assistant',tool_calls:[{index:0,id:'write-'+requests.length,type:'function',function:{name:'write',arguments:JSON.stringify({path:file,content:'persistent fixture '+file})}}]}:reviewer&&!submitted?{role:'assistant',tool_calls:[{index:0,id:'review-'+requests.length,type:'function',function:{name:'swarm_review_result',arguments:JSON.stringify({approved:true,findings:'offline fixture review'})}}]}:{role:'assistant',content:'Native teammate outcome '+requests.length};
     res.writeHead(200,{'Content-Type':'text/event-stream'});for(const [value,finish] of [[delta,null],[{},(reviewer||writer)&&!submitted?'tool_calls':'stop']])res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',created:1,model:'offline',choices:[{index:0,delta:value,finish_reason:finish}]})+'\n\n');res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',created:1,model:'offline',choices:[],usage:{prompt_tokens:11,completion_tokens:7,total_tokens:18}})+'\n\n');res.end('data: [DONE]\n\n');

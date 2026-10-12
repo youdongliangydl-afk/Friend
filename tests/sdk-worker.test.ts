@@ -16,6 +16,7 @@ import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
 import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
+function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
  const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,...options.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_TEMPORARY_WRITE_ROOT:options.temporary?directory:undefined,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_MODE:options.executionMode,FRIEND_PI_STATUS:options.status,FRIEND_PI_PERMISSION_MODE:options.permissionMode,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined,FRIEND_PI_SUPERVISED:options.supervised?'1':undefined}});
@@ -175,7 +176,7 @@ test('a missing Swarm graph gets one read-only correction, with final payload pr
   let corrections=0,blocked=false,queued=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});
   const server=createServer(async(req,res)=>{
    let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
-   const index=messages.findLastIndex(message=>message.role==='user'),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   const index=providerTaskIndex(messages),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
    if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
    else if(names.includes('friend_swarm')){
@@ -224,7 +225,7 @@ test('read-only correction results cannot wake writable member, goal or job cont
  const phases:string[]=[];
  const server=createServer(async(req,res)=>{
   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
-  const index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+  const index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
   let call:{name:string;input:unknown}|undefined,reply='Original delivery retained';
   const phase=names.includes('friend_swarm')?body.includes('NEW_USER_REQUEST')?'user':body.includes('队友提出补充')?'member-followup':body.includes('用户已选择 Swarm')?'correction':'original':'member';phases.push(phase);
   if(phase==='correction'){
@@ -274,7 +275,7 @@ test('corrected Goals pause after verification and queued restoration; explicit 
  for(const queued of [false,true]){
   let memberHeld=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
   const server=createServer(async(req,res)=>{
-   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
@@ -455,7 +456,7 @@ test('native Swarm completion automatically continues a waiting Goal without pol
   const tools=messages.filter(message=>message.role==='tool').flatMap(message=>{try{return [JSON.parse(message.content)];}catch{return [];}});let call:{name:string;input:unknown}|undefined,text='Actual read-only member evidence';
   if(names.includes('swarm_review_result')){if(!messages.some(message=>message.role==='tool'))call={name:'swarm_review_result',input:{approved:true,findings:'Independent loopback reviewer inspected both read outcomes'}};}
   else if(names.includes('friend_swarm')){
-   const user=messages.findLastIndex(message=>message.role==='user'),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
+   const user=providerTaskIndex(messages),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
    if(latest.includes('Swarm 任务图')&&latest.includes('已通过检查')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
     if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
