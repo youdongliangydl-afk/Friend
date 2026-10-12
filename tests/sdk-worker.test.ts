@@ -801,30 +801,41 @@ test('custom instructions reach final provider payload after edit, clear, cold r
  let f=await start({temporary:true});
  const system=(payload:Payload)=>payload.messages.filter(message=>message.role==='system').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
  const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
+ const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const assertSettingsContext=(payload:Payload,expected?:string)=>{
+  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 用户设置上下文，非新聊天任务]'));
+  if(expected===undefined){assert.equal(notes.length,0,'never-configured empty settings add no request reminder');return;}
+  assert.equal(notes.length,1,'each final provider request contains exactly one settings reminder');
+  assert.equal(notes[0],payload.messages.at(-1),'settings reminder reaches the end of the actual provider request');
+  const note=messageText(notes[0].content);assert.ok(note.includes(`版本 ${readCustomInstructions(f.dataDir).revision}`));
+  if(expected){assert.equal(note.split(expected).length-1,1,'the current instruction body appears exactly once in the reminder');assert.equal(system(payload).split(expected).length-1,1);}
+  else {assert.match(note,/已清空/);assert.ok(!note.includes('<friend_custom_instructions>'));}
+  for(const old of [alpha,beta,persisted])if(old!==expected)assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');
+ };
  const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});
- const round=async(label:string)=>{
+ const round=async(label:string,expected?:string)=>{
   const beforeEvents=f.events.length,beforePayloads=payloads.length;await f.request('send',{text:label,mode:'single',planMode:false});
   await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const requests=payloads.slice(beforePayloads);assert.equal(requests.length,1,'each plain-text round reaches the actual loopback provider once');
   const prompt=system(requests[0]);assert.ok(prompt.includes('所有任务产物默认写入当前会话目录'));assert.ok(prompt.includes('权限策略不能免除该要求'));
-  assert.ok(prompt.includes('friend_questions'));return prompt;
+  assert.ok(prompt.includes('friend_questions'));assertSettingsContext(requests[0],expected);return prompt;
  };
  try{
   await f.request('configure',{plugins:[]});
   await f.request('provider.save',{provider:'custom-instructions-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
   assert.ok(!(await round('CUSTOM_EMPTY_ROUND')).includes('<friend_custom_instructions>'));
-  save(alpha);const first=await round('CUSTOM_ADD_ROUND');assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
+  save(alpha);const first=await round('CUSTOM_ADD_ROUND',alpha);assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
   assert.ok(first.includes('本轮用户的明确要求优先于这些偏好'));
-  save(beta);const edited=await round('CUSTOM_EDIT_ROUND');assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
-  save('');const cleared=await round('CUSTOM_CLEAR_ROUND');assert.ok(!cleared.includes(beta));assert.ok(!cleared.includes('<friend_custom_instructions>'));
+  save(beta);const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
+  save('');const cleared=await round('CUSTOM_CLEAR_ROUND','');assert.ok(!cleared.includes(beta));assert.ok(!cleared.includes('<friend_custom_instructions>'));
   save(persisted);const before=await f.request('state') as {sessionFile:string;sessionId:string};const oldPid=f.child.pid,directory=f.directory;
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture',temporary:true});
   await f.request('configure',{plugins:[]});assert.notEqual(f.child.pid,oldPid);
   const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);
-  const cold=await round('CUSTOM_COLD_ROUND');assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
+  const cold=await round('CUSTOM_COLD_ROUND',persisted);assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
   const native=readFileSync(restored.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,5,'request-only settings reminders do not create native user turns');
-  assert.ok(!native.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
+  assert.ok(!native.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
 
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
   await f.request('configure',{plugins:['swarm']});await f.request('configure',{executionMode:'team'});
@@ -834,7 +845,7 @@ test('custom instructions reach final provider payload after edit, clear, cold r
   await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const memberPayloads=payloads.slice(beforeTeam).filter(payload=>payload.tools?.some(tool=>tool.function.name==='team_message'));
   assert.ok(memberPayloads.length>0,'actual Team worker must reach the loopback provider');
-  for(const payload of memberPayloads){const prompt=system(payload);assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
+  for(const payload of memberPayloads){const prompt=system(payload);assertSettingsContext(payload,persisted);assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
   const team=await f.request('plugin',{plugin:'team',action:'list'}) as {graphs:{status:string}[]};assert.equal(team.graphs[0].status,'completed');
  }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
