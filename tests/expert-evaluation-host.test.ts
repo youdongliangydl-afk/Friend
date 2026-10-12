@@ -6,8 +6,9 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {ModelRuntime,SessionManager,initTheme} from '@earendil-works/pi-coding-agent';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
-import {RecordStore,LearningBudget,SourcePolicy,CapabilityError,digest,visibleText,historyItems,type PluginContext,type HostEvalRequest,type HostEvaluationSuite,type ExpertScenario} from '../packages/core/src/index.js';
+import {RecordStore,LearningBudget,SourcePolicy,CapabilityError,acquireLearningLease,releaseLearningLease,digest,visibleText,historyItems,type PluginContext,type HostEvalRequest,type HostEvaluationSuite,type ExpertScenario} from '../packages/core/src/index.js';
 import {createExpertEvaluationHost} from '../apps/desktop/src/expert-evaluation-host.js';
+import {ExpertController,type ExpertLearningJob} from '../packages/expert/src/index.js';
 import type {RegisteredEvaluationSuite} from '../apps/desktop/src/expert-evaluation-cases.js';
 
 interface FixtureOptions {toolFirst?:boolean;stopReason?:'length'|'error'}
@@ -117,7 +118,7 @@ test('source revocation before admission and insufficient role write scope send 
 test('catalog hides random expected answers and persists four independent positive contracts per scenario',async()=>{
  const f=await fixture();try{
   for(const scenario of scenarios){
-   const suite=await f.catalog(scenario),again=await f.catalog(scenario),registered=f.registered(suite);assert.deepEqual(again,suite);assert.match(registered.nonce,/^[a-f0-9]{32}$/);assert.notEqual(registered.nonce,'public-initial-template-v2');
+   const suite=await f.catalog(scenario),again=await f.catalog(scenario),registered=f.registered(suite);assert.deepEqual(again,suite);assert.equal(new Set([...suite.validation,...suite.release].map(example=>example.inputHash)).size,6,'validation and release must not reuse an identical outside-scope input');assert.match(registered.nonce,/^[a-f0-9]{32}$/);assert.notEqual(registered.nonce,'public-initial-template-v2');
    for(const example of [...suite.validation,...suite.release])assert.deepEqual(Object.keys(example).sort(),['critical','families','id','inputHash','kind','taskRef']);
    const publicJson=JSON.stringify(suite);assert.equal(publicJson.includes(registered.nonce),false,'public case families must not disclose the private nonce used to construct hidden answers');for(const forbidden of ['expected','nonce','materials','prompt'])assert.equal(publicJson.includes(`"${forbidden}"`),false);
    const positives=[...registered.validation,...registered.release].filter(example=>example.kind==='positive');assert.equal(positives.length,4);assert.equal(new Set(positives.flatMap(example=>example.checks.map(check=>check.id))).size,4);assert.equal(new Set(positives.flatMap(example=>example.families)).size,4);
@@ -125,4 +126,40 @@ test('catalog hides random expected answers and persists four independent positi
   }
   assert.equal(f.calls(),0);
  }finally{f.close();}
+});
+
+test('explicit Role model and thinking contracts reject mismatched evaluation without provider requests',async()=>{
+ const f=await fixture();try{
+  const input={scenario:'code-development' as const,baseline:f.baseline,candidate:f.candidate,modelId:f.ctx.modelId!,thinkingLevel:'off',tools:[]};
+  Object.assign(f.role,{modelSource:'role',modelId:'another-provider/explicit'});assert.equal(await f.host.catalog(input),undefined);
+  Object.assign(f.role,{modelSource:'inherited',thinkingSource:'role',thinkingLevel:'high'});assert.equal(await f.host.catalog(input),undefined);
+  Object.assign(f.role,{thinkingSource:'inherited'});assert.ok(await f.host.catalog(input));assert.equal(f.calls(),0);
+ }finally{f.close();}
+});
+
+test('Expert controller freezes, schedules and advances all 36 public SDK tasks without inventing an efficiency promotion',async()=>{
+ const f=await fixture(),controller=new ExpertController(f.ctx.dataDir),lease=acquireLearningLease(controller.store,'expert-host-full-roundtrip')!;assert.ok(lease);
+ try{
+  f.ctx.request=async(plugin,action,input={})=>{assert.equal(plugin,'expert');return controller.dispatch(action,input,{...f.ctx,origin:'plugin'});};
+  const user={...f.ctx,origin:'user' as const},baseline=controller.skillCatalog.read('seed.scenario.code-development',1,user);
+  const created=await controller.dispatch('candidate.submit',{id:'roundtrip-same-method',key:'roundtrip-candidate',skillBody:{scenario:'code-development',title:'Identical fixed method, no claimed efficiency gain',description:baseline.description,applicability:baseline.applicability,exclusions:baseline.exclusions,keywords:baseline.keywords,body:baseline.body},evidence:[]},user) as {id:string;revision:number;version:number};
+  await controller.dispatch('trial.configure',{id:created.id,expectedRevision:created.revision,scope:{projectId:'project',applicability:baseline.applicability},limits:{maxTasks:3},key:'roundtrip-trial'},user);
+  // The service's missing-host waiting result is not a successful evaluation.
+  assert.equal(controller.skillCatalog.head(created.id,user).status,'trial');assert.equal(controller.learning.snapshot(user).jobs.length,0);
+  f.ctx.expertEvaluation=f.host;
+  const registered=await controller.dispatch('validation.manifest',{key:'roundtrip-manifest',manifest:{execution:'pi-sdk',candidateId:created.id,candidateHash:baseline.contentHash,scenario:'code-development',trainFamilies:['roundtrip-independent-source'],metric:{kind:'paired-efficiency'},timeoutMs:10000}},f.ctx) as {manifestHash:string;minimumSdkTasks:number};assert.equal(registered.minimumSdkTasks,36);
+  const scheduled=await controller.dispatch('validation.schedule',{id:created.id,expectedRevision:controller.skillCatalog.head(created.id,user).revision,manifestHash:registered.manifestHash},f.ctx) as {jobId:string};
+  let job=controller.store.get<ExpertLearningJob>(`job:${scheduled.jobId}`)!.value;
+  for(let steps=0;steps<40&&['queued','retryable'].includes(job.state);steps++){
+   f.ctx.learning={budgetId:job.budgetId,sourceRunId:job.sourceRunId,lease,canAdmit:()=>true};f.ctx.modelId=job.modelId;f.ctx.thinkingLevel=job.thinkingLevel;
+   job=(await controller.dispatch('validation.advance',{jobId:job.id},f.ctx) as {job:ExpertLearningJob}).job;
+  }
+  assert.equal(job.state,'waiting_evidence');assert.match(job.error||'',/未证明|门槛/);assert.equal(f.calls(),36);assert.equal(f.budget.read(job.budgetId).calls,36);assert.equal(f.budget.read(job.budgetId).maxCalls,64);assert.equal(f.budget.read(job.budgetId).usageUnknown,false);
+  assert.equal(controller.skillCatalog.head(created.id,user).status,'trial');assert.equal(controller.store.get(`evaluation:${job.id}`),undefined);
+  const result=await controller.dispatch('validation.read',{jobId:job.id},f.ctx) as {pairs:{baseline:{checks:{ref:Parameters<SourcePolicy['readCheck']>[0];passed:boolean}[];nativeEvidence:Parameters<PluginContext['readSource']>[0][]};candidate:{checks:{ref:Parameters<SourcePolicy['readCheck']>[0];passed:boolean}[];nativeEvidence:Parameters<PluginContext['readSource']>[0][]}}[];phases:{complete:boolean;known:boolean;strictImprovement:boolean;baselineTokens:number;candidateTokens:number;tokenGain:boolean}[]};
+  assert.equal(result.pairs.length,18);assert.equal(result.phases.length,2);assert.ok(result.phases.every(phase=>phase.complete&&phase.known&&!phase.strictImprovement&&!phase.tokenGain&&phase.baselineTokens===phase.candidateTokens));
+  for(const pair of result.pairs)for(const observation of [pair.baseline,pair.candidate]){assert.ok(observation.checks.length&&observation.nativeEvidence.length);for(const check of observation.checks)assert.equal(f.policy.readCheck(check.ref,'project').passed,true);for(const source of observation.nativeEvidence)assert.ok(f.ctx.readSource(source));}
+  const hostStore=new RecordStore('expert-evaluation-host',f.ctx.dataDir);try{const operations=hostStore.list<HostOperation>('operation:project:');assert.equal(operations.length,36);assert.equal(new Set(operations.map(row=>row.value.sessionId)).size,36);}finally{hostStore.close();}
+  assert.equal(f.store.list(`learning-call:${job.budgetId}:`).length,36);
+ }finally{releaseLearningLease(controller.store,lease);controller.dispose();f.close();}
 });
