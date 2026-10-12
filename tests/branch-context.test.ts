@@ -29,7 +29,7 @@ test('native provider receives the frozen-branch boundary while ordinary session
   const fixture=fauxProvider({api:'branch-context-fixture',provider:'branch-context-fixture',models:[{id:'offline',input:['text'],contextWindow:32768,maxTokens:1024}],tokensPerSecond:10000});runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('branch-context-fixture','synthetic-test-only');
   const settings=SettingsManager.inMemory({packages:[],extensions:[],defaultTools:[]});
   const loader=new DefaultResourceLoader({cwd:dir,agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,extensionFactories:[pi=>{
-   vm.runInNewContext(registration,{pi,session:{sessionManager:manager},pendingInputs:[],startedInputId:undefined,runId:undefined,projectTodo,digest,object,SIDECHAT_TYPE,planMode:false,executionMode:'single',enabled:[],temporaryWriteRoot:undefined});
+   vm.runInNewContext(registration,{pi,cwd:dir,session:{sessionManager:manager},pendingInputs:[],startedInputId:undefined,runId:undefined,projectTodo,digest,object,SIDECHAT_TYPE,planMode:false,executionMode:'single',enabled:[],temporaryWriteRoot:undefined});
   }]});
   await loader.reload({resolveProjectTrust:async()=>true});initTheme('light',false);
   const {session}=await createAgentSession({cwd:dir,agentDir,resourceLoader:loader,settingsManager:settings,modelRuntime:runtime,model:fixture.getModel('offline'),sessionManager:manager,noTools:'builtin'});
