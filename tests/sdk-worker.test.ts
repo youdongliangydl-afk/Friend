@@ -822,6 +822,9 @@ test('custom instructions reach final provider payload after edit, clear, cold r
   await f.request('configure',{plugins:[]});assert.notEqual(f.child.pid,oldPid);
   const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);
   const cold=await round('CUSTOM_COLD_ROUND');assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
+  const native=readFileSync(restored.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,5,'request-only settings reminders do not create native user turns');
+  assert.ok(!native.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
 
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
   await f.request('configure',{plugins:['swarm']});await f.request('configure',{executionMode:'team'});
