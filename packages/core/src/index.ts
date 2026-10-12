@@ -222,6 +222,8 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   // A host answers through its own Pi bus. Native packages remain independent
   // when no desktop host is present; no module singleton carries authority.
   pi.events?.emit('friend-pi:v1:policy',{v:1,sessionId,reply:(value:HostPolicy)=>{policy=value;}});
+  let expertEvaluation:ExpertEvaluationHost|undefined;
+  pi.events?.emit('friend-pi:v1:expert-evaluation',{v:1,sessionId,reply:(value:ExpertEvaluationHost)=>{if(value?.v===1&&typeof value.catalog==='function'&&typeof value.advance==='function'&&typeof value.read==='function')expertEvaluation=value;}});
   const availableModels=(ctx.modelRegistry?.getAvailable?.()||[]).filter(item=>process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'||savedModelIds(dataDir).includes(`${item.provider}/${item.id}`)).map(item=>({id:`${item.provider}/${item.id}`,thinkingLevels:getSupportedThinkingLevels(item)}));
   if (sessionFile) {
     const registry = new RecordStore('sessions',dataDir);try{const old=registry.get<{path:string;projectDir:string}>(sessionId)?.value;if(old?.path!==sessionFile||old?.projectDir!==ctx.cwd)registry.put(sessionId,{path:sessionFile,projectDir:ctx.cwd});}finally{registry.close();}
@@ -230,7 +232,7 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   return {
     origin, dataDir, agentDir, projectDir:ctx.cwd, projectId:projectIdentity(ctx.cwd), sessionId, sessionFile, signal:ctx.signal,
     modelId:model ? `${model.provider}/${model.id}` : undefined,thinkingLevel,runId:process.env.FRIEND_PI_RUN_ID,
-    policy,executionMode:policy?.executionMode,availableTools:pi.getAllTools?.().map(tool=>tool.name)||[],availableModels,learningModel,
+    policy,executionMode:policy?.executionMode,availableTools:pi.getAllTools?.().map(tool=>tool.name)||[],availableModels,learningModel,expertEvaluation,
     applyModel:async(modelId,level)=>{
       if(!policy?.canSwitchRole||policy.unsettledTools)throw new Error('型号切换未到宿主安全阶段');
       const slash=modelId.indexOf('/'),target=ctx.modelRegistry.find(modelId.slice(0,slash),modelId.slice(slash+1));

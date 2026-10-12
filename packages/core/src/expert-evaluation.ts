@@ -35,7 +35,7 @@ export interface HostEvalResult {
 export interface ExpertEvaluationHost {
   v:1;
   catalog(input:{scenario:ExpertScenario;baseline:EvaluationMethodRef;candidate:EvaluationMethodRef;modelId:string;thinkingLevel:string;tools:string[]}):Promise<HostEvaluationSuite|undefined>;
-  advance(request:HostEvalRequest):Promise<HostEvalResult>;
+  advance(request:HostEvalRequest,options?:{signal?:AbortSignal}):Promise<HostEvalResult>;
   read(input:{operationId:string}):Promise<HostEvalResult|undefined>;
 }
 
