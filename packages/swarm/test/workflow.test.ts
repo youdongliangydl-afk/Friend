@@ -140,7 +140,7 @@ test('runtime task metadata does not invalidate code while project Pi agent conf
   mkdirSync(join(f.project,'.pi','agents'),{recursive:true});writeFileSync(join(f.project,'.pi','agents','reviewer.md'),'changed actual agent guidance');assert.notEqual(workflowCodeDigest(f.project,['.']),before);
 }finally{await f.cleanup();}});
 test('recovery code digests bind same-root business files and preserve data-ancestor business names while excluding host migration backups',async()=>{const f=fixture();try{
-  const first=workflowCodeDigest(f.project,['.'],f.project);writeFileSync(join(f.project,'plugins.sqlite'),'host state');writeFileSync(join(f.project,'swarm-pre-v4-1234-abcd.sqlite'),'host backup');assert.equal(workflowCodeDigest(f.project,['.'],f.project),first);
+  const first=workflowCodeDigest(f.project,['.'],f.project);writeFileSync(join(f.project,'plugins.sqlite'),'host state');writeFileSync(join(f.project,'swarm-pre-v4-1234-abcd.sqlite'),'host backup');for(const name of ['expert-migration-backups','expert-evaluations']){mkdirSync(join(f.project,name));writeFileSync(join(f.project,name,'private.json'),'private host data');}assert.equal(workflowCodeDigest(f.project,['.'],f.project),first);
   writeFileSync(join(f.project,'a.txt'),'business bytes changed');assert.notEqual(workflowCodeDigest(f.project,['.'],f.project),first);
   const ancestor=workflowCodeDigest(f.project,['.'],f.root);writeFileSync(join(f.project,'plugins.sqlite'),'business file when host data is ancestor');assert.notEqual(workflowCodeDigest(f.project,['.'],f.root),ancestor);
 }finally{await f.cleanup();}});

@@ -11,7 +11,7 @@ function walk(root:string,excluded?:string,stagingRoots:string[]=[]):string[]{
   root=realpathSync(root);const data=excluded?(existsSync(excluded)?realpathSync(excluded):resolve(excluded)):undefined,out:string[]=[];
   const hidden=new Set([...(data?[data]:[]),...stagingRoots.map(path=>realpathSync(path))].filter(path=>path!==root&&contains(root,path)));
   // Mirror the host roots in core/code-version only at the actual data root.
-  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
+  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','expert-migration-backups','expert-evaluations','projections','artifact-versions','attachments','external-capabilities.json']);
   const visit=(path:string)=>{for(const entry of readdirSync(path,{withFileTypes:true})){
     const file=join(path,entry.name);
     if(entry.name==='.git'||hidden.has(file)||path===data&&(hostEntries.has(entry.name)||/^swarm-pre-v[34]-[a-f0-9-]+\.sqlite$/.test(entry.name)))continue;

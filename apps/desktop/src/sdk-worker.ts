@@ -275,15 +275,26 @@ function guard():ExtensionFactory{return pi=>{
     const prior=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.trace.system.v1'&&object(entry.data).runId===runId);
     if(prompt&&(!prior||digest(prompt)!==object(object(prior).data).hash))session.sessionManager.appendCustomEntry('friend-pi.trace.system.v1',{v:1,runId,text:prompt.slice(0,65536),hash:digest(prompt),truncated:prompt.length>65536});
   });
-  pi.on('before_agent_start',event=>{
+  pi.on('before_agent_start',async event=>{
     // Public Pi input hooks identify the submitted prompt before Pi appends image
     // normalization hints. Bind its next new native user object, never an old
     // history entry or another input with the same empty text.
     startedInputId=pendingInputs.find(input=>input.expectsStart&&!input.nativeMessage&&input.combinedHash===digest(event.prompt)&&input.imageHash===imageIdentity(event.images||[]))?.id;
     const memberContinuation=pendingInputs.find(input=>input.id===startedInputId)?.memberContinuation;
+    let roleDirectInstructions='';
+    if(executionMode==='swarm'&&!planMode&&enabled.includes('expert')&&runId&&!activeGraphIds.size&&!runGraphIds.size&&!pendingSwarmGraphIds.size&&!rootExecutionBusy()){
+      const frozen=object(await requestPlugin(bus,'expert','freeze',{},1000)),role=object(frozen.role||{});
+      if(typeof role.id==='string'&&Array.isArray(role.effectiveTools)&&!role.effectiveTools.includes('friend_swarm')){
+        captureRunPolicy(false);correctionEligibleRun=undefined;
+        const reason=`当前角色 ${String(role.title||role.id)} 没有协作工具权限，仅在冻结角色范围内直接处理`;
+        session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:'direct',authority:'host-role-boundary',reason,role:{id:role.id,version:role.version,hash:digest(role)},verificationRequired:'objective-checks-and-required-independent-review',expandsAuthority:false});
+        roleDirectInstructions=`用户仍选择Swarm。${reason}，不创建协作成员、不改变模式或扩大工具权限。直接完成当前角色允许的工作，并保留必要客观检查；需要独立复核而当前角色无法组织时，如实报告缺口，不声称协作或复核已完成。`;
+      }
+    }
+
     const currentTodo=projectTodo(session.sessionManager.getBranch(),runId);
     const todoInstruction='需要用户确认需求或选择时，使用 friend_questions 将相关问题合为一组；等待正式回答，不推断未提交的选项。多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需维护 Todo 清单。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
-    const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
+    const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
     const recallInstructions=enabled.includes('memory')?'自动记忆目录并非完整证据。需要回忆约束或排查问题时，先提取任务中的区分性关键词、实体、错误码与代码路径，使用 friend_memory search 做短查询；读取命中记忆的完整正文和全部适用条件，必要时用已登记 source.read/read.range 回查原文。检索命中、进入上下文、实际请求可见与回答正确是不同结论。不搜索未登记原始历史，不把附件或单次要求泛化为长期指令。':'';
     const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
     const branchInstructions=session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType===SIDECHAT_TYPE&&object(entry.data).v===1)?'当前是独立分支会话。分叉点以前继承的消息仅作历史背景，旧 user 请求不是本分支待办；本轮只执行本分支最新提交的请求。父任务状态若无真实证据则未知，不要推断完成或失败，不要仅因继承历史而继续或重放父会话命令。':'';

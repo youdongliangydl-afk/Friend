@@ -8,7 +8,7 @@ export function workflowCodeDigest(projectDir:string, paths:string[], dataDir?:s
   const hash=createHash('sha256');let files=0,bytes=0;
   const visited=new Set<string>();
   const ignored=new Set(['.git','node_modules','.cache','.artifacts','dist','.friendData']);
-  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','projections','artifact-versions','attachments','external-capabilities.json']);
+  const hostEntries=new Set(['plugins.sqlite','plugins.sqlite-wal','plugins.sqlite-shm','plugins.sqlite-journal','pi','sessions','swarm-sessions','swarm-workspaces','swarm-shared','swarm-views','memory-views','memory-migration-backups','expert-migration-backups','expert-evaluations','projections','artifact-versions','attachments','external-capabilities.json']);
   const inside=(path:string)=>path===root||path.startsWith(root+sep);
   function visit(path:string):void {
     const logical=relative(root,path);

@@ -69,12 +69,12 @@ test('actual temporary staging subtree is excluded without losing nearby busines
 
 test('same-root host names are excluded at the data root, while nested business names copy normally',()=>{
  const f=fixture('same-root');try{
-  for(const name of ['sessions','pi','memory-views','projections','attachments']){
+  for(const name of ['sessions','pi','memory-views','projections','attachments','expert-evaluations','expert-migration-backups']){
    mkdirSync(join(f.data,name));writeFileSync(join(f.data,name,'host.txt'),'host state');
    mkdirSync(join(f.project,'inputs',name),{recursive:true});writeFileSync(join(f.project,'inputs',name,'input.txt'),`business ${name}`);
   }
   const staged=f.artifacts.stage(f.graph,f.attempt,f.ctx);
-  for(const name of ['sessions','pi','memory-views','projections','attachments']){
+  for(const name of ['sessions','pi','memory-views','projections','attachments','expert-evaluations','expert-migration-backups']){
    assert.equal(existsSync(join(staged.cwd,name)),false);assert.equal(readFileSync(join(staged.cwd,'inputs',name,'input.txt'),'utf8'),`business ${name}`);
   }
  }finally{f.close();}
