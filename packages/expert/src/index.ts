@@ -180,7 +180,8 @@ export class ExpertController {
     if(roleId&&!definition)throw new Error('角色已停用或范围不匹配');
     const role=definition?this.freezeDefinition(definition,ctx):undefined;
     if(role)prompt=`${rolePrompt(role)}\n\n${prompt}`;
-    const availableSkills=this.skillCatalog.directory(ctx).flatMap(item=>this.skillCatalog.resolve(item.id,item.version,ctx).map(v=>({...v,statusAtFreeze:this.skillCatalog.head(v.id,ctx).status,sourceEpoch:this.skillCatalog.head(v.id,ctx).sourceEpoch})));
+    const availableSkills=this.skillCatalog.directory(ctx).flatMap(item=>this.skillCatalog.resolve(item.id,item.version,ctx).map(v=>({...v,statusAtFreeze:this.skillCatalog.statusForVersion(v,ctx),sourceEpoch:this.skillCatalog.head(v.id,ctx).sourceEpoch})));
+    availableSkills.push(...this.skillCatalog.trialDirectory(ctx).filter(v=>!availableSkills.some(old=>old.id===v.id&&old.version===v.version)));
     return {availableSkills,id:chosen.join('+')||'auto',version:Math.max(1,...experts.map(expert=>expert.version)),prompt,toolScope,skillPaths:[],experts,methods:structuredClone(experts),roles:structuredClone(roles),...(role?{role}:{}),hash:digest({experts,roles,role,availableSkills}),selectionMode:chosen.length?'explicit':'auto',selectedIds:[...chosen],adoptedIds:[...chosen]};
   }
   validateDelivery(ctx:PluginContext){const run=this.store.get<FrozenRun>(`run:${ctx.sessionId}`)?.value;if(!run?.role)return;const source=ctx.history().filter(item=>item.role==='assistant').at(-1);let approved=false,error:string|undefined;try{assertRoleDelivery(run.role,parseModelJson(source?.text||''));approved=true;}catch(cause){error=errorText(cause);}const receipt={v:1,runId:run.runId,roleId:run.role.id,roleVersion:run.role.version,approved,error,source:source?{sessionId:ctx.sessionId,entryId:source.id,hash:digest(source.text)}:undefined};ctx.appendEntry('friend-pi.expert.delivery',receipt);ctx.emit('expert.role.delivery',receipt);if(error)ctx.notify(`角色交付未通过：${error}`,'error');return receipt;}
@@ -214,11 +215,11 @@ export class ExpertController {
     if(action==='expert.read'){const expert=this.skillCatalog.experts(ctx).find(e=>e.id===text(input.id));if(!expert)throw new Error('专家不存在');if(input.version!==undefined&&input.version!==expert.version){const previous=this.store.get(`expert.version:${expert.projectId||'builtin'}:${expert.id}:${integer(input.version,'version')}`);if(!previous)throw new Error('专家版本不存在');return previous.value;}return expert;}
     if(action==='skill.read')return this.skillCatalog.read(text(input.id),integer(input.version,'version'),ctx);
     if(action==='skill.versions')return this.skillCatalog.heads(ctx).filter(h=>h.id===text(input.id)).flatMap(h=>this.store.list(`skill.version:${h.projectId||'builtin'}:${h.id}:`).map(row=>{const v=object(row.value);return {id:v.id,version:v.version,hash:v.contentHash,status:h.status};}));
-    if(action==='candidate.submit'&&input.skillBody!==undefined){const result=this.skillCatalog.submit(input,ctx);this.skillCatalog.rebuildIndex();this.changed(ctx);return result;}
-    if(action==='trial.configure'){const result=this.skillCatalog.configureTrial(input,ctx);this.skillCatalog.rebuildIndex();this.changed(ctx);return result;}
+    if(action==='candidate.submit'&&input.skillBody!==undefined){const result=this.skillCatalog.submit(input,ctx);this.skillCatalog.syncIndex();this.changed(ctx);return result;}
+    if(action==='trial.configure'){const result=this.skillCatalog.configureTrial(input,ctx);this.skillCatalog.syncIndex();this.changed(ctx);return result;}
     if(action==='trial.observe'){const result=this.skillCatalog.observeTrials(input,ctx);this.changed(ctx);return result;}
     if(action==='trial.result'){const result=this.skillCatalog.trialResult(input,ctx);this.changed(ctx);return result;}
-    if(action==='skill.update'||action==='skill.toggle'||action==='skill.rollback'){const result=this.skillCatalog.update(input,ctx,action);this.skillCatalog.rebuildIndex();this.changed(ctx);return result;}
+    if(action==='skill.update'||action==='skill.toggle'||action==='skill.rollback'){const result=this.skillCatalog.update(input,ctx,action);this.skillCatalog.syncIndex();this.changed(ctx);return result;}
     if(action==='candidate.withdraw'&&input.expectedRevision!==undefined){const result=this.skillCatalog.withdraw(input,ctx);this.changed(ctx);return result;}
     if(action==='source.invalidate'){const result=this.skillCatalog.invalidate(input,ctx);this.learning.invalidate(ctx);this.changed(ctx);return result;}
     if(action==='projection.rebuild'){mutationOrigin(ctx);return this.skillCatalog.projection(ctx);}
@@ -276,9 +277,9 @@ export class ExpertController {
     }
     if(action==='create'){
       const id=randomUUID();const prompt=text(input.prompt,'专业方法',32000);const tools=cleanStrings(input.tools??[],'工具');const skills=cleanStrings(input.skills??[],'Skill');skills.forEach(path=>frozenSkill(path,ctx));
-      const definition:ExpertDefinition={id,version:1,title:text(input.title,'名称',120),scope:ctx.projectId,prompt,tools,skills,enabled:true,hash:digest({prompt,tools,skills}),createdAt:now()};const row=this.store.put(expertKey(ctx.projectId,id),definition,null);this.skillCatalog.importLegacy(definition,ctx);this.skillCatalog.rebuildIndex();return {...definition,revision:row.revision};
+      const definition:ExpertDefinition={id,version:1,title:text(input.title,'名称',120),scope:ctx.projectId,prompt,tools,skills,enabled:true,hash:digest({prompt,tools,skills}),createdAt:now()};const row=this.store.put(expertKey(ctx.projectId,id),definition,null);this.skillCatalog.importLegacy(definition,ctx);this.skillCatalog.syncIndex();return {...definition,revision:row.revision};
     }
-    if(action==='update'||action==='toggle'||action==='rollback'){const definition=this.updateDefinition(text(input.id),input,ctx,action);this.skillCatalog.importLegacy(definition,ctx);this.skillCatalog.rebuildIndex();if(action==='update')return {...definition,revision:this.definition(definition.id,ctx)!.revision};return this.snapshot(ctx);}
+    if(action==='update'||action==='toggle'||action==='rollback'){const definition=this.updateDefinition(text(input.id),input,ctx,action);this.skillCatalog.importLegacy(definition,ctx);this.skillCatalog.syncIndex();if(action==='update')return {...definition,revision:this.definition(definition.id,ctx)!.revision};return this.snapshot(ctx);}
     if(action==='versions'){const id=text(input.id);return this.store.list<ExpertDefinition>(`version:${ctx.projectId}:${id}:`).map(row=>row.value);}
     if(action==='candidate.submit'){
       if(ctx.origin!=='user'&&ctx.origin!=='plugin')throw new Error('模型不能用候选提交绕过用户管理；自动方法由有来源的 Memory 插件提交');

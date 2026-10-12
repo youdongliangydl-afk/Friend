@@ -72,3 +72,9 @@ Pi 和 Typebox 使用宿主 peer；不绑定特定 Provider，不复制 Pi loop�
 ```
 
 包内 fake Provider 测试验证合同和状态，不证明真实模型成长效果。最终真实模型、GUI、制品及组合验收由集成宿主执行并绑定候选提交与 Pi SHA。
+
+### Stable methods and incremental indexes
+
+The current candidate head and the stable validated pointer are separate. Submitting or trialling a same-id update keeps the stable version available to ordinary runs; a trial selects the candidate's exact version (`skillRefs`). In-flight runs retain their frozen body and restrictions. Promotion checks the frozen candidate, stable baseline and source fence. A withdrawn candidate source cannot withdraw an independently supported stable version. Disabling a method still disables every version.
+
+The SQLite version records remain authoritative. Durable dirty-version triggers maintain only changed directory/FTS/dependency rows; unchanged startup reuses those rows. Missing or damaged derived indexes, and schema changes, rebuild from version records. Historical method bodies and source invalidation retain their version semantics.
