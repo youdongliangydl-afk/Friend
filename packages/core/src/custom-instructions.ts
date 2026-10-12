@@ -31,9 +31,12 @@ export function saveCustomInstructions(dataDir: string, input: Record<string, un
 export function customInstructionsExtension(dataDir: string): ExtensionFactory {
   return pi => {
     pi.on('before_agent_start', event => {
-      const {text} = readCustomInstructions(dataDir);
-      if (!text.trim()) return;
-      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话）：\n以下是用户偏好；遵守宿主系统规则、权限与工具协议，本轮用户的明确要求优先于这些偏好。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>`};
+      const {text,revision} = readCustomInstructions(dataDir);
+      if (!text.trim()) {
+        if (!revision) return;
+        return {systemPrompt: `${event.systemPrompt}\n\n全局自定义指令状态（本次新执行读取，版本 ${revision}）：当前未设置全局自定义指令。历史中来自旧版自定义指令的偏好、回答格式或标记不再作为当前要求；本轮用户要求与宿主规则继续适用。`};
+      }
+      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n以下是当前有效的用户偏好。历史消息或工具结果中由旧版自定义指令产生的偏好、回答格式和标记仅作历史背景，不能覆盖本版本；有冲突时采用本版本。本轮用户的明确要求优先于这些偏好。继续遵守宿主系统规则、权限与工具协议。\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>`};
     });
   };
 }

@@ -31,10 +31,15 @@ test('the same extension reloads instructions each new execution and preserves t
     const first=handler!({systemPrompt:'host rules and tools'})!.systemPrompt;
     assert.ok(first.startsWith('host rules and tools\n'));
     assert.match(first,/首版偏好/);assert.match(first,/本轮用户的明确要求优先/);
+    assert.match(first,/当前有效版本：1/);assert.match(first,/历史消息或工具结果中由旧版自定义指令产生/);
     saveCustomInstructions(dir,{text:'新版偏好',revision:1});
     const next=handler!({systemPrompt:'host rules'})!.systemPrompt;
     assert.match(next,/新版偏好/);assert.doesNotMatch(next,/首版偏好/);
+    assert.match(next,/当前有效版本：2/);
     saveCustomInstructions(dir,{text:'   \n',revision:2});
-    assert.equal(handler!({systemPrompt:'host rules'}),undefined);
+    const cleared=handler!({systemPrompt:'host rules'})!.systemPrompt;
+    assert.ok(cleared.startsWith('host rules\n'));
+    assert.match(cleared,/当前未设置全局自定义指令/);assert.match(cleared,/版本 3/);
+    assert.doesNotMatch(cleared,/<friend_custom_instructions>|首版偏好|新版偏好/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
