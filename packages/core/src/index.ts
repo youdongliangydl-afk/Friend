@@ -11,7 +11,7 @@ import {getSupportedThinkingLevels,normalizeContext,type ProviderHeaders,type Pr
 import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCapabilityError,restrictedSourceItem,readRegisteredArtifact,type ArtifactRef,type EvidenceReceipt,type LearningLeaseToken} from './capability-services.js';
 export * from './capability-services.js';
 export * from './collaboration-services.js';
-export {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,type CustomInstructions} from './custom-instructions.js';
+export {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,DEFAULT_CUSTOM_INSTRUCTIONS,type CustomInstructions} from './custom-instructions.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';

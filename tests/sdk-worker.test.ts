@@ -14,7 +14,7 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
-import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions } from '../packages/core/src/index.js';
+import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
@@ -788,7 +788,7 @@ test('cold restore discards a persisted internal Swarm correction without starti
  finally{wake.close();await f.close();}
 });
 
-test('custom instructions reach final provider payload after edit, clear, cold restore and Team inheritance',{timeout:45000},async()=>{
+test('custom instructions reach final provider payload with full defaults, override, clear, cold restore and Team inheritance',{timeout:45000},async()=>{
  type Payload={messages:{role:string;content:unknown}[];tools?:{function:{name:string}}[]};
  const payloads:Payload[]=[];
  const server=createServer(async(req,res)=>{
@@ -802,18 +802,21 @@ test('custom instructions reach final provider payload after edit, clear, cold r
  const system=(payload:Payload)=>payload.messages.filter(message=>message.role==='system').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
  const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
  const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
- const assertSettingsContext=(payload:Payload,expected?:string)=>{
+ const assertSettingsContext=(payload:Payload,expected:string)=>{
   const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]'));
-  if(expected===undefined){assert.equal(notes.length,0,'never-configured empty settings add no request reminder');return;}
   assert.equal(notes.length,1,'each final provider request contains exactly one settings reminder');
   assert.equal(notes[0],payload.messages.at(-1),'settings reminder reaches the end of the actual provider request');
   const note=messageText(notes[0].content);assert.ok(note.includes(`版本 ${readCustomInstructions(f.dataDir).revision}`));
-  if(expected){assert.equal(note.split(expected).length-1,1,'the current instruction body appears exactly once in the reminder');assert.equal(system(payload).split(expected).length-1,1);}
-  else {assert.match(note,/已清空/);assert.ok(!note.includes('<friend_custom_instructions>'));}
-  for(const old of [alpha,beta,persisted])if(old!==expected)assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');
+  const prompt=system(payload),tagged=[...prompt.matchAll(/<friend_custom_instructions>\n([\s\S]*?)\n<\/friend_custom_instructions>/g)];
+  assert.equal(tagged.length,1,'the system prompt contains exactly one current instruction block');
+  assert.equal(tagged[0][1],expected,'the current block contains the complete effective body without appending defaults');
+  assert.equal(note.split(expected).length-1,1,'the complete effective body appears exactly once in the request reminder');
+  assert.equal(prompt.split(expected).length-1,1,'the complete effective body appears exactly once in the system prompt');
+  if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');}
+  for(const old of [alpha,beta,persisted])if(old!==expected){assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');assert.ok(!prompt.includes(old),'system prompt cannot resurrect an old instruction body');}
  };
  const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});
- const round=async(label:string,expected?:string)=>{
+ const round=async(label:string,expected=DEFAULT_CUSTOM_INSTRUCTIONS)=>{
   const beforeEvents=f.events.length,beforePayloads=payloads.length;await f.request('send',{text:label,mode:'single',planMode:false});
   await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   const requests=payloads.slice(beforePayloads);assert.equal(requests.length,1,'each plain-text round reaches the actual loopback provider once');
@@ -823,19 +826,21 @@ test('custom instructions reach final provider payload after edit, clear, cold r
  try{
   await f.request('configure',{plugins:[]});
   await f.request('provider.save',{provider:'custom-instructions-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
-  assert.ok(!(await round('CUSTOM_EMPTY_ROUND')).includes('<friend_custom_instructions>'));
+  assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:0});
+  const defaults=await round('CUSTOM_EMPTY_ROUND');assert.ok(defaults.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'fresh raw empty settings use the complete default body');
   save(alpha);const first=await round('CUSTOM_ADD_ROUND',alpha);assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
   assert.ok(first.includes('本轮用户的明确要求优先于这些偏好'));
   save(beta);const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
-  save('');const cleared=await round('CUSTOM_CLEAR_ROUND','');assert.ok(!cleared.includes(beta));assert.ok(!cleared.includes('<friend_custom_instructions>'));
+  save('');assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:3});
+  const cleared=await round('CUSTOM_CLEAR_ROUND');assert.ok(cleared.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'clearing restores the complete default body');assert.ok(!cleared.includes(alpha)&&!cleared.includes(beta));
   save(persisted);const before=await f.request('state') as {sessionFile:string;sessionId:string};const oldPid=f.child.pid,directory=f.directory;
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture',temporary:true});
   await f.request('configure',{plugins:[]});assert.notEqual(f.child.pid,oldPid);
-  const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);
+  const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);assert.equal(readCustomInstructions(f.dataDir).text,persisted);
   const cold=await round('CUSTOM_COLD_ROUND',persisted);assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
   const native=readFileSync(restored.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,5,'request-only settings reminders do not create native user turns');
-  assert.ok(!native.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
+  assert.ok(!native.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
 
   await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
   await f.request('configure',{plugins:['swarm']});await f.request('configure',{executionMode:'team'});
