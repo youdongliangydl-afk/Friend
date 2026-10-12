@@ -1024,11 +1024,39 @@ export class MemoryController implements PluginController {
   private impactPreview(input:JsonObject,ctx:PluginContext):JsonObject {
     if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','影响预览仅向用户开放');
     if(!['update','forget'].includes(String(input.action)))throw new CapabilityError('VALIDATION_ERROR','影响预览仅支持更正与遗忘');
-    const record=this.get(input.id,ctx),descendants=this.descendants(record.id,ctx),patch=input.action==='update'?object(input.patch||{}):{};
-    const affected=[record,...descendants].map(value=>({id:value.id,revision:value.revision,hash:value.hash,status:value.status,sources:value.sources,dependencies:value.dependencies||[]}));
-    const sources=[...new Map(affected.flatMap(value=>value.sources).map(source=>[preciseKey(source),source])).values()].map(source=>{try{this.policy!.assertSource(source);const item=ctx.readSource(source);return {source,valid:true,hash:digest(readSourceSpan(item,source))};}catch{return {source,valid:false};}});
-    const preview={v:1,action:input.action,id:record.id,revision:record.revision,hash:record.hash,epoch:this.epoch(ctx),candidateDigest:digest(patch),affected,sources,conclusion:input.action==='forget'?'将遗忘选中记忆及其派生记录；保留失效标记防止自动复活':'正文或条件更正会使派生记录失效；实际修改仍由现有控制器提交',evidenceBoundary:'只读预览，不修改记录、提案或处理水位'};
-    return {...preview,previewToken:digest(preview)};
+    const db=this.store!.db;
+    const read=():JsonObject=>{
+      const record=this.get(input.id,ctx),related=[record,...this.descendants(record.id,ctx)],patch=input.action==='update'?object(input.patch||{}):{};
+      const affected=related.map(value=>({id:value.id,revision:value.revision,hash:value.hash,recordDigest:digest(value),projectId:value.projectId,scope:value.scope,status:value.status,sources:value.sources,dependencies:value.dependencies||[]}));
+      // Read the public validity ledger on the same snapshot; capture() would create a new fence.
+      const statement=db.prepare("SELECT json FROM documents WHERE namespace='source-policy' AND key=?"),cache=new Map<string,unknown>();
+      const policyValue=(key:string):unknown=>{if(!cache.has(key)){const row=statement.get(key);cache.set(key,row?JSON.parse(String(row.json)):undefined);}return cache.get(key);};
+      const revocations=db.prepare("SELECT key,json FROM documents WHERE namespace='source-policy' AND substr(key,1,?)=? ORDER BY key");
+      const sourceState=(source:SourceRef):JsonObject=>{const prefix=`revocation:${source.sessionId}:`;return {session:policyValue(`session:${source.sessionId}`)??null,entry:policyValue(`entry:${digest([source.sessionId,source.entryId])}`)??null,fragment:policyValue(`source:${digest([source.sessionId,source.entryId,source.start??null,source.end??null,source.hash??null])}`)??null,revocations:revocations.all(prefix.length,prefix).flatMap(row=>{const value=JSON.parse(String(row.json)) as {source:SourceRef};return sameEntryOverlap(value.source,source)?[{key:row.key,value}]:[]})};};
+      for(const memory of related)if(memory.scope==='personal')Object.assign(affected.find(value=>value.id===memory.id)!,{sourceGrantDigest:digest(policyValue(`personal:${memory.id}`)??null)});
+      const sourceEpoch=policyValue('epoch')??0,policyEpoch=policyValue('policyEpoch')??0;
+      if(!Number.isSafeInteger(sourceEpoch)||!Number.isSafeInteger(policyEpoch)||Number(sourceEpoch)<0||Number(policyEpoch)<0)throw new CapabilityError('SOURCE_UNAVAILABLE','来源策略状态无法核对');
+      const sources=[...new Map(related.flatMap(value=>value.sources).map(source=>[preciseKey(source),source])).values()].map(source=>{try{this.policy!.assertSource(source);const item=ctx.readSource(source);return {source,valid:true,hash:digest(readSourceSpan(item,source)),stateDigest:digest(sourceState(source))};}catch(error){return {source,valid:false,reason:redactMemorySecrets(errorMessage(error)),stateDigest:digest(sourceState(source))};}});
+      const artifacts:JsonObject[]=[],dependencies:JsonObject[]=[];
+      for(const memory of related){
+        const projectId=memory.scope==='personal'?ctx.projectId:memory.projectId;
+        for(const evidence of memory.evidence||[]){if(evidence.kind!=='artifact')continue;
+          const base={memoryId:memory.id,projectId,artifact:evidence.artifact,observationReceiptId:evidence.observationReceiptId,observer:evidence.observer,visibleRanges:evidence.visibleRanges,policyStateDigest:digest(policyValue(`artifact:${digest([evidence.artifact.artifactId,evidence.artifact.version])}`)??null)};
+          let registered:ReturnType<SourcePolicy['artifact']>|undefined,receipt:EvidenceReceipt|undefined;
+          const stateDigest=()=>digest({ref:registered!.ref,valid:registered!.valid,owners:(registered!.owners||[]).map(session=>({session,state:policyValue(`session:${session}`)??null})),observerSession:receipt?policyValue(`session:${receipt.sessionId}`)??null:null,sources:receipt?.sources.map(sourceState)||[]});
+          try{registered=this.policy!.artifact(evidence.artifact,projectId);receipt=registered.observations.find(item=>item.receiptId===evidence.observationReceiptId);this.policy!.assertArtifactObservation(evidence.artifact,evidence.observationReceiptId,evidence.observer);artifacts.push({...base,valid:true,receiptHash:digest(receipt),stateDigest:stateDigest()});}catch(error){artifacts.push({...base,valid:false,reason:redactMemorySecrets(errorMessage(error)),...(registered?{stateDigest:stateDigest()}:{}),...(receipt?{receiptHash:digest(receipt)}:{})});}
+        }
+        for(const dependency of memory.dependencies||[]){
+          const projects=[projectId,'builtin',...(dependency.capability==='memory'?['personal']:[])];let state:JsonObject|undefined;
+          for(const project of projects){const found=policyValue(`dependency:${digest([project,dependency.capability,dependency.id,dependency.version,dependency.hash])}`);if(found){state=object(found);break;}}
+          dependencies.push({memoryId:memory.id,projectId,dependency,valid:state?.valid===true,...(state?{epoch:state.epoch,stateDigest:digest(state)}:{}),...(state?.valid===true?{}:{reason:redactMemorySecrets(String(state?.reason||'依赖未登记或已撤回'))})});
+        }
+      }
+      const preview={v:1,action:input.action,id:record.id,revision:record.revision,hash:record.hash,epoch:this.epoch(ctx),publicPolicy:{sourceEpoch,policyEpoch},candidateDigest:digest(patch),affected,sources,artifacts,dependencies,conclusion:input.action==='forget'?'将遗忘选中记忆及其派生记录；保留失效标记防止自动复活':'正文或条件更正会使派生记录失效；实际修改仍由现有控制器提交',evidenceBoundary:'只读预览，不修改记录、提案或处理水位'};
+      return {...preview,previewToken:digest({...preview,publicPolicy:{policyEpoch}})};
+    };
+    if(db.isTransaction)return read();
+    db.exec('BEGIN');try{const result=read();db.exec('COMMIT');return result;}catch(error){db.exec('ROLLBACK');throw error;}
   }
   private assertImpact(input:JsonObject,action:'update'|'forget',ctx:PluginContext):void {
     if(input.previewToken===undefined)return;
