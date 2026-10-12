@@ -48,7 +48,7 @@ test('mutation uses the preview revision and token, rejects wrong actions/record
  for(const invalid of [null,{}, {...preview,action:'forget'},{...preview,id:'other'},{...preview,revision:0},{...preview,revision:1.5},{...preview,previewToken:''}])assert.throws(()=>memoryImpactMutation(invalid,'update',memory.id,patch),/重新预览/);assert.equal(preview.revision,7);assert.equal(patch.content,'精确草稿');
 });
 test('impact preview remains descriptive, exposes unavailable sources, and folds exact versions before confirmation',()=>{
- const html=render(React.createElement(MemoryImpactPreview,{preview}));for(const text of ['本次操作的只读影响预览','当前 v7','涉及记忆','派生内容','1 / 2 可用','部分来源已不可用','此预览尚未修改任何记忆','内容或来源变化时，需要重新预览'])assert.ok(html.includes(text));assert.match(html,/<details[^>]*><summary>查看涉及的版本与来源/);assert.doesNotMatch(html,/<details[^>]*open=|<button|onClick/);assert.match(html,/derived-two · v2/);
+ const html=render(React.createElement(MemoryImpactPreview,{preview}));for(const text of ['本次操作的只读影响预览','当前 v7','涉及记忆','派生内容','1 / 2 可用','有来源或依赖不可用','此预览尚未修改任何记忆','内容或来源变化时，需要重新预览'])assert.ok(html.includes(text));assert.match(html,/<details[^>]*><summary>查看涉及的版本、来源与失效原因/);assert.doesNotMatch(html,/<details[^>]*open=|<button|onClick/);assert.match(html,/derived-two · v2/);
 });
 
 
@@ -59,4 +59,12 @@ test('live changes to revisions, hashes or epoch expire the displayed preview wi
 
 test('a personal preference preview may include a descendant outside the current snapshot scope',()=>{
  const frozen={...preview,id:'personal',epoch:2,affected:[{id:'personal',revision:1},{id:'other-project-child',revision:4}]},current={epoch:2,memories:[{id:'personal',revision:1,scope:'personal'}],candidates:[]};assert.equal(memoryImpactChanged(frozen,current),false);assert.equal(memoryImpactChanged(frozen,{...current,epoch:3}),true);
+});
+
+
+test('impact preview shows artifact/dependency availability and folds their exact failure and policy evidence',()=>{
+ const extended={...preview,artifacts:[{valid:false,artifact:{artifactId:'artifact-output',version:2},reason:'产物观察来源已撤回'}],dependencies:[{valid:true,dependency:{id:'stable-method',version:1}},{valid:false,dependency:{id:'withdrawn-method',version:4},reason:'依赖版本已撤回'}],publicPolicy:{sourceEpoch:17,policyEpoch:2}},html=render(React.createElement(MemoryImpactPreview,{preview:extended}));assert.match(html,/<dt>产物引用<\/dt><dd>0 \/ 1 可用/);assert.match(html,/<dt>能力依赖<\/dt><dd>1 \/ 2 可用/);assert.match(html,/有来源或依赖不可用/);assert.match(html,/产物 artifact-output · v2/);assert.match(html,/产物观察来源已撤回/);assert.match(html,/能力依赖 withdrawn-method · v4/);assert.match(html,/依赖版本已撤回/);assert.match(html,/&quot;artifacts&quot;/);assert.match(html,/&quot;dependencies&quot;/);assert.match(html,/&quot;publicPolicy&quot;/);assert.match(html,/<details[^>]*><summary>查看涉及的版本、来源与失效原因/);assert.doesNotMatch(html,/<details[^>]*open=/);
+});
+test('missing legacy artifact/dependency diagnostics stay unknown while an explicitly empty set remains empty',()=>{
+ const legacy=render(React.createElement(MemoryImpactPreview,{preview}));assert.match(legacy,/<dt>产物引用<\/dt><dd>未记录/);assert.match(legacy,/<dt>能力依赖<\/dt><dd>未记录/);const known=render(React.createElement(MemoryImpactPreview,{preview:{...preview,sources:[],artifacts:[],dependencies:[]}}));assert.match(known,/<dt>会话原文<\/dt><dd>未登记/);assert.match(known,/<dt>产物引用<\/dt><dd>未登记/);assert.match(known,/<dt>能力依赖<\/dt><dd>未引用/);assert.doesNotMatch(known,/有来源或依赖不可用/);const unknown=render(React.createElement(MemoryImpactPreview,{preview:{...preview,sources:[],artifacts:[{artifact:{artifactId:'unconfirmed',version:1}}],dependencies:[]}}));assert.match(unknown,/有效性未确认/);assert.doesNotMatch(unknown,/有来源或依赖不可用/);
 });
