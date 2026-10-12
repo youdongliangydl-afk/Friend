@@ -76,7 +76,8 @@ export function customInstructionsExtension(dataDir: string): ExtensionFactory {
       const state = current.usesDefault
         ? current.revision ? `这是已保存并生效的设置变更，不是待总结的历史记录。用户自定义指令已清空（版本 ${current.revision}），现已恢复 Friend 默认指令。当前回答要求：采用下面的默认正文，勿添加仅来自历史自定义偏好的固定首行、前缀或后缀。回复前检查并删除这类历史标记，不要解释此设置提醒。` : '本次执行采用 Friend 内置默认指令，版本 0。'
         : `本次执行采用用户自定义指令版本 ${current.revision}，下面的正文整段替换 Friend 默认指令，不叠加默认正文。`;
-      const content = `[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]\n${state}\n回复前核对系统上下文 <friend_custom_instructions> 中的当前要求；历史回答的格式和标记不代表当前偏好。继续原用户任务，保持宿主规则、工具和结构化协议，本轮用户的明确要求优先。\n本次生效的用户指令正文：\n${current.text}`;
+      const formatCheck = current.usesDefault ? '\n\n默认答复格式检查：先给核心结论，树状结构最多三级（结论→要点→说明或示例）。不要建立第四层；把更深的示例合并到第三级同一条，或提升为同级要点。简单问题只用一至两层即可。本轮用户明确要求仍然优先。' : '';
+      const content = `[Friend 当前有效的用户设置指令：对本次答复生效；不新增工作任务]\n${state}\n回复前核对系统上下文 <friend_custom_instructions> 中的当前要求；历史回答的格式和标记不代表当前偏好。继续原用户任务，保持宿主规则、工具和结构化协议，本轮用户的明确要求优先。\n本次生效的用户指令正文：\n${current.text}${formatCheck}`;
       return {messages: [...event.messages, {role: 'custom', customType: 'friend-pi.custom-instructions.context.v1', display: false, content, timestamp: Date.now()}]};
     });
   };
