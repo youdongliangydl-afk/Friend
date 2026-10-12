@@ -422,6 +422,7 @@ else {
     await loadProviderMetadata();startLearning();for(const mark of store.list<Deletion>('deleting:').map(row=>row.value))if(mark.state==='preparing'||mark.memoryPending)await finishDeletion(mark).catch(error=>publish('notice',{level:'warning',message:'删除清理待恢复：'+String(error)}));
     const qaWidth=Number(process.env.FRIEND_PI_QA_WIDTH);const qaHeight=Number(process.env.FRIEND_PI_QA_HEIGHT);
     window=new BrowserWindow({title:clientName,titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},width:Number.isInteger(qaWidth)&&qaWidth>=680?qaWidth:1320,height:Number.isInteger(qaHeight)&&qaHeight>=550?qaHeight:860,minWidth:680,minHeight:550,backgroundColor:'#f7f8fb',webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+    window.on('page-title-updated',event=>event.preventDefault());
     browserHost=new BrowserHost(window,root,viewContext,saveView,publish);
     ipcMain.handle('friend-composer:ready',async event=>{requireActive();if(!browserHost?.acceptsOverlay(event))throw new Error('输入框来源无效');return browserHost.readyOverlay();});
     ipcMain.handle('friend-composer:request',async(event,method:string,raw:unknown)=>{requireActive();if(!browserHost?.acceptsOverlay(event)||!['reference.list','attachment.inspect','attachment.import'].includes(method))throw new Error('输入框操作来源无效');const input=object(raw);if(input.sessionId!==currentId)throw new Error('会话已切换');return handle(method,input);});
