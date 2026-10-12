@@ -116,7 +116,7 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(start.executionStyle==='team'?['team_message']:['swarm_message',...(!start.parentTools||start.parentTools.includes('swarm_shared')?['swarm_shared']:[])]),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];

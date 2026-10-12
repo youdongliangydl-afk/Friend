@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { build } from 'esbuild';
-import {createAgentSession,createEventBus,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager,type AgentSession} from '@earendil-works/pi-coding-agent';
+import {createAgentSession,createEventBus,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager,type AgentSession,type ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import swarmExtension,{ SwarmController, type Graph, type MemberInput, type MemberOutput, type MemberStart,type MemberLauncher,type StopObject } from '../src/index.js';
 import {ownChild} from '../src/managed.js';
 import {requestPlugin,RuntimeCapabilityServices,TaskLedger,RecordStore,SourcePolicy,digest,visibleText,type PluginContext} from '@friend-pi/core';
@@ -15,6 +15,7 @@ import {nativeCheckType,readMemberChecks} from '../src/member-checks.js';
 import {Compile} from 'typebox/compile';
 import type {TSchema} from 'typebox';
 import {ExpertController} from '../../expert/src/index.js';
+import {guardMember} from '../src/guard.js';
 
 type LocalResponse=string|{tool:string;args:Record<string,unknown>}|{tools:{tool:string;args:Record<string,unknown>}[]};
 type ModelRequest=Record<string,unknown>;
@@ -61,6 +62,24 @@ test('bundled standalone member runs Pi SDK in a separate process and stores onl
     assert.ok(env.requests()>=1);const files=readdirSync(start.sessionDir).filter(file=>file.endsWith('.jsonl'));assert.equal(files.length,1);const entries=readFileSync(join(start.sessionDir,files[0]),'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries[0].type,'session');assert.ok(entries.some(entry=>entry.type==='message' && entry.message.role==='assistant'));assert.ok(result.sessionId);assert.equal(result.sessionFile,join(start.sessionDir,files[0]));
     await new Promise<void>(done=>{if (child.exitCode!==null) done();else child.once('exit',()=>done());});
   }finally {child.kill('SIGTERM');await env.cleanup();}
+});
+
+for(const permitted of [false,true])test(`Swarm SDK advertises shared materials only when the frozen parent ${permitted?'allows':'excludes'} that tool`,async()=>{
+  let advertised:string[]=[];
+  const env=await environment(input=>{advertised=(input.tools as {function:{name:string}}[]).map(tool=>tool.function.name);return 'Frozen tool visibility checked.';});
+  const start:MemberStart={v:1,type:'start',graphId:'tool-visibility',taskId:'read-source',attemptId:randomUUID(),cwd:env.project,dataDir:join(env.root,'data'),agentDir:env.agentDir,sessionDir:join(env.root,'sessions'),modelId:'swarm-fixture/fixture',thinkingLevel:'off',prompt:'Report the available frozen tools.',mode:'read',writeScopes:[],executionStyle:'swarm',parentTools:['read','friend_swarm',...(permitted?['swarm_shared']:[])]};
+  const child=fork(env.worker,[],{cwd:env.project,stdio:['ignore','pipe','pipe','ipc'],execArgv:[]});child.stdout?.resume();child.stderr?.resume();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    const finished=new Promise<Extract<MemberOutput,{type:'settled'}>>((done,reject)=>{timer=setTimeout(()=>reject(new Error('Tool visibility fixture timed out')),15000);child.on('message',(message:MemberOutput)=>{if(message.type==='settled'){clearTimeout(timer);done(message);}if(message.type==='failed'){clearTimeout(timer);reject(new Error(message.error));}});child.once('error',reject);});
+    child.send(start);assert.equal((await finished).summary,'Frozen tool visibility checked.');assert.deepEqual(advertised,['read','swarm_message',...(permitted?['swarm_shared']:[])]);
+    const callbacks=new Map<string,(event:{toolName:string;input:Record<string,unknown>})=>Promise<unknown>>();
+    guardMember(start,async()=>false)({on:(name:string,handler:unknown)=>callbacks.set(name,handler as never)} as unknown as ExtensionAPI);
+    const decision=await callbacks.get('tool_call')!({toolName:'swarm_shared',input:{action:'read',name:'untrusted-direct-call'}});
+    if(permitted)assert.equal(decision,undefined);else assert.deepEqual(decision,{block:true,reason:'工具超出父任务权限'});
+    assert.ok(env.requests()>0,'observe the actual SDK provider payload');
+    await new Promise<void>(done=>{if(child.exitCode!==null)done();else child.once('exit',()=>done());});
+  }finally{clearTimeout(timer);child.kill('SIGTERM');await env.cleanup();}
 });
 
 test('standalone member forwards live Bash partial output before tool completion and still settles',async()=>{
