@@ -99,6 +99,8 @@ test('a cold stopped session keeps its terminal status when an old integrated Sw
    assert.equal(snapshot.graphs[0]?.status,'integrated');
    const after=await fixture.request('state') as {lifecycleStatus:string;isRunning:boolean};
    assert.equal(after.lifecycleStatus,'stopped');assert.equal(after.isRunning,false);
+   await assert.rejects(fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'单人模式不能组织协作',tasks:[{id:'denied',title:'不创建',prompt:'只读检查',mode:'read'}]}}),/single/);
+   await fixture.request('configure',{executionMode:'swarm'});
    await fixture.request('plugin',{plugin:'swarm',action:'create',input:{goal:'只创建待启动的手动图',tasks:[{id:'manual',title:'待启动',prompt:'只读检查',mode:'read',dependencies:[]}]}});
    assert.equal((await fixture.request('state') as {lifecycleStatus:string}).lifecycleStatus,'stopped','a manual unstarted graph cannot overwrite a cold terminal record');
    await fixture.request('configure',{executionMode:'swarm'});

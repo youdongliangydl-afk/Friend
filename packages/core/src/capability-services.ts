@@ -63,8 +63,10 @@ export class SourcePolicy {
    put(this.store,policyNS,`fence:${fence.id}`,{hash:digest(fence)});return fence;
   });
  }
- assert(fence:SourceFence,lease?:LearningLeaseToken):void {
-  if(!fence||fence.v!==1||fence.expiresAt<Date.now()||get<{hash:string}>(this.store,policyNS,`fence:${fence.id}`)?.hash!==digest(fence))throw new CapabilityError('VERSION_CONFLICT','来源围栏已过期或不匹配');
+ assert(fence:SourceFence,lease?:LearningLeaseToken):void {this.checkFence(fence,lease,false);}
+ renew(fence:SourceFence,lease?:LearningLeaseToken):SourceFence {return this.store.transaction(()=>{this.checkFence(fence,lease,true);return fence.expiresAt<Date.now()?this.capture({projectId:fence.projectId,sources:fence.sources,artifacts:fence.artifacts,dependencies:fence.dependencies}):fence;});}
+ private checkFence(fence:SourceFence,lease:LearningLeaseToken|undefined,allowExpired:boolean):void {
+  if(!fence||fence.v!==1||!allowExpired&&fence.expiresAt<Date.now()||get<{hash:string}>(this.store,policyNS,`fence:${fence.id}`)?.hash!==digest(fence))throw new CapabilityError('VERSION_CONFLICT','来源围栏已过期或不匹配');
   if((get<number>(this.store,policyNS,'policyEpoch')||0)!==fence.policyEpoch)throw new CapabilityError('SOURCE_UNAVAILABLE','来源策略已变化');
   for(const entry of fence.states){const state=this.state(entry.key);if(!state.valid||state.epoch!==entry.epoch)throw new CapabilityError('SOURCE_UNAVAILABLE',state.reason||'来源或依赖版本已变化');}
   for(const source of fence.sources)this.assertSource(source);

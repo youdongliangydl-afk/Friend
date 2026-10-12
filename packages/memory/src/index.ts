@@ -679,7 +679,7 @@ export class MemoryController implements PluginController {
       if(this.settings(ctx).paused||!this.settings(ctx).enabled||this.store!.db.prepare("SELECT 1 FROM memory_jobs WHERE state='running' LIMIT 1").get())return undefined;
       const next=peekLearningJob(ctx.dataDir,id?{projectId:ctx.projectId,sessionId:ctx.sessionId}:undefined,false);if(!next||id&&next.id!==id||next.projectId!==ctx.projectId||next.sessionId!==ctx.sessionId)return undefined;
       if(next.stage==='extract'&&ctx.learning&&!ctx.learning.canAdmit())return undefined;
-      let sourceFence:SourceFence;try{sourceFence=next.sourceFence&&next.sourceFence.expiresAt>Date.now()?next.sourceFence:this.policy!.capture({projectId:ctx.projectId,sources:next.sources,artifacts:next.observedArtifacts?.map(item=>item.artifact)});}catch(error){this.writeJob({...next,state:'invalidated',error:errorMessage(error),owner:undefined});return undefined;}
+      let sourceFence:SourceFence;try{sourceFence=next.sourceFence?this.policy!.renew(next.sourceFence):this.policy!.capture({projectId:ctx.projectId,sources:next.sources,artifacts:next.observedArtifacts?.map(item=>item.artifact)});}catch(error){this.writeJob({...next,state:'invalidated',error:errorMessage(error),owner:undefined});return undefined;}
       const job={...next,state:'running' as const,sourceEpoch:this.epoch(ctx),sourceFence,leaseUntil:new Date(Date.now()+60000).toISOString(),owner:{instance:this.instance,pid:process.pid,heartbeatAt:now(),token:randomUUID()},updatedAt:now()};
       this.writeJob(job);this.store!.put(`served:${ctx.projectId}`,{at:Date.now()});return job;
     });
@@ -746,7 +746,7 @@ export class MemoryController implements PluginController {
       const saved=this.store!.db.prepare('SELECT json FROM memory_jobs WHERE id=?').get(job.id);const current=saved?JSON.parse(String(saved.json)) as LearningJob:undefined;
       if(current?.state!=='running'||current.owner?.token!==job.owner?.token||current.leaseUntil&&Date.parse(current.leaseUntil)<=Date.now())throw new Error('学习任务租约已被替换');
       if(isSessionDeleted(ctx.dataDir,job.sessionId))throw new Error('来源会话已删除');
-      if(job.sourceFence)this.policy!.assert(job.sourceFence,this.activeLease);else throw new CapabilityError('SOURCE_UNAVAILABLE','学习任务缺少来源围栏，需重新排队');
+      if(job.sourceFence)job.sourceFence=this.policy!.renew(job.sourceFence,this.activeLease);else throw new CapabilityError('SOURCE_UNAVAILABLE','学习任务缺少来源围栏，需重新排队');
       if(this.epoch(ctx)!==job.sourceEpoch)throw new Error('来源版本已变化');
       if(this.settings(ctx).paused||!this.settings(ctx).enabled)throw new Error('学习已暂停');
       job.sources.forEach((source,i)=>{const item=ctx.readSource(source);if(job.sourceHashes?.[i]&&digest(readSourceSpan(item,source))!==job.sourceHashes[i])throw new Error('来源原文已变化');});

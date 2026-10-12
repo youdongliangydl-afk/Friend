@@ -173,3 +173,17 @@ test('a rejected outside-scope tool attempt fails its native boundary check desp
   assert.deepEqual(await f.host.advance(request),result);assert.equal(f.calls(),2);
  }finally{f.close();}
 });
+
+test('a valid frozen suite can continue after its source fence expires without dropping authority checks',async()=>{
+ const f=await fixture(),originalNow=Date.now;try{
+  Date.now=()=>originalNow()-3*60*60*1000;const request=await f.request('code-development');Date.now=originalNow;
+  const result=await f.host.advance(request);assert.equal(result.status,'completed');assert.ok(result.checks.every(check=>check.passed));assert.equal(f.calls(),1);
+ }finally{Date.now=originalNow;f.close();}
+});
+
+test('managed evaluation rechecks model readiness before sending a previously frozen request',async()=>{
+ const f=await fixture(),managed=process.env.FRIEND_PI_DESKTOP_MANAGED;try{
+  const request=await f.request('code-development');process.env.FRIEND_PI_DESKTOP_MANAGED='1';
+  await assert.rejects(f.host.advance(request),/型号|模型|测试|配置|验证/);assert.equal(f.calls(),0);assert.equal(f.budget.read(request.budgetId).calls,0);
+ }finally{if(managed===undefined)delete process.env.FRIEND_PI_DESKTOP_MANAGED;else process.env.FRIEND_PI_DESKTOP_MANAGED=managed;f.close();}
+});
