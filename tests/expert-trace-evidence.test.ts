@@ -52,6 +52,8 @@ const invalidMutations:Record<string,(f:ReturnType<typeof nativeCheckFixture>)=>
  'stdout pass without a native receipt':f=>{f.entries.splice(f.entries.findIndex(e=>e.id==='receipt'),1);},
  'assistant JSON impersonating a receipt':f=>{const e=f.row('receipt');e.type='message';e.message={role:'assistant',content:[{type:'text',text:JSON.stringify(e.data)}]};},
  'wrong run':f=>{f.row('receipt').data.runId='older-run';},
+ 'current input marker has no native entry':f=>{f.row('input').data.entryId='missing-user';},
+ 'current input marker points to a decision instead of user':f=>{f.row('input').data.entryId='decision';},
  'wrong command':f=>{f.row('decision').message.content[0].arguments.command='npm install';},
  'changed output':f=>{f.row('receipt').data.outputHash=digest('a different result');},
  'noninteger exit':f=>{f.row('receipt').data.exitCode=0.5;},

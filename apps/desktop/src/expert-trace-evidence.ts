@@ -21,6 +21,7 @@ export function expertTraceChecks(entries:readonly unknown[],scope:{sessionId:st
   const marker=raw.findLastIndex(entry=>entry.type==='custom'&&entry.customType==='friend-pi.input.v1'&&record(entry.data).runId===scope.runId);
   const sourceUser=raw.findIndex(entry=>entry.type==='message'&&record(entry.message).role==='user'&&sources.some(source=>source.entryId===entry.id));
   const start=marker>=0?raw.findIndex(entry=>entry.id===record(raw[marker].data).entryId):sourceUser;
+  if(marker>=0&&(start<0||raw[start].type!=='message'||record(raw[start].message).role!=='user'))return {records,invalidChecks:true,failedChecks:false};
   const next=marker>=0?raw.findIndex((entry,index)=>index>marker&&entry.type==='custom'&&entry.customType==='friend-pi.input.v1'&&record(entry.data).runId!==scope.runId):-1;
   for(const [toolIndex,entry] of raw.entries()) {
     const message=record(entry.message);
