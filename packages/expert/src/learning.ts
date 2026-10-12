@@ -61,7 +61,7 @@ export class ExpertLearningService {
   const stable=this.skills.stableOf(h,ctx),base=stable?this.skills.version(id,stable.version,ctx):this.skills.version(`seed.scenario.${scenario}`,1,ctx);
   if(base.scenario!==scenario||this.skills.statusForVersion(base,ctx)!=='validated')error('CAPABILITY_UNAVAILABLE','没有同场景已验收稳定基线，保留试用');
   const baseline={id:base.id,version:base.version,hash:base.contentHash};if(raw.baseline!==undefined&&digest(raw.baseline)!==digest(baseline))error('VERSION_CONFLICT','基线由当前稳定方法或已验收场景模板固定');
-  const snapshot=model(ctx),tools=strings(raw.tools??ctx.policy?.tools??ctx.availableTools??[],'工具快照'),host=this.host(ctx);if(!host)error('CAPABILITY_UNAVAILABLE','缺少可信 Pi SDK 评测宿主，保留试用');
+  const snapshot=model(ctx),parentTools=ctx.policy?.tools??ctx.availableTools??[],tools=strings(raw.tools??parentTools.filter(tool=>tool==='read'||tool==='write'),'工具快照').filter(tool=>!candidate.restrictions?.tools||candidate.restrictions.tools.includes(tool)).filter(tool=>!base.restrictions?.tools||base.restrictions.tools.includes(tool)),host=this.host(ctx);if(!host)error('CAPABILITY_UNAVAILABLE','缺少可信 Pi SDK 评测宿主，保留试用');
   const suite=await host.catalog({scenario,baseline,candidate:{id,version:candidate.version,hash:candidate.contentHash},modelId:snapshot.modelId,thinkingLevel:snapshot.thinkingLevel,tools});
   if(!suite)error('CAPABILITY_UNAVAILABLE','没有匹配的宿主场景/检查器，保留试用');
   if(suite.v!==1||suite.scenario!==scenario||!suite.suiteId||[suite.suiteHash,suite.environmentHash,suite.checkerHash,suite.promptHash,suite.roleHash,suite.materialsHash].some(hash=>!/^[a-f0-9]{64}$/.test(hash)))error('VALIDATION_ERROR','宿主评测快照无效');
