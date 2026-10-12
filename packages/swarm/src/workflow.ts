@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { ConflictError, RecordStore, digest, object, text, type JsonObject, type PluginContext } from '@friend-pi/core';
 import { workflowCodeDigest } from './workflow-code.js';
+import { graphReachability } from './reachability.js';
 
 export type WorkflowValue=null|boolean|number|string|WorkflowValue[]|{[key:string]:WorkflowValue};
 export type WorkflowPredicate={taskId:string;path?:string[];op:'eq'|'ne'|'exists';value?:WorkflowValue}|{all:WorkflowPredicate[]}|{any:WorkflowPredicate[]}|{not:WorkflowPredicate};
@@ -73,8 +74,8 @@ export function validateWorkflowDefinition(value:unknown):WorkflowDefinition {
   const visiting=new Set<string>(),visited=new Set<string>();
   function visit(node:WorkflowNode):void {if(visiting.has(node.id))throw new Error('流程依赖存在循环');if(visited.has(node.id))return;visiting.add(node.id);for(const dep of node.dependencies){const target=byId.get(dep);if(!target)throw new Error(`流程依赖 ${dep} 不存在`);visit(target);}visiting.delete(node.id);visited.add(node.id);}
   nodes.forEach(visit);
-  function ancestors(node:WorkflowNode):Set<string>{const result=new Set<string>();for(const dep of node.dependencies){result.add(dep);for(const inherited of ancestors(byId.get(dep)!))result.add(inherited);}return result;}
-  for(const node of nodes){const available=ancestors(node);if(node.when&&predicateSources(node.when).some(source=>!available.has(source)))throw new Error('分支条件必须引用本节点的前置成果');if(node.retryWhen&&predicateSources(node.retryWhen).some(source=>source!==node.id&&!available.has(source)))throw new Error('重试条件必须引用当前节点或前置成果');}
+  const reachability=graphReachability(nodes);
+  for(const node of nodes){if(!node.when&&!node.retryWhen)continue;const available=reachability.ancestors(node.id);if(node.when&&predicateSources(node.when).some(source=>!available.has(source)))throw new Error('分支条件必须引用本节点的前置成果');if(node.retryWhen&&predicateSources(node.retryWhen).some(source=>source!==node.id&&!available.has(source)))throw new Error('重试条件必须引用当前节点或前置成果');}
   const definition:WorkflowDefinition={v:1,title:text(raw.title,'流程名称',200),goal:text(raw.goal,'流程目标',100000),nodes,parameters:plain(raw.parameters??{}),maxWorkers:integer(raw.maxWorkers,4,1,16,'流程并发')};
   if(JSON.stringify(definition).length>512000)throw new Error('流程定义超过 512 KB');return definition;
 }

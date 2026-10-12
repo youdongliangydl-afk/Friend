@@ -5,6 +5,7 @@ import {SourcePolicy,CapabilityError,digest,RecordStore,type PluginContext} from
 import {contains} from './guard.js';
 import {schemaErrors} from './verification.js';
 import type {ArtifactVersion,Graph,Attempt} from './types.js';
+import {graphReachability} from './reachability.js';
 export const fileDigest=(path:string):string=>{if(!existsSync(path))return 'missing';if(lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())throw new CapabilityError('VALIDATION_ERROR','产物必须为普通文件');return createHash('sha256').update(readFileSync(path)).digest('hex');};
 function walk(root:string,excluded?:string,stagingRoots:string[]=[]):string[]{
   root=realpathSync(root);const data=excluded?(existsSync(excluded)?realpathSync(excluded):resolve(excluded)):undefined,out:string[]=[];
@@ -34,7 +35,7 @@ export class Artifacts {
   private active(graph:Graph):ArtifactVersion[]{return this.latest(graph.id).filter(a=>graph.tasks.some(t=>t.currentAttempt===a.attemptId));}
   private targets(graph:Graph,artifacts=this.active(graph)):ArtifactVersion[]{
     const tasks=new Map(graph.tasks.map(task=>[task.id,task])),order=new Map<string,number>(),visit=(id:string)=>{if(order.has(id))return;for(const dependency of tasks.get(id)?.dependencies||[])visit(dependency);order.set(id,order.size);};for(const task of graph.tasks)visit(task.id);
-    const depends=(taskId:string,dependencyId:string):boolean=>(tasks.get(taskId)?.dependencies||[]).some(id=>id===dependencyId||depends(id,dependencyId));
+    const {depends}=graphReachability(graph.tasks);
     const selected=new Map<string,ArtifactVersion>();for(const artifact of artifacts.filter(a=>a.target&&a.stagingPath).sort((a,b)=>order.get(a.taskId)!-order.get(b.taskId)!||a.artifactId.localeCompare(b.artifactId))){const key=resolve(graph.projectDir,artifact.target!),prior=selected.get(key);if(!prior){selected.set(key,artifact);continue;}
       const priorWrites=tasks.get(prior.taskId)?.mode==='write',writes=tasks.get(artifact.taskId)?.mode==='write';if(priorWrites&&!writes)continue;
       if(priorWrites&&writes&&prior.taskId!==artifact.taskId&&!depends(artifact.taskId,prior.taskId))throw new CapabilityError('VERSION_CONFLICT','同一目标有无依赖顺序的多个写入成果');

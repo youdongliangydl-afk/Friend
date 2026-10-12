@@ -23,6 +23,7 @@ import {declarativeCheck,failureFingerprint} from './verification.js';
 import type {BudgetSnapshot,VerificationRecord,ArtifactVersion} from './types.js';
 import {projectSwarmToolResult} from './tool-result.js';
 import {nativeCheckType,memberNativeInput,readMemberChecks,trialAdoptions} from './member-checks.js';
+import {graphReachability} from './reachability.js';
 export {DynamicWorkflowController} from './workflow.js';
 export type * from './types.js';
 
@@ -83,6 +84,13 @@ export function validateDAG(tasks:Task[]): void {
     visiting.add(id);for (const dep of task.dependencies) visit(dep);visiting.delete(id);visited.add(id);
   }
   for (const task of tasks) visit(task.id);
+}
+export function validateWriteRanges(tasks:Task[]):void {
+  const {depends}=graphReachability(tasks),writers=tasks.filter(task=>task.mode==='write');
+  for(let i=0;i<writers.length;i++)for(let j=i+1;j<writers.length;j++){
+    const a=writers[i],b=writers[j];
+    if(!depends(a.id,b.id)&&!depends(b.id,a.id)&&a.writeScopes.some(x=>b.writeScopes.some(y=>contains(resolve('/scope',x),resolve('/scope',y))||contains(resolve('/scope',y),resolve('/scope',x)))))throw new CapabilityError('VALIDATION_ERROR','并行写任务范围重叠，请声明依赖或缩小范围');
+  }
 }
 function checkSpecs(input:unknown): Check[] {
   if (input === undefined) return [];
@@ -476,7 +484,7 @@ export class SwarmController implements PluginController {
     }
     if (!Array.isArray(raw) || raw.length<1 || raw.length>64) throw new Error('任务数必须在 1–64 之间');
     if(newSchema&&raw.some(item=>!['read','write'].includes(String(object(item).mode))))throw new CapabilityError('VALIDATION_ERROR','必须明确每个任务mode');
-    const tasks=raw.map(taskSpec);validateDAG(tasks);if(newSchema){const depends=(task:Task,id:string):boolean=>task.dependencies.some(dep=>dep===id||depends(tasks.find(t=>t.id===dep)!,id));for(let i=0;i<tasks.length;i++)for(let j=i+1;j<tasks.length;j++){const a=tasks[i],b=tasks[j];if(a.mode==='write'&&b.mode==='write'&&!depends(a,b.id)&&!depends(b,a.id)&&a.writeScopes.some(x=>b.writeScopes.some(y=>contains(resolve('/scope',x),resolve('/scope',y))||contains(resolve('/scope',y),resolve('/scope',x)))))throw new CapabilityError('VALIDATION_ERROR','并行写任务范围重叠，请声明依赖或缩小范围');}}
+    const tasks=raw.map(taskSpec);validateDAG(tasks);if(newSchema)validateWriteRanges(tasks);
     for(const task of tasks){boundTaskPolicy(task,ctx);validateTaskModel(task,ctx,ctx.modelId,ctx.thinkingLevel);}
     let checks=checkSpecs(input.checks);
     const executionStyle=input.executionStyle===undefined?'swarm':input.executionStyle;if(executionStyle!=='team'&&executionStyle!=='swarm')throw new Error('未知协作方式');
