@@ -854,7 +854,8 @@ test('custom instructions reach final provider payload with full defaults, overr
   assert.equal(tagged[0][1],expected,'the current block contains the complete effective body without appending defaults');
   assert.equal(note.split(expected).length-1,1,'the complete effective body appears exactly once in the request reminder');
   assert.equal(prompt.split(expected).length-1,1,'the complete effective body appears exactly once in the system prompt');
-  if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');}
+  if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');assert.doesNotMatch(note,/默认答复格式检查|仅演示缩进的两级正例/,'custom requests contain no default-only formatting reminder');}
+  else {assert.ok(note.includes('- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。'));assert.match(note,/允许第三级，并在第三级封顶/);assert.match(note,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);}
   for(const old of [alpha,beta,persisted])if(old!==expected){assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');assert.ok(!prompt.includes(old),'system prompt cannot resurrect an old instruction body');}
  };
  const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});

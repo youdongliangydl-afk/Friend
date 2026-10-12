@@ -71,6 +71,11 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.equal(fresh.length,native.length+1);assert.match(fresh.at(-1).content,/版本 0/);
     assert.equal(fresh.at(-1).content.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
     assert.match(fresh.at(-1).content,/默认答复格式检查：先给核心结论，树状结构最多三级/);
+    const example='- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。';
+    assert.ok(fresh.at(-1).content.includes(example));
+    assert.match(fresh.at(-1).content,/核心结论和各主题直接作为一级条目/);
+    assert.match(fresh.at(-1).content,/允许第三级，并在第三级封顶/);
+    assert.match(fresh.at(-1).content,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);
     saveCustomInstructions(dir,{text:'ACTIVE_ONLY_111',revision:0});handlers.before_agent_start({systemPrompt:'host rules'});
     saveCustomInstructions(dir,{text:'CHANGED_ONLY_222',revision:1});
     const request=handlers.context_with_system({messages:native}).messages;
@@ -78,7 +83,7 @@ test('request-only reminder freezes one execution and never mutates native messa
     const note=request.at(-1);assert.equal(note.role,'custom');assert.equal(note.display,false);
     assert.match(note.content,/对本次答复生效；不新增工作任务/);assert.match(note.content,/版本 1/);assert.doesNotMatch(note.content,/版本 2/);
     assert.match(note.content,/本次生效的用户指令正文：\nACTIVE_ONLY_111/);assert.doesNotMatch(note.content,/CHANGED_ONLY_222/);assert.ok(!note.content.includes(DEFAULT_CUSTOM_INSTRUCTIONS));
-    assert.doesNotMatch(note.content,/默认答复格式检查|不要建立第四层/,'custom content also replaces the default-only format check');
+    assert.doesNotMatch(note.content,/默认答复格式检查|第四层|盆栽/,'custom content also replaces the default-only format check and example');
     assert.equal(handlers.context_with_system({messages:native}).messages.length,native.length+1,'each request adds one reminder without accumulating it');
     handlers.before_agent_start({systemPrompt:'host rules'});
     assert.match(handlers.context_with_system({messages:native}).messages.at(-1).content,/本次生效的用户指令正文：\nCHANGED_ONLY_222/);
@@ -87,6 +92,7 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.match(cleared,/已清空（版本 3）/);assert.match(cleared,/恢复 Friend 默认指令/);assert.doesNotMatch(cleared,/ACTIVE_ONLY_111|CHANGED_ONLY_222/);
     assert.equal(cleared.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
     assert.match(cleared,/默认答复格式检查：先给核心结论，树状结构最多三级/);
+    assert.ok(cleared.includes(example));assert.match(cleared,/继续遵守宿主规则、工具和结构化协议/);
     assert.match(cleared,/回复前检查并删除这类历史标记/);assert.match(cleared,/本轮用户的明确要求优先/);
     assert.equal(JSON.stringify(native),unchanged,'request-only settings preserve messages and tool-call/result correlation');
   } finally {rmSync(dir,{recursive:true,force:true});}
