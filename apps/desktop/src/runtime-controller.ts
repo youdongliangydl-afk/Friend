@@ -137,7 +137,7 @@ export class RuntimeController {
      if(current.tokenBudget!==undefined&&(!current.usageAvailable||current.tokens>=current.tokenBudget))return;
      if(current.status==='waiting')this.goals.update({progress:current.progress,nextAction:current.nextAction},native);
      const version=digest({integration:graph.integration,tasks:tasks.map(task=>[task.id,task.currentAttempt,task.resultRevision])});
-     this.enqueue(`swarm:${current.id}:${id}:${generation}:${version}`,`Swarm 任务图 ${id} 已通过检查与独立复核并整合。请用 friend_swarm snapshot 读取实际成果，继续目标的验证与收尾；不要重放已完成成员。`,{generation,runId:current.sourceRunId,goalId:current.id});
+     this.enqueue(`swarm:${current.id}:${id}:${generation}:${version}`,`Swarm 任务图 ${id} 已整合。请用 friend_swarm snapshot 读取实际成果及合同要求的检查、复核记录，继续目标的验证与收尾；不要重放已完成成员，不把未要求或未执行的检查、复核当作通过。`,{generation,runId:current.sourceRunId,goalId:current.id});
     });
    }
   }
