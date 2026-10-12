@@ -94,6 +94,11 @@ function projectConstraintFacts(item:HistoryItem,sessionId:string):ProjectConstr
 function sameEntryOverlap(a:SourceRef,b:SourceRef):boolean {
   return a.sessionId===b.sessionId&&a.entryId===b.entryId&&(a.end??Infinity)>(b.start??0)&&(b.end??Infinity)>(a.start??0);
 }
+function sameNativeCorrectedFact(active:MemoryRecord,proposed:MemoryRecord):boolean {
+  if(active.id===proposed.id||!active.enabled||active.status!=='active'||active.conflictIds?.length||active.confirmedBy!=='user'||active.kind!=='fact'||proposed.kind!=='fact'||active.projectId!==proposed.projectId||active.scope!==proposed.scope||!active.subject||active.subject!==proposed.subject||active.content!==proposed.content||!proposed.sources.length||active.sources.length!==proposed.sources.length)return false;
+  const corrected=new Set((active.evidence||[]).flatMap(e=>e.kind==='pi'&&e.relation==='corrects'&&e.sourceRole==='user'&&e.visibility==='native-text'?[preciseKey(e.source)]:[]));
+  return proposed.sources.every(source=>source.hash&&Number.isInteger(source.start)&&Number.isInteger(source.end)&&corrected.has(preciseKey(source))&&active.sources.some(ref=>preciseKey(ref)===preciseKey(source)))&&!(proposed.evidence||[]).some(e=>e.kind!=='pi'||e.relation==='contradicts'||!corrected.has(preciseKey(e.source)));
+}
 function userEvidenceContext(item:HistoryItem,source:SourceRef):string {
   const typed=typedUserText(item);if(typed===undefined)return '';
   const before=typed.slice(0,source.start??0);const boundary=Math.max(...['。','！','？','!','?',';','；','\n'].map(mark=>before.lastIndexOf(mark)))+1;
@@ -853,7 +858,9 @@ export class MemoryController implements PluginController {
       const grouped=new Map<string,string[]>();for(const id of [...new Set([...publishIds,...job.memoryIds.filter(id=>!job.proposalLedger?.some(proposal=>proposal.memoryId===id))])]){const key=job.proposalLedger?.find(proposal=>proposal.memoryId===id)?.groupId||id;grouped.set(key,[...grouped.get(key)||[],id]);}
       for(const [groupId,ids] of grouped){const before=structuredClone(job);try{this.store!.transaction(()=>{ensure();for(const id of ids){let record=this.get(id,ctx);if(record.kind==='method'||record.status!=='candidate'&&!job.proposalLedger?.some(proposal=>proposal.memoryId===record.id&&proposal.state==='validated'))continue;
         const proposal=job.proposalLedger?.find(proposal=>proposal.memoryId===record.id&&proposal.state==='validated');const correctionIds=proposal?.supersedes?.map(item=>item.id)||[];
-        const conflicts=this.records(ctx).filter(active=>!correctionIds.includes(active.id)&&active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
+        // A generated variant of the same native correction is not a new conflicting observation.
+        const canonicalCorrection=this.records(ctx).find(active=>sameNativeCorrectedFact(active,record));
+        const conflicts=canonicalCorrection?[]:this.records(ctx).filter(active=>!correctionIds.includes(active.id)&&active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
         const supporting=record.evidence?.length?record.evidence.filter(e=>e.kind==='pi'&&e.relation!=='contradicts').map(e=>(e as Extract<MemoryEvidence,{kind:'pi'}>).source):record.sources;const sourced=supporting.map(source=>({source,item:ctx.readSource(source)}));const userSources=sourced.filter(({item,source})=>{const typed=typedUserText(item);return item.role==='user'&&typed!==undefined&&(source.end??item.text.length)<=typed.length&&!taskOrQuotedCue.test(userEvidenceContext(item,source))&&!/(?:不要|别|不用|不必).{0,8}(?:记住|保存|学习)|do not remember|don't remember/iu.test(typed);});
         const artifactOriginals=(record.evidence||[]).flatMap(e=>{
           if(e.kind!=='artifact'||e.relation==='contradicts'||e.observer.kind==='parser'||!e.visibleRanges?.length||!this.artifactEvidenceAvailable(e,ctx))return [];
@@ -873,10 +880,10 @@ export class MemoryController implements PluginController {
         const preferenceSupported=record.kind!=='preference'||userSources.some(({item,source})=>explicitPreferenceSource(item,source));
         const artifactSupported=record.kind!=='preference'&&artifactOriginals.length>0;
         const authoritative=preferenceSupported&&literalsSupported&&factSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text)));
-        if(proposal?.supersedes?.length&&(!authoritative||conflicts.length))throw new CapabilityError('VALIDATION_ERROR','更正尚未通过发布权威性或冲突检查');
+        if(proposal?.supersedes?.length&&(!authoritative||conflicts.length||canonicalCorrection))throw new CapabilityError('VALIDATION_ERROR','更正尚未通过发布权威性或冲突检查');
         if(authoritative&&conflicts.length)for(const conflict of conflicts)this.write({...conflict,revision:conflict.revision+1,conflictIds:[...new Set([...conflict.conflictIds||[],record.id])],updatedAt:now()},ctx,conflict.revision);
-        const status=authoritative&&!conflicts.length?'active':'candidate';
-        const held=conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
+        const status=authoritative&&!conflicts.length&&!canonicalCorrection?'active':'candidate';
+        const held=canonicalCorrection?'同一用户更正已生效；派生提案的适用条件不同，保留候选待核验':conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
         record=this.write({...record,revision:record.revision+1,status,confidence:status==='active'?'supported':'ambiguous',confirmedAt:status==='active'?now():undefined,confirmedBy:status==='active'?'system':undefined,conflictIds:conflicts.map(item=>item.id),invalidatedReason:held,updatedAt:now()},ctx,record.revision);
         if(proposal){proposal.state=record.status==='active'?'published':'candidate';proposal.reason=held;}
       }
