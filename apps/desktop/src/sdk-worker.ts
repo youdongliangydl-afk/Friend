@@ -14,7 +14,7 @@ import { SourcePolicy,isDerivedCapabilityInput,modelTokenUsage,type ArtifactRef,
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
 import {PlanStore} from './plan-store.js';
-import {expertTraceSources} from './expert-trace-evidence.js';
+import {expertTraceSources,expertTraceChecks} from './expert-trace-evidence.js';
 import {MessageQueue,type InputPayload,type QueuedInput} from './message-queue.js';
 import {TODO_TYPE,SIDECHAT_TYPE,todoItems,projectTodo,ownedEntries,stableForkLeaf} from './task-todo.js';
 import {providerSystems,projectMessages,projectTeammateMessages,projectTraceSystems,traceJSON} from './message-projection.js';
@@ -228,15 +228,22 @@ async function enqueueExpertTrace(){
  const branch=session.sessionManager.getBranch(),start=branch.findLastIndex(entry=>entry.type==='custom'&&entry.customType==='friend-pi.input.v1'&&object(entry.data).runId===observedRunId),marker=start>=0?object(object(branch[start]).data):{},sourceStart=typeof marker.entryId==='string'?branch.findIndex(entry=>entry.id===marker.entryId):branch.findLastIndex(entry=>entry.type==='message'&&entry.message.role==='user');
  const items=historyItems(branch.slice(Math.max(0,sourceStart))).filter(item=>['user','toolResult'].includes(item.role||'')&&!isDerivedCapabilityInput(item));
  const snapshot=services.snapshot(),tasks=snapshot.tasks.filter(task=>task.runId===observedRunId||snapshot.goal?.sourceRunId===observedRunId&&task.goalId===snapshot.goal?.id),checks=tasks.flatMap(task=>task.checkRefs||[]);
- const lastAssistant=session.messages.findLast(message=>message.role==='assistant'),incomplete=cancelRequested||lastAssistant?.stopReason==='aborted'||lastAssistant?.stopReason==='error'||['stopped','interrupted','paused'].includes(lifecycleStatus);
- const status=incomplete?undefined:tasks.some(task=>['repair','blocked'].includes(task.status))?'failed':lifecycleStatus==='completed'?'completed':lifecycleStatus==='failed'?'failed':undefined;
- const outcome=incomplete?(cancelRequested||lastAssistant?.stopReason==='aborted'?'cancelled':'unknown'):status;
- if(outcome)try{await requestPlugin(bus,'expert','trial.observe',{runId:observedRunId,checks,outcome,key:`settled:${observedRunId}:${digest([outcome,checks])}`},3000);}catch(error){if(!disposed)publish('notice',{level:'warning',message:'专家试用等待核对：'+publicError(error)});}
- if(!status||disposed||runId!==observedRunId||session.sessionId!==observedSessionId)return;
+ const lastAssistant=session.messages.findLast(message=>message.role==='assistant'),unknownTask=tasks.some(task=>task.status==='unknown'),stoppedTask=tasks.some(task=>task.status==='stopped'),unsettledTask=tasks.some(task=>!['completed','repair','blocked'].includes(task.status)),incomplete=cancelRequested||unsettledTask||lastAssistant?.stopReason==='aborted'||lastAssistant?.stopReason==='error'||['stopped','interrupted','paused'].includes(lifecycleStatus);
+ let status=incomplete?undefined:tasks.some(task=>['repair','blocked'].includes(task.status))?'failed':lifecycleStatus==='completed'?'completed':lifecycleStatus==='failed'?'failed':undefined;
+ let outcome=incomplete?(unknownTask?'unknown':stoppedTask||cancelRequested||lastAssistant?.stopReason==='aborted'?'cancelled':'unknown'):status;
  const unverifiedUserEntries=new Set(branch.flatMap(entry=>entry.type==='custom'&&entry.customType==='friend-pi.attachments.v1'&&object(entry.data).stage==='unverified'&&typeof object(entry.data).entryId==='string'?[String(object(entry.data).entryId)]:[]));
- let sources:ReturnType<typeof expertTraceSources>;try{sources=expertTraceSources(items,session.sessionId,unverifiedUserEntries);}catch(error){publish('notice',{level:'warning',message:'专家学习未入队：'+publicError(error)});return;}
+ let sources:ReturnType<typeof expertTraceSources>=[];
+ try{
+  sources=expertTraceSources(items,session.sessionId,unverifiedUserEntries);
+  const native=expertTraceChecks(branch,{sessionId:observedSessionId,projectId:projectIdentity(cwd),runId:observedRunId,sources}),policy=new SourcePolicy(artifactStore);
+  for(const record of native.records){for(const source of record.sources)policy.assertSource(source);policy.registerCheck(record);if(!checks.some(check=>digest(check)===digest(record.ref)))checks.push(record.ref);}
+  if(native.invalidChecks){status=undefined;if(!incomplete)outcome='unknown';publish('notice',{level:'warning',message:'专家学习等待核实原生检查收据；未把工具输出视为检查通过。'});}
+  else if(native.failedChecks&&!incomplete){status='failed';outcome='failed';}
+ }catch(error){status=undefined;if(!incomplete)outcome='unknown';publish('notice',{level:'warning',message:'专家学习未入队：'+publicError(error)});}
+ if(outcome)try{await requestPlugin(bus,'expert','trial.observe',{runId:observedRunId,checks,outcome,key:`settled:${observedRunId}:${digest([outcome,checks])}`},3000);}catch(error){if(!disposed)publish('notice',{level:'warning',message:'专家试用等待核对：'+publicError(error)});}
+ if(!status||disposed||stopping||cancelRequested||runId!==observedRunId||session.sessionId!==observedSessionId)return;
  const evidence:unknown[]=sources.map(source=>({kind:'pi',projectId:projectIdentity(cwd),source}));for(const check of checks)evidence.push({kind:'check',projectId:projectIdentity(cwd),check});
- const version=parseInt(digest([observedRunId,tasks.map(task=>[task.id,task.revision]),items.map(item=>[item.id,digest(item.text)])]).slice(0,10),16);
+ const version=parseInt(digest([observedRunId,tasks.map(task=>[task.id,task.revision]),items.map(item=>[item.id,digest(item.text)]),checks]).slice(0,10),16);
  try{await requestPlugin(bus,'expert','taskTraceReady',{runId:observedRunId,taskResultVersion:version,taskResult:{status,tasks:tasks.map(task=>({id:task.id,status:task.status,result:task.result,checkRefs:task.checkRefs})),goal:snapshot.goal?{id:snapshot.goal.id,status:snapshot.goal.status}:undefined},evidence},3000);}catch(error){if(!disposed)publish('notice',{level:'warning',message:'专家学习未入队：'+publicError(error)});}
 }
 async function ensureModelReady(){if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,session.model?`${session.model.provider}/${session.model.id}`:'');}
