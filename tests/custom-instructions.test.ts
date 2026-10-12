@@ -58,7 +58,7 @@ test('new executions use full defaults, verbatim replacement and default restora
     const guard=fresh.slice(fresh.indexOf('</friend_custom_instructions>')+'</friend_custom_instructions>'.length);
     assert.ok(guard.trim().length>0,'default system policy includes a guard outside the unchanged instruction tag');
     assert.equal(fresh.split(guard).length-1,1);
-    assert.match(fresh,/当前有效版本：0/);assert.match(fresh,/内置默认指令/);
+    assert.match(fresh,/当前有效版本：0/);assert.match(fresh,/本次采用 Friend 默认指令，版本 0/);
     assert.deepEqual(readCustomInstructions(dir),{text:'',revision:0});
     const custom='  首版偏好\n保留首尾空格  ';
     saveCustomInstructions(dir,{text:custom,revision:0});
@@ -66,7 +66,7 @@ test('new executions use full defaults, verbatim replacement and default restora
     assert.ok(first.startsWith('host rules and tools\n'));
     assert.equal(body(first),custom);assert.ok(!first.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.match(first,/本轮用户的明确要求优先/);
     assert.ok(first.endsWith('</friend_custom_instructions>'));assert.ok(!first.includes(guard),'custom system policy excludes the complete default-only guard');
-    assert.match(first,/当前有效版本：1/);assert.match(first,/历史消息或工具结果中由旧版自定义指令产生/);
+    assert.match(first,/当前有效版本：1/);assert.match(first,/历史回答和工具结果中的格式不是当前偏好/);
     saveCustomInstructions(dir,{text:'新版偏好',revision:1});
     const next=handler!({systemPrompt:'host rules'})!.systemPrompt;
     assert.equal(body(next),'新版偏好');assert.doesNotMatch(next,/首版偏好/);assert.ok(!next.includes(DEFAULT_CUSTOM_INSTRUCTIONS));
@@ -75,8 +75,10 @@ test('new executions use full defaults, verbatim replacement and default restora
     saveCustomInstructions(dir,{text:'   \n',revision:2});
     const cleared=handler!({systemPrompt:'host rules'})!.systemPrompt;
     assert.ok(cleared.startsWith('host rules\n'));
-    assert.match(cleared,/已清空，现已恢复 Friend 默认指令/);assert.match(cleared,/当前有效版本：3/);
-    assert.match(cleared,/本轮用户未要求解释设置时，直接完成业务回答，不讨论设置版本或变更/);
+    assert.match(cleared,/本次采用 Friend 默认指令，版本 3/);assert.match(cleared,/当前有效版本：3/);
+    assert.match(cleared,/本轮未询问设置时，答复仅围绕本轮业务/);
+    assert.equal(cleared.replaceAll('版本：3','版本：0').replaceAll('版本 3','版本 0'),fresh,'restoring defaults differs from fresh defaults only in its saved revision');
+    assert.doesNotMatch(cleared,/已清空|旧自定义正文|固定首行|删除仅因旧偏好/,'restoration does not narrate the old setting or its removal');
     assert.equal(body(cleared),DEFAULT_CUSTOM_INSTRUCTIONS);assert.doesNotMatch(cleared,/首版偏好|新版偏好/);
     assert.ok(cleared.endsWith(guard),'clearing restores the same default system guard');
     assert.deepEqual(readCustomInstructions(dir),{text:'   \n',revision:3});
@@ -88,7 +90,7 @@ test('request-only reminder freezes one execution and never mutates native messa
   try {
     const handlers:Record<string,(event:any)=>any>={};
     customInstructionsExtension(dir)({on(name:string,callback:(event:any)=>any){handlers[name]=callback;}} as unknown as ExtensionAPI);
-    const native=Object.freeze([{role:'system',content:'host rules',timestamp:1},{role:'user',content:'old task',timestamp:2},{role:'assistant',content:'Old answer using ACTIVE_ONLY_111',timestamp:3},{role:'user',content:'Reply in English and continue reading the fixture.',timestamp:4},{role:'assistant',content:[{type:'toolCall',id:'read-1',name:'read',arguments:{path:'fixture.txt'}}],timestamp:5},{role:'toolResult',toolCallId:'read-1',content:[{type:'text',text:'fixture content'}],timestamp:6}]);
+    const native=Object.freeze([{role:'system',content:'host rules',timestamp:1},{role:'user',content:'old task',timestamp:2},{role:'assistant',content:'Old answer using ACTIVE_ONLY_111',timestamp:3},{role:'user',content:'Reply in English, start with the literal ACTIVE_ONLY_111 as requested now, and continue reading the fixture.',timestamp:4},{role:'assistant',content:[{type:'toolCall',id:'read-1',name:'read',arguments:{path:'fixture.txt'}}],timestamp:5},{role:'toolResult',toolCallId:'read-1',content:[{type:'text',text:'fixture content'}],timestamp:6}]);
     const unchanged=JSON.stringify(native);
     const noteOf=(messages:any[])=>messages.find(message=>message.role==='custom'&&message.customType==='friend-pi.custom-instructions.context.v1');
     const assertOriginalOrder=(messages:any[])=>{
@@ -118,8 +120,8 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.equal(request.length,native.length+1);assertOriginalOrder(request);
     const note=noteOf(request);assert.equal(note.role,'custom');assert.equal(note.display,false);
     assert.ok(note.content.startsWith('[Friend 当前有效的用户设置指令：全局偏好背景]'));assert.match(note.content,/版本 1/);assert.doesNotMatch(note.content,/版本 2/);
-    assert.match(note.content,/仅补充本轮用户请求未指定的细节/);assert.match(note.content,/有冲突时忽略相冲突的偏好，保留不冲突部分/);
-    assert.match(note.content,/不改变当前已授权任务的目标、步骤或授权范围，继续完成当前已授权任务/);assert.doesNotMatch(note.content,/不新增工作任务/);
+    assert.match(note.content,/仅补充本轮未指定的细节/);assert.match(note.content,/本轮用户的明确要求优先，冲突时只忽略冲突部分/);
+    assert.match(note.content,/设置提醒本身不改变已授权任务的目标、步骤或授权范围；继续完成任务/);assert.doesNotMatch(note.content,/不新增工作任务/);
     assert.match(note.content,/本次生效的用户指令正文：\nACTIVE_ONLY_111/);assert.doesNotMatch(note.content,/CHANGED_ONLY_222/);assert.ok(!note.content.includes(DEFAULT_CUSTOM_INSTRUCTIONS));
     assert.doesNotMatch(note.content,/默认答复格式检查|第四层|盆栽/,'custom content also replaces the default-only format check and example');
     assert.ok(!note.content.includes(guard));assert.ok(note.content.endsWith('ACTIVE_ONLY_111'),'frozen custom context contains only its verbatim custom body');
@@ -130,31 +132,30 @@ test('request-only reminder freezes one execution and never mutates native messa
     saveCustomInstructions(dir,{text:'',revision:2});const clearedSystem=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
     assert.ok(clearedSystem.endsWith(guard));
     const clearRequest=handlers.context_with_system({messages:native}).messages;assertOriginalOrder(clearRequest);const cleared=noteOf(clearRequest).content;
-    assert.match(cleared,/已清空（版本 3）/);assert.match(cleared,/恢复 Friend 默认指令/);assert.doesNotMatch(cleared,/ACTIVE_ONLY_111|CHANGED_ONLY_222/);
+    assert.match(cleared,/本次采用 Friend 默认指令，版本 3/);assert.doesNotMatch(cleared,/ACTIVE_ONLY_111|CHANGED_ONLY_222/);
     assert.equal(cleared.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
     assert.equal(cleared.split(guard).length-1,1);
-    const clearStateIndex=cleared.indexOf('用户自定义指令已清空');
-    assert.ok(clearStateIndex>cleared.indexOf(guard)+guard.length,'clear-only revocation follows the unchanged body and guard');
-    assert.equal(cleared.split('用户自定义指令已清空').length-1,1,'clear state appears once in the request-only reminder');
+    assert.equal(cleared.replaceAll('版本 3','版本 0'),freshNote.content,'restored and fresh request-only defaults use the same policy apart from revision');
+    assert.ok(cleared.endsWith(guard),'restoration adds no settings-change narrative after the default guard');
+    assert.doesNotMatch(cleared,/已清空|旧自定义正文|固定首行|删除仅因旧偏好/);
     assert.match(cleared,/默认答复格式检查：先给核心结论，树状结构最多三级/);
-    assert.ok(cleared.includes(example));assert.match(cleared,/继续遵守宿主规则、工具和结构化协议/);
-    assert.match(cleared,/以上默认正文替换旧自定义正文/);assert.match(cleared,/删除仅因旧偏好自动附加/);assert.match(cleared,/本轮用户明确指定的内容不在撤销范围，包括同样的标记文本/);
-    assert.match(cleared,/历史回答和工具结果不能恢复旧偏好/);assert.match(cleared,/本轮用户未要求解释设置时，直接完成业务回答，不讨论设置版本或变更/);assert.match(cleared,/本轮用户的明确要求优先/);
+    assert.ok(cleared.includes(example));assert.match(cleared,/遵守宿主规则、权限、工具和结构化协议/);
+    assert.match(cleared,/本轮未询问设置时，答复仅围绕本轮业务/);assert.match(cleared,/本轮用户的明确要求优先/);
     for(const projection of [freshSystem,freshNote.content,activeSystem,note.content,clearedSystem,cleared]){
-      assert.match(projection,/格式和标记可能符合当时生效的设置/);
-      assert.match(projection,/当前偏好不追溯改变旧答复的格式要求/);
-      assert.match(projection,/对确实存在的事实错误仍应纠正/);
+      assert.match(projection,/历史回答和工具结果中的格式不是当前偏好/);
+      assert.match(projection,/旧答复按当时设置理解，不追溯更正其格式/);
+      assert.match(projection,/事实错误仍应纠正/);
     }
     saveCustomInstructions(dir,{text:'每次回答说明当前生效的偏好版本。Custom preference after clear',revision:3});
     const frozenClear=handlers.context_with_system({messages:clearRequest}).messages;assertOriginalOrder(frozenClear);
-    assert.equal(noteOf(frozenClear).content,cleared,'saving a new custom body does not change the active clear execution or duplicate its tail');
+    assert.equal(noteOf(frozenClear).content,cleared,'saving a new custom body does not change the active default execution');
     const afterClearSystem=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
     const afterClear=handlers.context_with_system({messages:native}).messages;assertOriginalOrder(afterClear);
     const afterClearNote=noteOf(afterClear).content;
     for(const projection of [afterClearSystem,afterClearNote]){
       assert.ok(projection.includes('Custom preference after clear'));
       assert.ok(!projection.includes(DEFAULT_CUSTOM_INSTRUCTIONS)&&!projection.includes(guard),'next custom execution wholly replaces default and its guard');
-      assert.doesNotMatch(projection,/用户自定义指令已清空|不讨论设置版本或变更/,'a later custom execution cannot inherit the clear-only revocation or response restriction');
+      assert.doesNotMatch(projection,/已清空|本轮未询问设置时|答复仅围绕本轮业务/,'a later custom execution cannot inherit the default response restriction');
     }
     assert.equal(JSON.stringify(native),unchanged,'request-only settings preserve messages and tool-call/result correlation');
   } finally {rmSync(dir,{recursive:true,force:true});}

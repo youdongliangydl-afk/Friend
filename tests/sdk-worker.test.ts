@@ -35,8 +35,12 @@ async function start(options:{directory?:string;sessionFile?:string;modelId?:str
 test('four public Pi extensions are loaded and GUI commands reach their controllers', {timeout:30000},async()=>{const fixture=await start();try{for(const plugin of ['swarm','expert','memory','topic-rebuild']){const state=await fixture.request('plugin',{plugin,action:'snapshot'}) as Record<string,unknown>;assert.equal(typeof state,'object');}await fixture.request('plugin',{plugin:'memory',action:'save',input:{title:'项目约束',content:'必须保留中文字段',scope:'project',explicitRemember:true}});const result=await fixture.request('plugin',{plugin:'memory',action:'search',input:{query:'中文字段'}}) as unknown;assert.ok(JSON.stringify(result).includes('必须保留中文字段'));}finally{await fixture.close();}});
 test('public native Swarm snapshot settles without a model run, native user or correction graph',{timeout:30000},async()=>{
  let f=await start();try{
-  const sent=await f.request('send',{text:'/swarm snapshot',mode:'swarm'}) as {runId:string};
-  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.lifecycleStatus==='completed'));
+  let sent!:{runId:string};
+  for(const text of ['/swarm snapshot','/swarm snapshot\n','/swarm snapshot\r\n','/swarm \tsnapshot \n']){
+   sent=await f.request('send',{text,mode:'swarm'}) as {runId:string};
+   await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.lifecycleStatus==='completed'));
+   assert.equal(f.events.some(e=>e.event?.type==='notice'&&String(e.event.data.message).includes('任务图标识无效')),false);
+  }
   const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;runId:string};
   assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');assert.equal(state.runId,sent.runId);
   assert.equal(f.events.some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
@@ -927,13 +931,12 @@ test('custom instructions reach final provider payload before business user with
   assert.equal(prompt.split(expected).length-1,1,'the complete effective body appears exactly once in the system prompt');
   if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');assert.doesNotMatch(note,/默认答复格式检查|仅演示缩进的两级正例/,'custom requests contain no default-only formatting reminder');}
   else {assert.ok(note.includes('- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。'));assert.match(note,/允许第三级，并在第三级封顶/);assert.match(note,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);}
-  for(const projection of [prompt,note])assert.match(projection,/当前偏好不追溯改变旧答复的格式要求/);
-  if(expected===DEFAULT_CUSTOM_INSTRUCTIONS&&revision>0){
-   const clearIndex=note.indexOf('用户自定义指令已清空');
-   assert.ok(clearIndex>note.indexOf('继续遵守宿主规则、工具和结构化协议。'),'cleared settings revoke old automatic formats after the full default and guard');
-   assert.equal(note.split('用户自定义指令已清空').length-1,1);
-   assert.match(note.slice(clearIndex),/删除仅因旧偏好自动附加/);assert.match(note.slice(clearIndex),/不讨论设置版本或变更/);
-  }else assert.doesNotMatch(note,/用户自定义指令已清空|不讨论设置版本或变更/,'fresh or custom executions do not inherit a clear-only reminder or response restriction');
+  for(const projection of [prompt,note]){
+   assert.match(projection,/旧答复按当时设置理解，不追溯更正其格式/);
+   assert.doesNotMatch(projection,/用户自定义指令已清空|删除仅因旧偏好自动附加/,'settings describe the current effective body without narrating removal of earlier formats');
+  }
+  if(expected===DEFAULT_CUSTOM_INSTRUCTIONS)assert.match(note,new RegExp(`本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`));
+  else assert.doesNotMatch(note,/本轮未询问设置时|答复仅围绕本轮业务/,'custom content also replaces the default response restriction');
   for(const old of [alpha,beta,persisted])if(old!==expected){assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');assert.ok(!prompt.includes(old),'system prompt cannot resurrect an old instruction body');}
  };
  const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});
@@ -950,7 +953,7 @@ test('custom instructions reach final provider payload before business user with
   assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:0});
   const defaults=await round('CUSTOM_EMPTY_ROUND');assert.ok(defaults.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'fresh raw empty settings use the complete default body');
   save(alpha);const first=await round('CUSTOM_ADD_ROUND',alpha);assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
-  assert.ok(first.includes('本轮用户的明确要求优先于这些偏好'));
+  assert.ok(first.includes('本轮用户的明确要求优先，冲突时只忽略冲突部分'));
   for(const tool of toolCalls)writeFileSync(join(f.directory,tool.path),tool.result);
   const frozenRevision=readCustomInstructions(f.dataDir).revision,beforeFrozen=payloads.length,beforeFrozenEvents=f.events.length;
   await f.request('send',{text:frozenTask,mode:'single',planMode:false});await f.wait(()=>frozenStarted);

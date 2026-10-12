@@ -325,7 +325,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
     async execute(_id,params,_signal,_update,ctx) { const result = await call(params.action,params.input || {},ctx); const content=options.projectToolResult?options.projectToolResult(params.action,result):result; return {content:[{type:'text',text:JSON.stringify(content)}],details:result}; },
   });
   pi.registerCommand(name,{description,handler:async(args,ctx) => {
-    const space = args.indexOf(' '); const action = args ? (space < 0 ? args : args.slice(0,space)) : 'snapshot'; const rest = space < 0 ? '' : args.slice(space+1);
+    const parts = args.match(/^\s*(\S+)(?:\s([\s\S]*))?$/); const action = parts?.[1] || 'snapshot'; const rest = parts?.[2] || '';
     const input = rest.trim().startsWith('{') ? object(JSON.parse(rest)) : rest ? {text:rest} : {};
     const result = await call(action,input,ctx,'user'); const notice=commandNotice(name,action,result);ctx.ui.notify(notice.message,notice.level);
   }});
