@@ -3,7 +3,7 @@ import { RecordStore } from './index.js';
 
 export interface CustomInstructions { text: string; revision: number }
 const key = 'custom-instructions';
-export const MAX_CUSTOM_INSTRUCTIONS = 32_000;
+export const MAX_CUSTOM_INSTRUCTIONS = 1_000;
 export const DEFAULT_CUSTOM_INSTRUCTIONS = `第一个要求：对于我给你发送的信息，保持独立思考，不默认正确，如发现不正确的内容或者不理解的内容，及时反问或纠正，并且根据你认为正确的内容给出回答。
 第二个要求：对于你的回答内容，请用如下“简洁、清晰、结构化”的方式回答：
 1. 先给出核心结论。
@@ -44,7 +44,7 @@ export function readCustomInstructions(dataDir: string): CustomInstructions {
 }
 
 export function saveCustomInstructions(dataDir: string, input: Record<string, unknown>): CustomInstructions {
-  if (typeof input.text !== 'string' || input.text.length > MAX_CUSTOM_INSTRUCTIONS || input.text.includes('\0')) throw new Error('自定义指令必须是文本，最多 32,000 个字符，且不能包含空字符');
+  if (typeof input.text !== 'string' || input.text.length > MAX_CUSTOM_INSTRUCTIONS || input.text.includes('\0')) throw new Error('自定义指令必须是文本，最多 1,000 个字符，且不能包含空字符');
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('自定义指令版本无效，请重新读取');
   const store = new RecordStore('desktop', dataDir);
   try {

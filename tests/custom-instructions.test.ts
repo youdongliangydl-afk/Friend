@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,DEFAULT_CUSTOM_INSTRUCTIONS} from '../packages/core/src/custom-instructions.js';
+import {RecordStore} from '../packages/core/src/index.js';
 
 test('built-in default instructions preserve the complete approved text',()=>{
   assert.equal(DEFAULT_CUSTOM_INSTRUCTIONS.length,519);
@@ -26,6 +27,23 @@ test('global instructions persist verbatim, reject stale writers and clear witho
     assert.equal(readCustomInstructions(dir).text,text,'invalid updates preserve the last saved value');
     assert.deepEqual(saveCustomInstructions(dir,{text:'',revision:1}),{text:'',revision:2});
     assert.throws(()=>saveCustomInstructions(dir,{text:'stale resurrection',revision:1}),/其他窗口更新/);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('the 1,000 character limit accepts its boundary and preserves legacy text until explicitly shortened',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-instructions-limit-'));
+  try {
+    assert.equal(MAX_CUSTOM_INSTRUCTIONS,1000);
+    const boundary='中'.repeat(1000);
+    assert.deepEqual(saveCustomInstructions(dir,{text:boundary,revision:0}),{text:boundary,revision:1});
+    assert.throws(()=>saveCustomInstructions(dir,{text:boundary+'文',revision:1}),/最多 1,000 个字符/);
+    assert.deepEqual(readCustomInstructions(dir),{text:boundary,revision:1});
+    const store=new RecordStore('desktop',dir),legacy='既有'.repeat(600);
+    const row=store.put('custom-instructions',{text:legacy},1);store.close();
+    assert.deepEqual(readCustomInstructions(dir),{text:legacy,revision:row.revision},'reading does not silently truncate existing instructions');
+    assert.throws(()=>saveCustomInstructions(dir,{text:legacy,revision:row.revision}),/最多 1,000 个字符/);
+    assert.deepEqual(readCustomInstructions(dir),{text:legacy,revision:row.revision});
+    assert.deepEqual(saveCustomInstructions(dir,{text:'主动缩短后的偏好',revision:row.revision}),{text:'主动缩短后的偏好',revision:row.revision+1});
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 

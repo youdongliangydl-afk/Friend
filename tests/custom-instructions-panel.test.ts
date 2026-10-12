@@ -21,6 +21,7 @@ function fixture() {
   const same=(before:unknown[]|undefined,after:unknown[]|undefined)=>!!before&&!!after&&before.length===after.length&&before.every((value,index)=>Object.is(value,after[index]));
   const hooks={
     useState(initial:any){const index=cursor++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return [slots[index],(value:any)=>{slots[index]=typeof value==='function'?value(slots[index]):value;}];},
+    useRef(initial:unknown){const index=cursor++;if(!(index in slots))slots[index]={current:initial};return slots[index];},
     useEffect(callback:()=>void|(()=>void),deps?:unknown[]){const index=cursor++,previous=slots[index];if(previous&&same(previous.deps,deps))return;const slot={deps,cleanup:previous?.cleanup};slots[index]=slot;effects.push(()=>{slot.cleanup?.();slot.cleanup=callback();});},
   };
   const context:any={window:{friendPi:{request(method:string,input:Record<string,unknown>={}){return new Promise((resolve,reject)=>requests.push({method,input,resolve,reject}));}}},module:{exports:{}},require(name:string){
@@ -29,7 +30,7 @@ function fixture() {
   }};
   vm.runInNewContext(transformSync(readFileSync('apps/desktop/src/renderer/CustomInstructionsPanel.tsx','utf8'),{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code,context);
   assert.equal(typeof context.module.exports.CustomInstructionsPanel,'function');
-  const props={onBusy:(value:boolean)=>busy.push(value)};
+  const props={onBusy:(value:boolean)=>busy.push(value),active:true};
   function render(){cursor=0;const tree=context.module.exports.CustomInstructionsPanel(props);while(effects.length)effects.shift()!();return tree;}
   function element(type:string,label?:string){const node=nodes(render()).find(node=>node.type===type&&(label===undefined||text(node)===label));assert.ok(node,`${type} ${label??''} exists`);return node.props;}
   function button(label:string){return element('button',label);}
@@ -39,9 +40,31 @@ function fixture() {
   async function flush(){for(let i=0;i<12;i++)await Promise.resolve();return render();}
   async function load(value={text:'先给出结论。',revision:7}){render();request('instructions.get').resolve(settings(value));await flush();}
   function status(){return text(nodes(render()).find(node=>node.props.role==='status'));}
+  function activate(value:boolean){props.active=value;render();}
   function unmount(){for(const slot of slots)slot?.cleanup?.();}
-  return {render,element,button,request,edit,submit,flush,load,status,unmount,requests,busy};
+  return {render,element,button,request,edit,submit,flush,load,status,activate,unmount,requests,busy};
 }
+
+test('the default preview starts collapsed, stays open while reading and collapses on re-entry',async()=>{
+  const f=fixture();await f.load();const details=f.element('details');
+  assert.equal(details.open,undefined,'the native details element initially has no open attribute');
+  const preview={open:true};details.ref.current=preview;
+  f.edit('查看默认全文时的草稿');assert.equal(preview.open,true,'editing does not interrupt a user-expanded preview');
+  f.activate(false);assert.equal(preview.open,true);f.activate(true);assert.equal(preview.open,false);
+  assert.equal(text(f.element('pre').children),defaultText,'collapsing retains the entire default body');
+  assert.equal(f.element('textarea').value,'查看默认全文时的草稿');assert.equal(f.busy.at(-1),true,'page switches retain the unsaved draft guard');
+});
+
+test('the 1000-character limit preserves legacy text and blocks oversized drafts until shortened',async()=>{
+  const f=fixture(),legacy='原'.repeat(1200);await f.load({text:legacy,revision:4});
+  assert.equal(f.element('textarea').value,legacy);assert.equal(f.element('textarea').maxLength,1000);
+  assert.match(text(f.render()),/1,200 \/ 1,000/);assert.match(text(f.render()),/原内容已完整保留/);assert.equal(f.element('textarea')['aria-invalid'],true);
+  f.edit('新'.repeat(1001));f.submit();assert.equal(f.button('保存').disabled,true);assert.equal(f.requests.some(request=>request.method==='instructions.update'),false);
+  f.button('取消修改').onClick();f.render();assert.equal(f.element('textarea').value,legacy,'cancel restores the full legacy value');
+  const shortened='短'.repeat(1000);f.edit(shortened);assert.equal(f.button('保存').disabled,false);assert.equal(f.element('textarea')['aria-invalid'],false);
+  f.submit();assert.deepEqual(plain(f.request('instructions.update').input),{text:shortened,revision:4});
+  f.request('instructions.update').resolve(settings({text:shortened,revision:5}));await f.flush();assert.equal(f.status(),'已保存，下轮对话生效。');assert.equal(f.busy.at(-1),false);
+});
 
 test('instructions controls stay disabled until the initial read finishes',async()=>{
   const f=fixture();
