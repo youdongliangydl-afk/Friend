@@ -9,3 +9,16 @@ Fixed design references:
 - DeepSeekHarness session-query and Mem0: source references and retrieval/update/deletion separation, as recorded in the root ledger. Neither hosted service is required.
 
 Tests use synthetic data and public Pi faux providers. They do not verify real-model semantic quality, desktop Computer Use or packaged artifact identity; those are separate root-agent acceptance gates.
+
+## Active-recall reference, 2026-10-12
+
+Official XiaomiMiMo/MiMo-Code fixed commit `f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f`, MIT; Copyright (c) 2026 MiMo Code, Xiaomi Corporation; Copyright (c) 2025 opencode. Read the exact upstream files and license; this implementation borrows ideas only and copies no source code or prompt text.
+
+- [tool/memory.txt](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/packages/cli/src/tool/memory.txt): a few distinctive search terms, complete body reading, original literal tracing. SHA256 `e78c35ac4d8f8b69190d3ba13f415090931a4a22d18c8f456a075f44612dd404`.
+- [memory/fts-query.ts](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/packages/cli/src/memory/fts-query.ts): literal quoted FTS terms and disjunction; Friend retains its own CJK bigrams, bounded term selection and existing matching modes. SHA256 `a6bba320bae3af8fcc5931e69060373fb6f544b19bc2effbaf1b24c48d4bdd2c`.
+- [memory/service.ts](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/packages/cli/src/memory/service.ts): BM25 ranking, scope filtering and retrieval limits. SHA256 `5fadc62b0ce14417ca09b306790cf20fb28ee58e0f07d03555d8fad0dfdf8e0a`.
+- [tool/memory.ts](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/packages/cli/src/tool/memory.ts): zero-hit explanation and full-body/original-reading guidance. SHA256 `e2aa8990bec8e70ca8321aa5dec48d3aa6a73e6702595449e505f5930598eff2`.
+- [session/prompt.ts](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/packages/cli/src/session/prompt.ts): conditional foreground recall reminder (`recallHintLines`, `buildRecallReminderText`, per-user-message reminder). SHA256 `622ac185cbec6d1fd4805ada697a9eec3ccd775249d292e708b6cf230b796fd8`.
+- [LICENSE](https://github.com/XiaomiMiMo/MiMo-Code/blob/f98dcd1cf7e70e7eb42f721fdf72bc4a6b87914f/LICENSE), SHA256 `d7201a5532f4ce12324aec5469dc1dfe290654d085c2547bc7384932881ac448`.
+
+Deliberately not adopted: upstream “hit is authoritative”, unregistered raw-history/SQL search, automatic scope widening, checkpoint/Topic/Rebuild coupling, vector/semantic recall, or an extra query-rewrite provider call. Memory checks effective revisions, source policy, complete conditions and permitted registered references. These are design references, not evidence of Friend model quality or acceptance.
