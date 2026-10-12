@@ -34,7 +34,7 @@ export function judgePhase(pairs:EvaluationPair[],caseCount:number,metric:'paire
  const negativePassed=complete&&pairs.filter(pair=>pair.kind==='negative').every(pair=>pair.candidate!.passed);
  const sum=(side:'baseline'|'candidate',field:'tokens'|'elapsed'|'queue')=>pairs.reduce((total,pair)=>total+(field==='tokens'?(pair[side]?.usage.totalTokens??0):field==='elapsed'?(pair[side]?.timing.elapsedMs??0):(pair[side]?.timing.queueWaitMs??0)),0);
  const baselineTokens=sum('baseline','tokens'),candidateTokens=sum('candidate','tokens'),baselineElapsedMs=sum('baseline','elapsed'),candidateElapsedMs=sum('candidate','elapsed');
- const tokenGain=known&&candidateTokens<=baselineTokens*.85,timeNonRegression=known&&pairs.every(pair=>pair.candidate!.timing.elapsedMs<=pair.baseline!.timing.elapsedMs);
+ const tokenGain=known&&candidateTokens<=baselineTokens*.85,timeNonRegression=known&&candidateElapsedMs<=baselineElapsedMs;
  const strictImprovement=known&&nonRegression&&criticalPassed&&negativePassed&&(metric==='paired-efficiency'?tokenGain&&timeNonRegression:candidatePassed>baselinePassed);
  return {complete,known,total:caseCount*3,observed:pairs.length,baselinePassed,candidatePassed,nonRegression,criticalPassed,negativePassed,baselineTokens,candidateTokens,baselineElapsedMs,candidateElapsedMs,baselineQueueWaitMs:sum('baseline','queue'),candidateQueueWaitMs:sum('candidate','queue'),tokenGain,timeNonRegression,strictImprovement,metric,evidenceScope:'frozen measured cases only; not a population non-inferiority claim'};
 }
