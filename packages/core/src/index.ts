@@ -14,6 +14,7 @@ export * from './collaboration-services.js';
 export {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,DEFAULT_CUSTOM_INSTRUCTIONS,type CustomInstructions} from './custom-instructions.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
+import {commandNotice} from './command-notice.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
 const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
@@ -326,7 +327,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   pi.registerCommand(name,{description,handler:async(args,ctx) => {
     const space = args.indexOf(' '); const action = args ? (space < 0 ? args : args.slice(0,space)) : 'snapshot'; const rest = space < 0 ? '' : args.slice(space+1);
     const input = rest.trim().startsWith('{') ? object(JSON.parse(rest)) : rest ? {text:rest} : {};
-    const result = await call(action,input,ctx,'user'); ctx.ui.notify(JSON.stringify(result,null,2),'info');
+    const result = await call(action,input,ctx,'user'); const notice=commandNotice(name,action,result);ctx.ui.notify(notice.message,notice.level);
   }});
   pi.on('session_shutdown',async() => { current = undefined; off(); await controller.dispose?.(); });
 }
