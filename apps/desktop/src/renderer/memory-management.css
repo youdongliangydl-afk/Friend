@@ -9,3 +9,28 @@
 .memory-manager .memory-candidates>summary{cursor:pointer;font-weight:600}
 .memory-manager .memory-candidates .memory-item:last-child{border-bottom:0}
 .memory-manager .memory-record-details>summary:focus-visible,.memory-manager .memory-candidates>summary:focus-visible{outline:2px solid #6c8e7b;outline-offset:3px;border-radius:3px}
+.memory-manager,.memory-impact-modal{--memory-text:#43544b;--memory-caption:#65746b;--memory-warning:#8a4b31;--memory-soft:#f4f8f5}
+.memory-manager .memory-diagnostic-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;color:var(--memory-text);font-size:13px;line-height:1.6}
+.memory-manager .memory-learning-batch{padding:16px 0;border-top:1px solid var(--line);min-width:0}
+.memory-manager .memory-learning-batch:first-child{margin-top:12px}
+.memory-manager .memory-diagnostic-caption,.memory-impact-modal .memory-diagnostic-caption{font-size:12px;line-height:1.6;color:var(--memory-caption);margin:8px 0;overflow-wrap:anywhere}
+.memory-manager .memory-waiting{font-size:12px;color:var(--memory-warning)}
+.memory-manager .memory-progress-counts,.memory-manager .memory-recall-levels,.memory-impact-modal .memory-impact-preview dl{display:flex;flex-wrap:wrap;gap:12px 24px;margin:12px 0;padding:0}
+.memory-manager .memory-progress-counts>div,.memory-manager .memory-recall-levels>div,.memory-impact-modal .memory-impact-preview dl>div{display:grid;gap:3px;min-width:64px}
+.memory-manager .memory-progress-counts dt,.memory-manager .memory-recall-levels dt,.memory-impact-modal .memory-impact-preview dt{color:var(--memory-caption);font-size:12px}
+.memory-manager .memory-progress-counts dd,.memory-manager .memory-recall-levels dd,.memory-impact-modal .memory-impact-preview dd{margin:0;color:var(--memory-text);font-size:14px;font-variant-numeric:tabular-nums}
+.memory-manager .memory-diagnostic-details,.memory-impact-modal .memory-diagnostic-details{margin:8px 0;min-width:0}
+.memory-manager .memory-diagnostic-details>summary,.memory-impact-modal .memory-diagnostic-details>summary{font-size:12px;color:var(--accent);padding:6px 0;line-height:1.6;cursor:pointer;overflow-wrap:anywhere}
+.memory-manager .memory-diagnostic-details>summary:focus-visible,.memory-impact-modal .memory-diagnostic-details>summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+.memory-manager .memory-rejection-list,.memory-impact-modal .memory-rejection-list{list-style:none;margin:8px 0;padding:0;display:grid;gap:10px}
+.memory-manager .memory-rejection-list li,.memory-impact-modal .memory-rejection-list li{display:grid;gap:4px;overflow-wrap:anywhere;color:var(--memory-text);font-size:12px;line-height:1.6}
+.memory-manager .memory-rejection-list strong,.memory-impact-modal .memory-rejection-list strong{font-weight:500}
+.memory-manager .memory-rejection-list span,.memory-impact-modal .memory-rejection-list span{color:var(--memory-caption)}
+.memory-manager .memory-diagnostic-error,.memory-impact-modal .memory-diagnostic-error{font-size:12px;line-height:1.7;color:var(--memory-warning);overflow-wrap:anywhere;margin:10px 0}
+.memory-impact-modal .memory-impact-preview{background:var(--memory-soft);border-left:2px solid var(--accent);padding:12px 14px;margin:16px 0;min-width:0;color:var(--memory-text)}
+.memory-impact-modal .memory-impact-preview>strong{font-size:13px;font-weight:600}
+.memory-impact-modal .memory-impact-preview>p{font-size:12px;color:var(--memory-text);margin:8px 0;line-height:1.7}
+.memory-impact-modal .memory-impact-preview small{font-size:12px;color:var(--memory-caption)}
+.memory-impact-modal .field input,.memory-impact-modal .field textarea{width:100%}
+.memory-manager .memory-diagnostic-details .code-view,.memory-impact-modal .memory-diagnostic-details .code-view{max-height:320px;color:var(--memory-text);font-size:12px}
+@media(max-width:760px){.memory-manager .memory-progress-counts,.memory-manager .memory-recall-levels,.memory-impact-modal .memory-impact-preview dl{gap:12px 18px}.memory-manager .memory-learning-batch{padding:12px 0}.memory-impact-modal .memory-impact-preview{padding:10px 12px}}
