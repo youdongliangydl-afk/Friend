@@ -175,7 +175,7 @@ let correctionEligibleRun:string|undefined,correctionEligibleGeneration:number|u
 function correctMissingSwarm(){
  const last=[...session.messages].reverse().find(message=>message.role==='assistant');
  const goal=services.currentGoal();
- if(!runId||correctionEligibleRun!==runId||correctionEligibleGeneration!==services.generation()||runRequiresSwarm!==true||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed||rootExecutionBusy()||runGraphIds.size||activeGraphIds.size||finiteJobs()||!services.safeObjects()||memberBudgetWait()||roleDeliveryErrors.has(runId)||last?.stopReason!=='stop'||goal&&(!['active','waiting'].includes(goal.status)||goal.waitFor==='user-acceptance'))return false;
+ if(!runId||correctionEligibleRun!==runId||correctionEligibleGeneration!==services.generation()||runRequiresSwarm!==true||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed||rootExecutionBusy()||runGraphIds.size||activeGraphIds.size||finiteJobs()||!services.safeObjects()||memberBudgetWait()||roleDeliveryErrors.has(runId)||unresolvedSwarmContract()||last?.stopReason!=='stop'||goal&&(!['active','waiting'].includes(goal.status)||goal.waitFor==='user-acceptance'))return false;
  if(session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.correction.v1'&&object(entry.data).runId===runId))return false;
  const id='swarm-correction:'+runId,generation=services.generation();
  session.sessionManager.appendCustomEntry('friend-pi.swarm.correction.v1',{v:1,runId,generation,id});
@@ -184,11 +184,42 @@ function correctMissingSwarm(){
  if(!added){swarmCorrectionPending=false;return false;}return true;
 }
 function current(){const entries=session.sessionManager.getBranch(),owned=ownedEntries(entries),sdkStats=session.getSessionStats(),context=sdkStats.contextUsage;return {todo:projectTodo(entries,runId),queue:queueState(),sideDraft:inputQueue?.store.get<InputPayload>(`draft:${session.sessionId}`)?.value,monitor:projectSessionMonitor(session.sessionManager.getEntries(),sdkStats,context),sessionId:session.sessionId,messages:projectMessages(entries),changes:projectRunChanges(owned),traceSystems:projectTraceSystems(entries),receipts:entries.filter(entry=>entry.type==='custom'&&/friend-pi\.(?:memory|expert|attachments)/.test(entry.customType)),plan:plans?.current(),lifecycleStatus,isRunning:!session.isIdle||swarmBusy()||finiteJobs()||stopping,runtime:runtimeState(),navigationLocked:!session.isIdle||swarmBusy()||stopping,permissionEpoch,planMode,permissionMode,executionMode,modelId:missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:undefined),thinkingLevel:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels(),plugins:enabled,context,sessionFile:session.sessionFile,runId};}
+function explicitSwarmContract(input:Record<string,unknown>):boolean {
+  const data=input.input,contract=data&&typeof data==='object'&&!Array.isArray(data)?(data as Record<string,unknown>).contract:undefined;
+  return input.action==='create'&&!!contract&&typeof contract==='object'&&!Array.isArray(contract)&&['V1','V2'].includes(String((contract as Record<string,unknown>).verification));
+}
+// Pi prepares parallel calls before executing them; missing native results retain the frozen contract too.
+function unresolvedSwarmContract(currentCallId?:string):'failed'|'pending'|undefined {
+  if(!runId||!session)return;
+  const entries=ownedEntries(session.sessionManager.getBranch()),start=entries.findIndex(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).runId===runId);
+  if(start<0)return;
+  const current=currentCallId?entries.findLastIndex(entry=>entry.type==='message'&&entry.message.role==='assistant'&&entry.message.content.some(part=>part.type==='toolCall'&&part.id===currentCallId)):-1;
+  const currentEntry=entries[current],currentParts=currentEntry?.type==='message'&&currentEntry.message.role==='assistant'?currentEntry.message.content:[],currentPart=currentParts.findIndex(part=>part.type==='toolCall'&&part.id===currentCallId),call=currentParts[currentPart];
+  const currentExplicit=call?.type==='toolCall'&&call.name==='friend_swarm'&&explicitSwarmContract(call.arguments);
+  let pending=false,nativeRunId=runId;
+  for(let index=start+1;index<entries.length;index++){
+    const entry=entries[index];
+    if(entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'){nativeRunId=String(object(entry.data).runId||'');continue;}
+    if(nativeRunId!==runId||entry.type!=='message'||entry.message.role!=='assistant')continue;
+    const next=entries.findIndex((item,position)=>position>index&&item.type==='message'&&item.message.role==='assistant');
+    const results=entries.slice(index+1,next<0?undefined:next);
+    for(const [partIndex,part] of entry.message.content.entries()){
+      if(part.type!=='toolCall'||part.name!=='friend_swarm'||index===current&&part.id===currentCallId)continue;
+      if(currentExplicit&&index===current&&partIndex>currentPart)continue;
+      if(!explicitSwarmContract(part.arguments))continue;
+      const result=results.findLast(item=>item.type==='message'&&item.message.role==='toolResult'&&item.message.toolCallId===part.id);
+      if(result?.type==='message'&&result.message.role==='toolResult'){if(result.message.isError)return 'failed';}else pending=true;
+    }
+  }
+  return pending?'pending':undefined;
+}
 function swarmAuthority():{status:string;message?:string}|undefined {
   const required=runRequiresSwarm===true&&!!runId;
   const ids=new Set([...activeGraphIds,...(required?runGraphIds:[])]);
   const graphs=[...ids].map(id=>swarmGraphs.get(id));
   if(rootExecutionBusy())return {status:graphs.some(graph=>graph?.status==='awaiting_review')?'awaiting_review':'running'};
+  const contractAttempt=unresolvedSwarmContract();
+  if(contractAttempt)return {status:contractAttempt==='failed'?'failed':'interrupted',message:'Swarm 原契约创建失败、被拒绝或结果尚未确认；保留原契约，请检查工具过程后提交新的明确请求。'};
   if(!ids.size)return required?{status:'failed',message:'Swarm 本轮没有实际任务图和成员执行，不能认定协作已完成。请检查工具过程后显式继续。'}:undefined;
   if(graphs.some(graph=>!graph))return {status:'failed',message:'Swarm 本轮任务图记录缺失，无法确认成果已整合。'};
   if(graphs.some(graph=>graph!.status==='failed'))return {status:'failed',message:'Swarm 本轮存在失败任务图；成果尚未全部整合，请查看任务图。'};
@@ -331,6 +362,10 @@ function guard():ExtensionFactory{return pi=>{
       if(!plan&&!graphs.length&&!['write','edit'].includes(event.toolName))return {block:true,reason:'先校验本轮 Swarm 执行策略，再开始命令'};
       const readOnly=plan?.readOnlyCollaboration===true||graphs.length>0&&graphs.every(graph=>Array.isArray(graph?.tasks)&&graph.tasks.every(task=>object(task).mode==='read'));
       if(readOnly)return {block:true,reason:'本轮是只读协作，主 Agent 使用读取工具，不运行命令或修改文件'};
+    }
+    if(event.toolName==='friend_swarm'){
+      const contractAttempt=unresolvedSwarmContract(event.toolCallId),data=object(input.input);
+      if(contractAttempt&&(input.action==='plan.validate'&&data.strategy==='direct'||input.action==='create'))return {block:true,reason:'本轮原契约创建失败、被拒绝或结果尚未确认，不能重试或降级替换；请检查后提交新的明确请求'};
     }
     if(event.toolName==='friend_swarm'&&input.action==='plan.validate'&&object(input.input).strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size))return {block:true,reason:'本轮已有协作图，不能以直接策略绕过原图核验'};
     // A failed explicit graph/contract must not be replaced by generic verification.

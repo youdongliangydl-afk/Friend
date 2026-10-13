@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import ts from 'typescript';
+import type {ToolCall} from '@earendil-works/pi-ai';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import {createProviderRuntime} from '../apps/desktop/src/provider-settings.js';
 import {registerSavedModel,testConfiguredModel,invalidateProvider} from '../apps/desktop/src/model-readiness.js';
@@ -15,7 +17,8 @@ import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/to
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
 import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
-import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
+import {ownedEntries} from '../apps/desktop/src/task-todo.js';
+import { RecordStore,projectIdentity,digest,object,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
 function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：'));}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
@@ -247,6 +250,107 @@ for(const scenario of ['create-denied','create-cancelled','write-expired','inval
    const later=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)),markers=later.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1');assert.equal(corrections,1,'a fresh user run still receives the ordinary missing-graph correction');assert.equal(markers.length,1);assert.equal(markers[0].data.runId,next.runId);assert.notEqual(next.runId,sent.runId);
   }
  }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+for(const scenario of [
+ {failure:'invalid',strategy:'v0',parallel:false,weakFirst:false},
+ {failure:'invalid',strategy:'direct',parallel:false,weakFirst:false},
+ {failure:'denied',strategy:'v0',parallel:false,weakFirst:false},
+ {failure:'denied',strategy:'direct',parallel:false,weakFirst:false},
+ {failure:'invalid',strategy:'v0',parallel:true,weakFirst:false},
+ {failure:'invalid',strategy:'direct',parallel:true,weakFirst:true},
+] as const)test(`Swarm frozen contract blocks same-run weakening: ${scenario.failure}/${scenario.strategy}/${scenario.parallel?'parallel':'later'}`,{timeout:30000},async()=>{
+ const contract={version:1,goal:'Preserve the required digest check',verification:'V1',risk:'low',acceptance:['The original digest passes'],forbiddenEffects:['No file writes'],checks:[{id:'required-digest',kind:'file.hash',target:'input.txt',args:{sha256:scenario.failure==='invalid'?'invalid-digest':'0'.repeat(64)}}],artifacts:[]};
+ const original={action:'create',input:{goal:contract.goal,contract,tasks:[{id:'verify',title:'Verify input',prompt:'Read input.txt',mode:'read',dependencies:[]}]}};
+ const direct={action:'plan.validate',input:{goal:contract.goal,reason:'Try to avoid the failed original check',strategy:'direct',tasks:[],risk:'low'}};
+ const weaker=scenario.strategy==='direct'?direct:{action:'create',input:{goal:contract.goal,checks:[],tasks:original.input.tasks}};
+ let requests=0,dialogs=0;
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:unknown}[],index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),results=messages.slice(index+1).filter(message=>message.role==='tool');requests++;
+  const fresh=body.includes('FRESH_EXPLICIT_DIRECT_RUN');
+  const calls=!results.length?(fresh?[direct]:scenario.parallel?(scenario.weakFirst?[weaker,original]:[original,weaker]):[original]):!fresh&&!scenario.parallel&&results.length===1?[weaker]:[];
+  res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=calls.length?{role:'assistant',tool_calls:calls.map((input,index)=>({index,id:'call-'+randomUUID(),type:'function',function:{name:'friend_swarm',arguments:JSON.stringify(input)}}))}:{role:'assistant',content:'Original failure retained; no replacement is authorized.'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:calls.length?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'contract-weakening',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');let f=await start({permissionMode:scenario.failure==='denied'?'ask':'allPermissions'});
+ f.child.on('message',(message:Message)=>{if(message.event?.type==='dialog'){dialogs++;void f.request('dialog.respond',{id:message.event.data.id,confirmed:dialogs!==1});}});
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'contract-weakening',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  const sent=await f.request('send',{text:'Keep this explicit V1 contract unchanged: '+JSON.stringify(original.input),mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {sessionFile:string;lifecycleStatus:string;isRunning:boolean},entries=SessionManager.open(state.sessionFile).getBranch(),results=entries.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult');
+  assert.equal(results.length,2,'observe both the original call and the attempted weakening');
+  for(const entry of results){assert.ok(entry.type==='message'&&entry.message.role==='toolResult');assert.equal(entry.message.isError,true,'both the failed contract and its weakening must remain errors');}
+  assert.ok(results.some(entry=>JSON.stringify(entry).includes('原契约')),'the rejected weakening explains the retained contract');
+  assert.equal(state.lifecycleStatus,'failed');assert.equal(state.isRunning,false);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[],'no replacement V0 graph can be created');
+  assert.equal(entries.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.correction.v1'),false);
+  assert.equal(dialogs,scenario.failure==='denied'?1:0,'a blocked weakening cannot ask for new authorization');
+  const before=requests,directory=f.directory;await f.close(true);f=await start({directory,sessionFile:state.sessionFile,modelId:'contract-weakening/fixture',executionMode:'swarm',status:'failed'});
+  assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'failed');assert.equal(requests,before,'cold restore does not replay failed tools or start a model');
+  const offset=f.events.length,next=await f.request('send',{text:'FRESH_EXPLICIT_DIRECT_RUN: choose a fresh direct strategy',mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.slice(offset).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  assert.notEqual(next.runId,sent.runId);assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed','a new explicit user run may choose its own strategy');
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+for(const failure of ['invalid','denied'] as const)test(`Swarm frozen contract rejects parallel explicit V1 replacement: ${failure}`,{timeout:30000},async()=>{
+ const contract={version:1,goal:'Preserve the original digest check',verification:'V1',risk:'low',acceptance:['The original digest passes'],forbiddenEffects:['No file writes'],checks:[{id:'required-digest',kind:'file.hash',target:'input.txt',args:{sha256:failure==='invalid'?'invalid-digest':'0'.repeat(64)}}],artifacts:[]};
+ const original={action:'create',input:{goal:contract.goal,contract,tasks:[{id:'verify',title:'Verify input',prompt:'Read input.txt',mode:'read',dependencies:[]}]}};
+ const replacement={action:'create',input:{...original.input,contract:{...contract,checks:[{...contract.checks[0],args:{sha256:'1'.repeat(64)}}]}}};
+ let dialogs=0;
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const messages=JSON.parse(raw).messages as {role:string;content:unknown}[],results=messages.slice(providerTaskIndex(messages)+1).filter(message=>message.role==='tool'),calls=results.length?[]:[original,replacement];
+  res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=calls.length?{role:'assistant',tool_calls:calls.map((input,index)=>({index,id:'call-'+randomUUID(),type:'function',function:{name:'friend_swarm',arguments:JSON.stringify(input)}}))}:{role:'assistant',content:'Retain the original failed contract.'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:calls.length?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'parallel-explicit-contract',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:failure==='denied'?'ask':'allPermissions'});
+ f.child.on('message',(message:Message)=>{if(message.event?.type==='dialog'){dialogs++;void f.request('dialog.respond',{id:message.event.data.id,confirmed:dialogs!==1});}});
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'parallel-explicit-contract',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  await f.request('send',{text:'Keep the original V1 contract unchanged: '+JSON.stringify(original.input),mode:'swarm'});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {sessionFile:string;lifecycleStatus:string;isRunning:boolean},entries=SessionManager.open(state.sessionFile).getBranch(),results=entries.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult'),calls=entries.flatMap(entry=>entry.type==='message'&&entry.message.role==='assistant'?entry.message.content.filter(part=>part.type==='toolCall'):[]);
+  assert.deepEqual(calls.map(call=>call.arguments),[original,replacement],'retain both complete explicit V1 attempts in native history');
+  assert.equal(results.length,2);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[],'no parallel explicit V1 replacement graph may be created');
+  for(const entry of results){assert.ok(entry.type==='message'&&entry.message.role==='toolResult');assert.equal(entry.message.isError,true,'the original failure and replacement rejection both remain native errors');}
+  assert.match(JSON.stringify(results[1]),/原契约/);
+  assert.equal(dialogs,failure==='denied'?1:0,'the blocked replacement cannot ask for another approval');
+  assert.equal(state.lifecycleStatus,'failed');assert.equal(state.isRunning,false);
+  assert.equal(entries.some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.correction.v1'),false);
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+function productionSwarmContractScan(manager:SessionManager,runId:string){
+ const file=ts.createSourceFile('sdk-worker.ts',readFileSync(resolve('apps/desktop/src/sdk-worker.ts'),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),names=['explicitSwarmContract','unresolvedSwarmContract'];
+ const functions=names.map(name=>{const declaration=file.statements.find(statement=>ts.isFunctionDeclaration(statement)&&statement.name?.text===name);assert.ok(declaration,`production ${name} must exist`);return declaration.getText(file);});
+ const compiled=ts.transpileModule(functions.join('\n'),{compilerOptions:{target:ts.ScriptTarget.ESNext,module:ts.ModuleKind.None}}).outputText;
+ return new Function('session','runId','object','ownedEntries',compiled+'\nreturn unresolvedSwarmContract;')({sessionManager:manager},runId,object,ownedEntries) as (currentCallId?:string)=>'failed'|'pending'|undefined;
+}
+
+for(const scenario of ['success-restored','single-restored','own-failure-retained','parallel-first','parallel-second','weak-first-direct'] as const)test(`production Swarm contract scan respects native run ownership: ${scenario}`,()=>{
+ const directory=mkdtempSync(join(tmpdir(),'friend-pi-native-contract-scan-')),manager=SessionManager.create(directory,join(directory,'sessions'));
+ const usage={input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}};
+ const policy=(runId:string,mode='swarm')=>manager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId,mode,planMode:false,requiresSwarm:mode==='swarm'});
+ const create=(id:string)=>({type:'toolCall' as const,id,name:'friend_swarm',arguments:{action:'create',input:{goal:'Retain the native contract',contract:{verification:'V1',checks:[]},tasks:[{id:'read',mode:'read'}]}}});
+ const assistant=(content:ToolCall[])=>manager.appendMessage({role:'assistant',content,api:'faux',provider:'friend-fixture',model:'offline',usage,stopReason:'toolUse',timestamp:Date.now()});
+ const result=(id:string,isError:boolean)=>manager.appendMessage({role:'toolResult',toolCallId:id,toolName:'friend_swarm',content:[{type:'text',text:isError?'OPERATION_UNKNOWN: preserve the original failure':'{"id":"accepted-v1-graph"}'}],isError,timestamp:Date.now()});
+ try{
+  policy('A',scenario==='single-restored'?'single':'swarm');
+  if(scenario.startsWith('parallel-')){
+   assistant([create('first-v1'),create('second-v1')]);
+   assert.equal(productionSwarmContractScan(manager,'A')(scenario==='parallel-first'?'first-v1':'second-v1'),scenario==='parallel-first'?undefined:'pending','only the first explicit contract may be admitted before native results exist');
+  }else if(scenario==='weak-first-direct'){
+   assistant([{...create('weak-direct'),arguments:{action:'plan.validate',input:{goal:'Retain the native contract',strategy:'direct',tasks:[]}}},create('original-v1')]);
+   assert.equal(productionSwarmContractScan(manager,'A')('weak-direct'),'pending','a direct call before the explicit contract must still see its pending result');
+  }else{
+   if(scenario!=='single-restored'){assistant([create('A-v1')]);result('A-v1',scenario==='own-failure-retained');}
+   policy('B');assistant([create('B-v1')]);result('B-v1',scenario!=='own-failure-retained');
+   policy('A',scenario==='single-restored'?'single':'swarm');policy('A',scenario==='single-restored'?'single':'swarm');
+   assert.equal(productionSwarmContractScan(manager,'A')(),scenario==='own-failure-retained'?'failed':undefined,'restoring A excludes B while retaining every failed A contract across repeated policy entries');
+  }
+ }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
 test('a missing Swarm graph gets one read-only correction, with final payload proof and no replay',{timeout:40000},async()=>{
