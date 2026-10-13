@@ -4,8 +4,11 @@ import {ChangePreview} from './ChangePreview.js';
 import {ChangeDiffCache,type ChangeReviewTarget} from './change-review.js';
 export function ChangedFiles({summary,sessionId,cache,workspacePath}:{summary:RunChangesSummary;sessionId?:string;cache?:ChangeDiffCache;workspacePath?:string}){
  const [expanded,setExpanded]=useState(false),[ownCache]=useState(()=>new ChangeDiffCache());const cardRef=useRef<HTMLElement>(null),description=useId(),diffCache=cache||ownCache;
- const unavailable=summary.unavailable||('error' in summary&&summary.error?(typeof summary.error==='string'?summary.error:'本轮改动统计失败'):undefined);
+ const error='error' in summary&&summary.error?(typeof summary.error==='string'?summary.error:'本轮改动统计失败'):undefined;
+ const unavailable=error||summary.unavailable;
  const incomplete=!!summary.truncated||!!summary.omittedFiles||(summary.fileCount!==undefined&&summary.fileCount!==summary.files.length);
+ // Older non-Git runs recorded normal baseline absence as unavailable.
+ if(!error&&!summary.files.length&&!incomplete&&unavailable==='当前项目不是可读取的 Git 工作区'&&summary.note?.startsWith('此目录没有可用 Git 基线，'))return null;
  if(!summary.files.length&&!unavailable&&!incomplete)return null;
  const additions=summary.files.reduce((n,file)=>n+(file.additions||0),0),deletions=summary.files.reduce((n,file)=>n+(file.deletions||0),0),single=summary.files.length===1?summary.files[0]:undefined;
  const displayPath=(path:string)=>path.startsWith('/')||!workspacePath?path:workspacePath.replace(/[\\/]+$/,'')+'/'+path;

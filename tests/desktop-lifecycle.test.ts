@@ -103,6 +103,41 @@ function assertDeleted(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType
 test('registered missing original history rejects before forking and preserves its index',async()=>{
   const f=fixture();try{const value={...f.record('missing'),path:path.join(f.dataDir,'missing.jsonl')};f.api.store.put('session:missing',value);await assert.rejects(f.api.handle('session.open',{id:'missing'}),/原始会话历史缺失/);assert.equal(f.children.length,0);assert.equal(f.api.store.get('session:missing').value.path,value.path);}finally{f.cleanup();}
 });
+test('startup timeout stops its owned worker at 45 seconds with a neutral last-stage error and unchanged history',async()=>{
+ const f=fixture();try{
+  const record=f.record('startup-timeout'),before=fs.readFileSync(record.path,'utf8'),starting=f.api.startWorker(record),worker=f.api.workers.get(record.id),child=f.children[0];
+  const failed=assert.rejects(starting,error=>{assert.match(String(error),/Pi 初始化超时（加载扩展和项目资源）/);assert.match(String(error),/历史已保留.*重新打开会话后显式继续/);assert.doesNotMatch(String(error),/文件访问授权/);return true;});
+  child.emit('message',{type:'startup.phase',phase:'resources'});
+  await f.tick(44999);assert.equal(worker.phase,'starting');assert.equal(f.signals.length,0);
+  await f.tick(1);await failed;
+  assert.equal(f.api.workers.has(record.id),false);assert.ok(f.signals.some(signal=>signal.pid===child.pid&&signal.signal==='SIGKILL'));
+  assert.equal(f.api.store.get('session:'+record.id).value.status,'interrupted');assert.equal(fs.readFileSync(record.path,'utf8'),before);assert.equal(f.children.length,1,'timeout must not reopen or replay automatically');
+ }finally{f.cleanup();}
+});
+test('startup phases accept only the fixed enum while starting and never copy arbitrary IPC details',async()=>{
+ const f=fixture();try{
+  const record=f.record('startup-enum'),starting=f.api.startWorker(record),worker=f.api.workers.get(record.id),child=f.children[0];
+  for(const phase of ['provider-runtime','model-selection','resources','native-session','agent-session','extensions','restore','metadata']){
+   child.emit('message',{type:'startup.phase',phase,details:'must not copy'});assert.equal(worker.startupPhase,phase);assert.equal(worker.state.startupPhase,phase);assert.equal(worker.state.details,undefined);
+  }
+  for(const phase of ['unknown','toString','__proto__',{phase:'resources'},null])child.emit('message',{type:'startup.phase',phase});
+  assert.equal(worker.startupPhase,'metadata');assert.equal(worker.state.startupPhase,'metadata');
+  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:record.piSessionId,sessionFile:record.path};child.emit('message',{type:'ready',state:child.state});await starting;
+  child.emit('message',{type:'startup.phase',phase:'resources'});assert.equal(worker.startupPhase,'metadata');assert.equal(worker.state.startupPhase,undefined);
+  await f.tick(45000);assert.equal(f.api.workers.get(record.id),worker);assert.equal(f.signals.length,0);
+ }finally{f.cleanup();}
+});
+test('late startup phases and ready messages from a retired generation cannot alter its replacement',async()=>{
+ const f=fixture();try{
+  const record=f.record('startup-generation'),oldStarting=f.api.startWorker(record),oldWorker=f.api.workers.get(record.id),oldChild=f.children[0],retired=assert.rejects(oldStarting,/explicit reopen/);
+  oldChild.emit('message',{type:'startup.phase',phase:'provider-runtime'});f.api.retireWorker(oldWorker,new Error('explicit reopen'),true);await retired;
+  const starting=f.api.startWorker(record),worker=f.api.workers.get(record.id),child=f.children[1];assert.notEqual(worker.generation,oldWorker.generation);
+  child.emit('message',{type:'startup.phase',phase:'extensions'});oldChild.emit('message',{type:'startup.phase',phase:'metadata'});oldChild.emit('message',{type:'ready',state:{lifecycleStatus:'idle',startupPhase:'metadata'}});
+  assert.equal(oldWorker.startupPhase,'provider-runtime');assert.equal(worker.phase,'starting');assert.equal(worker.startupPhase,'extensions');assert.equal(f.api.workers.get(record.id),worker);
+  child.state={isRunning:false,lifecycleStatus:'idle',sessionId:record.piSessionId,sessionFile:record.path};child.emit('message',{type:'ready',state:child.state});await starting;
+  await f.tick(45000);assert.equal(f.api.workers.get(record.id),worker);assert.equal(worker.phase,'ready');assert.equal(f.signals.some(signal=>signal.pid===child.pid),false);
+ }finally{f.cleanup();}
+});
 test('recorded comparison read is session-owned, starts no SDK, and is removed with its session',async()=>{
  const f=fixture();try{
   const record=f.record('comparison'),summaries:runChanges.RunChangesSummary[]=[];

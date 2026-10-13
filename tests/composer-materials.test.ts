@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 import vm from 'node:vm';
+import {submissionSettled} from '../apps/desktop/src/renderer/submission-state.js';
 
 function between(source: string, start: string, end: string): string {
   const offset = source.indexOf(start), finish = source.indexOf(end, offset);
@@ -58,14 +59,15 @@ function appFixture() {
   const storage = new Map<string, string>(), requests: any[] = [], errors: string[] = [];
   let release!: () => void; const acknowledgement = new Promise<void>(done => {release = done;});
   const attachments = [{path: '/project/original.csv'}];
-  const ctx: any = {errorText: String, asObject: (value: any) => value && typeof value === 'object' ? value : {}, hasQueueIntent: () => false,
+  const ctx: any = {errorText: String, submissionSettled, asObject: (value: any) => value && typeof value === 'object' ? value : {}, hasQueueIntent: () => false,
     localStorage: {getItem: (key: string) => storage.get(key) || null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key)},
     sendLock: {current: false}, allocationLock: {current: false}, migratingDraft: {current: false}, navigating: false, draftRef: {current: 'analyze attached data'}, attachmentsRef: {current: attachments},
     activeSession: {archived: false}, activeMemberRef: {current: null}, selectedModel: {ready: true}, setSending() {}, setSubmissionRevision() {}, setNotice() {}, sessionId: 'native', ownerKey: 'native', attachments,
-    lastSubmitted: {current: null}, navigationEpoch: {current: 4}, running: false, state: {current: {queue: {items: []}}}, setLocalRunning() {}, setTools() {}, setLive() {}, followScroll: {},
+    lastSubmitted: {current: null}, navigationEpoch: {current: 4}, running: false, state: {current: {sessionId: 'native', runId: 'prior-run', isRunning: false, lifecycleStatus: 'completed', queue: {items: []}}}, setLocalRunning() {}, setTools() {}, setLive() {}, followScroll: {},
     mode: 'single', planMode: false, permissionMode: 'auto', permissionExplicit: true, ownerRef: {current: 'native'}, setDraft(value: string) {ctx.draftRef.current = value;},
     setAttachments(value: any) {const next = typeof value === 'function' ? value(ctx.attachmentsRef.current) : value; ctx.attachments = next; ctx.attachmentsRef.current = next;}, setDraftOwner() {},
     report(error: string) {errors.push(error);}, window: {friendPi: {request: async (method: string, input: any) => {requests.push({method, input}); await acknowledgement; return {accepted: true};}}}};
+  ctx.stateRef = {current: ctx.state};
   vm.createContext(ctx); vm.runInContext(stripTypeScriptTypes(send + action + '\nglobalThis.send=send;globalThis.action=composerAction;'), ctx);
   return {ctx, storage, requests, errors, release};
 }
@@ -121,7 +123,7 @@ test('manual sidebar navigation reopens deferred approval after admission and ke
  for(const name of ['openSession','selectProject']){
   const marker='  const '+name+'=async',offset=source.indexOf(marker),end=source.indexOf('\n',offset);assert.ok(offset>=0&&end>offset);
   const callback=source.slice(offset,end),deferred=new Set(['pending-approval']),calls:any[]=[];
-  const context:any={navigating:false,sending:true,allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:deferred},stateRef:{current:{current:{dialogs:[{id:'pending-approval'}]}}},setDialogs(value:any){context.restored=value;},setNavigating(){},setSelectedProject(){},setMaterial(){},invoke:async(method:string)=>{calls.push({method,deferred:deferred.size});}};
+  const context:any={navigating:false,sending:true,notice:null,setNotice(value:any){context.notice=typeof value==='function'?value(context.notice):value;},allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:deferred},stateRef:{current:{current:{dialogs:[{id:'pending-approval'}]}}},setDialogs(value:any){context.restored=value;},setNavigating(){},setSelectedProject(){},setMaterial(){},invoke:async(method:string)=>{calls.push({method,deferred:deferred.size});}};
   vm.createContext(context);context.useCallback=(callback:any)=>callback;const restore=between(source,'  const restoreDialogs=','  useEffect(()=>{if(sessionView.active');vm.runInContext(stripTypeScriptTypes(restore+callback+'\nglobalThis.navigate='+name+';'),context);
   await context.navigate('target');assert.equal(deferred.size,1);assert.equal(calls.length,0);
   context.sending=false;await context.navigate('target');assert.equal(deferred.size,0);assert.equal(calls.length,1);assert.equal(calls[0].deferred,0);assert.equal(context.navigationEpoch.current,1);assert.equal(context.restored[0].id,'pending-approval');

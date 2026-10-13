@@ -40,6 +40,27 @@ function Inline({ text,basePath,workspace }: { text: string;basePath?:string;wor
   const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|!?\[[^\]\n]*\]\([^\s)]+\))/g);
   return <>{parts.map((part, i) => {const link=/^(!?)\[([^\]]*)\]\(([^)]+)\)$/.exec(part);if(link){const url=link[3];if(link[1])return <LocalImage key={i} url={url} alt={link[2]} basePath={basePath} workspace={workspace}/>;return <a key={i} href={/^https?:\/\//i.test(url)?url:'#'} onClick={event=>{event.preventDefault();if(/^https?:\/\//i.test(url))void window.friendPi.request('link.open',{url});else {const target=materialPath(url,basePath);if(target)window.dispatchEvent(new CustomEvent('friend-pi:file-open',{detail:target}));}}}>{link[2]}</a>;}return part.startsWith('`') && part.endsWith('`') ? <code key={i}>{part.slice(1, -1)}</code> : part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part;})}</>;
 }
+/** Only consecutive list-marker lines are parsed; Inline retains escaping and link policy. */
+function markdownLists(lines:string[],basePath?:string,workspace?:WorkspaceRef):ReactNode[]|undefined {
+  const items:{indent:number;number?:number;text:string}[]=[];
+  for(const line of lines){
+    const match=/^([ \t]*)(?:(\d+)[.)]|[-*])[ \t]+(.*)$/.exec(line);if(!match)return;
+    const indent=[...match[1]].reduce((width,char)=>char==='\t'?width+4-width%4:width+1,0);
+    items.push({indent,number:match[2]===undefined?undefined:Number(match[2]),text:match[3]});
+  }
+  let cursor=0;
+  const renderList=():ReactNode=>{
+    const start=cursor,first=items[cursor],ordered=first.number!==undefined,children:ReactNode[]=[];
+    while(cursor<items.length){
+      const item=items[cursor];if(item.indent!==first.indent||(item.number!==undefined)!==ordered)break;
+      const key=cursor++,nested:ReactNode[]=[];
+      while(cursor<items.length&&items[cursor].indent>first.indent)nested.push(renderList());
+      children.push(<li key={key}><Inline basePath={basePath} workspace={workspace} text={item.text}/>{nested}</li>);
+    }
+    return ordered?<ol key={start} start={Number.isSafeInteger(first.number)&&first.number!==1?first.number:undefined}>{children}</ol>:<ul key={start}>{children}</ul>;
+  };
+  const lists:ReactNode[]=[];while(cursor<items.length)lists.push(renderList());return lists;
+}
 /** Render a small safe Markdown subset. Model/user content never becomes HTML. */
 export function Markdown({ text,basePath,workspace }: { text: string;basePath?:string;workspace?:WorkspaceRef }) {
   const blocks = text.split(/(```[\s\S]*?(?:```|$))/g);
@@ -50,8 +71,7 @@ export function Markdown({ text,basePath,workspace }: { text: string;basePath?:s
       if (heading) return <div key={i}><h3><Inline basePath={basePath} workspace={workspace} text={heading[2]} /></h3>{heading[3]&&<Markdown basePath={basePath} workspace={workspace} text={heading[3]}/>}</div>;
       const lines = paragraph.split('\n');if(lines.every(line=>/^>\s?/.test(line)))return <blockquote key={i}><Markdown basePath={basePath} workspace={workspace} text={lines.map(line=>line.replace(/^>\s?/, '')).join('\n')}/></blockquote>;
       if(lines.length>=2&&/^\s*\|?\s*:?-{3}/.test(lines[1])){const cells=(line:string)=>line.trim().replace(/^\||\|$/g,'').split('|').map(x=>x.trim());return <div className="table-scroll" key={i}><table><thead><tr>{cells(lines[0]).map((cell,j)=><th key={j}><Inline basePath={basePath} workspace={workspace} text={cell}/></th>)}</tr></thead><tbody>{lines.slice(2).map((line,j)=><tr key={j}>{cells(line).map((cell,k)=><td key={k}><Inline basePath={basePath} workspace={workspace} text={cell}/></td>)}</tr>)}</tbody></table></div>;}
-      if(lines.every(line=>/^\s*\d+[.)]\s+/.test(line)))return <ol key={i}>{lines.map((line,j)=><li key={j}><Inline basePath={basePath} workspace={workspace} text={line.replace(/^\s*\d+[.)]\s+/,'')}/></li>)}</ol>;
-      if (lines.every(line => /^\s*[-*]\s+/.test(line))) return <ul key={i}>{lines.map((line, j) => <li key={j}><Inline basePath={basePath} workspace={workspace} text={line.replace(/^\s*[-*]\s+/, '')} /></li>)}</ul>;
+      const lists=markdownLists(lines,basePath,workspace);if(lists)return <div key={i}>{lists}</div>;
       return <p key={i}><Inline basePath={basePath} workspace={workspace} text={paragraph} /></p>;
     })}</div>;
   })}</div>;

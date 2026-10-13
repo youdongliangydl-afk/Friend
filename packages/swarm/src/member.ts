@@ -1,4 +1,4 @@
-import {SourcePolicy,RecordStore} from '@friend-pi/core';
+import {SourcePolicy,RecordStore,customInstructionsExtension} from '@friend-pi/core';
 /** Standalone native-Pi worker. Pi remains the only owner of its loop and JSONL history. */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, existsSync,openSync,fsyncSync,closeSync } from 'node:fs';
@@ -123,7 +123,7 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(handoff?['swarm_handoff_read']:[]),...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(handoff?['swarm_handoff_read']:[]),...(start.executionStyle==='team'?['team_message']:['swarm_message',...(!start.parentTools||start.parentTools.includes('swarm_shared')?['swarm_shared']:[])]),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
@@ -135,7 +135,7 @@ async function run(start:MemberStart): Promise<void> {
   };
   const evidenceInstructions='基于来源形成结论时，分别保留目标/要求、已确认事实、尚待确认三类状态，以及适用对象、时间和条件。目标/要求不等于已经实现，待确认或未提及不等于否定。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突；否则保留差异、来源和未知，不补成当前事实。转述成员结论前对照可用原文和实际读取/检查记录，未经核实的推断明确标注。';
   const sourceScopeInstructions=`当前项目绝对路径：${start.cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的数量或完成状态，只有实际核实后才可写为事实。`;
-  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[handoffReader,checks,pi=>{pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n${evidenceInstructions}\n${sourceScopeInstructions}`}));pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
+  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[handoffReader,checks,pi=>{pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n${evidenceInstructions}\n${sourceScopeInstructions}`}));pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},customInstructionsExtension(start.dataDir),guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools],customTools:[createBashToolDefinition(start.cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});
   session = created.session;

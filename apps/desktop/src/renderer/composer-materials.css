@@ -44,4 +44,3 @@
 .friend-layout .floating-composer .composer-input>textarea{min-height:68px;padding:8px 4px 4px}
 .friend-layout .floating-composer .composer-toolbar{flex-wrap:nowrap;padding:8px 0 0}
 .floating-composer.composer-wrap{overflow:visible}
-@container (max-width:700px){.friend-layout .agent-mode-control button,.friend-layout .agent-mode-control button.selected{width:34px;min-width:34px}.friend-layout .agent-mode-control button.selected span{display:none}.friend-layout .agent-mode-thumb{width:34px;left:3px;top:3px;bottom:3px}.friend-layout .agent-mode-control[data-mode=team] .agent-mode-thumb{transform:translateX(36px)}.friend-layout .agent-mode-control[data-mode=swarm] .agent-mode-thumb{transform:translateX(72px)}.friend-layout .agent-mode-control{padding:3px}}

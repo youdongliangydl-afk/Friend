@@ -14,8 +14,10 @@ import {projectTimeline} from '../apps/desktop/src/renderer/timeline.js';
 import {groupToolActivity,activitySummary} from '../apps/desktop/src/renderer/tool-activity.js';
 import type {Message as DisplayMessage} from '../apps/desktop/src/renderer/types.js';
 import type {SessionMonitor} from '../apps/desktop/src/session-monitor.js';
-import { RecordStore,projectIdentity,digest } from '../packages/core/src/index.js';
+import {AttentionRegistry} from '../apps/desktop/src/session-attention.js';
+import { RecordStore,projectIdentity,digest,readCustomInstructions,saveCustomInstructions,DEFAULT_CUSTOM_INSTRUCTIONS } from '../packages/core/src/index.js';
 interface Message {type:string;id?:string;error?:string;result?:unknown;state?:Record<string,unknown>;event?:{type:string;data:Record<string,unknown>}}
+function providerTaskIndex(messages:{role:string;content:unknown}[]){return messages.findLastIndex(message=>message.role==='user'&&!(typeof message.content==='string'?message.content:Array.isArray(message.content)?message.content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'').startsWith('[Friend 当前有效的用户设置指令：'));}
 async function start(options:{directory?:string;sessionFile?:string;modelId?:string;status?:string;managed?:boolean;supervised?:boolean;permissionMode?:string;temporary?:boolean;executionMode?:'single'|'team'|'swarm';env?:NodeJS.ProcessEnv}={}){
  const directory=options.directory||mkdtempSync(join(tmpdir(),'friend-pi-sdk-'));const dataDir=join(directory,'data');const events:Message[]=[];const pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
  const child=fork(resolve('apps/desktop/dist/sdk-worker.mjs'),[],{execPath:process.execPath,stdio:['ignore','pipe','pipe','ipc'],env:{...process.env,...options.env,FRIEND_PI_ROOT:resolve('.'),FRIEND_PI_PROJECT:directory,FRIEND_PI_TEMPORARY_WRITE_ROOT:options.temporary?directory:undefined,FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_TEST_PROVIDER:'1',FRIEND_PI_MEMBER_WORKER:resolve('packages/swarm/dist/member.js'),FRIEND_PI_SESSION_FILE:options.sessionFile,FRIEND_PI_MODEL:options.modelId,FRIEND_PI_MODE:options.executionMode,FRIEND_PI_STATUS:options.status,FRIEND_PI_PERMISSION_MODE:options.permissionMode,FRIEND_PI_DESKTOP_MANAGED:options.managed?'1':undefined,FRIEND_PI_SUPERVISED:options.supervised?'1':undefined}});
@@ -31,6 +33,50 @@ async function start(options:{directory?:string;sessionFile?:string;modelId?:str
  return {directory,dataDir,events,child,initial,request,wait,close};
 }
 test('four public Pi extensions are loaded and GUI commands reach their controllers', {timeout:30000},async()=>{const fixture=await start();try{for(const plugin of ['swarm','expert','memory','topic-rebuild']){const state=await fixture.request('plugin',{plugin,action:'snapshot'}) as Record<string,unknown>;assert.equal(typeof state,'object');}await fixture.request('plugin',{plugin:'memory',action:'save',input:{title:'项目约束',content:'必须保留中文字段',scope:'project',explicitRemember:true}});const result=await fixture.request('plugin',{plugin:'memory',action:'search',input:{query:'中文字段'}}) as unknown;assert.ok(JSON.stringify(result).includes('必须保留中文字段'));}finally{await fixture.close();}});
+test('public native Swarm snapshot settles without a model run, native user or correction graph',{timeout:30000},async()=>{
+ let f=await start();try{
+  let sent!:{runId:string};
+  for(const text of ['/swarm snapshot','/swarm snapshot\n','/swarm snapshot\r\n','/swarm \tsnapshot \n']){
+   sent=await f.request('send',{text,mode:'swarm'}) as {runId:string};
+   await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.lifecycleStatus==='completed'));
+   assert.equal(f.events.some(e=>e.event?.type==='notice'&&String(e.event.data.message).includes('任务图标识无效')),false);
+  }
+  const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;runId:string};
+  assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');assert.equal(state.runId,sent.runId);
+  assert.equal(f.events.some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
+  const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.some(e=>e.type==='message'),false);assert.equal(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.swarm.correction.v1'),false);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[]);
+  const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:state.sessionFile,status:'completed',executionMode:'swarm'});
+  const reopened=await f.request('state') as {isRunning:boolean;lifecycleStatus:string};assert.equal(reopened.isRunning,false);assert.equal(reopened.lifecycleStatus,'completed','a handled command cannot become a failed model task after reopening');
+ }finally{await f.close();}
+});
+test('public native Swarm start publishes its new run before approval and integrates the existing graph',{timeout:40000},async()=>{
+ const f=await start({temporary:true});try{
+  const prior=await f.request('send',{text:'/swarm snapshot',mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===prior.runId&&e.event.data.lifecycleStatus==='completed'));
+  const graph=await f.request('plugin',{plugin:'swarm',action:'create',input:{collaborationVersion:1,goal:'retained readonly command graph',checks:[],tasks:[{id:'read',title:'Read',prompt:'Read only',mode:'read',dependencies:[]}]}}) as {id:string;runId:string};
+  assert.equal(graph.runId,prior.runId);
+  const attention=new AttentionRegistry(),owner={sessionId:'desktop-command',generation:'worker-command'};
+  attention.register(owner.sessionId,owner.generation);attention.observeState({...owner,runId:prior.runId},{runId:prior.runId,isRunning:false,lifecycleStatus:'completed'});
+  let captured:boolean|undefined;f.child.on('message',(raw:any)=>{
+   if(raw.type!=='event')return;const event=raw.event;
+   if(event.type==='state')attention.observeState({...owner,runId:event.data.runId},event.data);
+   if(event.type==='dialog')captured=attention.captureDialog({...owner,runId:event.runId},event.data);
+  });
+  const offset=f.events.length,sent=await f.request('send',{text:'/swarm start '+JSON.stringify({graphId:graph.id}),mode:'swarm'}) as {runId:string};
+  await f.wait(()=>captured!==undefined);assert.equal(captured,true,'the host must retain the new-run approval before any model event');
+  const prompt=f.events.slice(offset).find(e=>e.event?.type==='dialog')!.event!.data;
+  assert.equal(attention.snapshot().filter(activity=>activity.kind==='dialog').length,1);assert.match(String(prompt.message),/git rev-parse --show-toplevel/);
+  assert.notEqual(sent.runId,prior.runId);assert.equal(f.events.slice(offset).some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
+  await f.request('dialog.respond',{id:prompt.id,confirmed:true});
+  await f.wait(()=>f.events.slice(offset).some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(e.event.data.data).includes('"status":"integrated"')),25000);
+  const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{id:string;runId:string;status:string;attempts:{status:string;sessionId?:string}[];reviewAttempts:{status:string}[];integration:{review:{approved:boolean;sessionId:string;sessionFile:string}}}[]};
+  assert.equal(snapshot.graphs.length,1);const integrated=snapshot.graphs[0];assert.equal(integrated.id,graph.id);assert.equal(integrated.runId,prior.runId);assert.equal(integrated.status,'integrated');assert.equal(integrated.attempts[0].status,'completed');assert.equal(integrated.integration.review.approved,true);assert.equal(integrated.reviewAttempts.at(-1)?.status,'completed');assert.ok(integrated.integration.review.sessionFile);assert.notEqual(integrated.integration.review.sessionId,integrated.attempts[0].sessionId);
+  const state=await f.request('state') as {isRunning:boolean;lifecycleStatus:string;sessionFile:string};assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');
+  assert.equal(f.events.slice(offset).some(e=>e.event?.type==='pi'&&['agent_start','agent_settled'].includes(String(e.event.data.type))),false);
+  const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.some(e=>e.type==='message'),false);assert.ok(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.permission.decision'&&(e.data as {approved?:boolean}).approved===true));
+ }finally{await f.close();}
+});
 test('Pi SDK executes a real tool, persists native JSONL, and settles without fake task authority',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('send',{text:'QA_WRITE：写验证成果',mode:'single'});await fixture.wait(()=>fixture.events.some(event=>event.type==='event'&&event.event?.type==='pi'&&event.event.data.type==='agent_settled'));assert.ok(existsSync(join(fixture.directory,'fixture-result.txt')));assert.match(readFileSync(join(fixture.directory,'fixture-result.txt'),'utf8'),/SDK tool execution/);const state=await fixture.request('state') as {sessionFile:string;messages:{id:string;role:string;text:string}[];isRunning:boolean;lifecycleStatus:string;changes:{changeId?:string;unavailable?:string;files:{path:string;status:string}[]}[]};assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'completed');assert.ok(state.messages.some(message=>message.role==='toolResult'));assert.ok(state.messages.every(message=>!!message.id));assert.ok(existsSync(state.sessionFile));assert.match(readFileSync(state.sessionFile,'utf8'),/toolResult/);assert.equal(state.changes.length,1);assert.equal(state.changes[0].unavailable,undefined);assert.ok(state.changes[0].changeId);assert.deepEqual(state.changes[0].files.map(file=>[file.path,file.status]),[['fixture-result.txt','A']]);}finally{await fixture.close();}});
 test('desktop plugin toggles really reload and disabled plugin cannot be called',{timeout:30000},async()=>{const fixture=await start();try{await fixture.request('configure',{plugins:['expert']});await assert.rejects(fixture.request('plugin',{plugin:'memory',action:'snapshot'}),/不可用|超时/);const state=await fixture.request('state') as {plugins:string[]};assert.deepEqual(state.plugins,['expert']);}finally{await fixture.close();}});
 test('session monitor binds public timing to native steps and restores totals on cold restart',{timeout:30000},async()=>{
@@ -172,12 +218,43 @@ test('Swarm task authority rejects a provider claiming completion after create a
  }finally{await fixture.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
 
+for(const scenario of ['create-denied','create-cancelled','write-expired','invalid-contract'] as const)test('Swarm correction preserves a failed explicit request: '+scenario,{timeout:scenario==='write-expired'?80000:25000},async()=>{
+ let corrections=0,dialogs=0;
+ const contract={version:1,goal:'Verify the original input against its required digest',verification:'V1',risk:'low',acceptance:['The required digest passes'],forbiddenEffects:['No file writes'],checks:[{id:'required-digest',kind:'file.hash',target:'input.txt',args:{sha256:scenario==='invalid-contract'?'invalid-digest':'0'.repeat(64)}}],artifacts:[]};
+ const create={action:'create',input:{goal:contract.goal,contract,tasks:[{id:'verify',title:'Verify input',prompt:'Read input.txt and verify the required digest',mode:'read',dependencies:[]}]}};
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:unknown}[],index=providerTaskIndex(messages),value=messages[index]?.content,body=typeof value==='string'?value:JSON.stringify(value),recent=messages.slice(index).filter(message=>message.role==='tool');
+  let call:{name:string;input:unknown}|undefined,reply='The requested operation failed; await a new explicit user request.';
+  if(body.includes('用户已选择 Swarm')){corrections++;reply='No replacement graph was requested.';}
+  else if(!recent.length&&!body.includes('independent fresh Swarm request'))call=scenario==='write-expired'?{name:'write',input:{path:'unauthorized.txt',content:'must not be written'}}:{name:'friend_swarm',input:create};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'failed-explicit-request',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:scenario==='invalid-contract'?'allPermissions':'ask'}),responses:Promise<unknown>[]=[];
+ f.child.on('message',(message:Message)=>{if(message.event?.type!=='dialog')return;dialogs++;if(scenario==='write-expired'&&dialogs===1)return;responses.push(f.request('dialog.respond',{id:message.event.data.id,...(scenario==='create-cancelled'?{cancelled:true}:{confirmed:false})}));});
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'failed-explicit-request',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  const sent=await f.request('send',{text:'Preserve this requested goal and V1 contract: '+JSON.stringify(create.input),mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.runId===sent.runId&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning),scenario==='write-expired'?70000:15000);await Promise.all(responses);
+  const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;messages:{role:string}[]},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)),calls=entries.flatMap(entry=>entry.message?.role==='assistant'&&Array.isArray(entry.message.content)?entry.message.content.filter((part:any)=>part.type==='toolCall'):[]),errors=entries.filter(entry=>entry.message?.role==='toolResult'&&entry.message.isError);
+  assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'failed');assert.equal(corrections,0,'a failed or unapproved explicit request must not receive a generic correction');assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),false);assert.equal(state.messages.some(message=>message.role==='automatic'),false);assert.equal(calls.length,1);assert.equal(errors.length,1);assert.equal(existsSync(join(f.directory,'unauthorized.txt')),false);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[],'no V0 replacement graph may erase the original contract');
+  if(scenario==='write-expired'){assert.equal(dialogs,1);assert.equal(calls[0].name,'write');const denied=entries.filter(entry=>entry.customType==='friend-pi.permission.decision'&&entry.data.approved===false),called=entries.find(entry=>entry.message?.role==='assistant'&&entry.message.content.some((part:any)=>part.type==='toolCall'&&part.id===calls[0].id));assert.equal(denied.length,1);assert.ok(Date.parse(denied[0].timestamp)-Date.parse(called.timestamp)>=60000,'exercise the actual approval timeout without a response');assert.ok(f.events.some(event=>event.event?.type==='dialog.closed'));assert.match(JSON.stringify(errors[0]),/用户未批准/);}
+  else{assert.equal(calls[0].name,'friend_swarm');assert.deepEqual(calls[0].arguments,create,'retain the complete attempted goal, V1 verification and objective check');if(scenario==='invalid-contract'){assert.equal(dialogs,0);assert.match(JSON.stringify(errors[0]),/checks.sha256/);}else{assert.equal(dialogs,1);assert.match(JSON.stringify(errors[0]),/用户未批准/);}}
+  if(scenario==='create-denied'){
+   const next=await f.request('send',{text:'independent fresh Swarm request',mode:'swarm'}) as {runId:string};
+   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.runId===next.runId&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+   const later=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)),markers=later.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1');assert.equal(corrections,1,'a fresh user run still receives the ordinary missing-graph correction');assert.equal(markers.length,1);assert.equal(markers[0].data.runId,next.runId);assert.notEqual(next.runId,sent.runId);
+  }
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
 test('a missing Swarm graph gets one read-only correction, with final payload proof and no replay',{timeout:40000},async()=>{
  for(const scenario of ['recover','queued','refuse','stop']){
   let corrections=0,blocked=false,queued=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});
   const server=createServer(async(req,res)=>{
    let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
-   const index=messages.findLastIndex(message=>message.role==='user'),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   const index=providerTaskIndex(messages),latest=messages[index]?.content,body=typeof latest==='string'?latest:JSON.stringify(latest),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,text='Only a summary; no graph yet';
    if(body.includes('QUEUED_CHECK'))text='Queued user request completed';
    else if(names.includes('friend_swarm')){
@@ -226,7 +303,7 @@ test('read-only correction results cannot wake writable member, goal or job cont
  const phases:string[]=[];
  const server=createServer(async(req,res)=>{
   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name);
-  const index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+  const index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
   let call:{name:string;input:unknown}|undefined,reply='Original delivery retained';
   const phase=names.includes('friend_swarm')?body.includes('NEW_USER_REQUEST')?'user':body.includes('队友提出补充')?'member-followup':body.includes('用户已选择 Swarm')?'correction':'original':'member';phases.push(phase);
   if(phase==='correction'){
@@ -276,7 +353,7 @@ test('corrected Goals pause after verification and queued restoration; explicit 
  for(const queued of [false,true]){
   let memberHeld=false,verificationGraphId='',release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
   const server=createServer(async(req,res)=>{
-   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=messages.findLastIndex(message=>message.role==='user'),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
+   let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
@@ -463,7 +540,7 @@ test('native Swarm completion automatically continues a waiting Goal without pol
   const tools=messages.filter(message=>message.role==='tool').flatMap(message=>{try{return [JSON.parse(message.content)];}catch{return [];}});let call:{name:string;input:unknown}|undefined,text='Actual read-only member evidence';
   if(names.includes('swarm_review_result')){if(!messages.some(message=>message.role==='tool'))call={name:'swarm_review_result',input:{approved:true,findings:'Independent loopback reviewer inspected both read outcomes'}};}
   else if(names.includes('friend_swarm')){
-   const user=messages.findLastIndex(message=>message.role==='user'),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
+   const user=providerTaskIndex(messages),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
    if(latest.includes('Swarm 任务图')&&latest.includes('已整合')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
     if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
@@ -584,10 +661,25 @@ test('persistent member GUI bridge displays native history, wakes read-only disc
   await f.request('plugin',{plugin:'swarm',action:'start',input:{graphId:graph.id}});
   await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(event.event.data.data).includes('"status":"integrated"')));
   const memberId=graph.tasks[0].memberId;
+  const integrated=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{id:string;status:string;updatedAt:string}[]};
+  const sourceGraph=integrated.graphs.find(source=>source.id===graph.id)!;assert.equal(sourceGraph.status,'integrated');
   const before=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string;state:string};messages:DisplayMessage[]};assert.ok(before.messages.some(message=>message.role==='assistant'));assert.equal(before.member.state,'idle');
+  const discussionSentAt=Date.now(),discussionEvents=f.events.length;
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'gui-supplement',body:'请补充解释，保留已完成成果'}});
-  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-request'));
+  await f.wait(()=>f.events.slice(discussionEvents).some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='swarm.member-request'));
+  await f.wait(()=>f.events.slice(discussionEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
   await f.wait(()=>f.events.slice(-5).some(event=>event.event?.type==='state'&&event.event.data.isRunning===false));
+  const root=await f.request('state') as {sessionFile:string};
+  const entries=readFileSync(root.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  const wake=entries.find(entry=>entry.customType==='friend-pi.runtime-wake'&&String(entry.data.eventId).startsWith('member-request:'));
+  assert.ok(wake,'the actual public SDK ran a member-notification continuation');
+  const automatic=entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').find(entry=>JSON.stringify(entry.message.content).includes('来源任务图事实快照（通知生成时）'));
+  assert.ok(automatic,'the actual native business user contains source facts, not only UI or test metadata');
+  const automaticText=typeof automatic.message.content==='string'?automatic.message.content:automatic.message.content.filter((part:any)=>part.type==='text').map((part:any)=>part.text).join('\n');
+  const facts=JSON.parse(automaticText.match(/来源任务图事实快照（通知生成时）：([^\n]+)/)![1]) as {id:string;status:string;updatedAt:string;asOf:string};
+  assert.deepEqual({id:facts.id,status:facts.status,updatedAt:facts.updatedAt},{id:sourceGraph.id,status:sourceGraph.status,updatedAt:sourceGraph.updatedAt},'the continuation uses the exact integrated controller graph and retained timestamp');
+  assert.ok(Number.isFinite(Date.parse(facts.asOf))&&Date.parse(facts.asOf)>=discussionSentAt&&Date.parse(facts.asOf)<=Date.parse(wake.timestamp)&&Date.parse(wake.timestamp)<=Date.parse(automatic.timestamp),'notification asOf is bounded by the real discussion send and native continuation');
+  assert.match(automaticText,/讨论本身不改变正式成果或任务图状态/);assert.match(automaticText,/先调用 friend_swarm snapshot/);
   const after=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{sessionId:string};messages:DisplayMessage[];inbox:{nativeEntryId?:string}[]};assert.equal(after.member.sessionId,before.member.sessionId);assert.ok(after.inbox[0].nativeEntryId);assert.equal(after.messages.find(message=>message.id===after.inbox[0].nativeEntryId)?.userText,'请补充解释，保留已完成成果');
   await f.request('stop');const snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{status:string}[];teammates:{state:string}[]};assert.equal(snapshot.graphs.length,1);assert.equal(snapshot.graphs[0].status,'integrated');assert.equal(snapshot.teammates[0].state,'paused');
   await f.request('plugin',{plugin:'swarm',action:'member.send',input:{memberId,messageId:'saved-after-stop',body:'停止后保留的要求'}});const queued=await f.request('plugin',{plugin:'swarm',action:'member.history',input:{memberId}}) as {member:{state:string};inbox:{id:string;nativeEntryId?:string}[]};assert.equal(queued.member.state,'paused');assert.equal(queued.inbox.find(message=>message.id==='saved-after-stop')?.nativeEntryId,undefined);
@@ -672,12 +764,56 @@ test('completed changed-files metadata and native trajectory survive a cold work
 
 test('native Bash and background jobs omit inherited credentials while inference stays authenticated',{timeout:30000},async()=>{
  const credential='synthetic-local-inference-only';let authenticated=0,calls=0;
+ const visibleProviderText=(content:any)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const observations:{at:string;authenticated:boolean;bodySha256:string;bodyContainsCredential:boolean;latestUserTextPrefix:string;messages:{role:string;contentSha256:string;toolCallId?:string;toolCallIds?:string[]}[];response:'tool_calls'|'stop';finished?:boolean;closed?:boolean}[]=[];
  const command="'"+process.execPath.replaceAll("'","'\\''")+"' -e 'console.log(JSON.stringify({credentialPresent:!!process.env.FRIEND_QA_API_KEY,normal:process.env.FRIEND_QA_NORMAL}))'";
- const server=createServer(async(req,res)=>{for await(const _ of req){}if(req.headers.authorization==='Bearer '+credential)authenticated++;const tool=calls++===0;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');res.end('data: [DONE]\n\n');});
- await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions',env:{FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained',FRIEND_PI_LEARNING_ROLE:'producer'}});
- try{await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string};const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);assert.equal(authenticated,2);assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
- const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
- }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),authorized=req.headers.authorization==='Bearer '+credential;
+  if(authorized)authenticated++;const tool=calls++===0;
+  const observation:typeof observations[number]={at:new Date().toISOString(),authenticated:authorized,bodySha256:digest(raw),bodyContainsCredential:raw.includes(credential),latestUserTextPrefix:visibleProviderText(payload.messages?.findLast((message:any)=>message.role==='user')?.content).replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]').slice(0,240),messages:(payload.messages||[]).map((message:any)=>({role:message.role,contentSha256:digest(message.content),toolCallId:message.tool_call_id,toolCallIds:message.tool_calls?.map((call:any)=>call.id)})),response:tool?'tool_calls':'stop'};
+  observations.push(observation);res.on('finish',()=>{observation.finished=true;});res.on('close',()=>{observation.closed=true;});
+  res.writeHead(200,{'Content-Type':'text/event-stream'});
+  const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'env-boundary',type:'function',function:{name:'bash',arguments:JSON.stringify({command})}}]}:{role:'assistant',content:'Checked environment boundary'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:tool?'tool_calls':'stop'}])res.write('data: '+JSON.stringify({id:'env-boundary',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})+'\n\n');
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ // Expert can legitimately infer after agent_settled; this fixture isolates native Bash/core jobs.
+ const f=await start({permissionMode:'allPermissions',env:{FRIEND_PI_PLUGINS:'[]',FRIEND_QA_API_KEY:credential,FRIEND_QA_NORMAL:'retained'}});
+ try{
+  assert.deepEqual((await f.request('state') as {plugins:string[]}).plugins,[]);
+  await f.request('provider.save',{provider:'env-local',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:credential});
+  await f.request('send',{text:'Check native command environment'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+  const state=await f.request('state') as {messages:{role:string;text:string}[];sessionFile:string;plugins:string[]};assert.deepEqual(state.plugins,[]);
+  const result=state.messages.find(m=>m.role==='toolResult')!;assert.match(result.text,/"credentialPresent":false/);assert.match(result.text,/"normal":"retained"/);
+  const native=readFileSync(state.sessionFile,'utf8');assert.equal(native.includes(credential),false);
+  const entries=native.trim().split('\n').map(line=>JSON.parse(line)),users=entries.filter(entry=>entry.message?.role==='user'),assistants=entries.filter(entry=>entry.message?.role==='assistant');
+  assert.equal(users.length,1);assert.equal(visibleProviderText(users[0].message.content),'Check native command environment');
+  assert.deepEqual(assistants.map(entry=>entry.message.stopReason),['toolUse','stop'],'the two authenticated requests are the actual native Bash turn and its continuation');
+  const nativeCalls=assistants.flatMap(entry=>entry.message.content.filter((part:any)=>part.type==='toolCall'));assert.equal(nativeCalls.length,1);assert.equal(nativeCalls[0].name,'bash');assert.deepEqual(nativeCalls[0].arguments,{command});
+  const nativeResults=entries.filter(entry=>entry.message?.role==='toolResult');assert.equal(nativeResults.length,1);assert.equal(nativeResults[0].message.toolCallId,nativeCalls[0].id);assert.equal(nativeResults[0].message.isError,false);
+  assert.equal(calls,2);assert.equal(authenticated,2);assert.ok(observations.every(request=>request.authenticated&&!request.bodyContainsCredential),'every inference request has authentication only at the transport boundary');
+  assert.equal(observations[0].messages.findLast(message=>message.role==='user')?.contentSha256,digest(users[0].message.content));
+  const next=observations[1].messages,callIndex=next.findIndex(message=>message.toolCallIds?.includes(nativeCalls[0].id)),resultIndex=next.findIndex(message=>message.toolCallId===nativeCalls[0].id);
+  assert.ok(callIndex>=0&&resultIndex>callIndex);assert.equal(next[resultIndex].contentSha256,digest(visibleProviderText(nativeResults[0].message.content)),'the second authenticated request contains the correlated native Bash result');
+  assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='auto_retry_start'),false);
+  const job=await f.request('runtime',{action:'jobs.run',input:{command,autoContinue:false}}) as {id:string};
+  let logs='';const until=Date.now()+5000;while(Date.now()<until){logs=String((await f.request('runtime',{action:'jobs.logs',input:{id:job.id}}) as {text:string}).text);if(logs.includes('credentialPresent'))break;await new Promise(done=>setTimeout(done,30));}
+  assert.match(logs,/"credentialPresent":false/);assert.match(logs,/"normal":"retained"/);
+  await f.wait(()=>f.events.some(event=>event.event?.type==='jobs.changed'&&JSON.stringify(event.event.data).includes(job.id)&&JSON.stringify(event.event.data).includes('"status":"completed"')));
+  assert.equal((await f.request('runtime',{action:'jobs.status',input:{id:job.id}}) as {status:string}).status,'completed');
+  assert.equal(calls,2,'a non-continuing core job must not create an inference request');assert.equal(authenticated,calls);assert.ok(observations.every(request=>request.authenticated&&!request.bodyContainsCredential));assert.equal(readFileSync(state.sessionFile,'utf8').includes(credential),false);
+ }finally{
+  try{
+  const diagnostics=process.env.FRIEND_SECURITY_DIAGNOSTICS_DIR;
+  if(diagnostics){
+   const state=await f.request('state') as {sessionFile:string;plugins:string[]};const native=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   writeFileSync(join(diagnostics,'security-observations.json'),JSON.stringify({authenticated,calls,plugins:state.plugins,observations,native:native.map(entry=>({id:entry.id,parentId:entry.parentId,timestamp:entry.timestamp,type:entry.type,customType:entry.customType,runId:entry.data?.runId,eventId:entry.data?.eventId,message:entry.message?{role:entry.message.role,contentSha256:digest(entry.message.content),stopReason:entry.message.stopReason,errorMessage:entry.message.errorMessage?.replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]'),toolCallId:entry.message.toolCallId,toolName:entry.message.toolName,toolCalls:Array.isArray(entry.message.content)?entry.message.content.filter((part:any)=>part.type==='toolCall').map((part:any)=>({id:part.id,name:part.name,argumentsSha256:digest(part.arguments)})):undefined}:undefined})),events:f.events.filter(event=>event.event?.type==='pi').map(event=>({type:event.event!.data.type,attempt:event.event!.data.attempt,willRetry:event.event!.data.willRetry,delayMs:event.event!.data.delayMs,errorMessage:typeof event.event!.data.errorMessage==='string'?event.event!.data.errorMessage.replaceAll(credential,'[REDACTED_SYNTHETIC_CREDENTIAL]'):undefined}))},null,2)+'\n',{flag:'wx',mode:0o600});
+  }
+  }finally{
+   try{await f.close();}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+  }
+ }
 });
 
 test('Todo is permission-neutral in Plan/ask, recovers natively and resets on a new run',{timeout:30000},async()=>{
@@ -847,4 +983,122 @@ for(const sameBatch of [false,true])test(`Swarm readonly strategy rejects a ${sa
   await f.wait(()=>calls===(sameBatch?3:4)&&f.events.some(event=>event.event?.type==='state'&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
   assert.equal(existsSync(join(f.directory,'forbidden-command.txt')),false);const state=await f.request('state') as {messages:{role:string;text:string;toolCallId?:string}[]};const result=state.messages.find(message=>message.role==='toolResult'&&message.toolCallId==='forbidden-command');assert.ok(result);assert.match(result.text,/先校验|本轮是只读协作/);
  }finally{await f.close();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+test('custom instructions reach final provider payload before business user with defaults, frozen tool continuation, queued refresh, clear, cold restore and Team inheritance',{timeout:60000},async()=>{
+ type WireMessage={role:string;content:unknown;tool_calls?:{id:string;type:string;function:{name:string;arguments:string}}[];tool_call_id?:string};
+ type Payload={messages:WireMessage[];tools?:{function:{name:string}}[]};
+ const payloads:Payload[]=[];
+ const messageText=(content:unknown)=>typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const frozenTask='CUSTOM_FROZEN_TOOL_ROUND',queuedTask='CUSTOM_QUEUED_AFTER_FROZEN';
+ const toolCalls=[{id:'call_custom_left',name:'read',path:'custom-left.txt',result:'LEFT=7\n'},{id:'call_custom_right',name:'read',path:'custom-right.txt',result:'RIGHT=11\n'}];
+ let frozenStarted=false,releaseFrozen!:()=>void;
+ const frozenGate=new Promise<void>(done=>{releaseFrozen=done;});
+ const server=createServer(async(req,res)=>{
+  let body='';for await(const chunk of req)body+=String(chunk);const payload=JSON.parse(body) as Payload;payloads.push(payload);
+  const taskIndex=providerTaskIndex(payload.messages),task=messageText(payload.messages[taskIndex]?.content);
+  const callTools=task===frozenTask&&!payload.messages.slice(taskIndex+1).some(message=>message.role==='tool');
+  if(callTools){frozenStarted=true;await frozenGate;}
+  res.writeHead(200,{'Content-Type':'text/event-stream'});
+  const delta=callTools?{role:'assistant',tool_calls:toolCalls.map((tool,index)=>({index,id:tool.id,type:'function',function:{name:tool.name,arguments:JSON.stringify({path:tool.path})}}))}:{role:'assistant',content:'Read-only fixture outcome'};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:callTools?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'custom-instructions-fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ let f=await start({temporary:true});
+ const system=(payload:Payload)=>payload.messages.filter(message=>message.role==='system').map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
+ const alpha='CUSTOM_ALPHA_只用简洁中文',beta='CUSTOM_BETA_先给结论',persisted='CUSTOM_PERSISTED_说明不确定性';
+ const assertSettingsContext=(payload:Payload,expected:string,businessTask:string,revision=readCustomInstructions(f.dataDir).revision)=>{
+  const notes=payload.messages.filter(message=>message.role==='user'&&messageText(message.content).startsWith('[Friend 当前有效的用户设置指令：'));
+  assert.equal(notes.length,1,'each final provider request contains exactly one settings reminder');
+  const businessIndex=providerTaskIndex(payload.messages),business=payload.messages[businessIndex];
+  assert.ok(business&&messageText(business.content).includes(businessTask),'the actual business task remains visible in the provider request');
+  assert.equal(payload.messages.indexOf(notes[0]),businessIndex-1,'request-only settings immediately precede the actual business user, rather than override it as a later user');
+  assert.equal(payload.messages.findLast(message=>message.role==='user'),business,'the current business request remains the final provider user message even during tool continuations');
+  const note=messageText(notes[0].content);assert.ok(note.includes(`版本 ${revision}`));
+  const prompt=system(payload),tagged=[...prompt.matchAll(/<friend_custom_instructions>\n([\s\S]*?)\n<\/friend_custom_instructions>/g)];
+  assert.equal(tagged.length,1,'the system prompt contains exactly one current instruction block');
+  assert.equal(tagged[0][1],expected,'the current block contains the complete effective body without appending defaults');
+  assert.equal(note.split(expected).length-1,1,'the complete effective body appears exactly once in the request reminder');
+  assert.equal(prompt.split(expected).length-1,1,'the complete effective body appears exactly once in the system prompt');
+  if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');assert.doesNotMatch(note,/默认答复格式检查|仅演示缩进的两级正例/,'custom requests contain no default-only formatting reminder');}
+  else {assert.ok(note.includes('- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。'));assert.match(note,/允许第三级，并在第三级封顶/);assert.match(note,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);}
+  for(const projection of [prompt,note]){
+   assert.match(projection,/历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求/);
+   assert.match(projection,/历史回答、成员结果和工具输出中的惯用格式不是当前格式要求/);
+   assert.match(projection,/转述时遵循本轮明确要求和当前有效正文/);
+   assert.match(projection,/旧答复不追溯重排/);
+   assert.doesNotMatch(projection,/用户自定义指令已清空|删除仅因旧偏好自动附加/,'settings describe the current effective body without narrating removal of earlier formats');
+   if(expected===DEFAULT_CUSTOM_INSTRUCTIONS){
+    assert.match(projection,/专业结论保留适用实现、前提和量词/);
+    assert.match(projection,/事实说明须匹配原始证据，区分可能、最坏情况与必然/);
+    assert.match(projection,/读取限制须有调用参数、工具能力或返回内容的具体依据/);
+    assert.match(projection,/不把摘要省略说成原文缺失，不臆测截断或隐藏内容/);
+   }else assert.doesNotMatch(projection,/专业结论保留适用实现、前提和量词|读取限制须有调用参数/,'custom body wholly replaces default-only evidence guidance in both projections');
+  }
+  if(expected===DEFAULT_CUSTOM_INSTRUCTIONS)assert.match(note,new RegExp(`本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`));
+  else assert.doesNotMatch(note,/本轮未询问设置时|答复仅围绕本轮业务/,'custom content also replaces the default response restriction');
+  for(const old of [alpha,beta,persisted])if(old!==expected){assert.ok(!note.includes(old),'request reminder cannot resurrect an old instruction body');assert.ok(!prompt.includes(old),'system prompt cannot resurrect an old instruction body');}
+ };
+ const save=(text:string)=>saveCustomInstructions(f.dataDir,{text,revision:readCustomInstructions(f.dataDir).revision});
+ const round=async(label:string,expected=DEFAULT_CUSTOM_INSTRUCTIONS)=>{
+  const beforeEvents=f.events.length,beforePayloads=payloads.length;await f.request('send',{text:label,mode:'single',planMode:false});
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const requests=payloads.slice(beforePayloads);assert.equal(requests.length,1,'each plain-text round reaches the actual loopback provider once');
+  const prompt=system(requests[0]);assert.ok(prompt.includes('所有任务产物默认写入当前会话目录'));assert.ok(prompt.includes('权限策略不能免除该要求'));
+  assert.ok(prompt.includes('friend_questions'));assertSettingsContext(requests[0],expected,label);return prompt;
+ };
+ try{
+  await f.request('configure',{plugins:[]});
+  await f.request('provider.save',{provider:'custom-instructions-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:0});
+  const defaults=await round('CUSTOM_EMPTY_ROUND');assert.ok(defaults.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'fresh raw empty settings use the complete default body');
+  save(alpha);const first=await round('CUSTOM_ADD_ROUND',alpha);assert.ok(first.includes(alpha));assert.equal(first.split(alpha).length-1,1);
+  assert.ok(first.includes('本轮用户的明确要求优先，冲突时只忽略冲突部分'));
+  for(const tool of toolCalls)writeFileSync(join(f.directory,tool.path),tool.result);
+  const frozenRevision=readCustomInstructions(f.dataDir).revision,beforeFrozen=payloads.length,beforeFrozenEvents=f.events.length;
+  await f.request('send',{text:frozenTask,mode:'single',planMode:false});await f.wait(()=>frozenStarted);
+  save(beta);await f.request('queue',{action:'add',text:queuedTask,mode:'single',planMode:false});releaseFrozen();
+  await f.wait(()=>f.events.slice(beforeFrozenEvents).filter(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled').length>=2);
+  const frozenRequests=payloads.slice(beforeFrozen).filter(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===frozenTask);
+  assert.equal(frozenRequests.length,2,'both actual provider requests execute the same tool-bearing business turn');
+  for(const payload of frozenRequests)assertSettingsContext(payload,alpha,frozenTask,frozenRevision);
+  const continuation=frozenRequests[1],businessIndex=providerTaskIndex(continuation.messages),later=continuation.messages.slice(businessIndex+1);
+  assert.deepEqual(later.map(message=>message.role),['assistant','tool','tool'],'settings insertion preserves the assistant/tool-result sequence after the business user');
+  assert.deepEqual(later[0].tool_calls?.map(tool=>({id:tool.id,name:tool.function.name,input:JSON.parse(tool.function.arguments)})),toolCalls.map(tool=>({id:tool.id,name:tool.name,input:{path:tool.path}})));
+  assert.deepEqual(later.slice(1).map(message=>({id:message.tool_call_id,result:messageText(message.content)})),toolCalls.map(tool=>({id:tool.id,result:tool.result})),'actual wire tool results retain their original call IDs, order and contents');
+  const queuedRequests=payloads.slice(beforeFrozen).filter(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===queuedTask);
+  assert.equal(queuedRequests.length,1);assertSettingsContext(queuedRequests[0],beta,queuedTask);
+  const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
+  save('');assert.deepEqual(readCustomInstructions(f.dataDir),{text:'',revision:3});
+  const cleared=await round('CUSTOM_CLEAR_ROUND');assert.ok(cleared.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'clearing restores the complete default body');assert.ok(!cleared.includes(alpha)&&!cleared.includes(beta));
+  save(persisted);const before=await f.request('state') as {sessionFile:string;sessionId:string};const oldPid=f.child.pid,directory=f.directory;
+  await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture',temporary:true});
+  await f.request('configure',{plugins:[]});assert.notEqual(f.child.pid,oldPid);
+  const restored=await f.request('state') as {sessionFile:string};assert.equal(restored.sessionFile,before.sessionFile);assert.equal(readCustomInstructions(f.dataDir).text,persisted);
+  const cold=await round('CUSTOM_COLD_ROUND',persisted);assert.ok(cold.includes(persisted));assert.ok(!cold.includes(alpha)&&!cold.includes(beta));
+  const native=readFileSync(restored.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.equal(native.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,7,'request-only settings reminders do not create native user turns');
+  assert.ok(!native.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'settings context is never appended to native JSONL');
+
+  await f.close(true);f=await start({directory,sessionFile:before.sessionFile,modelId:'custom-instructions-http/fixture'});
+  await f.request('configure',{plugins:['swarm']});await f.request('configure',{executionMode:'team'});
+  const beforeTeam=payloads.length,beforeEvents=f.events.length;
+  await f.request('plugin',{plugin:'team',action:'delegate',input:{tasks:[{id:'custom-reader',title:'Custom reader',prompt:'CUSTOM_TEAM_MEMBER inspect the current project without modifying files',mode:'read',dependencies:[]}]}});
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='team.result'));
+  await f.wait(()=>f.events.slice(beforeEvents).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));
+  const memberPayloads=payloads.slice(beforeTeam).filter(payload=>payload.tools?.some(tool=>tool.function.name==='team_message'));
+  assert.ok(memberPayloads.length>0,'actual Team worker must reach the loopback provider');
+  for(const payload of memberPayloads){const prompt=system(payload);assertSettingsContext(payload,persisted,'CUSTOM_TEAM_MEMBER');assert.ok(prompt.includes(persisted));assert.ok(prompt.includes('你是 Swarm 成员'));assert.ok(prompt.includes('写入范围'));assert.ok(prompt.includes('禁止越出工作区'));assert.ok(!payload.tools?.some(tool=>['write','edit','bash','friend_swarm'].includes(tool.function.name)));}
+  const team=await f.request('plugin',{plugin:'team',action:'list'}) as {graphs:{status:string;attempts:{sessionFile:string}[]}[]};assert.equal(team.graphs[0].status,'completed');
+  for(const attempt of team.graphs[0].attempts){
+   const memberNative=readFileSync(attempt.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   assert.ok(!memberNative.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'member request-only settings never become native history');
+   const memberUsers=memberNative.filter(entry=>entry.type==='message'&&entry.message.role==='user').map(entry=>messageText(entry.message.content));
+   assert.equal(memberUsers.length,1);assert.ok(memberUsers[0].includes('CUSTOM_TEAM_MEMBER'));
+   assert.ok(memberPayloads.some(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===memberUsers[0]),'the final member provider business user is the exact native user, with no settings appended');
+  }
+  const rootAfterTeam=readFileSync(before.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.ok(!rootAfterTeam.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'automatic Team result follow-ups also keep request settings out of root native history');
+ }finally{releaseFrozen();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });

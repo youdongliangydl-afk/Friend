@@ -20,7 +20,7 @@ import {TODO_TYPE,SIDECHAT_TYPE,todoItems,projectTodo,ownedEntries,stableForkLea
 import {providerSystems,projectMessages,projectTeammateMessages,projectTraceSystems,traceJSON} from './message-projection.js';
 import {RunChangesTracker,projectRunChanges,RUN_CHANGES_TYPE} from './run-changes.js';
 import {SessionMetricRecorder,projectSessionMonitor,SESSION_METRIC_TYPE} from './session-monitor.js';
-import {guardDesktopModelRequests} from '@friend-pi/core';
+import {guardDesktopModelRequests,customInstructionsExtension} from '@friend-pi/core';
 import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 import {createExpertEvaluationHost} from './expert-evaluation-host.js';
@@ -159,6 +159,7 @@ async function admitQueuedInput():Promise<boolean>{
 }
 function imageIdentity(images:readonly unknown[]){return digest(JSON.stringify(images.map(raw=>{const image=object(raw);return [image.mimeType,image.data];})));}
 function output(message:unknown,flushed?:()=>void){if(process.connected){if(flushed)process.send?.(message,flushed);else process.send?.(message);}else flushed?.();}
+function startupPhase(phase:'provider-runtime'|'model-selection'|'resources'|'native-session'|'agent-session'|'extensions'|'restore'|'metadata'){output({type:'startup.phase',phase});}
 function publish(type:string,data:unknown){if(type==='state'&&!object(data).isRunning&&!disposed&&!['active','waiting','verifying'].includes(services.currentGoal()?.status||''))void changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000,terminalRequestId?:string):Promise<unknown>{
   const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer,terminalRequestId});publish('dialog',{id,kind,title,...input,expiresAt:Date.now()+timeout});});
@@ -304,7 +305,7 @@ function guard():ExtensionFactory{return pi=>{
 
     const currentTodo=projectTodo(session.sessionManager.getBranch(),runId);
     const todoInstruction='需要用户确认需求或选择时，使用 friend_questions 将相关问题合为一组；等待正式回答，不推断未提交的选项。多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需维护 Todo 清单。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
-    const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
+    const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。此桌面宿主在后台执行成员，delegate 返回不代表成员完成。委派后可继续独立工作；需要等待成果时结束本轮答复，待宿主自动回传后再用 result 读取成果。不要用 result、list、sleep 或循环查询等待成员；本轮用户明确询问当前进度时可按需读取一次状态。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
     const recallInstructions=enabled.includes('memory')?'自动记忆目录并非完整证据。需要回忆约束或排查问题时，先提取任务中的区分性关键词、实体、错误码与代码路径，使用 friend_memory search 做短查询；读取命中记忆的完整正文和全部适用条件，必要时用已登记 source.read/read.range 回查原文。检索命中、进入上下文、实际请求可见与回答正确是不同结论。不搜索未登记原始历史，不把附件或单次要求泛化为长期指令。':'';
     const evidenceInstructions='基于来源形成结论时，分别保留目标/要求、已确认事实、尚待确认三类状态，以及适用对象、时间和条件。目标/要求不等于已经实现，待确认或未提及不等于否定。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突；否则保留差异、来源和未知，不补成当前事实。转述成员结论前对照可用原文和实际读取/检查记录，未经核实的推断明确标注。';
     const sourceScopeInstructions=`当前项目绝对路径：${cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的数量或完成状态，只有实际核实后才可写为事实。`;
@@ -332,6 +333,8 @@ function guard():ExtensionFactory{return pi=>{
       if(readOnly)return {block:true,reason:'本轮是只读协作，主 Agent 使用读取工具，不运行命令或修改文件'};
     }
     if(event.toolName==='friend_swarm'&&input.action==='plan.validate'&&object(input.input).strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size))return {block:true,reason:'本轮已有协作图，不能以直接策略绕过原图核验'};
+    // A failed explicit graph/contract must not be replaced by generic verification.
+    if(event.toolName==='friend_swarm'&&input.action==='create'&&!swarmCorrectionActive)correctionEligibleRun=undefined;
     if(swarmCorrectionActive){
       if(event.toolName==='friend_swarm'){
         const data=object(input.input),tasks=Array.isArray(data.tasks)?data.tasks.map(object):[];
@@ -353,8 +356,9 @@ function guard():ExtensionFactory{return pi=>{
 async function approvePermission(request:PermissionRequest,terminalRequestId?:string){
   if(terminalRequestId&&!terminalRequests.has(terminalRequestId))return false;
   request=temporaryPermission(request,temporaryWriteRoot,cwd);
-  if(stopping||disposed)return false;const epoch=permissionEpoch,mode=permissionMode,decision=permissionDecision(mode,request);
+  if(stopping||disposed)return false;const epoch=permissionEpoch,owner=runId,mode=permissionMode,decision=permissionDecision(mode,request);
   const approved=decision==='allow'||Boolean(await dialog('confirm','确认'+request.operation,{message:request.message},60000,terminalRequestId));
+  if(!approved&&runId===owner&&permissionEpoch===epoch)correctionEligibleRun=undefined;
   if(stopping||disposed||terminalRequestId&&!terminalRequests.has(terminalRequestId)||epoch!==permissionEpoch||!temporaryPermissionMatches(request,temporaryWriteRoot,cwd))return false;
   session.sessionManager.appendCustomEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision});return approved;
 }
@@ -375,14 +379,18 @@ async function bind(){
 async function initialize(){
   process.env.PI_CODING_AGENT_DIR=agentDir;
   initTheme('light',false);
+  startupPhase('provider-runtime');
   runtime=await createProviderRuntime(dataDir);
+  startupPhase('model-selection');
   let model=process.env.FRIEND_PI_TEST_PROVIDER==='1'?await installFixtureProvider(runtime):undefined;
   if(process.env.FRIEND_PI_MODEL){const slash=process.env.FRIEND_PI_MODEL.indexOf('/');const requested=runtime.getModel(process.env.FRIEND_PI_MODEL.slice(0,slash),process.env.FRIEND_PI_MODEL.slice(slash+1));if(requested)model=requested;else if(process.env.FRIEND_PI_DESKTOP_MANAGED!=='1')model=selectedModel(process.env.FRIEND_PI_MODEL);else {missingModelId=process.env.FRIEND_PI_MODEL;process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE='1';}}
   if(!model)model=(await runtime.getAvailable())[0]||runtime.getModels().find(item=>item.provider==='deepseek')||runtime.getModels()[0];
   guardDesktopModelRequests(runtime,dataDir);
+  startupPhase('resources');
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[customInstructionsExtension(dataDir),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
   await loader.reload({resolveProjectTrust:async()=>true});
+  startupPhase('native-session');
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
   if(priorFile){if(!existsSync(priorFile))throw new Error('原始会话历史缺失，未创建替代历史');const raw=readFileSync(priorFile,'utf8');if(!raw.trim())throw new Error('原始历史为空，不能恢复');const entries=raw.trim().split('\n').map(line=>JSON.parse(line));if(entries[0]?.type!=='session'||typeof entries[0].id!=='string')throw new Error('原始历史头部无效，未创建替代历史');const known=new Set<string>();for(const entry of entries.slice(1)){if(!entry||typeof entry.type!=='string'||typeof entry.id!=='string'||!entry.id||known.has(entry.id)||typeof entry.timestamp!=='string'||!Number.isFinite(Date.parse(entry.timestamp))||entry.parentId!==null&&(typeof entry.parentId!=='string'||!known.has(entry.parentId))||entry.type==='message'&&(!entry.message||typeof entry.message.role!=='string'))throw new Error('原始历史条目损坏，索引保留，未创建替代历史');known.add(entry.id);}}
   const manager=priorFile?SessionManager.open(priorFile):SessionManager.create(cwd,join(dataDir,'sessions'));
@@ -397,6 +405,7 @@ async function initialize(){
   if(priorFile){const branch=ownedEntries(manager.getBranch());const latestUser=projectMessages(branch).findLast(message=>message.role==='user');runId=latestUser?.runId;const latestPolicy=branch.findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).v===1&&typeof object(entry.data).runId==='string'&&!!object(entry.data).runId&&typeof object(entry.data).requiresSwarm==='boolean');if(latestPolicy?.type==='custom'&&branch.indexOf(latestPolicy)>branch.findIndex(entry=>entry.id===latestUser?.id))runId=String(object(latestPolicy.data).runId);if(!runId&&latestUser){const userIndex=branch.findIndex(entry=>entry.id===latestUser.id);const receipt=branch.slice(userIndex+1).findLast(entry=>entry.type==='custom'&&/friend-pi\.(memory\.usage|expert\.(run|adoption))/.test(entry.customType)&&typeof object(entry.data).runId==='string');if(receipt?.type==='custom')runId=String(object(receipt.data).runId);}if(runId){process.env.FRIEND_PI_RUN_ID=runId;settledRunId=runId;}}
   if(inputQueue.store.get(`suspension:${manager.getSessionId()}`))inputQueue.pause(true);
   plans=new PlanStore(businessStore,projectIdentity(cwd),manager.getSessionId());
+  startupPhase('agent-session');
   const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager,customTools:[createBashToolDefinition(cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});session=created.session;
   const previousPayload=session.agent.onPayload;
   session.agent.onPayload=async(payload,model)=>{
@@ -464,7 +473,8 @@ async function initialize(){
     if(event.pluginEvent==='swarm.member-supplement'){const data=object(event.data);session.sessionManager.appendCustomEntry('friend-pi.swarm.supplement',{v:1,memberId:data.memberId,messageId:data.messageId,graphId:data.graphId});return;}
     if(event.pluginEvent==='swarm.member-request'){
       const data=object(event.data),graph=swarmGraphs.get(String(data.graphId)),sourceRun=typeof graph?.runId==='string'?graph.runId:undefined;
-      const frame={id:'member-request:'+String(data.attemptId)+':'+digest(data.body),generation:services.generation(),runId:sourceRun,message:'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body),createdAt:new Date().toISOString()};
+      const createdAt=new Date().toISOString(),graphState={id:graph?.id,status:graph?.status,updatedAt:graph?.updatedAt,asOf:createdAt};
+      const frame={id:'member-request:'+String(data.attemptId)+':'+digest(data.body),generation:services.generation(),runId:sourceRun,message:'队友提出补充讨论或返工建议。请读取 friend_swarm member.history 判断；如需修改，创建新的受控任务尝试并重新检查、复核。队友：'+String(data.memberId)+'；建议：'+String(data.body)+'\n来源任务图事实快照（通知生成时）：'+JSON.stringify(graphState)+'\n讨论本身不改变正式成果或任务图状态；历史记录中的状态只反映当时时点。如需报告此后最新状态，先调用 friend_swarm snapshot 读取该来源图。',createdAt};
       if(!graph||graph.sessionId!==session.sessionId||!sourceRun||![sourceRun,runId].includes(String(data.runId))||cancelRequested||stopping){skipRuntimeWake(frame,'stale-member-source');return;}
       if(correctedRun(sourceRun)){skipRuntimeWake(frame,sourceRun===runId?'correction-member-source':'stale-member-source');return;}
       if(data.runId!==runId){skipRuntimeWake(frame,'stale-member-source');return;}
@@ -502,7 +512,8 @@ async function initialize(){
     // after the committed graph snapshot has updated every busy flag.
     queueChanged();
   });
-  await bind();const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}
+  startupPhase('extensions');
+  await bind();startupPhase('restore');const restoredGoal=services.currentGoal();if(!runId&&restoredGoal?.sourceRunId){runId=restoredGoal.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.parse(restoredGoal.createdAt);settledRunId=runId;}
   const policy=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).v===1&&object(entry.data).runId===runId&&typeof object(entry.data).requiresSwarm==='boolean');
   if(policy?.type==='custom')runRequiresSwarm=object(policy.data).requiresSwarm as boolean;
   else if(runId&&restoredGoal&&restoredGoal.sourceRunId===runId)runRequiresSwarm=restoredGoal.mode==='swarm'&&!planMode;
@@ -512,7 +523,7 @@ async function initialize(){
     const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
     for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId!==session.sessionId||graph.runId!==runId||restoredGoal&&restoredGoal.sourceRunId===runId&&graph.goalId!==restoredGoal.id)continue;const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit!==true)runGraphIds.add(id);}
   }
-  await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
+  await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');startupPhase('metadata');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
 }
 
 async function handle(method:string,input:Record<string,unknown>):Promise<unknown>{
@@ -634,6 +645,8 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(queued&&(input.admissionEpoch!==queueEpoch||stopping))throw new Error('消息交付已取消');
     const inputRecord:PendingInput={attachmentMetadata:attachments.map(({text,image,...metadata})=>({...metadata,image:!!image})),id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
     if(queued)inputQueue.handoff(queued.id);
+    // Native commands can request approval before emitting any agent event.
+    publish('state',current());
     void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
       if(sendEpoch!==queueEpoch||stopping||disposed)throw new Error('消息交付已取消');
       if(result==='started'){inputRecord.preflightStarted=true;startedInputId=inputRecord.id;}

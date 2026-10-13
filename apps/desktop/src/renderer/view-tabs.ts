@@ -5,6 +5,10 @@ export function openTool(view:SessionViewState,page:ToolPage):SessionViewState {
   const tab=existing||{id:crypto.randomUUID(),kind:'tool' as const,page};
   return {...view,tabs:existing?tabs:[...tabs,tab],active:tab.id};
 }
+export function toggleTerminal(view:SessionViewState):SessionViewState {
+  const terminal=view.tabs.find(tab=>tab.kind==='tool'&&tab.page==='terminal');
+  return terminal?.id===view.active?{...view,tabs:view.tabs.filter(tab=>tab.id!==terminal.id),active:'conversation'}:openTool(view,'terminal');
+}
 export function toggleTrace(view:SessionViewState):SessionViewState {
   const trace=view.tabs.find(tab=>tab.kind==='tool'&&tab.page==='trace');
   return trace?.id===view.active?{...view,tabs:view.tabs.filter(tab=>tab.id!==trace.id),active:'conversation'}:openTool(view,'trace');

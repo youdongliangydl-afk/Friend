@@ -66,6 +66,14 @@ test('confirmed empty run summaries hide the entire card in both anchored and hi
  assert.match(conversation,/这是正文/);assert.doesNotMatch(conversation,/本轮改动文件|run-changes|本轮没有文件变化|执行结束|统计本轮期间/);
 });
 
+test('historical non-Git empty summaries hide the normal baseline absence without hiding real errors',()=>{
+ const empty:RunChangesSummary={...summary,files:[],fileCount:0,unavailable:'当前项目不是可读取的 Git 工作区',note:'此目录没有可用 Git 基线，仅统计文件工具修改；二进制或大文件不计行数。'};
+ assert.equal(renderToStaticMarkup(React.createElement(ChangedFiles,{summary:empty})), '');
+ for(const boundary of [{unavailable:'文件工具快照未完整记录，本轮变更不可用'},{truncated:true},{fileCount:2,omittedFiles:2}])assert.match(renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,...boundary}})),/本轮改动文件/);
+ const failed=renderToStaticMarkup(React.createElement(ChangedFiles,{summary:{...empty,error:'真实快照读取失败'} as RunChangesSummary}));assert.match(failed,/真实快照读取失败/);
+ const changed={...empty,unavailable:undefined,fileCount:1,files:[{path:'answer.txt',status:'A',binary:false,additions:1,deletions:0}]};assert.match(renderToStaticMarkup(React.createElement(ChangedFiles,{summary:changed})),/answer.txt|查看 Diff/);
+});
+
 test('empty file lists retain errors, unavailable snapshots and omitted or incomplete comparisons',()=>{
  const empty={...summary,files:[],fileCount:0};
  for(const boundary of [{unavailable:'Git 基线读取失败'},{error:'统计读取失败'},{truncated:true},{omittedFiles:2,fileCount:2},{fileCount:3}]){

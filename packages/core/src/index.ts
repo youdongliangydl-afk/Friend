@@ -13,8 +13,10 @@ export * from './capability-services.js';
 export * from './collaboration-services.js';
 export * from './expert-evaluation.js';
 import type {ExpertEvaluationHost} from './expert-evaluation.js';
+export {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,DEFAULT_CUSTOM_INSTRUCTIONS,type CustomInstructions} from './custom-instructions.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {requireReadyModel,savedModelIds} from './model-readiness.js';
+import {commandNotice} from './command-notice.js';
 export {guardDesktopModelRequests,requireReadyModel,testConfiguredModel,registerSavedModel,invalidateProvider,savedModelIds,modelReadiness} from './model-readiness.js';
 const desktopVerificationRuntimes=new WeakMap<object,Promise<ModelRuntime>>();
 
@@ -328,9 +330,9 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
     async execute(_id,params,_signal,_update,ctx) { const result = await call(params.action,params.input || {},ctx); const content=options.projectToolResult?options.projectToolResult(params.action,result):result; return {content:[{type:'text',text:JSON.stringify(content)}],details:result}; },
   });
   pi.registerCommand(name,{description,handler:async(args,ctx) => {
-    const space = args.indexOf(' '); const action = args ? (space < 0 ? args : args.slice(0,space)) : 'snapshot'; const rest = space < 0 ? '' : args.slice(space+1);
+    const parts = args.match(/^\s*(\S+)(?:\s([\s\S]*))?$/); const action = parts?.[1] || 'snapshot'; const rest = parts?.[2] || '';
     const input = rest.trim().startsWith('{') ? object(JSON.parse(rest)) : rest ? {text:rest} : {};
-    const result = await call(action,input,ctx,'user'); ctx.ui.notify(JSON.stringify(result,null,2),'info');
+    const result = await call(action,input,ctx,'user'); const notice=commandNotice(name,action,result);ctx.ui.notify(notice.message,notice.level);
   }});
   pi.on('session_shutdown',async() => { current = undefined; off(); await controller.dispose?.(); });
 }
@@ -352,7 +354,8 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
   const fixture=fauxProvider({api:'friend-fixture-api',provider:'friend-fixture',models:[{id:'offline',name:'离线验证模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096},{id:'alternate',name:'离线替代模型（非真实服务）',reasoning:false,input:['text','image'],contextWindow:32768,maxTokens:4096}],tokensPerSecond:300});
   const respond: Parameters<typeof fixture.setResponses>[0][number] = (context,options) => {
     fixture.appendResponses([respond]);
-    const messages=context.messages;const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
+    // Route this synthetic provider by the business task; keep the real provider context unchanged.
+    const messages=context.messages.filter(message=>!('customType' in message&&message.customType==='friend-pi.custom-instructions.context.v1')&&!(message.role==='user'&&visibleText(message.content).startsWith('[Friend 当前有效的用户设置指令：')));const content=messages.map(message=>message.role==='system'?JSON.stringify(message):visibleText(message.content)).join('\n');
     const hasResult=messages.some(message=>message.role==='toolResult');
     const latestUser=visibleText([...messages].reverse().find(message=>message.role==='user')?.content);
     if(latestUser.includes('QA_TOOL_GROUPS')){
