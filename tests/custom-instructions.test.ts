@@ -47,6 +47,43 @@ test('the 1,000 character limit accepts its boundary and preserves legacy text u
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
+test('opted-in host evidence policy survives default/custom/clear without changing native context',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-instructions-evidence-'));
+  try {
+    const handlers:Record<string,(event:any)=>any>={};
+    customInstructionsExtension(dir,{sourceEvidence:true})({on(name:string,callback:(event:any)=>any){handlers[name]=callback;}} as unknown as ExtensionAPI);
+    const native=Object.freeze([{role:'system',content:'host rules',timestamp:1},{role:'user',content:'old task',timestamp:2},{role:'assistant',content:'old answer',timestamp:3},{role:'user',content:'current task',timestamp:4},{role:'assistant',content:[{type:'toolCall',id:'read-1',name:'read',arguments:{path:'fixture.txt'}}],timestamp:5},{role:'toolResult',toolCallId:'read-1',content:[{type:'text',text:'fixture content'}],timestamp:6}]);
+    const before=JSON.stringify(native),tag='<friend_source_evidence>',end='</friend_source_evidence>';
+    let policy:string|undefined;
+    for(const [revision,text] of [[0,''],[1,'ONLY_USER_BODY'],[2,'']] as const){
+      if(revision)saveCustomInstructions(dir,{text,revision:revision-1});
+      const system=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
+      const once=handlers.context_with_system({messages:native}).messages;
+      const twice=handlers.context_with_system({messages:once}).messages;
+      for(const messages of [once,twice]){
+        const notes=messages.filter((message:any)=>message.role==='custom'&&message.customType==='friend-pi.custom-instructions.context.v1');
+        assert.equal(notes.length,1);
+        const note=notes[0];assert.ok(note.content.startsWith('[Friend 当前有效的用户设置指令：全局偏好背景]'));
+        const originals=messages.filter((message:any)=>message!==note);
+        assert.equal(originals.length,native.length);for(let index=0;index<native.length;index++)assert.equal(originals[index],native[index]);
+        assert.equal(messages.indexOf(note)+1,messages.indexOf(native[3]));assert.equal(messages.at(-2),native[4]);assert.equal(messages.at(-1),native[5]);
+        for(const projection of [system,note.content]){
+          assert.equal(projection.split(tag).length-1,1);assert.equal(projection.split(end).length-1,1);
+          const currentPolicy=projection.slice(projection.indexOf(tag)+tag.length,projection.indexOf(end));
+          if(policy===undefined)policy=currentPolicy;assert.equal(currentPolicy,policy,'both projections retain the same host policy across user-setting changes');
+          const body=projection.match(/<friend_custom_instructions>\n([\s\S]*?)\n<\/friend_custom_instructions>/)?.[1];
+          if(projection===system)assert.equal(body,text||DEFAULT_CUSTOM_INSTRUCTIONS);
+          if(text){assert.ok(projection.includes(text));assert.ok(!projection.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.doesNotMatch(projection,/默认答复格式检查/);}
+          else assert.equal(projection.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
+        }
+        assert.ok(system.indexOf(end)<system.indexOf('<friend_custom_instructions>'),'host policy remains outside the replaceable user body');
+      }
+      assert.deepEqual(readCustomInstructions(dir),{text,revision});
+    }
+    assert.equal(JSON.stringify(native),before,'projection neither edits nor persists an extra native message');
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
 test('new executions use full defaults, verbatim replacement and default restoration without changing raw storage',()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-instructions-hook-'));
   try {

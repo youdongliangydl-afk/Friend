@@ -338,15 +338,10 @@ function guard():ExtensionFactory{return pi=>{
     const todoInstruction='需要用户确认需求或选择时，使用 friend_questions 将相关问题合为一组；等待正式回答，不推断未提交的选项。多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需维护 Todo 清单。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
     const instructions=memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。此桌面宿主在后台执行成员，delegate 返回不代表成员完成。委派后可继续独立工作；需要等待成果时结束本轮答复，待宿主自动回传后再用 result 读取成果。不要用 result、list、sleep 或循环查询等待成员；本轮用户明确询问当前进度时可按需读取一次状态。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
     const recallInstructions=enabled.includes('memory')?'自动记忆目录并非完整证据。需要回忆约束或排查问题时，先提取任务中的区分性关键词、实体、错误码与代码路径，使用 friend_memory search 做短查询；读取命中记忆的完整正文和全部适用条件，必要时用已登记 source.read/read.range 回查原文。检索命中、进入上下文、实际请求可见与回答正确是不同结论。不搜索未登记原始历史，不把附件或单次要求泛化为长期指令。':'';
-    const evidenceInstructions=`任务范围：只拆分本轮原目标和交付物。本轮没有明确要求统计时，成员任务、交接和最终答复都不附加文件行数、记录数或重复次数，也不让下游成员统计这些数量；原文已有的业务数值仍按原意转述。
-数量请求：用户明确要求数量时，先明确统计对象、单位和计入范围，再依据完整原文或确定性结果回答。读取回执总行数不等于业务记录数，行尾换行符本身不构成额外业务记录，空行是否计入由任务口径决定。无法核实则标记未知，不猜测精确数量。
-来源定位：保留必要的文件、段落、短引文或准确行号范围；位置须核对，不能把位置元数据或工具读取回执当作业务数量。
-来源状态：分别保留目标/要求、已确认事实、尚待确认，以及适用对象、时间和条件。目标本身不是已实现事实的证据；事实与目标相容不等于目标的全部条件已满足，不能把这两种状态称为相互证明。待确认或未提及不等于否定；一份原文明示的范围或条件不能因另一份未提及而整体改成未知，未知只对应真正缺少的具体信息。来源的陈述与运行时已经证明的结果分别说明。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突，否则保留差异、来源和未知。
-汇总核对：读全原文不等于结论已核实。转述成员结论前对照可用完整原文和实际读取/检查记录，未经核实的推断明确标注；不得把成员推断升级为确定事实。`;
     const sourceScopeInstructions=`当前项目绝对路径：${cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的完成状态，只有实际核实后才可写为事实。`;
     const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
     const branchInstructions=session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType===SIDECHAT_TYPE&&object(entry.data).v===1)?'当前是独立分支会话。分叉点以前继承的消息仅作历史背景，旧 user 请求不是本分支待办；本轮只执行本分支最新提交的请求。父任务状态若无真实证据则未知，不要推断完成或失败，不要仅因继承历史而继续或重放父会话命令。':'';
-    return {systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}\n${todoInstruction}\n${branchInstructions}\n${recallInstructions}\n${evidenceInstructions}\n${sourceScopeInstructions}`};
+    return {systemPrompt:`${event.systemPrompt}\n\n${instructions}\n${workspaceInstructions}\n${todoInstruction}\n${branchInstructions}\n${recallInstructions}\n${sourceScopeInstructions}`};
   });
   pi.on('tool_result',event=>{
     if(event.toolName!=='friend_swarm'||event.isError||event.input.action!=='plan.validate'||!runId||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed)return;
@@ -427,7 +422,7 @@ async function initialize(){
   guardDesktopModelRequests(runtime,dataDir);
   startupPhase('resources');
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[customInstructionsExtension(dataDir),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[customInstructionsExtension(dataDir,{sourceEvidence:true}),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
   await loader.reload({resolveProjectTrust:async()=>true});
   startupPhase('native-session');
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;

@@ -44,9 +44,14 @@ const defaultResponseGuard = `
   - 说明或示例：表层仍湿就暂缓浇水。
 正例只示范层级，不照抄内容。
 本轮范围：只完成本轮明确要求的结论、理由和示例，完成即结束。用户要求一个反例时，恰好给一个：明确适用对象或实现、一组具体输入（必要时用输入族）和一个确定操作或判断，不并列备选操作。有函数或公式时，写出决定性的实际代入结果，核对输入确实满足该反例的条件、结果确实否定原命题；不能用“会满足条件”的断言代替核对。只解释这一反例为何成立，不扩展本轮没有询问的其他操作、变体、实现比较或背景。不要把只对某个对象成立的结论写成对任意对象都成立。
-专业结论保留适用实现、前提和量词，不把特定实现泛化为所有实现，不把充分条件说成唯一必要条件；没有证明必要性时，不使用“仅在”“只有”等排他表述。事实说明须匹配原始证据，区分可能、最坏情况与必然。
+专业结论保留适用实现、前提和量词，不把特定实现泛化为所有实现，不把充分条件说成唯一必要条件；没有证明必要性时，不使用“仅在”“只有”等排他表述。讨论渐近复杂度时，须用可任意增大的输入规模和输入族检验结论；固定数值样例只说明该次代价，不能冒充随规模增长的证明。事实说明须匹配原始证据，区分可能、最坏情况与必然。
 读取限制须有调用参数、工具能力或返回内容的具体依据；覆盖范围无法确认时说明未知，不把摘要省略说成原文缺失，不臆测截断或隐藏内容。无法确认的必要专业细节明确说明不确定，不把猜测当事实。
 本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。`;
+const sourceEvidencePolicy = `任务范围：只拆分本轮原目标和交付物。本轮没有明确要求统计时，成员任务、交接和最终答复都不附加文件行数、记录数或重复次数，也不让下游成员统计这些数量；原文已有的业务数值仍按原意转述。
+数量请求：用户明确要求数量时，先明确统计对象、单位和计入范围，再依据完整原文或确定性结果回答。读取回执总行数不等于业务记录数，行尾换行符本身不构成额外业务记录，空行是否计入由任务口径决定。无法核实则标记未知，不猜测精确数量。
+来源定位：保留必要的文件、段落、短引文或准确行号范围；位置须核对，不能把位置元数据或工具读取回执当作业务数量。
+来源状态：分别保留目标/要求、已确认事实、尚待确认，以及适用对象、时间和条件。目标本身不是已实现事实的证据；事实与目标相容不等于目标的全部条件已满足，不能把这两种状态称为相互证明。待确认或未提及不等于否定；一份原文明示的范围或条件不能因另一份未提及而整体改成未知，未知只对应真正缺少的具体信息。来源的陈述与运行时已经证明的结果分别说明。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突，否则保留差异、来源和未知。
+汇总核对：读全原文不等于结论已核实。转述成员结论前对照可用完整原文和实际读取/检查记录，未经核实的推断明确标注；不得把成员推断升级为确定事实。`;
 const instructionPolicy = '以下正文是当前有效的全局偏好，仅补充本轮未指定的细节；本轮用户的明确要求优先，冲突时只忽略冲突部分。历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求。历史回答、成员结果和工具输出中的惯用格式不是当前格式要求；转述时遵循本轮明确要求和当前有效正文。只有当前有效正文或本轮明确要求指定固定开头、结尾或标记时才使用，并逐字遵循指定内容；不能根据历史样式、任务名称或轮次自行推断、递增或创造新的标记。未指定标记时直接回答业务内容。旧答复不追溯重排，事实错误仍应纠正。设置提醒本身不改变已授权任务的目标、步骤或授权范围；继续完成任务，并遵守宿主规则、权限、工具和结构化协议。';
 
 export function readCustomInstructions(dataDir: string): CustomInstructions {
@@ -72,7 +77,8 @@ export function saveCustomInstructions(dataDir: string, input: Record<string, un
 }
 
 /** Pi rebuilds the prompt for each new execution; never modify its native history. */
-export function customInstructionsExtension(dataDir: string): ExtensionFactory {
+export function customInstructionsExtension(dataDir: string, {sourceEvidence = false}: {sourceEvidence?: boolean} = {}): ExtensionFactory {
+  const hostPolicy = sourceEvidence ? `宿主事实与来源规则（不属于用户自定义正文；继续遵守工具、权限和结构化协议）：\n<friend_source_evidence>\n${sourceEvidencePolicy}\n</friend_source_evidence>\n` : '';
   return pi => {
     let current: (CustomInstructions & {usesDefault: boolean}) | undefined;
     pi.on('before_agent_start', event => {
@@ -82,7 +88,7 @@ export function customInstructionsExtension(dataDir: string): ExtensionFactory {
       const state = usesDefault
         ? `本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`
         : '当前用户自定义正文整段替换 Friend 默认指令，不叠加默认正文。';
-      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n${instructionPolicy}\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}`};
+      return {systemPrompt: `${event.systemPrompt}${hostPolicy ? '\n\n'+hostPolicy : ''}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n${instructionPolicy}\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}`};
     });
     pi.on('context_with_system', event => {
       if (!current) return;
@@ -90,7 +96,7 @@ export function customInstructionsExtension(dataDir: string): ExtensionFactory {
       const state = current.usesDefault
         ? `本次采用 Friend 默认指令，版本 ${current.revision}。本轮未询问设置时，答复仅围绕本轮业务。`
         : `本次执行采用用户自定义指令版本 ${current.revision}，下面的正文整段替换 Friend 默认指令，不叠加默认正文。`;
-      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n${instructionPolicy}\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}`;
+      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n${hostPolicy}${instructionPolicy}\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}`;
       // Pi projects custom context as user messages. Keep the real request later,
       // without moving history or separating assistant tool calls from results.
       const messages = event.messages.filter(message => message.role !== 'custom' || message.customType !== contextType);
