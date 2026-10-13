@@ -77,7 +77,15 @@ test('opted-in host evidence policy survives default/custom/clear without changi
           else assert.equal(projection.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
         }
         assert.ok(system.indexOf(tag)>system.indexOf('</friend_custom_instructions>'),'host policy remains outside and after the replaceable user body');
-        assert.ok(note.content.endsWith(end+'\n'),'host policy is the last section of the single request-only reminder');
+        for(const projection of [system,note.content]){
+          if(text)assert.ok(projection.endsWith(end+'\n'),'custom preference replaces default-only response checks');
+          else {
+            assert.ok(projection.indexOf('默认答复格式检查')>projection.indexOf(end),'default response checks follow source guidance in both projections');
+            assert.match(projection,/一个有效反例只证明存在例外/);
+            assert.match(projection,/在这些条件下可以保证/);
+            assert.ok(projection.endsWith('本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。'));
+          }
+        }
       }
       assert.deepEqual(readCustomInstructions(dir),{text,revision});
     }
