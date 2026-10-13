@@ -216,6 +216,37 @@ test('Swarm task authority rejects a provider claiming completion after create a
  }finally{await fixture.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
 
+for(const scenario of ['create-denied','create-cancelled','write-expired','invalid-contract'] as const)test('Swarm correction preserves a failed explicit request: '+scenario,{timeout:scenario==='write-expired'?80000:25000},async()=>{
+ let corrections=0,dialogs=0;
+ const contract={version:1,goal:'Verify the original input against its required digest',verification:'V1',risk:'low',acceptance:['The required digest passes'],forbiddenEffects:['No file writes'],checks:[{id:'required-digest',kind:'file.hash',target:'input.txt',args:{sha256:scenario==='invalid-contract'?'invalid-digest':'0'.repeat(64)}}],artifacts:[]};
+ const create={action:'create',input:{goal:contract.goal,contract,tasks:[{id:'verify',title:'Verify input',prompt:'Read input.txt and verify the required digest',mode:'read',dependencies:[]}]}};
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:unknown}[],index=providerTaskIndex(messages),value=messages[index]?.content,body=typeof value==='string'?value:JSON.stringify(value),recent=messages.slice(index).filter(message=>message.role==='tool');
+  let call:{name:string;input:unknown}|undefined,reply='The requested operation failed; await a new explicit user request.';
+  if(body.includes('用户已选择 Swarm')){corrections++;reply='No replacement graph was requested.';}
+  else if(!recent.length&&!body.includes('independent fresh Swarm request'))call=scenario==='write-expired'?{name:'write',input:{path:'unauthorized.txt',content:'must not be written'}}:{name:'friend_swarm',input:create};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'failed-explicit-request',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:scenario==='invalid-contract'?'allPermissions':'ask'}),responses:Promise<unknown>[]=[];
+ f.child.on('message',(message:Message)=>{if(message.event?.type!=='dialog')return;dialogs++;if(scenario==='write-expired'&&dialogs===1)return;responses.push(f.request('dialog.respond',{id:message.event.data.id,...(scenario==='create-cancelled'?{cancelled:true}:{confirmed:false})}));});
+ try{
+  await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'failed-explicit-request',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  const sent=await f.request('send',{text:'Preserve this requested goal and V1 contract: '+JSON.stringify(create.input),mode:'swarm'}) as {runId:string};
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.runId===sent.runId&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning),scenario==='write-expired'?70000:15000);await Promise.all(responses);
+  const state=await f.request('state') as {sessionFile:string;isRunning:boolean;lifecycleStatus:string;messages:{role:string}[]},entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)),calls=entries.flatMap(entry=>entry.message?.role==='assistant'&&Array.isArray(entry.message.content)?entry.message.content.filter((part:any)=>part.type==='toolCall'):[]),errors=entries.filter(entry=>entry.message?.role==='toolResult'&&entry.message.isError);
+  assert.equal(state.isRunning,false);assert.equal(state.lifecycleStatus,'failed');assert.equal(corrections,0,'a failed or unapproved explicit request must not receive a generic correction');assert.equal(entries.some(entry=>entry.customType==='friend-pi.swarm.correction.v1'),false);assert.equal(state.messages.some(message=>message.role==='automatic'),false);assert.equal(calls.length,1);assert.equal(errors.length,1);assert.equal(existsSync(join(f.directory,'unauthorized.txt')),false);
+  assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,[],'no V0 replacement graph may erase the original contract');
+  if(scenario==='write-expired'){assert.equal(dialogs,1);assert.equal(calls[0].name,'write');assert.equal(entries.filter(entry=>entry.customType==='friend-pi.permission.decision'&&entry.data.approved===false).length,1);assert.match(JSON.stringify(errors[0]),/用户未批准/);}
+  else{assert.equal(calls[0].name,'friend_swarm');assert.deepEqual(calls[0].arguments,create,'retain the complete attempted goal, V1 verification and objective check');if(scenario==='invalid-contract'){assert.equal(dialogs,0);assert.match(JSON.stringify(errors[0]),/checks.sha256/);}else{assert.equal(dialogs,1);assert.match(JSON.stringify(errors[0]),/用户未批准/);}}
+  if(scenario==='create-denied'){
+   const next=await f.request('send',{text:'independent fresh Swarm request',mode:'swarm'}) as {runId:string};
+   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&event.event.data.runId===next.runId&&event.event.data.lifecycleStatus==='failed'&&!event.event.data.isRunning));
+   const later=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)),markers=later.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1');assert.equal(corrections,1,'a fresh user run still receives the ordinary missing-graph correction');assert.equal(markers.length,1);assert.equal(markers[0].data.runId,next.runId);assert.notEqual(next.runId,sent.runId);
+  }
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
 test('a missing Swarm graph gets one read-only correction, with final payload proof and no replay',{timeout:40000},async()=>{
  for(const scenario of ['recover','queued','refuse','stop']){
   let corrections=0,blocked=false,queued=false,release!:()=>void;const held=new Promise<void>(done=>{release=done;});

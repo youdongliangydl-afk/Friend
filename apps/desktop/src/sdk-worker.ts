@@ -289,6 +289,8 @@ function guard():ExtensionFactory{return pi=>{
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
+    // A failed explicit graph/contract must not be replaced by generic verification.
+    if(event.toolName==='friend_swarm'&&input.action==='create'&&!swarmCorrectionActive)correctionEligibleRun=undefined;
     if(swarmCorrectionActive){
       if(event.toolName==='friend_swarm'){
         const data=object(input.input),tasks=Array.isArray(data.tasks)?data.tasks.map(object):[];
@@ -309,8 +311,9 @@ function guard():ExtensionFactory{return pi=>{
 async function approvePermission(request:PermissionRequest,terminalRequestId?:string){
   if(terminalRequestId&&!terminalRequests.has(terminalRequestId))return false;
   request=temporaryPermission(request,temporaryWriteRoot,cwd);
-  if(stopping||disposed)return false;const epoch=permissionEpoch,mode=permissionMode,decision=permissionDecision(mode,request);
+  if(stopping||disposed)return false;const epoch=permissionEpoch,owner=runId,mode=permissionMode,decision=permissionDecision(mode,request);
   const approved=decision==='allow'||Boolean(await dialog('confirm','确认'+request.operation,{message:request.message},60000,terminalRequestId));
+  if(!approved&&runId===owner&&permissionEpoch===epoch)correctionEligibleRun=undefined;
   if(stopping||disposed||terminalRequestId&&!terminalRequests.has(terminalRequestId)||epoch!==permissionEpoch||!temporaryPermissionMatches(request,temporaryWriteRoot,cwd))return false;
   session.sessionManager.appendCustomEntry('friend-pi.permission.decision',{v:1,mode,operation:request.operation,messageHash:digest(request.message),approved,source:decision==='allow'?'automatic':'user',policyRevision});return approved;
 }
