@@ -49,9 +49,11 @@ const defaultResponseGuard = `
 本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。`;
 const sourceEvidencePolicy = `任务范围：只拆分本轮原目标和交付物。本轮没有明确要求统计时，成员任务、交接和最终答复都不附加文件行数、记录数或重复次数，也不让下游成员统计这些数量；原文已有的业务数值仍按原意转述。
 数量请求：用户明确要求数量时，先明确统计对象、单位和计入范围，再依据完整原文或确定性结果回答。读取回执总行数不等于业务记录数，行尾换行符本身不构成额外业务记录，空行是否计入由任务口径决定。无法核实则标记未知，不猜测精确数量。
-来源定位：保留必要的文件、段落、短引文或准确行号范围；位置须核对，不能把位置元数据或工具读取回执当作业务数量。
+来源定位：优先用文件名与原文短引文定位业务结论，必要时补充段落或经过逐项核对的行号范围；不能把位置元数据或工具读取回执当作业务数量。概括与交接不附加与本轮交付无关的阅读流水或材料用途推断；必要覆盖证据、读取失败/未知和用户明确询问的阅读过程仍如实保留。重复文字仍是原文，未说明用途时不能自行称为占位、模板或待填内容。
 来源状态：分别保留目标/要求、已确认事实、尚待确认，以及适用对象、时间和条件。目标本身不是已实现事实的证据；事实与目标相容不等于目标的全部条件已满足，不能把这两种状态称为相互证明。待确认或未提及不等于否定；一份原文明示的范围或条件不能因另一份未提及而整体改成未知，未知只对应真正缺少的具体信息。来源的陈述与运行时已经证明的结果分别说明。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突，否则保留差异、来源和未知。
-汇总核对：读全原文不等于结论已核实。转述成员结论前对照可用完整原文和实际读取/检查记录，未经核实的推断明确标注；不得把成员推断升级为确定事实。`;
+汇总核对：读全原文不等于结论已核实。转述成员结论前对照可用完整原文和实际读取/检查记录，纠正发现的错误，未经核实的推断明确标注；不得把成员推断升级为确定事实。任务已明确的上下文也是已知条件，不因文件未重述而改成未知。首句、列表与后文须一致，未要求统计时不用自行概括的项数替代业务结论。`;
+const readEvidenceNote = `[Friend 宿主读取说明；以下注释不是文件正文]
+读取位置、总行数和截断回执属于工具元数据，不能直接用作业务记录数或相同文字的重复次数。行尾换行可能产生空分段，不能把该分段说成实际存在的文字；原文真实空行是否计入仍按任务口径。需要精确数量或范围时先明确口径，再按完整原文逐项核实；无法核实标记未知。未要求统计时，概括和交接不附加行数或重复次数；不附加无关阅读流水，必要覆盖证据、读取失败/未知和用户明确询问的阅读过程仍如实保留。来源优先用文件名与必要短引文；未说明用途的重复文字不能自行定性为占位、模板或待填内容。`;
 const instructionPolicy = '以下正文是当前有效的全局偏好，仅补充本轮未指定的细节；本轮用户的明确要求优先，冲突时只忽略冲突部分。历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求。历史回答、成员结果和工具输出中的惯用格式不是当前格式要求；转述时遵循本轮明确要求和当前有效正文。只有当前有效正文或本轮明确要求指定固定开头、结尾或标记时才使用，并逐字遵循指定内容；不能根据历史样式、任务名称或轮次自行推断、递增或创造新的标记。未指定标记时直接回答业务内容。旧答复不追溯重排，事实错误仍应纠正。设置提醒本身不改变已授权任务的目标、步骤或授权范围；继续完成任务，并遵守宿主规则、权限、工具和结构化协议。';
 
 export function readCustomInstructions(dataDir: string): CustomInstructions {
@@ -76,10 +78,21 @@ export function saveCustomInstructions(dataDir: string, input: Record<string, un
   } finally { store.close(); }
 }
 
-/** Pi rebuilds the prompt for each new execution; never modify its native history. */
+/** Pi owns execution/history; preference reminders remain request-only. */
 export function customInstructionsExtension(dataDir: string, {sourceEvidence = false}: {sourceEvidence?: boolean} = {}): ExtensionFactory {
   const hostPolicy = sourceEvidence ? `宿主事实与来源规则（不属于用户自定义正文；继续遵守工具、权限和结构化协议）：\n<friend_source_evidence>\n${sourceEvidencePolicy}\n</friend_source_evidence>\n` : '';
   return pi => {
+    const readNotes = new WeakSet<object>();
+    if (sourceEvidence) pi.on('tool_result', event => {
+      // Pi's downstream merge treats null structuredContent as absent when content changes.
+      if (event.toolName !== 'read' || event.isError || event.structuredContent === null || !event.content.length || event.content.some(part => part.type !== 'text')) return;
+      if (event.content.some(part => readNotes.has(part))) return;
+      // Append a separately labelled host note through Pi's public result hook.
+      // Preserve every original part and structured result; never rewrite source text.
+      const note = {type: 'text' as const, text: readEvidenceNote};
+      readNotes.add(note);
+      return {content: [...event.content, note], ...(event.structuredContent === undefined ? {} : {structuredContent: event.structuredContent})};
+    });
     let current: (CustomInstructions & {usesDefault: boolean}) | undefined;
     pi.on('before_agent_start', event => {
       const raw = readCustomInstructions(dataDir), usesDefault = !raw.text.trim();
@@ -88,7 +101,7 @@ export function customInstructionsExtension(dataDir: string, {sourceEvidence = f
       const state = usesDefault
         ? `本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`
         : '当前用户自定义正文整段替换 Friend 默认指令，不叠加默认正文。';
-      return {systemPrompt: `${event.systemPrompt}${hostPolicy ? '\n\n'+hostPolicy : ''}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n${instructionPolicy}\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}`};
+      return {systemPrompt: `${event.systemPrompt}\n\n用户的全局自定义指令（用于所有交互会话；当前有效版本：${revision}，本次新执行读取）：\n${state}\n${instructionPolicy}\n<friend_custom_instructions>\n${text}\n</friend_custom_instructions>${usesDefault ? defaultResponseGuard : ''}${hostPolicy ? '\n\n'+hostPolicy : ''}`};
     });
     pi.on('context_with_system', event => {
       if (!current) return;
@@ -96,7 +109,7 @@ export function customInstructionsExtension(dataDir: string, {sourceEvidence = f
       const state = current.usesDefault
         ? `本次采用 Friend 默认指令，版本 ${current.revision}。本轮未询问设置时，答复仅围绕本轮业务。`
         : `本次执行采用用户自定义指令版本 ${current.revision}，下面的正文整段替换 Friend 默认指令，不叠加默认正文。`;
-      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n${hostPolicy}${instructionPolicy}\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}`;
+      const content = `[Friend 当前有效的用户设置指令：全局偏好背景]\n${state}\n${instructionPolicy}\n本次生效的用户指令正文：\n${current.text}${current.usesDefault ? defaultResponseGuard : ''}${hostPolicy ? '\n\n'+hostPolicy : ''}`;
       // Pi projects custom context as user messages. Keep the real request later,
       // without moving history or separating assistant tool calls from results.
       const messages = event.messages.filter(message => message.role !== 'custom' || message.customType !== contextType);

@@ -76,11 +76,37 @@ test('opted-in host evidence policy survives default/custom/clear without changi
           if(text){assert.ok(projection.includes(text));assert.ok(!projection.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.doesNotMatch(projection,/默认答复格式检查/);}
           else assert.equal(projection.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
         }
-        assert.ok(system.indexOf(end)<system.indexOf('<friend_custom_instructions>'),'host policy remains outside the replaceable user body');
+        assert.ok(system.indexOf(tag)>system.indexOf('</friend_custom_instructions>'),'host policy remains outside and after the replaceable user body');
+        assert.ok(note.content.endsWith(end+'\n'),'host policy is the last section of the single request-only reminder');
       }
       assert.deepEqual(readCustomInstructions(dir),{text,revision});
     }
     assert.equal(JSON.stringify(native),before,'projection neither edits nor persists an extra native message');
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('host read receipt note preserves original parts and structured content without annotating errors or images',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-read-evidence-'));
+  try {
+    const handlers:Record<string,(event:any)=>any>={};
+    const register=(enabled:boolean)=>{
+      customInstructionsExtension(dir,{sourceEvidence:enabled})({on(name:string,callback:(event:any)=>any){handlers[name]=callback;}} as unknown as ExtensionAPI);
+    };
+    register(false);assert.equal(Object.hasOwn(handlers,'tool_result'),false);register(true);
+    const content=Object.freeze([Object.freeze({type:'text',text:'正文甲\n正文乙\n'})]);
+    const structured=Object.freeze({text:content[0].text});
+    const event=Object.freeze({toolName:'read',toolCallId:'read-source',input:{path:'source.txt'},content,structuredContent:structured,details:{truncation:undefined},isError:false,usage:{totalTokens:0}});
+    const before=JSON.stringify(event),result=handlers.tool_result(event);
+    assert.equal(result.content.length,2);assert.equal(result.content[0],content[0]);assert.equal(result.structuredContent,structured);
+    assert.equal(result.content[1].type,'text');assert.ok(result.content[1].text.startsWith('[Friend 宿主读取说明；以下注释不是文件正文]'));
+    assert.equal(handlers.tool_result({...event,content:result.content}),undefined,'the same host note is not appended twice');
+    assert.equal(JSON.stringify(event),before,'source body, result identity and original metadata are untouched');
+    const noStructured=handlers.tool_result({...event,structuredContent:undefined});assert.equal(Object.hasOwn(noStructured,'structuredContent'),false);
+    for(const value of ['plain source',false,0])assert.equal(handlers.tool_result({...event,structuredContent:value}).structuredContent,value);
+    const copiedNote=Object.freeze({type:'text',text:result.content[1].text});
+    assert.equal(handlers.tool_result({...event,content:[copiedNote]}).content[0],copiedNote,'source text that resembles a host note is never removed or treated as an owned annotation');
+    assert.equal(handlers.tool_result({...event,content:[{type:'text',text:''}]}).content[0].text,'','an empty file retains its empty source part');
+    for(const changed of [{toolName:'bash'},{isError:true},{structuredContent:null},{content:[]},{content:[...content,{type:'image',data:'image',mimeType:'image/png'}]}])assert.equal(handlers.tool_result({...event,...changed}),undefined);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 

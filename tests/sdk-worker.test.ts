@@ -1170,7 +1170,29 @@ test('custom instructions reach final provider payload before business user with
   const continuation=frozenRequests[1],businessIndex=providerTaskIndex(continuation.messages),later=continuation.messages.slice(businessIndex+1);
   assert.deepEqual(later.map(message=>message.role),['assistant','tool','tool'],'settings insertion preserves the assistant/tool-result sequence after the business user');
   assert.deepEqual(later[0].tool_calls?.map(tool=>({id:tool.id,name:tool.function.name,input:JSON.parse(tool.function.arguments)})),toolCalls.map(tool=>({id:tool.id,name:tool.name,input:{path:tool.path}})));
-  assert.deepEqual(later.slice(1).map(message=>({id:message.tool_call_id,result:messageText(message.content)})),toolCalls.map(tool=>({id:tool.id,result:tool.result})),'actual wire tool results retain their original call IDs, order and contents');
+  assert.deepEqual(later.slice(1).map(message=>message.tool_call_id),toolCalls.map(tool=>tool.id),'actual wire tool results retain their original call IDs and order');
+  const frozenState=await f.request('state') as {sessionFile:string};
+  const frozenNative=readFileSync(frozenState.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  for(const [index,tool] of toolCalls.entries()){
+   const results=frozenNative.filter(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolCallId===tool.id);
+   assert.equal(results.length,1,'Pi persists the one actual tool result, without a duplicate transcript');
+   const result=results[0].message;
+   assert.equal(result.toolName,'read');assert.equal(result.isError,false);
+   assert.equal(result.content.length,2);assert.deepEqual(result.content[0],{type:'text',text:tool.result},'the complete original source part stays byte-for-byte unchanged');
+   const ended=f.events.filter(event=>event.event?.type==='pi'&&event.event.data.type==='tool_execution_end'&&event.event.data.toolCallId===tool.id);
+   assert.equal(ended.length,1);
+   const completed=ended[0].event?.data as {result:{content:unknown;structuredContent?:unknown;details?:unknown;usage?:unknown}};
+   assert.ok(completed?.result);
+   assert.equal(completed.result.structuredContent,tool.result,'the actual public SDK result merge preserves the original structured source');
+   assert.deepEqual(completed.result.content,result.content,'Pi persists the actual completed result content');
+   assert.equal(result.structuredContent,undefined,'Pi native tool messages intentionally store content, rather than structuredContent');
+   assert.equal(result.details,undefined,'the successful untruncated read keeps its original metadata');
+   assert.equal(completed.result.details,result.details);assert.equal(completed.result.usage,result.usage);
+   assert.ok(result.content[1].text.startsWith('[Friend 宿主读取说明；以下注释不是文件正文]'));
+   assert.equal(messageText(later[index+1].content),messageText(result.content),'next provider request contains the exact native original source plus the separate host note');
+   const callIndex=frozenNative.findIndex(entry=>entry.message?.role==='assistant'&&entry.message.content.some((part:any)=>part.type==='toolCall'&&part.id===tool.id));
+   assert.ok(callIndex>=0&&callIndex<frozenNative.indexOf(results[0]),'native result follows its actual assistant call');
+  }
   const queuedRequests=payloads.slice(beforeFrozen).filter(payload=>messageText(payload.messages[providerTaskIndex(payload.messages)]?.content)===queuedTask);
   assert.equal(queuedRequests.length,1);assertSettingsContext(queuedRequests[0],beta,queuedTask);
   const edited=await round('CUSTOM_EDIT_ROUND',beta);assert.ok(edited.includes(beta));assert.ok(!edited.includes(alpha));
