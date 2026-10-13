@@ -66,7 +66,7 @@ test('new executions use full defaults, verbatim replacement and default restora
     assert.ok(first.startsWith('host rules and tools\n'));
     assert.equal(body(first),custom);assert.ok(!first.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.match(first,/本轮用户的明确要求优先/);
     assert.ok(first.endsWith('</friend_custom_instructions>'));assert.ok(!first.includes(guard),'custom system policy excludes the complete default-only guard');
-    assert.match(first,/当前有效版本：1/);assert.match(first,/历史回答和工具结果中的格式不是当前偏好/);
+    assert.match(first,/当前有效版本：1/);assert.match(first,/历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求/);
     saveCustomInstructions(dir,{text:'新版偏好',revision:1});
     const next=handler!({systemPrompt:'host rules'})!.systemPrompt;
     assert.equal(body(next),'新版偏好');assert.doesNotMatch(next,/首版偏好/);assert.ok(!next.includes(DEFAULT_CUSTOM_INSTRUCTIONS));
@@ -107,6 +107,12 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.equal(fresh.length,native.length+1);assertOriginalOrder(fresh);const freshNote=noteOf(fresh);assert.match(freshNote.content,/版本 0/);
     assert.equal(freshNote.content.split(DEFAULT_CUSTOM_INSTRUCTIONS).length-1,1);
     assert.ok(freshNote.content.endsWith(guard));assert.equal(freshNote.content.split(guard).length-1,1,'system and request-only projections use exactly the same default guard');
+    for(const projection of [freshSystem,freshNote.content]){
+      assert.match(projection,/专业结论保留适用实现、前提和量词/);
+      assert.match(projection,/事实说明须匹配原始证据，区分可能、最坏情况与必然/);
+      assert.match(projection,/读取限制须有调用参数、工具能力或返回内容的具体依据/);
+      assert.match(projection,/不把摘要省略说成原文缺失，不臆测截断或隐藏内容/);
+    }
     assert.match(freshNote.content,/默认答复格式检查：先给核心结论，树状结构最多三级/);
     const example='- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。';
     assert.ok(freshNote.content.includes(example));
@@ -142,8 +148,10 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.ok(cleared.includes(example));assert.match(cleared,/遵守宿主规则、权限、工具和结构化协议/);
     assert.match(cleared,/本轮未询问设置时，答复仅围绕本轮业务/);assert.match(cleared,/本轮用户的明确要求优先/);
     for(const projection of [freshSystem,freshNote.content,activeSystem,note.content,clearedSystem,cleared]){
-      assert.match(projection,/历史回答和工具结果中的格式不是当前偏好/);
-      assert.match(projection,/旧答复按当时设置理解，不追溯更正其格式/);
+      assert.match(projection,/历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求/);
+      assert.match(projection,/历史回答、成员结果和工具输出中的惯用格式不是当前格式要求/);
+      assert.match(projection,/转述时遵循本轮明确要求和当前有效正文/);
+      assert.match(projection,/旧答复不追溯重排/);
       assert.match(projection,/事实错误仍应纠正/);
     }
     saveCustomInstructions(dir,{text:'每次回答说明当前生效的偏好版本。Custom preference after clear',revision:3});

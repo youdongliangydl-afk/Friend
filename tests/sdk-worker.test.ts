@@ -932,8 +932,17 @@ test('custom instructions reach final provider payload before business user with
   if(expected!==DEFAULT_CUSTOM_INSTRUCTIONS){assert.ok(!note.includes(DEFAULT_CUSTOM_INSTRUCTIONS));assert.ok(!prompt.includes(DEFAULT_CUSTOM_INSTRUCTIONS),'a custom body replaces the full default body');assert.doesNotMatch(note,/默认答复格式检查|仅演示缩进的两级正例/,'custom requests contain no default-only formatting reminder');}
   else {assert.ok(note.includes('- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。'));assert.match(note,/允许第三级，并在第三级封顶/);assert.match(note,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);}
   for(const projection of [prompt,note]){
-   assert.match(projection,/旧答复按当时设置理解，不追溯更正其格式/);
+   assert.match(projection,/历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求/);
+   assert.match(projection,/历史回答、成员结果和工具输出中的惯用格式不是当前格式要求/);
+   assert.match(projection,/转述时遵循本轮明确要求和当前有效正文/);
+   assert.match(projection,/旧答复不追溯重排/);
    assert.doesNotMatch(projection,/用户自定义指令已清空|删除仅因旧偏好自动附加/,'settings describe the current effective body without narrating removal of earlier formats');
+   if(expected===DEFAULT_CUSTOM_INSTRUCTIONS){
+    assert.match(projection,/专业结论保留适用实现、前提和量词/);
+    assert.match(projection,/事实说明须匹配原始证据，区分可能、最坏情况与必然/);
+    assert.match(projection,/读取限制须有调用参数、工具能力或返回内容的具体依据/);
+    assert.match(projection,/不把摘要省略说成原文缺失，不臆测截断或隐藏内容/);
+   }else assert.doesNotMatch(projection,/专业结论保留适用实现、前提和量词|读取限制须有调用参数/,'custom body wholly replaces default-only evidence guidance in both projections');
   }
   if(expected===DEFAULT_CUSTOM_INSTRUCTIONS)assert.match(note,new RegExp(`本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`));
   else assert.doesNotMatch(note,/本轮未询问设置时|答复仅围绕本轮业务/,'custom content also replaces the default response restriction');
