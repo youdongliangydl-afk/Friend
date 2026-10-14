@@ -78,6 +78,14 @@ test('frozen comparison belongs to its native session/project/run and survives l
  }finally{f.close();}
 });
 
+test('a legacy non-Git baseline notice does not disable file-tool capture after cold resume',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'friend-non-git-cold-')),data=mkdtempSync(join(tmpdir(),'friend-non-git-cold-data-')),values:RunChangesSummary[]=[];
+ try{const tracker=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));await tracker.begin('r');await tracker.settle('r','completed');assert.match(values[0].unavailable||'',/Git/);
+  const {RecordStore}=await import('@friend-pi/core');const store=new RecordStore('diff',data);try{const key='captures:s:r',record=store.get<Record<string,unknown>>(key)!;store.put(key,{...record.value,failure:values[0].unavailable});}finally{store.close();}
+  const cold=new RunChangesTracker(root,'p',data,'s',value=>values.push(value),()=>[values[0]]);await cold.ensure('r');writeFileSync(join(root,'file.txt'),'before\n');await cold.captureTool('edit',{path:'file.txt'});writeFileSync(join(root,'file.txt'),'after\n');await cold.settle('r','completed');assert.equal(values[1].unavailable,undefined);assert.deepEqual(values[1].files.map(file=>[file.path,file.additions,file.deletions]),[['file.txt',1,1]]);
+ }finally{rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}
+});
+
 test('DSH-style file-tool captures cover non-Git and ignored files without replacing a failed Git baseline',async()=>{
  const {readRunChange}=await import('../apps/desktop/src/run-changes.js');const root=mkdtempSync(join(tmpdir(),'friend-tool-captures-')),data=mkdtempSync(join(tmpdir(),'friend-tool-captures-data-')),values:RunChangesSummary[]=[];
  try{const tracker=new RunChangesTracker(root,'p',data,'s',value=>values.push(value));writeFileSync(join(root,'file.txt'),'before\n');await tracker.begin('r');await tracker.captureTool('edit',{path:'file.txt'});writeFileSync(join(root,'file.txt'),'after\n');await tracker.captureTool('write',{path:'new.txt'});writeFileSync(join(root,'new.txt'),'new\n');await tracker.settle('r','completed');assert.equal(values[0].unavailable,undefined);assert.equal(values[0].files.length,2);assert.match(values[0].note||'',/仅统计文件工具/);

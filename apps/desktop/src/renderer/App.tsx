@@ -7,7 +7,7 @@ import {PiDialog} from './PiDialog.js';
 import {permissionOptions} from './composer-permissions.js';
 import type {PermissionMode} from './types.js';
 import {initialView,browserUrl,browserScopeNames,type SessionViewState,type ToolPage,type BrowserScope} from '../session-view.js';
-import {openTool,toggleTrace,addNewTab,closeViewTab,visibleSessionView} from './view-tabs.js';
+import {openTool,toggleTrace,toggleTerminal,addNewTab,closeViewTab,visibleSessionView} from './view-tabs.js';
 import {TerminalNotice} from './TerminalNotice.js';
 import {SessionTabs,NewTabPage} from './SessionTabs.js';
 import {SessionComposer,type ComposerSnapshot,type ComposerAction} from './SessionComposer.js';
@@ -34,6 +34,8 @@ import {ProviderPanel} from './ProviderPanel.js';
 import {ModelPicker} from './model-picker.js';
 import {PlanPreview} from './plan-preview.js';
 import {TerminalPanel} from './TerminalPanel.js';
+import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
+import {submissionSettled} from './submission-state.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -48,7 +50,7 @@ function pickedPaths(value: unknown): string[] {
 
 
 interface SettingsData {preferences:Preferences;models:AppState['models'];providers:AppState['providers'];paths:{dataDir:string};piSource:string}
-type SettingsPage='general'|'models'|'memory'|'extensions';
+type SettingsPage='general'|'models'|'instructions'|'memory'|'extensions';
 export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClose,onBusy}:{onBusy(busy:boolean):void;page:SettingsPage;setPage(page:SettingsPage):void;onClose():void;projectId?:string;state:AppState;report(message:string,error?:boolean):void;refresh():Promise<AppState>}) {
   const defaults:Preferences={defaultModelId:'',defaultThinkingLevel:'off',defaultPlugins:[...plugins],defaultMode:'single',defaultPlanMode:false,defaultPermissionMode:'auto',defaultWorkspaceDir:'~/Documents/Friend',contextMode:'native',backgroundModelId:''};
   const [settings,setSettings]=useState<SettingsData>({preferences:state.preferences||defaults,models:state.models,providers:state.providers,paths:{dataDir:''},piSource:''});
@@ -56,7 +58,8 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
   const load=useCallback(async()=>{const generation=++loadGeneration.current;setSettingsReady(false);const next=await window.friendPi.request<SettingsData>('settings.get',{projectId:scope==='project'?projectId:undefined});if(generation!==loadGeneration.current)return;setSettings(next);setForm(next.preferences);setSettingsReady(true);},[scope,projectId]);
   useEffect(()=>{void load().catch(error=>report(errorText(error),true));return()=>{loadGeneration.current++;};},[load,report]);
   const providerRefresh=async()=>{const next=await refresh();setSettings(await window.friendPi.request<SettingsData>('settings.get',{projectId:scope==='project'?projectId:undefined}));return next;};
-  useEffect(()=>onBusy(providerBusy||saving),[providerBusy,saving,onBusy]);
+  const [instructionsBusy,setInstructionsBusy]=useState(false);
+  useEffect(()=>onBusy(providerBusy||saving||instructionsBusy),[providerBusy,saving,instructionsBusy,onBusy]);
   useEffect(()=>{for(const field of settingsRoot.current?.querySelector('[data-settings-general]')?.querySelectorAll<HTMLElement>('.field,.switch-row,fieldset')||[])field.hidden=!!query&&!field.textContent?.toLowerCase().includes(query.toLowerCase());},[query]);
   useEffect(()=>{void window.friendPi.request('learning.state').then(raw=>setLearning(asObject(raw))).catch(()=>{});},[]);
   const toggleCapability=async(plugin:'expert'|'memory',enabled:boolean)=>{
@@ -72,7 +75,7 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
   const defaultModel=settings.models.find(model=>model.id===form.defaultModelId)||(!form.defaultModelId?settings.models.find(model=>model.ready):undefined);
   const pageScroll=useRef<Partial<Record<SettingsPage,number>>>({});const pageBody=useRef<HTMLDivElement>(null);const previousPage=useRef(page);
   useEffect(()=>{previousPage.current=page;if(pageBody.current)pageBody.current.scrollTop=pageScroll.current[page]||0;},[page]);
-  return <div className="settings-shell"><nav className="settings-nav" aria-label="设置分类">{([['general','常规'],['models','模型'],['memory','记忆'],['extensions','扩展']] as const).map(([id,label])=><button key={id} aria-current={page===id?'page':undefined} onClick={()=>setPage(id)}>{label}</button>)}</nav><div ref={pageBody} className="settings-body" onScroll={e=>{pageScroll.current[previousPage.current]=e.currentTarget.scrollTop;}}><div ref={settingsRoot} className="panel-content settings-panel"><div data-settings-general hidden={page!=='general'}><input aria-label="搜索设置" placeholder="搜索设置…" value={query} onChange={event=>setQuery(event.target.value)}/><Field label="设置作用域"><select value={scope} disabled={saving} onChange={event=>{setSettingsReady(false);setScope(event.target.value);}}><option value="global">全局默认</option><option value="project" disabled={!projectId}>当前项目覆盖</option></select></Field><div className="panel-intro"><h2>设置</h2><p>模型与权限默认值用于新会话；上下文策略在安全边界应用。</p></div>
+  return <div className="settings-shell"><nav className="settings-nav" aria-label="设置分类">{([['general','常规'],['models','模型'],['instructions','自定义指令'],['memory','记忆'],['extensions','扩展']] as const).map(([id,label])=><button key={id} aria-current={page===id?'page':undefined} onClick={()=>setPage(id)}>{label}</button>)}</nav><div ref={pageBody} className="settings-body" onScroll={e=>{pageScroll.current[previousPage.current]=e.currentTarget.scrollTop;}}><div ref={settingsRoot} className="panel-content settings-panel"><div data-settings-general hidden={page!=='general'}><input aria-label="搜索设置" placeholder="搜索设置…" value={query} onChange={event=>setQuery(event.target.value)}/><Field label="设置作用域"><select value={scope} disabled={saving} onChange={event=>{setSettingsReady(false);setScope(event.target.value);}}><option value="global">全局默认</option><option value="project" disabled={!projectId}>当前项目覆盖</option></select></Field><div className="panel-intro"><h2>设置</h2><p>模型与权限默认值用于新会话；上下文策略在安全边界应用。</p></div>
     <section className="card"><h3>新会话默认值</h3><form onSubmit={event=>{event.preventDefault();if(!settingsReady||saving)return;setSaving(true);void window.friendPi.request<SettingsData>('settings.update',{...form,defaultPlugins:form.contextMode==='infinite'?[...new Set([...form.defaultPlugins,'topic-rebuild'])]:form.defaultPlugins,projectId:scope==='project'?projectId:undefined}).then(async next=>{setSettings(next);setForm(next.preferences);await refresh();report('设置已保存；模型默认值用于新会话，能力与上下文在安全边界生效');}).catch(error=>report(errorText(error),true)).finally(()=>setSaving(false));}}>
       <Field label="默认模型"><select value={form.defaultModelId||''} onChange={event=>{const id=event.target.value;const model=settings.models.find(model=>model.id===id);setForm({...form,defaultModelId:id,defaultThinkingLevel:model?.thinkingLevels?.includes(form.defaultThinkingLevel)?form.defaultThinkingLevel:model?.thinkingLevels?.[0]||'off'});}}><option value="">自动选择已验证模型</option>{settings.models.map(model=><option disabled={!model.ready} value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></Field>
       <Field label="默认思考等级"><select value={form.defaultThinkingLevel} onChange={event=>setForm({...form,defaultThinkingLevel:event.target.value})}>{[['off','不思考'],['minimal','最少'],['low','低'],['medium','中'],['high','高'],['xhigh','最高']].filter(([value])=>(defaultModel?.thinkingLevels||['off']).includes(value)).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></Field>
@@ -90,9 +93,10 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
     <section className="card environment-card"><h3>本地环境</h3><Field label="数据目录"><code>{settings.paths.dataDir||'读取中…'}</code></Field><Field label="Pi 源码版本"><code>{settings.piSource||'读取中…'}</code></Field></section></div>
     <div hidden={page!=='memory'}><section className="card"><label className="switch-row"><span>启用记忆</span><input type="checkbox" role="switch" disabled={saving||!settingsReady} checked={settings.preferences.defaultPlugins.includes('memory')} onChange={event=>void toggleCapability('memory',event.target.checked)}/></label></section><section className="card"><h3>自动学习</h3><p>项目经验和个人偏好由常驻后台串行整理，前台可以同时工作。</p><p className="hint">{learning.alive?'后台服务在线':'等待后台服务'} · {learning.paused?'已暂停':'自动学习'}</p><button onClick={()=>void window.friendPi.request(learning.paused?'learning.resume':'learning.pause').then(()=>window.friendPi.request('learning.state')).then(raw=>setLearning(asObject(raw))).catch(error=>report(String(error),true))}>{learning.paused?'恢复学习':'暂停学习'}</button></section>
     {state.current?.plugins.includes('memory')&&<MemoryPanel sessionId={state.current.sessionId} report={report}/>}</div>
+    <div hidden={page!=='instructions'}><CustomInstructionsPanel onBusy={setInstructionsBusy} active={page==='instructions'}/></div>
     <div hidden={page!=='models'}><ProviderPanel state={{...state,models:settings.models,providers:settings.providers}} report={report} refresh={providerRefresh} onBusy={setProviderBusy}/></div>
     <div hidden={page!=='extensions'}>{state.current?<CapabilitiesPanel sessionId={state.current.sessionId} report={report}/>:<Empty title="打开会话后配置 MCP 与外部工具"/>}</div>
-  </div></div><footer className="settings-footer"><span>{page==='models'?'保存并测试通过后，模型可用于对话':'Friend · Pi'}</span><button className="primary" disabled={providerBusy||saving} onClick={onClose}>{page==='models'?'完成并返回对话':'完成'}</button></footer></div>;
+  </div></div><footer className="settings-footer"><span>{instructionsBusy?'请先保存或取消自定义指令的修改':page==='models'?'保存并测试通过后，模型可用于对话':'Friend · Pi'}</span><button className="primary" disabled={providerBusy||saving||instructionsBusy} onClick={onClose}>{page==='models'?'完成并返回对话':'完成'}</button></footer></div>;
 }
 
 
@@ -127,7 +131,7 @@ export default function App() {
   const project=state.projects.find(p=>p.id===projectId),activeSession=state.sessions.find(s=>s.id===sessionId);
   const workspace=state.current?.workspace||(projectId?{kind:'project' as const,projectId}:undefined),workspaceKey=state.current?.workspacePath||project?.path||'';
   const ownerKey=sessionId||'pending:'+(projectId||'temporary'),ownerRef=useRef(ownerKey);ownerRef.current=ownerKey;
-  const [draftOwner,setDraftOwner]=useState(ownerKey),lastSubmitted=useRef<{sessionId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}|null>(null);
+  const [draftOwner,setDraftOwner]=useState(ownerKey),lastSubmitted=useRef<{sessionId?:string;previousRunId?:string;runId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}|null>(null);
   const [permissionMode,setPermissionMode]=useState<PermissionMode>('auto'),[permissionExplicit,setPermissionExplicit]=useState(false),permissionExplicitRef=useRef(false);
   const sessionView=visibleSessionView(viewOwner.current===sessionId?view:state.current?.ui||initialView());viewRef.current=sessionView;
   const activeViewTab=sessionView.tabs.find(t=>t.id===sessionView.active),toolActive=sessionView.active!=='conversation';
@@ -141,7 +145,7 @@ export default function App() {
   useEffect(()=>{const live=new Set((state.activities||[]).filter(activity=>activity.kind==='dialog'&&activity.dialog?.kind==='questionBatch').map(activity=>activity.dialog!.id));for(const key of questionDrafts.current.keys())if(!live.has(JSON.parse(key)[2]))questionDrafts.current.delete(key);},[state.activities]);
   const restoreDialogs=useCallback(()=>{deferredDialogs.current.clear();setDialogs(stateRef.current.current?.dialogs||[]);},[]);
   useEffect(()=>{if(sessionView.active==='conversation')restoreDialogs();},[sessionId,sessionView.active,restoreDialogs]);
-  const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);},[]);
+  const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);if(submissionSettled(lastSubmitted.current,next.current))setLocalRunning(false);},[]);
   const refresh=useCallback(async()=>{const next=await window.friendPi.request<AppState>('app.state');applyState(next);return next;},[applyState]);
   const invoke=useCallback(async(method:string,input:JsonObject={})=>{try{const result=await window.friendPi.request(method,input);await refresh();return result;}catch(error){report(errorText(error),true);throw error;}},[refresh,report]);
   useEffect(()=>{void refresh().catch(error=>report(errorText(error),true)).finally(()=>setBooting(false));return window.friendPi.onEvent(event=>{
@@ -185,8 +189,8 @@ export default function App() {
   useEffect(()=>{try{localStorage.setItem('friend-pi.layout.v1',JSON.stringify(layout));}catch{}},[layout]);
   const newSession=async(targetProjectId=projectId||'')=>{
     if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;
-    allocationLock.current=true;setNavigating(true);navigationEpoch.current++;
-    try{const next=await window.friendPi.request<AppState>('session.new',{projectId:targetProjectId,modelId:targetProjectId===projectId?pendingModel||undefined:undefined,permissionMode:targetProjectId===projectId?permissionMode:undefined});applyState(next);const id=next.createdSessionId||next.current?.sessionId;if(next.current?.sessionId!==id)return;setDraftOwner(id||ownerKey);return id;}
+    const previousNotice=notice;allocationLock.current=true;setNavigating(true);navigationEpoch.current++;
+    try{const next=await window.friendPi.request<AppState>('session.new',{projectId:targetProjectId,modelId:targetProjectId===projectId?pendingModel||undefined:undefined,permissionMode:targetProjectId===projectId?permissionMode:undefined});applyState(next);setNotice(current=>current===previousNotice?null:current);const id=next.createdSessionId||next.current?.sessionId;if(next.current?.sessionId!==id)return;setDraftOwner(id||ownerKey);return id;}
     catch(error){report(errorText(error),true);}finally{allocationLock.current=false;setNavigating(false);}
   };
   const selectedModelId=state.current?.modelId||pendingModel||state.preferences?.defaultModelId||state.models.find(model=>model.ready)?.id||'';
@@ -196,7 +200,7 @@ export default function App() {
   const send=async()=>{
     if(sendLock.current||allocationLock.current||navigating||migratingDraft.current||!draftRef.current.trim()&&!attachmentsRef.current.length||activeSession?.archived||!selectedModel?.ready){if(!sendLock.current)setSubmissionRevision(old=>old+1);return;}
     sendLock.current=true;setSending(true);setNotice(null);
-    const submitted={sessionId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
+    const submitted:{sessionId?:string;previousRunId?:string;runId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}={sessionId,previousRunId:state.current?.runId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
     const epoch=navigationEpoch.current;
     try{
       let target=sessionId;
@@ -205,16 +209,16 @@ export default function App() {
       const queued=running||!!state.current?.queue?.items.length||!!state.current?.sideDraft||hasQueueIntent(target,{text:submitted.text,attachments:submitted.attachments,mode,planMode});
       if(!queued){setLocalRunning(true);setTools([]);setLive(null);followScroll.current=true;}
       if(queued){const payload={text:submitted.text,attachments:submitted.attachments,mode,planMode},intent=queueIntent(target,payload);await window.friendPi.request('session.queue',{sessionId:target,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state.current?.sideDraft});acknowledgeQueueIntent(intent);}
-      else await window.friendPi.request('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});submitted.accepted=true;
+      else {const response=await window.friendPi.request<{runId?:string}>('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});if(typeof response?.runId==='string')submitted.runId=response.runId;}submitted.accepted=true;
       try{const remaining={text:draftRef.current===submitted.text?'':draftRef.current,attachments:JSON.stringify(attachmentsRef.current.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};localStorage.setItem('friend-pi.draft.v1:'+target,JSON.stringify(remaining));if(submitted.owner!==target)localStorage.removeItem('friend-pi.draft.v1:'+submitted.owner);}catch{}
       if(ownerRef.current===submitted.owner||ownerRef.current===target){if(draftRef.current===submitted.text)setDraft('');setAttachments(old=>JSON.stringify(old.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:old);setDraftOwner(target);}
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
-    finally{sendLock.current=false;setSending(false);setSubmissionRevision(old=>old+1);}
+    finally{sendLock.current=false;setSending(false);if(submissionSettled(submitted,stateRef.current.current))setLocalRunning(false);setSubmissionRevision(old=>old+1);}
   };
   const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});restoreDialogs();setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   const openProject=async(create=false)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke(create?'project.create':'project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};
-  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
-  const traverseSession=async(direction:-1|1)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('navigation.go',{direction});restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const traverseSession=async(direction:-1|1)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('navigation.go',{direction});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
   useEffect(()=>{if(!requestedSession||navigating||sending||sendLock.current||allocationLock.current)return;const id=requestedSession;setRequestedSession(undefined);deferredDialogs.current.clear();void openSession(id);},[requestedSession,navigating,sending,submissionRevision]);
   useEffect(()=>{const keys=(event:KeyboardEvent)=>{if(document.querySelector(':popover-open')||[...document.querySelectorAll<HTMLElement>('[role="dialog"]')].some(node=>node.getClientRects().length>0))return;if(!event.defaultPrevented&&event.metaKey&&['[',']'].includes(event.key)){event.preventDefault();void traverseSession(event.key==='['?-1:1);}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='n'){event.preventDefault();void newSession();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setSidebar(true);searchInput.current?.focus();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='t'){event.preventDefault();void openNewView();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='w'){event.preventDefault();void closeView(sessionView.active);}if(event.ctrlKey&&event.key===String.fromCharCode(96)){event.preventDefault();void showTerminal();}};window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);});
   const ensureUiSession=async()=>{
@@ -229,11 +233,13 @@ export default function App() {
   };
   const openToolView=async(page:ToolPage)=>{if(page==='terminal')return showTerminal();await writeView(openTool(viewRef.current,page));};
   const showTerminal=async()=>{
+    const next=toggleTerminal(viewRef.current);
+    if(next.active==='conversation'){try{await writeView(next);}catch(error){report(errorText(error),true);}return;}
     if(terminalOpening.current)return;terminalOpening.current=true;const epoch=navigationEpoch.current;
     try{
-      await writeView(openTool(viewRef.current,'terminal'));
+      await writeView(next);
       const id=viewOwner.current;if(!id)return;
-      if(stateRef.current.current?.sessionId!==id||epoch!==navigationEpoch.current||stateRef.current.sessions.find(session=>session.id===id)?.archived)return;
+      if(stateRef.current.current?.sessionId!==id||epoch!==navigationEpoch.current||!viewRef.current.tabs.some(tab=>tab.id===next.active&&tab.kind==='tool'&&tab.page==='terminal')||stateRef.current.sessions.find(session=>session.id===id)?.archived)return;
       const terminal=await window.friendPi.request<{id:string}>('terminal.open',{sessionId:id});
       if(stateRef.current.current?.sessionId===id&&epoch===navigationEpoch.current)setTerminalTarget({sessionId:id,id:terminal.id});
     }catch(error){report(errorText(error),true);}finally{terminalOpening.current=false;}
@@ -292,7 +298,7 @@ export default function App() {
   const activeNotice=notice&&<div className={'notice '+(notice.error?'error':'')} style={{flexShrink:0,WebkitAppRegion:'no-drag'} as React.CSSProperties} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>;
   return <div className={'app friend-layout session-fullscreen '+(sidebar?'':'sidebar-hidden ')+(toolActive?'full-tool-active ':'')} style={{'--sidebar-width':sidebarWidth+'px'} as React.CSSProperties}>
     <header className="topbar project-topbar"><nav className="session-navigation" aria-label="会话导航"><button aria-label="后退到上一个会话" title="后退 · ⌘[" disabled={navigating||sending||!state.navigation?.back} onClick={()=>void traverseSession(-1)}><Icon name="back" size={17}/></button><button aria-label="前进到下一个会话" title="前进 · ⌘]" disabled={navigating||sending||!state.navigation?.forward} onClick={()=>void traverseSession(1)}><Icon name="forward" size={17}/></button><button aria-label={sidebar?'收起会话侧栏':'展开会话侧栏'} aria-pressed={sidebar} onClick={()=>{const next=!sidebar;setSidebar(next);if(sessionId)void writeView({...viewRef.current,sidebar:next});}}><Icon name="sidebar" size={17}/></button></nav><div className="workspace-tabs-bar"><SessionTabs view={sessionView} onSelect={id=>{if(id==='conversation')restoreDialogs();void writeView({...viewRef.current,active:id});}} onClose={id=>void closeView(id)} onNew={()=>void openNewView()}/>
-      <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label={activeViewTab?.page==='trace'?'关闭轨迹并返回会话':'打开轨迹'} title={activeViewTab?.page==='trace'?'返回会话':'轨迹'} aria-pressed={toolActive&&activeViewTab?.page==='trace'} onClick={()=>void writeView(toggleTrace(viewRef.current))}><Icon name="trace" size={18}/></button><button aria-label="内嵌终端" title="终端" aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}><Icon name="terminal" size={18}/></button></div></div>
+      <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label={activeViewTab?.page==='trace'?'关闭轨迹并返回会话':'打开轨迹'} title={activeViewTab?.page==='trace'?'返回会话':'轨迹'} aria-pressed={toolActive&&activeViewTab?.page==='trace'} onClick={()=>void writeView(toggleTrace(viewRef.current))}><Icon name="trace" size={18}/></button><button aria-label={activeViewTab?.page==='terminal'?'关闭终端并返回会话':'打开终端'} title={activeViewTab?.page==='terminal'?'返回会话':'终端'} aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}><Icon name="terminal" size={18}/></button></div></div>
     </header>
     <aside className="sidebar" aria-label="项目与会话">
       <div className="sidebar-new"><button className="new-chat" disabled={navigating||sending} onClick={()=>void newSession()}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button className="new-project-button" aria-label="打开项目" title="打开项目" disabled={navigating||sending} onClick={()=>void openProject()}><Icon name="folder" size={19}/></button></div>

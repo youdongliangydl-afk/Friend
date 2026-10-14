@@ -55,7 +55,8 @@ export class RunChangesTracker {
     if(baseline)this.startedAt=baseline.createdAt;
     this.fileToolsOnly=prior?.fileToolsOnly??(!baseline&&!await hasGitRepository(this.root).catch(()=>true));
     const previous=reuse?this.history().findLast(summary=>summary.runId===runId):undefined;
-    this.captureFailure=prior?.failure||previous?.unavailable||(!baseline&&!this.fileToolsOnly?'Git 基线读取失败，本轮变更不可用':undefined);
+    const previousFailure=[prior?.failure,previous?.unavailable].find(failure=>failure&&!(this.fileToolsOnly&&failure==='当前项目不是可读取的 Git 工作区'));
+    this.captureFailure=previousFailure||(!baseline&&!this.fileToolsOnly?'Git 基线读取失败，本轮变更不可用':undefined);
     this.captures=new Map(prior?.files||[]);this.uncoveredAtCapture=new Set(prior?.uncoveredAtCapture||[]);if(prior?.startedAt||previous?.startedAt)this.startedAt=prior?.startedAt||previous!.startedAt;
     this.saveCaptures();
   }

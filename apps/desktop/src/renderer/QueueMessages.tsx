@@ -4,7 +4,7 @@ export interface QueueUi {menuId?:string;editing?:Record<string,string>}
 export function QueueMessages({queue,ui,act,setUi}:{queue?:QueueSnapshot&{suspendedGoal?:{objective:string}};ui?:QueueUi;act(input:Record<string,unknown>):Promise<unknown>;setUi(input:QueueUi):void}){
  const editing=ui?.editing||{};const [pending,setPending]=useState(''),[error,setError]=useState('');
 
- if(!queue||!queue.items.length&&!queue.suspendedGoal&&!queue.paused)return null;
+ if(!queue||!queue.items.length&&!queue.suspendedGoal)return null;
  const operate=async(action:string,item?:QueuedInput,extra:Record<string,unknown>={})=>{setError('');setPending(item?.id||action);try{await act({action,id:item?.id,revision:item?.revision,...extra});const texts={...ui?.editing};if(item&&action==='edit')texts[item.id]=item.text;if(item&&['save','cancelEdit','remove','sidechat'].includes(action))delete texts[item.id];setUi({editing:texts});}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setPending('');}};
  return <section className="queued-messages" aria-label="排队消息">
   <div className="queue-heading"><span>{queue.items.length?`${queue.items.length} 条排队消息`:'消息队列'}{queue.paused?' · 已暂停':''}</span>{queue.paused&&<button onClick={()=>void operate('resume')} disabled={!!pending}>恢复排队</button>}{queue.suspendedGoal&&<span className="queue-return" title={queue.suspendedGoal.objective}>队列完成后恢复原目标</span>}</div>

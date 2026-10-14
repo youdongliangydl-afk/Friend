@@ -1,4 +1,4 @@
-import {SourcePolicy,RecordStore} from '@friend-pi/core';
+import {SourcePolicy,RecordStore,customInstructionsExtension} from '@friend-pi/core';
 /** Standalone native-Pi worker. Pi remains the only owner of its loop and JSONL history. */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, existsSync,openSync,fsyncSync,closeSync } from 'node:fs';
@@ -38,6 +38,7 @@ function request(action:'lease.check'|'handoff.read'|'send'|'shared.read'|'share
   });
 }
 function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined):ExtensionFactory{return pi=>{
+  pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n成员交付范围：结构化交接的 goal 限定原用户目标，requirements 只细化该目标，不扩大交付范围；dependencies.summary 是待核对的成员陈述。按原问题交付结论和必要来源，逐句核对依据。省略未要求的计数、文档结构、阅读过程与空栏目，不把文中未提及的其他问题或未亲自重读列作未知、限制或风险。继续遵守全部权限、完整交接读取及独立复核要求。`}));
   if(start.executionStyle==='team')pi.registerTool({name:'team_message',label:'向主 Agent 发消息',description:'仅向本次委派的主 Agent 报告或澄清；不能联系同级成员或派生。',parameters:Type.Object({body:Type.String()}),async execute(_id,params){const result=await request('send',{to:'parent',body:params.body});return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   else {
   pi.registerTool({name:'swarm_message',label:'Swarm 成员消息',description:'向同一任务图中的另一个任务发消息。仅协作，不派生任务。',parameters:Type.Object({to:Type.String(),body:Type.String()}),async execute(_id,params) {const result=await request('send',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
@@ -123,7 +124,7 @@ async function run(start:MemberStart): Promise<void> {
       return {content:[{type:'text',text:'复核结论已提交；将等 Pi 本次运行真正结束后采用。'}],details:{accepted:true}};
     }});
   };
-  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(handoff?['swarm_handoff_read']:[]),...(start.executionStyle==='team'?['team_message']:['swarm_message','swarm_shared']),...(expert&&!expert.unavailable?['friend_expert']:[])];
+  const coordinationTools=start.discussion?['swarm_message']:start.reviewResult?['swarm_review_result']:[...(handoff?['swarm_handoff_read']:[]),...(start.executionStyle==='team'?['team_message']:['swarm_message',...(!start.parentTools||start.parentTools.includes('swarm_shared')?['swarm_shared']:[])]),...(expert&&!expert.unavailable?['friend_expert']:[])];
   guardDesktopModelRequests(runtime,dataDirectory());
   const settings = SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:[],packages:[],defaultTools:tools});
   const skillPaths=Array.isArray(expert?.skillPaths) ? expert.skillPaths.filter((path):path is string=>typeof path==='string') : [];
@@ -133,9 +134,8 @@ async function run(start:MemberStart): Promise<void> {
     pi.on('tool_call',event=>{if(event.toolName!=='bash')return;const entries=session!.sessionManager.getEntries(),callIndex=entries.findLastIndex(e=>e.type==='message'&&e.message.role==='assistant'&&e.message.content.some(p=>p.type==='toolCall'&&p.id===event.toolCallId)),adoptions=[...confirmedTrials.values()].filter(a=>{const index=entries.findIndex(e=>e.id===a.journalEntryId);return index>=0&&index<callIndex;}).map(a=>({operationId:String(a.operationId),journalEntryId:String(a.journalEntryId),skillsHash:digest(a.skills)}));nativeCalls.set(event.toolCallId,{commandHash:digest(event.input.command),adoptions});});
     pi.on('tool_result',event=>{const call=nativeCalls.get(event.toolCallId);nativeCalls.delete(event.toolCallId);if(event.toolName!=='bash'||!call?.adoptions.length||!event.structuredContent||typeof event.structuredContent!=='object')return;const result=object(event.structuredContent);if(typeof result.exit_code!=='number'||!Number.isSafeInteger(result.exit_code))return;nativeChecks.set(event.toolCallId,{...call,exitCode:result.exit_code,outputHash:digest(visibleText(event.content))});});
   };
-  const evidenceInstructions='基于来源形成结论时，分别保留目标/要求、已确认事实、尚待确认三类状态，以及适用对象、时间和条件。目标/要求不等于已经实现，待确认或未提及不等于否定。只有同一对象、时间和条件下互相排斥的陈述才登记为事实冲突；否则保留差异、来源和未知，不补成当前事实。转述成员结论前对照可用原文和实际读取/检查记录，未经核实的推断明确标注。';
-  const sourceScopeInstructions=`当前项目绝对路径：${start.cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的数量或完成状态，只有实际核实后才可写为事实。`;
-  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[handoffReader,checks,pi=>{pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n${evidenceInstructions}\n${sourceScopeInstructions}`}));pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
+  const sourceScopeInstructions=`当前项目绝对路径：${start.cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的完成状态，只有实际核实后才可写为事实。`;
+  const loader = new DefaultResourceLoader({cwd:start.cwd,agentDir:start.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalSkillPaths:skillPaths,extensionFactories:[handoffReader,checks,pi=>{pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n${sourceScopeInstructions}`}));pi.on('tool_call',async()=>{if(start.resourceReservationId)await request('lease.check',{});if(start.sourceFence){const store=new RecordStore('swarm',start.dataDir);try{new SourcePolicy(store).assert(start.sourceFence);}finally{store.close();}}if(start.v===2&&!inbox?.owned())return {block:true,reason:'成员执行租约已失效，禁止旧尝试继续操作'};});},customInstructionsExtension(start.dataDir,{sourceEvidence:true}),guardMember(start,confirm),start.reviewResult?review:collaboration(start,expert)]});
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools],customTools:[createBashToolDefinition(start.cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});
   session = created.session;
