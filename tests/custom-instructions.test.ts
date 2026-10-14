@@ -30,6 +30,24 @@ test('global instructions persist verbatim, reject stale writers and clear witho
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
+test('automatic continuation keeps its execution preference; a new execution reads the latest revision',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-instructions-owner-'));
+  try {
+    let execution='first';const handlers:Record<string,(event:any)=>any>={};
+    saveCustomInstructions(dir,{text:'FROZEN_ALPHA',revision:0});
+    customInstructionsExtension(dir,{executionId:()=>execution})({on(name:string,handler:(event:any)=>any){handlers[name]=handler;}} as unknown as ExtensionAPI);
+    const prompt=()=>handlers.before_agent_start({systemPrompt:'host'}).systemPrompt;
+    const first=prompt();assert.match(first,/FROZEN_ALPHA/);
+    saveCustomInstructions(dir,{text:'FRESH_BETA',revision:1});
+    assert.equal(prompt(),first,'another Pi prompt in the same host run keeps the frozen version');
+    const native=[{role:'user',content:'original request',timestamp:1},{role:'user',content:'owned result continuation',timestamp:2}];
+    assert.match(handlers.context_with_system({messages:native}).messages.at(-2).content,/FROZEN_ALPHA/);
+    execution='second';const next=prompt();assert.match(next,/FRESH_BETA/);assert.doesNotMatch(next,/FROZEN_ALPHA/);
+    saveCustomInstructions(dir,{text:'',revision:2});assert.equal(prompt(),next);
+    execution='third';assert.ok(prompt().includes(DEFAULT_CUSTOM_INSTRUCTIONS));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
 test('the 1,000 character limit accepts its boundary and preserves legacy text until explicitly shortened',()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-instructions-limit-'));
   try {

@@ -14,7 +14,7 @@ const queries=new Set(['snapshot','list','read','status','result','logs','histor
 export class RuntimeController {
  readonly capabilities:RuntimeCapabilityServices;readonly goals:GoalLedger;readonly tasks:TaskLedger;readonly jobs:ProcessJobs;readonly store:RecordStore;
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
- private disposed=false;private draining=false;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
+ private disposed=false;private draining=false;private activeWake?:WakeFrame;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
  private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
   this.capabilities=new RuntimeCapabilityServices(dataDir);this.goals=new GoalLedger(dataDir);this.tasks=new TaskLedger(dataDir);this.store=new RecordStore('runtime-activity',dataDir);
@@ -31,6 +31,7 @@ export class RuntimeController {
  unsettledJobs(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.jobs.store.list<ProcessJob>('job:').map(row=>row.value).filter(job=>job.sessionId===session&&(job.status==='unknown'||job.kind==='task'&&job.status==='running')):[];}
  unknownActivities(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.store.list<Activity>(`activity:${session}:`).map(row=>row.value).filter(row=>row.status==='unknown'&&row.sideEffect):[];}
  snapshot(ctx=this.context()){return {goal:this.goals.current(ctx),goals:this.goals.list(ctx),tasks:this.tasks.list(ctx),jobs:this.jobs.list(ctx),pendingWakes:this.coordinator?.pending()||[],activeTools:this.activeTools(),unknownActivities:this.unknownActivities()};}
+ hasCurrentWake(){return this.bound()&&[...(this.activeWake?[this.activeWake]:[]),...this.coordinator!.pending()].some(frame=>frame.generation===this.generation()&&this.eligible(frame,this.currentGoal()));}
  extension():ExtensionFactory{return pi=>{
   this.pi=pi;
   pi.on('session_start',(_event,ctx)=>{const reloading=!!this.coordinator,binding=++this.bindingEpoch;this.pi=pi;this.nativeContext=ctx;const context=makeContext(pi,ctx);if(!this.coordinator)this.coordinator=new ContinuationCoordinator(context.sessionId,this.dataDir);if(reloading)setImmediate(()=>{if(this.bound(binding))void this.drain();});});
@@ -117,11 +118,15 @@ export class RuntimeController {
   this.enqueue(`job:${job.id}:${job.status}`,`后台任务 ${job.name}（${job.id}）${job.status}，请读取日志并处理结果，勿无依据重跑。`,{generation:job.generation,runId:job.runId,goalId:goal?.id});
  }
  teamResult(data:JsonObject){if(!this.bound())return;const id=String(data.attemptId||data.graphId);if(this.wakeEvents.has(id))return;const owner=this.store.get<{generation:number;runId?:string;goalId?:string}>(`attempt-owner:${this.nativeContext?.sessionManager.getSessionId()}:${id}`)?.value;if(!owner||owner.generation!==this.generation()||owner.runId!==data.runId)return;this.wakeEvents.add(id);this.enqueue(`team:${id}`,`Team 成员成果已返回。请用 friend_team result 查询实际成果；写入仍需检查、独立复核并由主 Agent 决定整合。`,{generation:owner.generation,runId:owner.runId,goalId:owner.goalId});}
- observeSwarm(data:JsonObject){
+ observeSwarm(data:JsonObject,modelGraphs?:ReadonlySet<string>){
   if(!this.bound())return;
   const ctx=this.context(),goal=this.goals.current(ctx);for(const graph of Array.isArray(data.graphs)?data.graphs.map(object):[]){if(graph.sessionId!==ctx.sessionId||graph.audit===true)continue;
    const id=String(graph.id),previous=this.swarmStatuses.get(id);this.swarmStatuses.set(id,String(graph.status));
    for(const attempt of Array.isArray(graph.attempts)?graph.attempts.map(object):[]){const key=`attempt-owner:${ctx.sessionId}:${String(attempt.id)}`;if(!this.store.get(key)&&attempt.status==='running')this.store.put(key,{generation:this.generation(),runId:graph.runId,goalId:goal?.id});}
+   if(graph.goalId===undefined&&(!goal||!['active','waiting','verifying'].includes(goal.status))&&modelGraphs?.has(id)&&graph.runId===ctx.runId&&this.hooks.mode()==='swarm'&&!this.hooks.planMode()&&graph.status==='integrated'&&previous&&['running','awaiting_review','ready'].includes(previous)&&Array.isArray(graph.tasks)&&graph.tasks.length>0&&graph.tasks.every(task=>object(task).mode==='read')){
+    const version=digest(graph.tasks.map(task=>{const t=object(task);return[t.id,t.currentAttempt,t.resultRevision];})),generation=this.generation();
+    this.enqueue(`swarm-result:${id}:${generation}:${version}`,`只读 Swarm 任务图 ${id} 已整合。本条是原用户请求的成果回传，不是新的任务。请用 friend_swarm snapshot 读取当前实际成果，核对来源后交付原用户要求的中文结论；纠正成员推断，不重建任务、不重跑成员，不再询问是否继续已授权的汇总。`,{generation,runId:ctx.runId});
+   }
    if(!goal||graph.audit===true||graph.sessionId!==ctx.sessionId||(graph.goalId!==undefined?graph.goalId!==goal.id:graph.runId!==goal.sourceRunId))continue;
    if(Array.isArray(graph.attempts))for(const attempt of graph.attempts.map(object))if(attempt.mode==='write')this.goals.noteWrite(ctx,`member:${String(attempt.id)}`);this.tasks.syncExecution(graph,ctx,goal.id,this.goals.current(ctx)?.writeEpoch||0);
    if(graph.status==='integrated'&&previous&&['running','awaiting_review','ready'].includes(previous)){
@@ -152,14 +157,15 @@ export class RuntimeController {
   const binding=this.bindingEpoch;this.draining=true;let admitted:WakeFrame|undefined,sending=false;
   try{
    const userInput=await this.hooks.admitUserInput?.();if(!this.bound(binding)||userInput||this.hooks.planMode())return;
-   const goal=this.currentGoal(),frame=this.coordinator!.take(item=>this.eligible(item,goal));admitted=frame;if(!frame)return;
+   const goal=this.currentGoal(),frame=this.coordinator!.take(item=>this.eligible(item,goal));admitted=frame;this.activeWake=frame;if(!frame)return;
    await this.hooks.prepareWake(frame);
    if(!this.bound(binding)||frame.generation!==this.generation()||!this.eligible(frame,this.currentGoal())||this.hooks.planMode()||!this.nativeContext!.isIdle())return;
    sending=true;if(this.hooks.sendWake)await this.hooks.sendWake(frame);else this.pi!.sendMessage({customType:'friend-pi.runtime-wake',content:frame.message,display:true,details:{eventId:frame.id,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});
   }catch(error){
    if(this.bound(binding)&&admitted?.generation===this.generation()&&this.eligible(admitted,this.currentGoal())){this.goals.setState('paused',this.context(),String(error));this.hooks.publish('notice',{level:'error',message:String(error)});}
   }finally{
-   this.draining=false;
+   this.draining=false;this.activeWake=undefined;
+   if(this.bound()&&admitted)this.hooks.publish('runtime',this.snapshot());
    // Only an unsent wake can return to the queue after a reload. Once sending
    // begins its outcome may be unknown, and replay would risk a duplicate turn.
    if(!this.disposed&&binding!==this.bindingEpoch&&admitted&&!sending)this.coordinator?.defer(admitted);

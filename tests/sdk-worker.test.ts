@@ -1253,3 +1253,68 @@ test('custom instructions reach final provider payload before business user with
   assert.ok(!rootAfterTeam.some(entry=>entry.customType==='friend-pi.custom-instructions.context.v1'||entry.message?.customType==='friend-pi.custom-instructions.context.v1'),'automatic Team result follow-ups also keep request settings out of root native history');
  }finally{releaseFrozen();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
+
+for(const parentDelivers of [false,true])test(`ordinary read-only Swarm delivers once without a Goal: parent already delivers=${parentDelivers}`,{timeout:45000},async()=>{
+ type Wire={role:string;content:unknown;tool_calls?:unknown[]};
+ const textOf=(value:unknown)=>typeof value==='string'?value:Array.isArray(value)?value.filter(part=>part?.type==='text').map(part=>part.text).join('\n'):'';
+ const payloads:{messages:Wire[];tools?:{function:{name:string}}[]}[]=[];
+ let releaseMember!:()=>void,releaseParent!:()=>void,memberHeld=false,creates=0,finals=0;
+ const memberGate=new Promise<void>(done=>{releaseMember=done;}),parentGate=new Promise<void>(done=>{releaseParent=done;});
+ const goal='READONLY_DELIVERY_ORIGINAL',alpha='DELIVERY_FROZEN_ALPHA',beta='NEXT_EXECUTION_BETA';
+ const tasks=[{id:'reader',title:'Read source',prompt:'Read body.txt and return the literal source.',mode:'read',dependencies:[]}];
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);payloads.push(payload);
+  const messages=payload.messages as Wire[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=providerTaskIndex(messages),latest=textOf(messages[index]?.content);
+  const tools=messages.slice(index+1).filter(message=>message.role==='tool').flatMap(message=>{try{return [JSON.parse(textOf(message.content))];}catch{return [];}});
+  let call:{name:string;input:unknown}|undefined,reply='Actual member outcome';
+  if(payloads.length>25){console.error({parentDelivers,requests:payloads.length,reason:'unexpected fixture tool loop'});reply='Fixture stopped after unexpected tool loop';}
+  else if(names.includes('swarm_review_result')){
+   if(!tools.length)call={name:'swarm_review_result',input:{approved:true,findings:'The actual read source matches the member result'}};
+  }else if(names.includes('friend_swarm')){
+   if(latest==='NEXT_USER_REQUEST')reply='New request complete';
+   else if(latest.includes('只读 Swarm 任务图')&&latest.includes('已整合')){
+    if(!tools.length)call={name:'friend_swarm',input:{action:'snapshot',input:{}}};else {reply='FINAL_ORIGINAL_DELIVERY';finals++;}
+   }else{
+    const graph=tools.find(value=>value.status==='created');
+    if(!tools.some(value=>value.valid===true))call={name:'friend_swarm',input:{action:'plan.validate',input:{goal,reason:'One independent read result must be returned',risk:'low',strategy:'collaboration',tasks}}};
+    else if(!graph){creates++;call={name:'friend_swarm',input:{action:'create',input:{goal,checks:[],tasks}}};}
+    else if(!tools.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
+    else if(parentDelivers){await parentGate;if(!tools.some(value=>Array.isArray(value.graphs)&&value.graphs.some((g:any)=>g.id===graph.id&&g.status==='integrated')))call={name:'friend_swarm',input:{action:'snapshot',input:{}}};else {reply='FINAL_ORIGINAL_DELIVERY';finals++;}}
+    else reply='Waiting for the owned member result';
+   }
+  }else{
+   if(!messages.slice(index+1).some(message=>message.role==='tool')){memberHeld=true;await memberGate;call={name:'read',input:{path:'body.txt'}};}else reply='body.txt: literal source evidence';
+  }
+  if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});
+  const delta=call?{role:'assistant',tool_calls:[{index:0,id:'delivery-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};
+  for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'delivery',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}],usage:{prompt_tokens:5,completion_tokens:3,total_tokens:8}})}\n\n`);
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');let f=await start({permissionMode:'allPermissions'});
+ f.child.on('message',(message:Message)=>{if(message.event?.type==='plugin'&&message.event.data.pluginEvent==='swarm.changed'&&JSON.stringify(message.event.data.data).includes('"status":"integrated"'))releaseParent();});
+ try{
+  writeFileSync(join(f.directory,'body.txt'),'literal source evidence');await f.request('configure',{plugins:['swarm']});
+  await f.request('provider.save',{provider:'delivery-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  saveCustomInstructions(f.dataDir,{text:alpha,revision:0});const sent=await f.request('send',{text:goal,mode:'swarm'}) as {runId:string};
+  await f.wait(()=>memberHeld);
+  if(!parentDelivers)await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+  saveCustomInstructions(f.dataDir,{text:beta,revision:1});releaseMember();
+  await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&e.event.data.runId===sent.runId&&e.event.data.isRunning===false&&JSON.stringify(e.event.data.messages).includes('FINAL_ORIGINAL_DELIVERY')),25000).catch(async error=>{const state=await f.request('state') as {isRunning:boolean;lifecycleStatus:string};console.error({parentDelivers,creates,finals,requests:payloads.length,isRunning:state.isRunning,status:state.lifecycleStatus});throw error;});
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal?:unknown};isRunning:boolean;navigationLocked:boolean};
+  assert.equal(state.isRunning,false);assert.equal(state.navigationLocked,false);assert.equal(state.runtime.goal,undefined);assert.equal(creates,1);assert.equal(finals,1);
+  const entries=SessionManager.open(state.sessionFile).getBranch(),wakes=entries.filter(e=>e.type==='custom'&&e.customType==='friend-pi.runtime-wake');
+  assert.equal(wakes.length,parentDelivers?0:1);
+  if(parentDelivers)assert.ok(entries.some(e=>e.type==='custom'&&e.customType==='friend-pi.runtime-wake.skipped'&&object(e.data).reason==='swarm-result-already-delivered'));
+  else {
+   const continued=payloads.filter(p=>textOf(p.messages[providerTaskIndex(p.messages)]?.content).includes('只读 Swarm 任务图'));
+   assert.equal(continued.length,2,'one result read and one final answer');
+   for(const payload of continued){const system=payload.messages.filter(m=>m.role==='system').map(m=>textOf(m.content)).join('\n');assert.ok(system.includes(alpha));assert.ok(!system.includes(beta));}
+   const input=entries.find(e=>e.type==='custom'&&e.customType==='friend-pi.runtime-wake.input');assert.ok(input?.type==='custom'&&object(input.data).background===true);
+  }
+  const requests=payloads.length;await f.request('plugin',{plugin:'swarm',action:'snapshot'});await f.request('plugin',{plugin:'swarm',action:'snapshot'});assert.equal(payloads.length,requests);
+  const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:state.sessionFile,modelId:'delivery-http/fixture',executionMode:'swarm',status:'completed'});
+  assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);assert.equal(payloads.length,requests,'cold restore does not replay an owned result');
+  await f.request('send',{text:'NEXT_USER_REQUEST',mode:'single'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+  const next=payloads.at(-1)!;assert.ok(next.messages.filter(m=>m.role==='system').some(m=>textOf(m.content).includes(beta)));
+ }finally{releaseMember();releaseParent();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});

@@ -59,7 +59,7 @@ const sourceEvidencePolicy = `本轮交付：主会话、成员任务与交接�
 未确认事项：保留来源明示的待确认命题；其他未知只列回答本轮问题所必需且确实缺证的具体命题。风险须有具体原文或实际读取/检查记录支持。完整概括的汇总可以依赖完整交接，说明来源即可；未亲自重读本身不是覆盖缺口。未提及的材料用途、规格和元数据不自动成为新任务；重复文字按原意保留，不推断其他正文或用途。
 数量与来源：用户明确要求数量时，先明确统计对象、单位和计入范围，再依据完整原文或确定性结果计算；工具位置和行尾分段不能直接充当业务数量，无法核实则标记未知。未要求统计时，分派、交接和答复省去新增计数及其口径说明，原文业务数值按原意保留。用文件名和必要短引文定位结论；只报告影响结论的读取失败或覆盖限制，其他阅读流水和规则遵守说明省去。`;
 const readEvidenceNote = `[Friend 宿主读取说明；以下注释不是文件正文]
-以上各内容块保留工具返回的原文。依据实际回执判断读取覆盖，按本轮问题提取结论，分别保留来源的目标、事实和待确认状态。来源用文件名与必要短引文定位。本说明仅供核对，不进入业务概括或交接。`;
+以上各内容块保留工具返回的原文。只按原用户交付提取业务命题，区分目标、事实和待确认。原用户未要求统计时，省去行数、重复次数及计数口径，读取位置回执不能充当业务数量。未说明用途的重复文字按字面保留，不自行定性为占位、模板或待填内容。只说明影响本轮结论的真实读取限制；未提及的惯常章节、其他版本或材料用途不自动成为缺口。来源用文件名与必要短引文定位，本说明不进入业务概括或交接。`;
 const instructionPolicy = '以下正文是当前有效的全局偏好，仅补充本轮未指定的细节；本轮用户的明确要求优先，冲突时只忽略冲突部分。历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求。历史回答、成员结果和工具输出中的惯用格式不是当前格式要求；转述时遵循本轮明确要求和当前有效正文。只有当前有效正文或本轮明确要求指定固定开头、结尾或标记时才使用，并逐字遵循指定内容；不能根据历史样式、任务名称或轮次自行推断、递增或创造新的标记。未指定标记时直接回答业务内容。旧答复不追溯重排，事实错误仍应纠正。设置提醒本身不改变已授权任务的目标、步骤或授权范围；继续完成任务，并遵守宿主规则、权限、工具和结构化协议。';
 
 export function readCustomInstructions(dataDir: string): CustomInstructions {
@@ -85,7 +85,7 @@ export function saveCustomInstructions(dataDir: string, input: Record<string, un
 }
 
 /** Pi owns execution/history; preference reminders remain request-only. */
-export function customInstructionsExtension(dataDir: string, {sourceEvidence = false}: {sourceEvidence?: boolean} = {}): ExtensionFactory {
+export function customInstructionsExtension(dataDir: string, {sourceEvidence = false, executionId}: {sourceEvidence?: boolean; executionId?: () => string | undefined} = {}): ExtensionFactory {
   const hostPolicy = sourceEvidence ? `宿主事实与来源规则（不属于用户自定义正文；继续遵守工具、权限和结构化协议）：\n<friend_source_evidence>\n${sourceEvidencePolicy}\n</friend_source_evidence>\n` : '';
   return pi => {
     const readNotes = new WeakSet<object>();
@@ -100,10 +100,15 @@ export function customInstructionsExtension(dataDir: string, {sourceEvidence = f
       return {content: [...event.content, note], ...(event.structuredContent === undefined ? {} : {structuredContent: event.structuredContent})};
     });
     let current: (CustomInstructions & {usesDefault: boolean}) | undefined;
+    let owner: string | undefined;
     pi.on('before_agent_start', event => {
-      const raw = readCustomInstructions(dataDir), usesDefault = !raw.text.trim();
-      current = {text: usesDefault ? DEFAULT_CUSTOM_INSTRUCTIONS : raw.text, revision: raw.revision, usesDefault};
-      const {text,revision} = current;
+      const id = executionId?.();
+      if (!current || !id || owner !== id) {
+        const raw = readCustomInstructions(dataDir), usesDefault = !raw.text.trim();
+        current = {text: usesDefault ? DEFAULT_CUSTOM_INSTRUCTIONS : raw.text, revision: raw.revision, usesDefault};
+        owner = id;
+      }
+      const {text,revision,usesDefault} = current;
       const state = usesDefault
         ? `本次采用 Friend 默认指令，版本 ${revision}。本轮未询问设置时，答复仅围绕本轮业务。`
         : '当前用户自定义正文整段替换 Friend 默认指令，不叠加默认正文。';
