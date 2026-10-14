@@ -58,6 +58,6 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       }
       if(start.permissionMode!==undefined||start.temporaryWriteRoot){const raw=toolPermissionRequest(event.toolName,input,Boolean(start.temporaryWriteRoot))||(start.temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);if(raw){const request=temporaryPermission(raw,start.temporaryWriteRoot,start.cwd);const decision=permissionDecision(start.permissionMode||'auto',request);const accepted=decision==='allow'||await confirm('确认成员'+request.operation,request.message);pi.appendEntry('friend-pi.permission.decision',{v:1,mode:start.permissionMode,operation:request.operation,messageHash:digest(request.message),approved:accepted,source:decision==='allow'?'automatic':'user'});if(!accepted||!temporaryPermissionMatches(request,start.temporaryWriteRoot,start.cwd))return {block:true,reason:'成员操作未获确认或目录已变化'};}}
     });
-    pi.on('before_agent_start',event => ({systemPrompt: `${event.systemPrompt}\n你是 Swarm 成员。只处理本次任务，不派生子 Agent。工作区：${start.cwd}。写入范围：${start.writeScopes.join(', ')}。完成后报告事实、检查结果与剩余风险。Shell 为高信任工具，禁止越出工作区。`}));
+    pi.on('before_agent_start',event => ({systemPrompt: `${event.systemPrompt}\n你是 Swarm 成员。只处理本次任务，不派生子 Agent。工作区：${start.cwd}。写入范围：${start.writeScopes.join(', ')}。完成后按原用户要求交付有依据的结论；检查与风险只报告实际影响本轮结论的事项，不为填栏目推测缺口。Shell 为高信任工具，禁止越出工作区。`}));
   };
 }
