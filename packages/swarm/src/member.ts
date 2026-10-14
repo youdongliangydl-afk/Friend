@@ -38,7 +38,7 @@ function request(action:'lease.check'|'handoff.read'|'send'|'shared.read'|'share
   });
 }
 function collaboration(start:MemberStart,expert:Record<string,unknown>|undefined):ExtensionFactory{return pi=>{
-  pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n成员交付范围：结构化交接的 goal 是原用户目标，requirements 只细化分工，dependencies.summary 是待核对的成员陈述，均不能扩展原用户交付。只有原用户目标明确要求统计时才提供新增数量与口径，否则省去行数、重复次数及统计说明；原文业务数值按原意保留。材料没有章节时按实际命题概括，重复文字按字面保留，不自行称为占位或模板。未确认事项只列本轮必要且缺证的具体命题或来源明示待确认；不把未提及的惯常章节、其他版本或用途补写成缺口。完整交接保留结论和必要来源，不复述无关角色状态、阅读流水或遵规说明。继续遵守全部权限、完整交接读取与独立复核要求。`}));
+  pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n成员交付范围：结构化交接的 goal 限定原用户目标，requirements 仅细化分工，dependencies.summary 是待核对的成员陈述。概括或汇总按宿主业务命题规则取材，省略空栏目与新增元数据审计；未说明的文档用途、载体或规格不自动成为本轮未知。交接保留完成任务所需的结论、确定程度和必要来源，不复述阅读流水、角色状态或遵规声明。继续遵守全部权限、完整交接读取及独立复核要求。`}));
   if(start.executionStyle==='team')pi.registerTool({name:'team_message',label:'向主 Agent 发消息',description:'仅向本次委派的主 Agent 报告或澄清；不能联系同级成员或派生。',parameters:Type.Object({body:Type.String()}),async execute(_id,params){const result=await request('send',{to:'parent',body:params.body});return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
   else {
   pi.registerTool({name:'swarm_message',label:'Swarm 成员消息',description:'向同一任务图中的另一个任务发消息。仅协作，不派生任务。',parameters:Type.Object({to:Type.String(),body:Type.String()}),async execute(_id,params) {const result=await request('send',params);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
