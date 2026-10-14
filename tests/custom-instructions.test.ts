@@ -101,7 +101,7 @@ test('opted-in host evidence policy survives default/custom/clear without changi
             assert.ok(projection.indexOf('默认答复格式检查')>projection.indexOf(end),'default response checks follow source guidance in both projections');
             assert.match(projection,/一个有效反例只证明存在例外/);
             assert.match(projection,/在这些条件下可以保证/);
-            assert.ok(projection.endsWith('本轮用户明确要求仍然优先，不能把所有任务强制为两级。继续遵守宿主规则、工具和结构化协议。'));
+            assert.ok(projection.endsWith('继续遵守宿主规则、权限、工具和结构化协议。'));
           }
         }
       }
@@ -202,12 +202,7 @@ test('request-only reminder freezes one execution and never mutates native messa
       assert.match(projection,/读取限制须有调用参数、工具能力或返回内容的具体依据/);
       assert.match(projection,/不把摘要省略说成原文缺失，不臆测截断或隐藏内容/);
     }
-    assert.match(freshNote.content,/默认答复格式检查：先给核心结论，树状结构最多三级/);
-    const example='- 结论：盆栽按土壤干湿浇水。\n- 要点：先检查盆土。\n  - 说明或示例：表层仍湿就暂缓浇水。';
-    assert.ok(freshNote.content.includes(example));
-    assert.match(freshNote.content,/核心结论和各主题直接作为一级条目/);
-    assert.match(freshNote.content,/允许第三级，并在第三级封顶/);
-    assert.match(freshNote.content,/本轮用户明确要求仍然优先，不能把所有任务强制为两级/);
+    assert.match(freshNote.content,/默认答复格式检查：遵循默认正文的整体风格/);
     saveCustomInstructions(dir,{text:'ACTIVE_ONLY_111',revision:0});const activeSystem=handlers.before_agent_start({systemPrompt:'host rules'}).systemPrompt;
     assert.ok(activeSystem.endsWith('</friend_custom_instructions>'));assert.ok(!activeSystem.includes(guard));
     saveCustomInstructions(dir,{text:'CHANGED_ONLY_222',revision:1});
@@ -218,7 +213,7 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.match(note.content,/仅补充本轮未指定的细节/);assert.match(note.content,/本轮用户的明确要求优先，冲突时只忽略冲突部分/);
     assert.match(note.content,/设置提醒本身不改变已授权任务的目标、步骤或授权范围；继续完成任务/);assert.doesNotMatch(note.content,/不新增工作任务/);
     assert.match(note.content,/本次生效的用户指令正文：\nACTIVE_ONLY_111/);assert.doesNotMatch(note.content,/CHANGED_ONLY_222/);assert.ok(!note.content.includes(DEFAULT_CUSTOM_INSTRUCTIONS));
-    assert.doesNotMatch(note.content,/默认答复格式检查|第四层|盆栽/,'custom content also replaces the default-only format check and example');
+    assert.doesNotMatch(note.content,/默认答复格式检查|第四层|盆栽/,'custom content also replaces the complete default-only supplement');
     assert.ok(!note.content.includes(guard));assert.ok(note.content.endsWith('ACTIVE_ONLY_111'),'frozen custom context contains only its verbatim custom body');
     const repeated=handlers.context_with_system({messages:request}).messages;
     assert.equal(repeated.length,native.length+1,'reprojecting request context replaces its own reminder without accumulating it');assertOriginalOrder(repeated);
@@ -233,8 +228,8 @@ test('request-only reminder freezes one execution and never mutates native messa
     assert.equal(cleared.replaceAll('版本 3','版本 0'),freshNote.content,'restored and fresh request-only defaults use the same policy apart from revision');
     assert.ok(cleared.endsWith(guard),'restoration adds no settings-change narrative after the default guard');
     assert.doesNotMatch(cleared,/已清空|旧自定义正文|固定首行|删除仅因旧偏好/);
-    assert.match(cleared,/默认答复格式检查：先给核心结论，树状结构最多三级/);
-    assert.ok(cleared.includes(example));assert.match(cleared,/遵守宿主规则、权限、工具和结构化协议/);
+    assert.match(cleared,/默认答复格式检查：遵循默认正文的整体风格/);
+    assert.match(cleared,/遵守宿主规则、权限、工具和结构化协议/);
     assert.match(cleared,/本轮未询问设置时，答复仅围绕本轮业务/);assert.match(cleared,/本轮用户的明确要求优先/);
     for(const projection of [freshSystem,freshNote.content,activeSystem,note.content,clearedSystem,cleared]){
       assert.match(projection,/历史中已被本次有效版本替换的旧自定义指令，不再作为当前开头、结尾或格式要求/);
