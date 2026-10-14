@@ -300,6 +300,19 @@ function requestQuestions(input:unknown,toolCallId:string,signal?:AbortSignal):P
 }
 const questionGeneration=randomUUID();let questionSequence=0;
 function guard():ExtensionFactory{return pi=>{
+ let readonlyLoadout:{runId:string;removed:string[]}|undefined;
+ const commandTools=new Set(['bash','write','edit']);
+ const syncReadonlyLoadout=(readOnly:boolean)=>{
+  // Narrow the public Pi loadout as well as enforcing tool_call below. Restore
+  // only tools this extension removed, never every registered capability.
+  if(readonlyLoadout&&(!readOnly||readonlyLoadout.runId!==runId)){
+   pi.setActiveTools([...new Set([...pi.getActiveTools(),...readonlyLoadout.removed])]);readonlyLoadout=undefined;
+  }
+  if(readOnly&&runId&&!readonlyLoadout){
+   const active=pi.getActiveTools();readonlyLoadout={runId,removed:active.filter(name=>commandTools.has(name))};
+   pi.setActiveTools(active.filter(name=>!commandTools.has(name)));
+  }
+ };
  pi.registerTool({name:'friend_questions',label:'向用户提问',description:'需要用户澄清或选择时，主助手把相关问题合为一组。支持single/multiple/text；逐题填写、复核后一次提交。required必须明确，选项用稳定id/label。不要用默认选项代替用户回答；取消时没有部分答案。',parameters:Type.Object({v:Type.Literal(1),title:Type.String(),questions:Type.Array(Type.Object({id:Type.String(),type:Type.Union(['single','multiple','text'].map(value=>Type.Literal(value))),title:Type.String(),description:Type.Optional(Type.String()),required:Type.Boolean(),options:Type.Optional(Type.Array(Type.Object({id:Type.String(),label:Type.String()}))),allowOther:Type.Optional(Type.Boolean())}),{minItems:1,maxItems:12})}),async execute(id,input,signal){const result=await requestQuestions(input,id,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
 
   pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input,signal){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
@@ -318,6 +331,7 @@ function guard():ExtensionFactory{return pi=>{
     if(prompt&&(!prior||digest(prompt)!==object(object(prior).data).hash))session.sessionManager.appendCustomEntry('friend-pi.trace.system.v1',{v:1,runId,text:prompt.slice(0,65536),hash:digest(prompt),truncated:prompt.length>65536});
   });
   pi.on('before_agent_start',async event=>{
+    if(readonlyLoadout?.runId!==runId)syncReadonlyLoadout(false);
     // Public Pi input hooks identify the submitted prompt before Pi appends image
     // normalization hints. Bind its next new native user object, never an old
     // history entry or another input with the same empty text.
@@ -350,7 +364,9 @@ function guard():ExtensionFactory{return pi=>{
     if(plan.strategy==='direct'&&(runGraphIds.size||activeGraphIds.size||pendingSwarmGraphIds.size)){captureRunPolicy(true);return;}
     captureRunPolicy(plan.strategy!=='direct');
     if(plan.strategy==='direct')correctionEligibleRun=undefined;
-    session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:plan.strategy,readOnlyCollaboration:plan.strategy==='collaboration'&&Array.isArray(plan.tasks)&&plan.tasks.length>0&&plan.tasks.every(task=>object(task).mode==='read'),reason:plan.reason,risk:plan.risk,verificationRequired:plan.verificationRequired,checks:plan.checks,planHash:digest(plan),toolCallId:event.toolCallId});
+    const readOnlyCollaboration=plan.strategy==='collaboration'&&Array.isArray(plan.tasks)&&plan.tasks.length>0&&plan.tasks.every(task=>object(task).mode==='read');
+    session.sessionManager.appendCustomEntry('friend-pi.swarm.plan.v1',{v:1,runId,strategy:plan.strategy,readOnlyCollaboration,reason:plan.reason,risk:plan.risk,verificationRequired:plan.verificationRequired,checks:plan.checks,planHash:digest(plan),toolCallId:event.toolCallId});
+    syncReadonlyLoadout(readOnlyCollaboration);
   });
   pi.on('tool_call',async(event,ctx)=>{
     const input=object(event.input);if(stopping)return {block:true,reason:'正在停止，未开始的工具已取消'};
