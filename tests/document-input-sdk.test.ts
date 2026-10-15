@@ -1,6 +1,6 @@
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {fork,execFileSync} from 'node:child_process';
+import {fork,execFileSync,spawnSync} from 'node:child_process';
 import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -114,7 +114,14 @@ test('an attachment steered into an already streaming turn gains a started recei
 function pdf(pages:number){const objects=['<< /Type /Catalog /Pages 2 0 R >>','', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'],kids:string[]=[];for(let i=0;i<pages;i++){const id=objects.length+1,stream='BT /F1 18 Tf 30 150 Td (STOP_DURING_PDF_PARSE_'+i+') Tj ET';kids.push(id+' 0 R');objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 3 0 R >> >> /Contents ${id+1} 0 R >>`,`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`);}objects[1]=`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages} >>`;let out='%PDF-1.4\n';const offsets:number[]=[];for(const [index,object] of objects.entries()){offsets.push(Buffer.byteLength(out));out+=`${index+1} 0 obj\n${object}\nendobj\n`;}const end=Buffer.byteLength(out);out+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.map(offset=>String(offset).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${end}\n%%EOF\n`;return out;}
 test('stop while PDFKit extraction is active cancels admission and never starts an agent or provider',{timeout:30000,skip:process.platform!=='darwin'},async()=>{
   const provider=await localProvider(()=>({text:'This response must never be requested.'})),worker=await start();try{await configureProvider(worker,provider.baseUrl);const path=join(worker.directory,'slow-parse.pdf');writeFileSync(path,pdf(1800));const starts=eventCount(worker,'agent_start'),requests=providerEvents(worker),submission=worker.request('send',{text:'parse before model',attachments:[{path}]});const rejected=assert.rejects(submission,/取消|停止/);
-    await worker.wait(()=>execFileSync('/bin/ps',['-axo','ppid=,command='],{encoding:'utf8'}).split('\n').some(line=>new RegExp('^\\s*'+worker.child.pid+'\\s').test(line)&&line.includes('/usr/bin/osascript')&&line.includes('friend-pdf-')),10000);await worker.request('stop');await rejected;await new Promise(yes=>setTimeout(yes,100));assert.equal(eventCount(worker,'agent_start'),starts);assert.equal(providerEvents(worker),requests);assert.equal(provider.requests.length,0);assert.equal((await worker.request('state')).isRunning,false);
+    await worker.wait(()=>{
+      // Read arguments only for this worker's PDF readers; other processes may have large command lines.
+      const readers=execFileSync('/bin/ps',['-axo','pid=,ppid=,comm='],{encoding:'utf8'}).split('\n').map(line=>line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).filter(row=>row&&Number(row[2])===worker.child.pid&&row[3]==='/usr/bin/osascript').map(row=>row![1]);
+      if(!readers.length)return false;
+      const observed=spawnSync('/bin/ps',['-p',readers.join(','),'-o','command='],{encoding:'utf8'});
+      assert.ok(!observed.error&&[0,1].includes(observed.status??-1));
+      return observed.stdout.split('\n').some(line=>line.includes('/usr/bin/osascript')&&line.includes('friend-pdf-'));
+    },10000);await worker.request('stop');await rejected;await new Promise(yes=>setTimeout(yes,100));assert.equal(eventCount(worker,'agent_start'),starts);assert.equal(providerEvents(worker),requests);assert.equal(provider.requests.length,0);assert.equal((await worker.request('state')).isRunning,false);
   }finally{await worker.close();await provider.close();}
 });
 test('cold restore authorizes external documents from started receipts and ignores prepared-only attachment records',{timeout:30000},async()=>{
