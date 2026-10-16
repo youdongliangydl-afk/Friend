@@ -105,7 +105,6 @@ async function run(start:MemberStart): Promise<void> {
   const allowed=start.mode === 'read' ? ['read','grep','find','ls'] : spawn ? ['read','grep','find','ls','write','edit','bash'] : ['read','write','edit','bash'];
   const scope=Array.isArray(expert?.toolScope) ? expert.toolScope as unknown[] : undefined;
   const scoped=scope ? allowed.filter(tool=>scope.includes(tool)) : allowed;const parent=start.parentTools?scoped.filter(tool=>start.parentTools!.includes(tool)):scoped;const roleTools=role&&Array.isArray(role.effectiveTools)?role.effectiveTools:undefined;const roleBound=roleTools?parent.filter(tool=>roleTools.includes(tool)):parent;const tools=spawn?roleBound.filter(tool=>(spawn.tools as string[]).includes(tool)):roleBound;
-  if(spawn?.toolsMode==='allowlist'&&(spawn.tools as string[]).some(tool=>!['read','write','edit','bash','grep','find','ls','friend_expert','swarm_shared','swarm_message','team_message','swarm_handoff_read'].includes(tool)))throw new Error('明确工具在原生成员中不可用');
   let reviewSubmission:Readonly<{approved:boolean;findings:string;taskIds?:string[];resultVersions?:Record<string,number>}>|undefined;
   let reviewConflict=false;
   const rawReviewArguments=new Map<string,unknown>();
@@ -143,7 +142,16 @@ async function run(start:MemberStart): Promise<void> {
   await loader.reload();
   const created = await createAgentSession({cwd:start.cwd,agentDir:start.agentDir,modelRuntime:runtime,model,thinkingLevel:(start.thinkingLevel || 'medium') as 'medium',settingsManager:settings,resourceLoader:loader,sessionManager:start.nativeSessionFile?SessionManager.open(start.nativeSessionFile,start.sessionDir,start.cwd):SessionManager.create(start.cwd,start.sessionDir),tools:[...tools,...coordinationTools],customTools:[createBashToolDefinition(start.cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});
   session = created.session;
-  if(spawn){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>{await request('expert.validate',{hash:spawn.hash});return originalStream(model,context,options);};session.sessionManager.appendCustomEntry('friend-pi.expert.spawn',{v:1,runId:start.attemptId,snapshot:spawn,effectiveTools:[...tools,...coordinationTools],modelId:start.modelId,thinkingLevel:start.thinkingLevel,executionPolicy:start.frozen?.executionPolicy});}
+  const definedTools=new Set(session.getAllTools().map(tool=>tool.name)),effectiveTools=[...tools,...coordinationTools];
+  if(spawn?.toolsMode==='allowlist'){
+    // Known member tools may be removed by task mode or authority. A parent-only
+    // extension name is not such a restriction: it needs an actual child definition.
+    const nativeNames=new Set(['read','write','edit','bash','grep','find','ls','friend_expert','swarm_shared','swarm_message','team_message','swarm_handoff_read']);
+    const unavailable=(spawn.tools as string[]).filter(name=>!definedTools.has(name)&&!(nativeNames.has(name)&&!effectiveTools.includes(name)));
+    if(unavailable.length)throw new Error(`明确工具在原生成员中不可用（未注册子会话定义）：${unavailable.join(', ')}`);
+  }
+  if(spawn)session.setActiveToolsByName(effectiveTools.filter(name=>definedTools.has(name)));
+  if(spawn){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>{await request('expert.validate',{hash:spawn.hash});return originalStream(model,context,options);};session.sessionManager.appendCustomEntry('friend-pi.expert.spawn',{v:1,runId:start.attemptId,snapshot:spawn,effectiveTools:session.getActiveToolNames(),modelId:start.modelId,thinkingLevel:start.thinkingLevel,executionPolicy:start.frozen?.executionPolicy});}
   if(start.v===2)inbox=new MemberInbox(start,session,output);
   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDirectory(),`${model.provider}/${model.id}`),context,options);}
   if(start.thinkingLevel&&!session.getAvailableThinkingLevels().includes(start.thinkingLevel as 'medium'))throw new Error('成员冻结的思考等级不受当前模型支持');
