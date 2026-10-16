@@ -87,6 +87,7 @@ export class RuntimeController {
    throw new Error('未知步骤操作');
   }
   if(area==='goal'){
+   if(input.goalId!==undefined&&['pause','stop','complete','accept'].includes(operation)&&input.goalId!==this.goals.current(ctx)?.id)throw new Error('当前目标已变化，请重新读取后操作');
    if(operation==='create'){const goal=this.goals.create(input,ctx,this.generation());if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`create:${goal.id}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;}
    if(operation==='list'||operation==='snapshot')return this.goals.list(ctx);
    if(operation==='read'||operation==='status')return input.id?this.goals.read(text(input.id),ctx):this.goals.current(ctx)||null;

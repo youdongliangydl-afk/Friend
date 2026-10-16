@@ -89,7 +89,7 @@
       "noticePath": "NOTICE",
       "mode": "reference",
       "modified": false,
-      "use": "Cancellation, tool authority and memory/context research; no implementation files incorporated."
+      "use": "Cancellation, tool authority, memory/context and Goal UX research (codex-rs/tui/src/chatwidget/goal_menu.rs and app-server-protocol/schema/typescript/v2/ThreadGoalSetParams.ts). Composer Goal uses the existing Friend-Pi controller and native Pi execution; no Codex implementation files incorporated."
     },
     {
       "name": "MiMo-Code",

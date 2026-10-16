@@ -652,6 +652,18 @@ test('completed Team goal followed by Swarm workflow releases navigation and adm
     assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
   }finally{await f.close();}
 });
+test('composer plan-mode configuration saves a paused Goal without executing until explicit resume',{timeout:30000},async()=>{
+ const f=await start();try{
+  await assert.rejects(f.request('configure',{planMode:'true'}),/计划模式设置无效/);
+  const configured=await f.request('configure',{planMode:true,executionMode:'single',thinkingLevel:'off'}) as {planMode:boolean};assert.equal(configured.planMode,true);
+  const goal=await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}}) as {id:string;status:string};assert.equal(goal.status,'paused');
+  await new Promise(done=>setTimeout(done,100));assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
+  await assert.rejects(f.request('runtime',{action:'goal.resume',input:{goalId:goal.id}}),/计划模式/);
+  await f.request('configure',{planMode:false});await f.request('runtime',{action:'goal.resume',input:{goalId:goal.id}});
+  await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);
+  const state=await f.request('state') as {sessionFile:string;planMode:boolean};assert.equal(state.planMode,false);assert.match(readFileSync(state.sessionFile,'utf8'),/friend-pi.plan.configured/);
+ }finally{await f.close();}
+});
 test('goal completion uses Single self checks and Team independent native reviewer',{timeout:30000},async()=>{for(const mode of ['single','team']){const f=await start();try{await f.request('configure',{executionMode:mode});await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}});await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const snap=await f.request('runtime',{action:'snapshot'}) as {goal:{status:string;audit:{independent?:boolean}}};assert.equal(snap.goal.status,'completed');const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;attempts:unknown[];reviewAttempts?:unknown[]}[]};if(mode==='single')assert.equal(graphs.graphs.length,0);else{assert.ok(graphs.graphs.some(graph=>graph.audit===true&&graph.reviewAttempts?.length===1));assert.equal(snap.goal.audit.independent,true);}assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');}finally{await f.close();}}});
 test('native Swarm completion automatically continues a waiting Goal without polling or replaying members',{timeout:30000},async()=>{
  let waited=false,releaseMembers!:()=>void;const membersReady=new Promise<void>(done=>{releaseMembers=done;});let creates=0;const trace:unknown[]=[];

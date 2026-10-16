@@ -15,7 +15,7 @@ import type {QueueUi} from './QueueMessages.js';
 import {SessionStats} from './SessionStats.js';
 import {BrowserPane} from './BrowserPane.js';
 import type {BrowserSnapshot} from '../browser-host.js';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MemoryPanel } from './panels.js';
 import { asList, asObject, contentText, errorText, pluginLabels, type AppState, type DialogRequest, type JsonObject, type PluginName, type Preferences, type WorkspaceTab } from './types.js';
 import { Badge, Empty, Field, JsonView, Markdown, RichMessage, Modal } from './ui.js';
@@ -36,6 +36,7 @@ import {PlanPreview} from './plan-preview.js';
 import {TerminalPanel} from './TerminalPanel.js';
 import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
 import {submissionSettled} from './submission-state.js';
+import {GoalDialog,type ComposerGoal,type GoalCommand} from './GoalDialog.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -112,7 +113,10 @@ export default function App() {
   const [settingsOpen,setSettingsOpen]=useState(false),[material,setMaterial]=useState<Material>(),[historyOpen,setHistoryOpen]=useState(false),[sessionSearch,setSessionSearch]=useState('');
   const [menu,setMenu]=useState<{id:string;name:string;archived?:boolean;x:number;y:number;moves?:SessionMoves}|null>(null),[deleting,setDeleting]=useState<JsonObject|null>(null),[rename,setRename]=useState<{id:string;name:string}|null>(null);
   const [navigating,setNavigating]=useState(false),[sending,setSending]=useState(false),[localRunning,setLocalRunning]=useState(false),[swarmRunning,setSwarmRunning]=useState(false);
+  // Keep the visible session intact until navigation has an authoritative response.
+  const navigationState=useRef<AppState|null|undefined>(undefined);
   const [submissionRevision,setSubmissionRevision]=useState(0);
+  const [goalOpen,setGoalOpen]=useState<{sessionId:string;epoch:number}|null>(null),goalActionLock=useRef(false),migratedComposerOwner=useRef('');
   const [draft,setDraft]=useState(''),draftRef=useRef('');draftRef.current=draft;
   const [attachments,setAttachments]=useState<{path:string}[]>([]),attachmentsRef=useRef(attachments),[planMode,setPlanMode]=useState(false),[mode,setMode]=useState<'single'|'team'|'swarm'>('single'),[pendingModel,setPendingModel]=useState(''),[pendingThinking,setPendingThinking]=useState('off');
   attachmentsRef.current=attachments;
@@ -137,7 +141,7 @@ export default function App() {
   const activeViewTab=sessionView.tabs.find(t=>t.id===sessionView.active),toolActive=sessionView.active!=='conversation';
   const browserTabs=sessionView.tabs.filter(t=>t.kind==='browser'),browserTab=toolActive&&activeViewTab?.kind==='browser'?activeViewTab:undefined;
   const [queueUi,setQueueUi]=useState<QueueUi>({});
-  useEffect(()=>{setQueueUi({});},[state.current?.sessionId]);
+  useLayoutEffect(()=>{setQueueUi({});},[state.current?.sessionId]);
   const running=Boolean(state.current?.isRunning||localRunning||swarmRunning),messages=state.current?.messages||[],currentPlugins=state.current?.plugins||plugins;
   useEffect(()=>{setSelectedProject(state.selectedProjectId??state.current?.projectId??'');},[state.selectedProjectId,state.current?.projectId]);
   const batchDialog=dialogs.filter((dialog):dialog is QuestionBatchDialog=>dialog.kind==='questionBatch').sort(questionOrder)[0],modalDialog=dialogs.find(dialog=>dialog.kind!=='questionBatch');
@@ -145,7 +149,11 @@ export default function App() {
   useEffect(()=>{const live=new Set((state.activities||[]).filter(activity=>activity.kind==='dialog'&&activity.dialog?.kind==='questionBatch').map(activity=>activity.dialog!.id));for(const key of questionDrafts.current.keys())if(!live.has(JSON.parse(key)[2]))questionDrafts.current.delete(key);},[state.activities]);
   const restoreDialogs=useCallback(()=>{deferredDialogs.current.clear();setDialogs(stateRef.current.current?.dialogs||[]);},[]);
   useEffect(()=>{if(sessionView.active==='conversation')restoreDialogs();},[sessionId,sessionView.active,restoreDialogs]);
-  const applyState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);if(submissionSettled(lastSubmitted.current,next.current))setLocalRunning(false);},[]);
+  const commitState=useCallback((next:AppState)=>{if((next.revision||0)<(stateRef.current.revision||0))return;stateRef.current={...EMPTY,...next};setState(stateRef.current);if(submissionSettled(lastSubmitted.current,next.current))setLocalRunning(false);},[]);
+  const applyState=useCallback((next:AppState)=>{if(navigationState.current!==undefined){if((next.revision||0)>=Math.max(stateRef.current.revision||0,navigationState.current?.revision||0))navigationState.current=next;return;}commitState(next);},[commitState]);
+  const beginNavigation=()=>{navigationState.current=null;setNavigating(true);};
+  const finishNavigation=()=>{const next=navigationState.current;navigationState.current=undefined;if(next)commitState(next);setNavigating(false);};
+  const navigate=async(method:string,input:JsonObject)=>{const next=await window.friendPi.request<AppState>(method,input);applyState(next);return next;};
   const refresh=useCallback(async()=>{const next=await window.friendPi.request<AppState>('app.state');applyState(next);return next;},[applyState]);
   const invoke=useCallback(async(method:string,input:JsonObject={})=>{try{const result=await window.friendPi.request(method,input);await refresh();return result;}catch(error){report(errorText(error),true);throw error;}},[refresh,report]);
   useEffect(()=>{void refresh().catch(error=>report(errorText(error),true)).finally(()=>setBooting(false));return window.friendPi.onEvent(event=>{
@@ -156,6 +164,7 @@ export default function App() {
     if(String(event.type)==='browser'){if(event.sessionId===stateRef.current.current?.sessionId)setBrowserSnapshot(event.data as BrowserSnapshot);return;}
     if(event.sessionId&&event.sessionId!==stateRef.current.current?.sessionId)return;
     const data=asObject(event.data);
+    if(event.type==='runtime'||event.type==='plugin'&&data.pluginEvent==='goal.changed'){const current=stateRef.current.current;if(current){const runtime=event.type==='runtime'?data:{...current.runtime,goal:data.data};applyState({...stateRef.current,current:{...current,runtime}});}return;}
     if(event.type==='notice'){const message=typeof event.data==='string'?event.data:String(data.message||'');if(message)report(message,data.level==='error');}
     if(event.type==='dialog')setDialogs(old=>old.some(d=>d.id===data.id)?old:[...old,data as unknown as DialogRequest]);
     if(String(event.type)==='dialog.closed')setDialogs(old=>old.filter(d=>d.id!==data.id));
@@ -171,27 +180,27 @@ export default function App() {
     if(data.type==='tool_execution_start')setTools(old=>[...old.filter(t=>t.id!==data.toolCallId),{id:String(data.toolCallId),name:String(data.toolName),status:'running',input:data.args}]);
     if(['tool_execution_update','tool_execution_end'].includes(String(data.type)))setTools(old=>updateToolRun(old,data));
   });},[refresh,report,applyState]);
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     if(booting||migratingDraft.current||sendLock.current&&lastSubmitted.current&&!lastSubmitted.current.accepted)return;
     let saved:JsonObject={};try{saved=asObject(JSON.parse(localStorage.getItem('friend-pi.draft.v1:'+ownerKey)||'{}'));}catch{}
     setDraft(typeof saved.text==='string'?saved.text:state.current?.sideDraft?.text||'');setAttachments(Array.isArray(saved.attachments)?asList<{path:string}>(saved.attachments):(state.current?.sideDraft?.attachments||[]).map(item=>({path:item.path})));setDraftOwner(ownerKey);
     setPlanMode(typeof saved.planMode==='boolean'?saved.planMode:state.current?.sideDraft?.planMode??state.current?.planMode??state.preferences?.defaultPlanMode??false);
     permissionExplicitRef.current=!sessionId&&(saved.permissionExplicit===true||saved.permissionExplicit===undefined&&saved.permissionMode!==undefined);setPermissionExplicit(permissionExplicitRef.current);
     setPermissionMode(!sessionId&&['ask','auto','allPermissions'].includes(String(saved.permissionMode))?saved.permissionMode as PermissionMode:state.current?.permissionMode||state.preferences?.defaultPermissionMode||'auto');
-    setMode((!sessionId||!!state.current?.sideDraft)&&(saved.mode==='swarm'||saved.mode==='team'||saved.mode==='single')?saved.mode:state.current?.sideDraft?.mode||state.current?.executionMode||state.preferences?.defaultMode||'single');
-    setChangeReview(undefined);setLive(null);setTools([]);setDialogs([]);setLocalRunning(false);setSwarmRunning(false);followScroll.current=true;
+    setMode((!sessionId||!!state.current?.sideDraft||migratedComposerOwner.current===ownerKey)&&(saved.mode==='swarm'||saved.mode==='team'||saved.mode==='single')?saved.mode:state.current?.sideDraft?.mode||state.current?.executionMode||state.preferences?.defaultMode||'single');
+    migratedComposerOwner.current='';setChangeReview(undefined);setLive(null);setTools([]);setDialogs([]);setLocalRunning(false);setSwarmRunning(false);followScroll.current=true;
   },[ownerKey,booting]);
   useEffect(()=>{if(booting||draftOwner!==ownerKey)return;try{localStorage.setItem('friend-pi.draft.v1:'+ownerKey,JSON.stringify({text:draft,attachments,planMode,mode,permissionMode,permissionExplicit}));}catch{}},[draft,attachments,planMode,mode,permissionMode,permissionExplicit,draftOwner,ownerKey,booting]);
   useEffect(()=>{if(!booting&&draftOwner===ownerKey&&!sessionId&&!permissionExplicitRef.current)setPermissionMode(state.preferences?.defaultPermissionMode||'auto');},[sessionId,permissionExplicit,state.preferences?.defaultPermissionMode,ownerKey,draftOwner,booting]);
-  useEffect(()=>{setDialogs((state.current?.dialogs||[]).filter(dialog=>!deferredDialogs.current.has(dialog.id)));},[state.current?.sessionId,state.current?.dialogs]);
+  useLayoutEffect(()=>{setDialogs((state.current?.dialogs||[]).filter(dialog=>!deferredDialogs.current.has(dialog.id)));},[state.current?.sessionId,state.current?.dialogs]);
   useEffect(()=>{if(mode!=='swarm')setMemberRoute(null);},[mode]);
-  useEffect(()=>{if(!activeMember&&!toolActive&&followScroll.current)scroll.current?.scrollTo({top:scroll.current.scrollHeight,behavior:'instant'});},[messages,live,tools,toolActive,activeMember]);
+  useLayoutEffect(()=>{if(!activeMember&&!toolActive&&followScroll.current)scroll.current?.scrollTo({top:scroll.current.scrollHeight,behavior:'instant'});},[messages,live,tools,toolActive,activeMember]);
   useEffect(()=>{try{localStorage.setItem('friend-pi.layout.v1',JSON.stringify(layout));}catch{}},[layout]);
   const newSession=async(targetProjectId=projectId||'')=>{
     if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;
-    const previousNotice=notice;allocationLock.current=true;setNavigating(true);navigationEpoch.current++;
+    const previousNotice=notice;allocationLock.current=true;beginNavigation();navigationEpoch.current++;
     try{const next=await window.friendPi.request<AppState>('session.new',{projectId:targetProjectId,modelId:targetProjectId===projectId?pendingModel||undefined:undefined,permissionMode:targetProjectId===projectId?permissionMode:undefined});applyState(next);setNotice(current=>current===previousNotice?null:current);const id=next.createdSessionId||next.current?.sessionId;if(next.current?.sessionId!==id)return;setDraftOwner(id||ownerKey);return id;}
-    catch(error){report(errorText(error),true);}finally{allocationLock.current=false;setNavigating(false);}
+    catch(error){report(errorText(error),true);}finally{allocationLock.current=false;finishNavigation();}
   };
   const selectedModelId=state.current?.modelId||pendingModel||state.preferences?.defaultModelId||state.models.find(model=>model.ready)?.id||'';
   const selectedModel=state.models.find(model=>model.id===selectedModelId);
@@ -215,16 +224,16 @@ export default function App() {
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
     finally{sendLock.current=false;setSending(false);if(submissionSettled(submitted,stateRef.current.current))setLocalRunning(false);setSubmissionRevision(old=>old+1);}
   };
-  const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('project.select',{projectId:id});restoreDialogs();setSelectedProject(id);setMaterial(undefined);}catch{}finally{setNavigating(false);}};
-  const openProject=async(create=false)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;setNavigating(true);try{const chosen=asObject(await invoke(create?'project.create':'project.open'));if(chosen.id){await invoke('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch{}finally{setNavigating(false);}};
-  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('session.open',{id});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
-  const traverseSession=async(direction:-1|1)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;setNavigating(true);try{await invoke('navigation.go',{direction});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch{}finally{setNavigating(false);}};
+  const selectProject=async(id:string)=>{if(sending||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;deferredDialogs.current.clear();navigationEpoch.current++;beginNavigation();try{await navigate('project.select',{projectId:id});restoreDialogs();setSelectedProject(id);setMaterial(undefined);}catch(error){report(errorText(error),true);}finally{finishNavigation();}};
+  const openProject=async(create=false)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;navigationEpoch.current++;beginNavigation();try{const chosen=asObject(await window.friendPi.request(create?'project.create':'project.open'));if(chosen.id){await navigate('project.select',{projectId:chosen.id});setSelectedProject(String(chosen.id));setMaterial(undefined);}}catch(error){report(errorText(error),true);}finally{finishNavigation();}};
+  const openSession=async(id:string)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current||id===sessionId)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;beginNavigation();try{await navigate('session.open',{id});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch(error){report(errorText(error),true);}finally{finishNavigation();}};
+  const traverseSession=async(direction:-1|1)=>{if(navigating||sending||allocationLock.current||migratingDraft.current||sendLock.current)return;const previousNotice=notice;deferredDialogs.current.clear();navigationEpoch.current++;beginNavigation();try{await navigate('navigation.go',{direction});setNotice(current=>current===previousNotice?null:current);restoreDialogs();setMaterial(undefined);}catch(error){report(errorText(error),true);}finally{finishNavigation();}};
   useEffect(()=>{if(!requestedSession||navigating||sending||sendLock.current||allocationLock.current)return;const id=requestedSession;setRequestedSession(undefined);deferredDialogs.current.clear();void openSession(id);},[requestedSession,navigating,sending,submissionRevision]);
   useEffect(()=>{const keys=(event:KeyboardEvent)=>{if(document.querySelector(':popover-open')||[...document.querySelectorAll<HTMLElement>('[role="dialog"]')].some(node=>node.getClientRects().length>0))return;if(!event.defaultPrevented&&event.metaKey&&['[',']'].includes(event.key)){event.preventDefault();void traverseSession(event.key==='['?-1:1);}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='n'){event.preventDefault();void newSession();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setSidebar(true);searchInput.current?.focus();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='t'){event.preventDefault();void openNewView();}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='w'){event.preventDefault();void closeView(sessionView.active);}if(event.ctrlKey&&event.key===String.fromCharCode(96)){event.preventDefault();void showTerminal();}};window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);});
   const ensureUiSession=async()=>{
     if(sessionId)return sessionId;if(running||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;
-    allocationLock.current=true;setNavigating(true);migratingDraft.current=true;
-    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));setDraftOwner(id);applyState(next);viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{allocationLock.current=false;migratingDraft.current=false;setNavigating(false);}
+    allocationLock.current=true;beginNavigation();migratingDraft.current=true;
+    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));migratedComposerOwner.current=id;setDraftOwner(id);applyState(next);viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{allocationLock.current=false;migratingDraft.current=false;finishNavigation();}
   };
   const writeView=async(next:SessionViewState,confirmReload=false)=>{
     const hadSession=!!sessionId;let base=viewRef.current;const id=await ensureUiSession();if(!id)return;if(!hadSession){base=viewRef.current;next={...next,browserScope:base.browserScope};}const version=++uiVersion.current;viewOwner.current=id;viewRef.current=next;setView(next);setSidebar(next.sidebar);if(!uiPending.current)pendingView.current=null;uiPending.current++;
@@ -247,7 +256,7 @@ export default function App() {
   const openNewView=async()=>{await writeView(addNewTab(viewRef.current));};
   const closeView=async(id:string)=>{if(id==='conversation')return;await writeView(closeViewTab(viewRef.current,id));};
   const openWeb=async(url:string)=>{const normalized=browserUrl(url);const current=viewRef.current.tabs.find(t=>t.id===viewRef.current.active),tab=current?.kind==='new'?{id:current.id,kind:'browser' as const,url:normalized,title:'网页'}:{id:crypto.randomUUID(),kind:'browser' as const,url:normalized,title:'网页'};await writeView({...viewRef.current,tabs:current?.kind==='new'?viewRef.current.tabs.map(t=>t.id===current.id?tab:t):[...viewRef.current.tabs,tab],active:tab.id});};
-  useEffect(()=>{const id=sessionId;setBrowserSnapshot({tabs:[],downloads:[]});if(!id){viewOwner.current='';setView(initialView());setSidebar(true);return;}viewOwner.current=id;const next=state.current?.ui||initialView();viewRef.current=next;setView(next);setSidebar(next.sidebar);void window.friendPi.request<BrowserSnapshot>('browser.list',{sessionId:id}).then(value=>{if(stateRef.current.current?.sessionId===id)setBrowserSnapshot(value);}).catch(()=>{});},[sessionId]);
+  useLayoutEffect(()=>{const id=sessionId;setBrowserSnapshot({tabs:[],downloads:[]});if(!id){viewOwner.current='';setView(initialView());setSidebar(true);return;}viewOwner.current=id;const next=state.current?.ui||initialView();viewRef.current=next;setView(next);setSidebar(next.sidebar);void window.friendPi.request<BrowserSnapshot>('browser.list',{sessionId:id}).then(value=>{if(stateRef.current.current?.sessionId===id)setBrowserSnapshot(value);}).catch(()=>{});},[sessionId]);
   useEffect(()=>{
     const check=()=>setBrowserBlocked([...document.body.querySelectorAll<HTMLElement>('[role="dialog"],[role="menu"],:popover-open,dialog[open]'+(window.innerWidth<=760?',.sidebar':''))].some(node=>node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden'));
     const beforeToggle=(event:Event)=>{if((event as ToggleEvent).newState==='open')setBrowserBlocked(true);requestAnimationFrame(check);};
@@ -261,13 +270,30 @@ export default function App() {
   useEffect(()=>{const open=(event:Event)=>{const target=(event as CustomEvent<ChangeReviewTarget>).detail;if(target.sessionId!==sessionId)return;setChangeReview(target);void openToolView('diff');};window.addEventListener('friend-pi:changes-review',open);return()=>window.removeEventListener('friend-pi:changes-review',open);},[sessionId]);
   const composerAction=async(action:ComposerAction)=>{
     if(activeMemberRef.current)return;
-    if(action.sessionId!==(sessionId||'')||action.epoch!==navigationEpoch.current)return;
+    if(action.sessionId!==(sessionId||'')||action.epoch!==navigationEpoch.current){if(action.type==='goal')throw new Error('会话已切换，请在当前会话重新打开目标。');return;}
     if(sendLock.current&&['draft','send','attach','removeAttachment','files','reference'].includes(action.type))return;
     if(action.type==='draft'){draftRef.current=String(action.value||'');setDraft(draftRef.current);}
     else if(action.type==='queueUi')setQueueUi(asObject(action.value));
     else if(action.type==='queue'){const requestOwner=sessionId,requestEpoch=navigationEpoch.current;const input=asObject(action.value);const result=await window.friendPi.request('session.queue',{sessionId,...input});if(requestOwner!==stateRef.current.current?.sessionId||requestEpoch!==navigationEpoch.current)return;if(input.action==='sidechat')setRequestedSession(String(asObject(result).sessionId));setQueueUi(old=>({editing:old.editing}));}
     else if(action.type==='send'){if(typeof action.text==='string'){draftRef.current=action.text;setDraft(action.text);}await send();}
     else if(action.type==='attach')addAttachments();
+    else if(action.type==='goal.open'){if(navigating||sending)return;const epoch=navigationEpoch.current,id=sessionId||await ensureUiSession();if(!id||navigationEpoch.current!==epoch)return;if(viewRef.current.active!=='conversation')await writeView({...viewRef.current,active:'conversation'});if(stateRef.current.current?.sessionId===id&&navigationEpoch.current===epoch)setGoalOpen({sessionId:id,epoch});}
+    else if(action.type==='goal'){
+      if(goalActionLock.current)throw new Error('目标操作正在进行。');
+      if(navigating||sending||sendLock.current||activeSession?.archived)throw new Error('当前会话暂时不能修改目标。');
+      const command=action.value as GoalCommand,operation=command.action;
+      if(!['goal.create','goal.update','goal.pause','goal.resume','goal.stop','goal.complete','goal.accept'].includes(operation))throw new Error('未知目标操作。');
+      if(['goal.create','goal.update','goal.resume','goal.complete','goal.accept'].includes(operation)&&running)throw new Error('请先暂停并等待当前执行结束。');
+      if(['goal.create','goal.resume','goal.complete'].includes(operation)&&!selectedModel?.ready)throw new Error('请先配置模型并通过连接测试。');
+      const epoch=navigationEpoch.current;goalActionLock.current=true;
+      const assertOwner=(id:string)=>{if(navigationEpoch.current!==epoch||stateRef.current.current?.sessionId!==id)throw new Error('会话已切换，目标操作已取消。');if(operation!=='goal.create'&&asObject(asObject(stateRef.current.current?.runtime).goal).id!==command.input.goalId)throw new Error('当前目标已变化，请重新打开目标。');};
+      try{const id=sessionId||operation==='goal.create'&&await ensureUiSession();if(!id)throw new Error('会话尚未就绪。');assertOwner(id);
+        if(operation==='goal.create'||operation==='goal.resume'){const current=stateRef.current.current!;if(mode!=='single'&&!current.plugins.includes('swarm')){const configured=await window.friendPi.request<AppState>('session.configure',{sessionId:id,plugins:[...current.plugins,'swarm']});assertOwner(id);applyState(configured);}
+          const configured=await window.friendPi.request<AppState>('session.configure',{sessionId:id,modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,executionMode:mode,planMode,permissionMode});assertOwner(id);applyState(configured);setMode(configured.current?.executionMode||mode);setPlanMode(configured.current?.planMode??planMode);setPermissionMode(configured.current?.permissionMode||permissionMode);}
+        assertOwner(id);await window.friendPi.request('runtime.call',{sessionId:id,action:operation,input:command.input});
+        if(navigationEpoch.current===epoch&&stateRef.current.current?.sessionId===id)await refresh();
+      }finally{goalActionLock.current=false;}
+    }
     else if(action.type==='files'){const owner=ownerKey;const files=await window.friendPi.request<{path:string;name:string}[]>('attachment.import',{sessionId,files:action.value});appendAttachments(files,owner);}
     else if(action.type==='reference'){const candidate=asObject(action.value);if(candidate.kind==='文件'&&typeof candidate.path==='string')appendAttachments([{path:candidate.path}],ownerKey);}
     else if(action.type==='attachmentChecked'){const item=asObject(action.value);setAttachments(old=>old.map(attachment=>attachment.path===item.path?{...attachment,hash:String(item.hash)}:attachment));}
@@ -292,7 +318,8 @@ export default function App() {
   useEffect(()=>{setMemberRoute(null);},[sessionId]);
   useEffect(()=>{const open=(event:Event)=>{const target=(event as CustomEvent<{rootSessionId:string;memberId:string}>).detail;if(target.rootSessionId!==sessionId)return;navigationEpoch.current++;if(!activeMemberRef.current)rootScrollBeforeMember.current={top:scroll.current?.scrollTop||0,following:followScroll.current};setMemberRoute(target);if(viewRef.current.active!=='conversation')void writeView({...viewRef.current,active:'conversation'});};window.addEventListener('friend-pi:teammate-open',open);return()=>window.removeEventListener('friend-pi:teammate-open',open);},[sessionId]);
   const returnToRoot=()=>{navigationEpoch.current++;followScroll.current=rootScrollBeforeMember.current.following;setMemberRoute(null);requestAnimationFrame(()=>{if(scroll.current)scroll.current.scrollTop=rootScrollBeforeMember.current.following?scroll.current.scrollHeight:rootScrollBeforeMember.current.top;composer.current?.focus({preventScroll:true});});};
-  const composerSnapshot:ComposerSnapshot={queue:state.current?.queue,queueUi,monitor:navigating||activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
+  const goal=asObject(state.current?.runtime).goal as ComposerGoal|undefined;
+  const composerSnapshot:ComposerSnapshot={goal,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
   useEffect(()=>window.friendPi.onEvent(event=>{if(event.sessionId!==stateRef.current.current?.sessionId)return;if(String(event.type)==='browser.shortcut'){const key=String(asObject(event.data).key);if(key==='t')void openNewView();else if(key==='w')void closeView(viewRef.current.active);else if(key==='n')void newSession();else if(key==='k'){setSidebar(true);searchInput.current?.focus();}else if(key==='l')document.querySelector<HTMLInputElement>('[aria-label="网页地址"]')?.focus();}}));
   const sidebarWidth=Math.max(180,Math.min(layout.sidebarWidth,400));
   const activeNotice=notice&&<div className={'notice '+(notice.error?'error':'')} style={{flexShrink:0,WebkitAppRegion:'no-drag'} as React.CSSProperties} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>;
@@ -300,12 +327,13 @@ export default function App() {
     <header className="topbar project-topbar"><nav className="session-navigation" aria-label="会话导航"><button aria-label="后退到上一个会话" title="后退 · ⌘[" disabled={navigating||sending||!state.navigation?.back} onClick={()=>void traverseSession(-1)}><Icon name="back" size={17}/></button><button aria-label="前进到下一个会话" title="前进 · ⌘]" disabled={navigating||sending||!state.navigation?.forward} onClick={()=>void traverseSession(1)}><Icon name="forward" size={17}/></button><button aria-label={sidebar?'收起会话侧栏':'展开会话侧栏'} aria-pressed={sidebar} onClick={()=>{const next=!sidebar;setSidebar(next);if(sessionId)void writeView({...viewRef.current,sidebar:next});}}><Icon name="sidebar" size={17}/></button></nav><div className="workspace-tabs-bar"><SessionTabs view={sessionView} onSelect={id=>{if(id==='conversation')restoreDialogs();void writeView({...viewRef.current,active:id});}} onClose={id=>void closeView(id)} onNew={()=>void openNewView()}/>
       <div className="module-controls" role="toolbar" aria-label="界面模块"><button aria-label={activeViewTab?.page==='trace'?'关闭轨迹并返回会话':'打开轨迹'} title={activeViewTab?.page==='trace'?'返回会话':'轨迹'} aria-pressed={toolActive&&activeViewTab?.page==='trace'} onClick={()=>void writeView(toggleTrace(viewRef.current))}><Icon name="trace" size={18}/></button><button aria-label={activeViewTab?.page==='terminal'?'关闭终端并返回会话':'打开终端'} title={activeViewTab?.page==='terminal'?'返回会话':'终端'} aria-pressed={toolActive&&activeViewTab?.page==='terminal'} onClick={()=>void showTerminal()}><Icon name="terminal" size={18}/></button></div></div>
     </header>
-    <aside className="sidebar" aria-label="项目与会话">
+    <aside className="sidebar" aria-label="项目与会话" aria-busy={navigating}>
       <div className="sidebar-new"><button className="new-chat" disabled={navigating||sending} onClick={()=>void newSession()}><Icon name="plus"/>新建会话<kbd>⌘N</kbd></button><button className="new-project-button" aria-label="打开项目" title="打开项目" disabled={navigating||sending} onClick={()=>void openProject()}><Icon name="folder" size={19}/></button></div>
       <label className="session-search"><Icon name="search"/><input ref={searchInput} aria-label="搜索项目与会话" placeholder="搜索项目与会话…" value={sessionSearch} onChange={event=>setSessionSearch(event.target.value)}/></label>
       <ProjectSidebar projects={state.projects} sessionOrder={state.sessionOrder} sessions={sidebarSessions(state.sessions,state.activities||[])} selectedProject={projectId||''} selectedSession={sessionId} query={sessionSearch} archived={historyOpen} disabled={navigating||sending} onProject={id=>void selectProject(id)} onSession={id=>void openSession(id)} onNewSession={id=>void newSession(id)} onToggleArchive={()=>setHistoryOpen(v=>!v)} onMenu={(item,position,moves)=>setMenu({...item,...position,moves})} onReorder={ids=>invoke('project.reorder',{ids})} onReorderSessions={(projectId,ids)=>invoke('session.reorder',{projectId,ids})}/>
       <button className="sidebar-settings" aria-label="设置" onClick={()=>setSettingsOpen(true)}><Icon name="settings"/>设置</button>
     </aside>
+    {goalOpen&&goalOpen.sessionId===sessionId&&goalOpen.epoch===navigationEpoch.current&&<GoalDialog key={ownerKey+':'+(goal?.id||'new')} goal={goal} running={running} ready={!!selectedModel?.ready} archived={!!activeSession?.archived} planMode={planMode} onClose={()=>setGoalOpen(null)} onAction={command=>composerAction({type:'goal',value:command,sessionId:sessionId||'',epoch:navigationEpoch.current})}/>}
     {sidebar&&<ResizeHandle className="sidebar-resize" name="调整会话侧栏宽度" value={sidebarWidth} min={180} max={400} onChange={value=>setLayout(old=>({...old,sidebarWidth:value}))}/>}
     <main className="main"><header className="conversation-heading"><div className="conversation-title"><h2>{activeSession?.name||project?.name||'临时会话'}</h2><p><Icon name="folder"/><span>{workspaceKey||'无需选择项目即可开始'}</span></p></div><div className="heading-actions">{sessionId&&mode==='swarm'&&currentPlugins.includes('swarm')&&<TeammateRoster key={'teammates:'+sessionId} rootSessionId={sessionId} compact selectedMemberId={activeMember||undefined} onBack={returnToRoot}/>}<SessionStats key={'stats:'+sessionId} stats={toolActive?undefined:composerSnapshot.monitor} contextTarget={contextStatsTarget}/></div></header>
       {!toolActive&&activeNotice}

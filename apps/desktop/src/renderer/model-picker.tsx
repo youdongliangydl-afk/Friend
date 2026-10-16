@@ -74,7 +74,7 @@ export function ModelPicker({models,providerNames,modelId,thinkingLevel,thinking
         <ModelOptions models={models} providerNames={providerNames} modelId={modelId} pending={pending} onChoose={id=>void choose({modelId:id})}/>
         <button type="button" className="model-picker-settings" disabled={pending} onClick={()=>{close(false);onConfigure();}}>配置模型与供应商 ↗</button>
       </>}
-      {pending&&<p role="status">正在应用…</p>}{error&&<p role="alert" className="model-picker-error">{error}</p>}
+      <span role="status" className="visually-hidden">{pending?'正在应用…':''}</span>{error&&<p role="alert" className="model-picker-error">{error}</p>}
     </div>
   </div>;
 }

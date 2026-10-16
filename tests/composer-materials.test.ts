@@ -97,8 +97,8 @@ test('an obsolete App attachment inspection cannot hash a new session or a newer
 
 test('opening a branch draft retains its frozen mode and plan instead of the root configuration', () => {
   const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
-  const body=between(source,'    let saved:JsonObject={};','    setChangeReview(undefined);');
-  const values:any={},ctx:any={ownerKey:'branch',sessionId:'branch',state:{current:{sideDraft:{text:'frozen',attachments:[{path:'/frozen.csv'}],mode:'team',planMode:true},executionMode:'single',planMode:false},preferences:{}},asObject:(value:any)=>value||{},asList:(value:any)=>value||[],localStorage:{getItem:()=>null},permissionExplicitRef:{current:false}};
+  const body=between(source,'    let saved:JsonObject={};',"    migratedComposerOwner.current='';");
+  const values:any={},ctx:any={ownerKey:'branch',sessionId:'branch',state:{current:{sideDraft:{text:'frozen',attachments:[{path:'/frozen.csv'}],mode:'team',planMode:true},executionMode:'single',planMode:false},preferences:{}},asObject:(value:any)=>value||{},asList:(value:any)=>value||[],localStorage:{getItem:()=>null},permissionExplicitRef:{current:false},migratedComposerOwner:{current:''}};
   for(const name of ['Draft','Attachments','DraftOwner','PlanMode','PermissionExplicit','PermissionMode','Mode'])ctx['set'+name]=(value:any)=>{values[name]=value;};
   vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(body),ctx);
   assert.equal(values.Draft,'frozen');assert.equal(values.Mode,'team');assert.equal(values.PlanMode,true);assert.equal(values.Attachments[0].path,'/frozen.csv');
@@ -123,9 +123,9 @@ test('manual sidebar navigation reopens deferred approval after admission and ke
  for(const name of ['openSession','selectProject']){
   const marker='  const '+name+'=async',offset=source.indexOf(marker),end=source.indexOf('\n',offset);assert.ok(offset>=0&&end>offset);
   const callback=source.slice(offset,end),deferred=new Set(['pending-approval']),calls:any[]=[];
-  const context:any={navigating:false,sending:true,notice:null,setNotice(value:any){context.notice=typeof value==='function'?value(context.notice):value;},allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:deferred},stateRef:{current:{current:{dialogs:[{id:'pending-approval'}]}}},setDialogs(value:any){context.restored=value;},setNavigating(){},setSelectedProject(){},setMaterial(){},invoke:async(method:string)=>{calls.push({method,deferred:deferred.size});}};
-  vm.createContext(context);context.useCallback=(callback:any)=>callback;const restore=between(source,'  const restoreDialogs=','  useEffect(()=>{if(sessionView.active');vm.runInContext(stripTypeScriptTypes(restore+callback+'\nglobalThis.navigate='+name+';'),context);
-  await context.navigate('target');assert.equal(deferred.size,1);assert.equal(calls.length,0);
-  context.sending=false;await context.navigate('target');assert.equal(deferred.size,0);assert.equal(calls.length,1);assert.equal(calls[0].deferred,0);assert.equal(context.navigationEpoch.current,1);assert.equal(context.restored[0].id,'pending-approval');
+  const context:any={navigating:false,sending:true,notice:null,setNotice(value:any){context.notice=typeof value==='function'?value(context.notice):value;},allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:deferred},stateRef:{current:{current:{dialogs:[{id:'pending-approval'}]}}},setDialogs(value:any){context.restored=value;},sessionId:"source",beginNavigation(){},finishNavigation(){},report(){},setSelectedProject(){},setMaterial(){},navigate:async(method:string)=>{calls.push({method,deferred:deferred.size});}};
+  vm.createContext(context);context.useCallback=(callback:any)=>callback;const restore=between(source,'  const restoreDialogs=','  useEffect(()=>{if(sessionView.active');vm.runInContext(stripTypeScriptTypes(restore+callback+'\nglobalThis.runNavigation='+name+';'),context);
+  await context.runNavigation('target');assert.equal(deferred.size,1);assert.equal(calls.length,0);
+  context.sending=false;await context.runNavigation('target');assert.equal(deferred.size,0);assert.equal(calls.length,1);assert.equal(calls[0].deferred,0);assert.equal(context.navigationEpoch.current,1);assert.equal(context.restored[0].id,'pending-approval');
  }
 });

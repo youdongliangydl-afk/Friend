@@ -743,6 +743,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='permission.confirm')return approvePermission({operation:text(input.operation),message:text(input.message),autoEligible:input.autoEligible===true,requireExplicit:input.requireExplicit===true,writePath:typeof input.writePath==='string'?input.writePath:undefined},typeof input.terminalRequestId==='string'?input.terminalRequestId:undefined);
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||runtimeWakeBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
+    if(input.planMode!==undefined&&typeof input.planMode!=='boolean')throw new Error('计划模式设置无效');
     queueEpoch++;cancelQueueResume();
     const nextPermission=input.permissionMode===undefined?permissionMode:parsePermissionMode(input.permissionMode);
     if(nextPermission!==permissionMode&&(services.jobs.pendingCount(session.sessionId)>0||dialogs.size>0))throw new Error('请先结束待批准的命令，再切换权限策略');
@@ -751,6 +752,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     if(nextPermission!==permissionMode){permissionMode=nextPermission;permissionEpoch++;policyRevision++;session.sessionManager.appendCustomEntry('friend-pi.permission.configured',{v:1,mode:permissionMode,origin:'user'});}
     if(input.modelId){await session.setModel(selectedModel(text(input.modelId)));missingModelId=undefined;delete process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE;}
     if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!session.getAvailableThinkingLevels().includes(level as ThinkingLevel))throw new Error('当前模型不支持此思考等级');session.setThinkingLevel(level as ThinkingLevel);}
+    if(typeof input.planMode==='boolean'&&input.planMode!==planMode){planMode=input.planMode;policyRevision++;session.sessionManager.appendCustomEntry('friend-pi.plan.configured',{v:1,planMode,origin:'user'});}
     if(Array.isArray(input.plugins)){
       const next=input.plugins.map(String);if(next.some(name=>!plugins.includes(name)))throw new Error('插件无效');
       if(JSON.stringify(enabled)!==JSON.stringify(next)){enabled=next;session.settingsManager.setExtensionPaths(next.map(name=>join(root,'packages',name,'dist','index.js')));await session.reload();await bind();}
