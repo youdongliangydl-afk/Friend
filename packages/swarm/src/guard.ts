@@ -18,11 +18,14 @@ export const destructiveCommand=sharedDestructiveCommand;
 export function guardMember(start: MemberStart, confirm: (title:string,message:string)=>Promise<boolean>): ExtensionFactory {
   return pi => {
     pi.on('tool_call',async event => {
+      const frozenSpawn=(start.expert as {spawn?:{toolsMode?:string;tools?:string[]}}|undefined)?.spawn;if(frozenSpawn?.toolsMode==='allowlist'&&(!frozenSpawn.tools?.includes(event.toolName)||start.parentTools&&!start.parentTools.includes(event.toolName)))return {block:true,reason:'工具不在本次派生明确允许范围'};
       if(event.toolName==='swarm_handoff_read'&&start.requiredHandoff)return;
       if(event.toolName==='swarm_review_result'&&start.reviewResult)return;
       if(start.discussion&&!['read','grep','find','ls','swarm_message'].includes(event.toolName))return {block:true,reason:'已完成成果的补充讨论只读；修改须由主 Agent 安排新尝试'};
       const input = event.input as Record<string,unknown>;
       const expert=start.expert && typeof start.expert==='object' ? start.expert as Record<string,unknown> : undefined;
+      const spawn=expert?.spawn as {toolsMode?:string;tools?:string[]}|undefined;
+      if(spawn&&!['swarm_message','team_message','friend_expert'].includes(event.toolName)&&!spawn.tools?.includes(event.toolName))return {block:true,reason:'工具超出本次派生冻结范围'};
       const role=expert?.role&&typeof expert.role==='object'?expert.role as Record<string,unknown>:undefined;
       if(role&&!['swarm_message','team_message'].includes(event.toolName)){
         if(!Array.isArray(role.effectiveTools)||!role.effectiveTools.includes(event.toolName))return {block:true,reason:'工具不在已冻结的角色合同'};
@@ -49,6 +52,7 @@ export function guardMember(start: MemberStart, confirm: (title:string,message:s
       }
       if (event.toolName === 'bash') {
         const command = String(input.command || '');
+        if(start.frozen?.executionPolicy?.workspace==='shared'&&/\bgit\s+(?:-[^;|&]+\s+)?(?:add|rm|mv|restore|stash|clean|apply|am|commit|checkout|checkout-index|switch|reset|merge|cherry-pick|rebase|update-ref|update-index|read-tree|write-tree|commit-tree|branch|tag|fetch|pull|push|init|clone|config|gc|prune|reflog|symbolic-ref)\b/.test(command))return {block:true,reason:'共享成员不能修改 Git 暂存区、引用或仓库状态'};
         if (start.mode === 'read') return {block:true,reason:'只读成员使用 read/grep/find/ls；Bash 可以产生未知写入，因此未开放'};
         if(start.parentTools&&!start.writeScopes.includes('.'))return {block:true,reason:'窄父任务写入范围不能开放 Bash'};
         // Shell commands are not statically sandboxable. Protect obvious escapes and destructive actions;

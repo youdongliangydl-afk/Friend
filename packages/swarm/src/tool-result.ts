@@ -1,6 +1,6 @@
 import type {Graph} from './types.js';
 
-const graphActions=new Set(['create','start','pause','stop','resume','prepare','review','integrate','rework','configure','append','update_task','workflow_skip']);
+const graphActions=new Set(['create','start','pause','stop','resume','prepare','review','integrate','rework','configure','append','update_task','workflow_skip','citations.bind']);
 
 function projectGraph(graph:Graph):unknown {
   const {expertCatalog,attempts,...retained}=graph;
