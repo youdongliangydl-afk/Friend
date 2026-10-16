@@ -12,6 +12,7 @@ import {SourcePolicy,LearningBudget,modelTokenUsage,CapabilityError,normalizeCap
 export * from './capability-services.js';
 export * from './collaboration-services.js';
 export * from './expert-evaluation.js';
+export * from './spawn-profile.js';
 import type {ExpertEvaluationHost} from './expert-evaluation.js';
 export {readCustomInstructions,saveCustomInstructions,customInstructionsExtension,MAX_CUSTOM_INSTRUCTIONS,DEFAULT_CUSTOM_INSTRUCTIONS,type CustomInstructions} from './custom-instructions.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
