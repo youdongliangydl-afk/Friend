@@ -122,3 +122,19 @@ test('frozen Skill disable and snapshot integrity failures reject validation',as
   await assert.rejects(f.resolve(profile.id),/停用或撤回/);
  }finally{f.dispose();}
 });
+
+
+test('profile selection prefers an effective manual head over stable without changing pinned or legacy adoption',async()=>{
+ const f=fixture();try{
+  const id='seed.researcher.1',profile=await f.create({title:'User research',prompt:'Review sources',skillRefs:[{id}]}),before=await f.resolve(profile.id),head=f.controller.skillCatalog.head(id,f.ctx);
+  const edited=await f.controller.dispatch('skill.update',{id,expectedRevision:head.revision,body:'Use the newly edited research instructions.',key:'manual-over-stable'},f.ctx) as {version:number};
+  assert.equal(edited.version,2);assert.equal(f.controller.skillCatalog.head(id,f.ctx).stable?.version,1);
+  const current=await f.resolve(profile.id);assert.equal(current.skills[0].version,2);assert.equal(current.skills[0].body,'Use the newly edited research instructions.');
+  const metadata=await f.controller.dispatch('profile.list',{},f.ctx) as any,selected=metadata.skills.find((skill:any)=>skill.id===id);
+  assert.equal(selected.version,2);assert.equal(selected.kind,'manual');assert.equal(selected.available,true);assert.equal(selected.validationKind,undefined);
+  const pinned=await f.resolve(profile.id,{skillRefs:[{id,version:1}]});assert.equal(pinned.skills[0].version,1);assert.equal(pinned.skills[0].body,before.skills[0].body);
+  assert.deepEqual(await f.controller.dispatch('spawn.validate',{hash:before.hash},f.ctx),before);
+  const legacy=f.controller.beginRun(f.ctx).experts.find(expert=>expert.id==='researcher')!.frozenSkills!.find(skill=>skill.id===id)!;assert.equal(legacy.version,1);assert.equal(legacy.body,before.skills[0].body);
+  assert.equal(f.calls(),0);
+ }finally{f.dispose();}
+});

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CapabilityError, digest, object, text, type ExpertSkillSelection, type ExpertSpawnOverrides, type JsonObject, type PluginContext, type RecordStore, type ResolvedExpertSpawn } from '@friend-pi/core';
-import { integer, mutationOrigin, SkillCatalog, type SkillVersion } from './skills.js';
+import { integer, mutationOrigin, SkillCatalog, type SkillVersion, type SkillHead } from './skills.js';
 import { intersectWriteScopes, type RoleDefinition } from './roles.js';
 import type { ExpertDefinition } from './index.js';
 
@@ -63,6 +63,12 @@ export class ProfileCatalog {
   read(id:string,ctx:PluginContext):ExpertProfile {
     const result=this.all(ctx,true).find(item=>item.id===id);if(!result)throw new CapabilityError('SOURCE_UNAVAILABLE','专家预设不存在');return result;
   }
+  private preferredSkillVersion(head:SkillHead,ctx:PluginContext):number {
+    const current=this.skills.version(head.id,head.version,ctx),status=this.skills.statusForVersion(current,ctx);
+    // A user's explicit edit is usable immediately in profiles. Learned candidates
+    // still resolve the stable pointer; legacy adoption has its own unchanged rules.
+    return current.kind==='manual'&&!['disabled','withdrawn'].includes(status)?head.version:this.skills.stableOf(head,ctx)?.version??head.version;
+  }
   list(input:JsonObject,ctx:PluginContext){
     const query=input.query===undefined?'':typeof input.query==='string'?input.query.trim().toLowerCase():fail('query 必须是文本');
     const all=this.all(ctx).filter(item=>!query||`${item.id}\n${item.title}\n${item.prompt}`.toLowerCase().includes(query));
@@ -72,10 +78,10 @@ export class ProfileCatalog {
     if(input.cursor!==undefined){try{const cursor=object(JSON.parse(Buffer.from(text(input.cursor,'cursor',2048),'base64url').toString()));if(cursor.signature!==signature)throw new Error();offset=integer(cursor.offset,'cursor offset',0,all.length);}catch{throw new CapabilityError('VERSION_CONFLICT','目录或查询已变化，请重新分页');}}
     const availableTools=[...(ctx.availableTools??ctx.policy?.tools??[])].filter(tool=>!ctx.policy?.tools||ctx.policy.tools.includes(tool));
     const skills=this.skills.heads(ctx).flatMap(head=>{
-      const stable=this.skills.stableOf(head,ctx),version=stable?.version??head.version;
-      try{const skill=this.skills.version(head.id,version,ctx),status=this.skills.statusForVersion(skill,ctx);let available=status==='validated'||status==='trial'||skill.kind==='manual'&&!['disabled','withdrawn'].includes(status);
+      const stable=this.skills.stableOf(head,ctx);
+      try{const skill=this.skills.version(head.id,this.preferredSkillVersion(head,ctx),ctx),status=this.skills.statusForVersion(skill,ctx);let available=status==='validated'||status==='trial'||skill.kind==='manual'&&!['disabled','withdrawn'].includes(status);
         try{this.skills.resolve(skill.id,skill.version,ctx);}catch{available=false;}
-        return [{id:skill.id,version:skill.version,hash:skill.contentHash,title:skill.title,description:skill.description,kind:skill.kind,status,validationKind:stable?.validationKind??head.validationKind,enabled:head.enabled!==false&&status!=='disabled',available}];
+        return [{id:skill.id,version:skill.version,hash:skill.contentHash,title:skill.title,description:skill.description,kind:skill.kind,status,validationKind:stable?.version===skill.version?stable.validationKind:head.validationKind,enabled:head.enabled!==false&&status!=='disabled',available}];
       }catch{return [];}
     });
     const end=offset+limit;return {items:all.slice(offset,end),total:all.length,availableTools,availableModels:structuredClone(ctx.availableModels??[]),skills,...(end<all.length?{nextCursor:Buffer.from(JSON.stringify({signature,offset:end})).toString('base64url')}:{})};
@@ -109,7 +115,7 @@ export class ProfileCatalog {
     const overrides=input.overrides===undefined?{}:parseSpawnOverrides(input.overrides);
     const selected=overrides.skillRefs??preset.skillRefs,versions=new Map<string,SkillVersion>();
     for(const ref of selected){
-      const head=this.skills.head(ref.id,ctx),version=ref.version??this.skills.stableOf(head,ctx)?.version??head.version;
+      const head=this.skills.head(ref.id,ctx),version=ref.version??this.preferredSkillVersion(head,ctx);
       for(const skill of this.skills.resolve(ref.id,version,ctx)){
         const status=this.skills.statusForVersion(skill,ctx);
         if(status!=='validated'&&status!=='trial'&&skill.kind!=='manual')throw new CapabilityError('SOURCE_UNAVAILABLE','成长 Skill 尚不可使用');
