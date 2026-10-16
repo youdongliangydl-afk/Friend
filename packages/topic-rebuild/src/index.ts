@@ -272,11 +272,20 @@ export class RebuildController implements PluginController {
     const inherited=(previous?.constraints || []).map(point=>this.upgradePoint(point,ctx)).filter(effective);
     const page=this.page(ctx,capture,previous);
     const facts=(item:HistoryItem)=>sourceFactRefs(item,ctx.sessionId).filter(source=>source.end!-source.start!<=6000&&page.coverage.ranges.some(range=>range.entryId===item.id&&range.start!<=source.start!&&range.end!>=source.end!)&&page.selected.some(range=>range.entryId===item.id&&range.start!<source.end!&&range.end!>source.start!)).map(source=>({text:readSourceSpan(item,source),sources:[source]}));
-    const requestPoint=(item:HistoryItem):FieldPoint=>{const source=sourceFactRefs(item,ctx.sessionId)[0];return source?{text:readSourceSpan(item,source).slice(0,3000),sources:[source]}:{text:item.text.slice(0,3000),sources:[{sessionId:ctx.sessionId,entryId:item.id}]};};
+    const requestPoint=(item:HistoryItem):FieldPoint=>{
+      const sources=sourceFactRefs(item,ctx.sessionId).filter(source=>source.start!<3000).map(source=>{
+        if(source.end!<=3000)return source;
+        const end=3000,hash=digest(item.text.slice(source.start,end));return {...source,end,hash,factId:digest([item.id,source.start,end,hash]).slice(0,32)};
+      });
+      return {text:sources.map(source=>readSourceSpan(item,source)).join(''),sources};
+    };
     let goal=previous?.goal||requestPoint(users[0]!);let goalStatus:WorkingField['goalStatus']=previous?.goalStatus||'active';
     const priorRequest=previous?.currentRequest?.sources.at(-1)?.entryId;const priorIndex=users.findIndex(item=>item.id===priorRequest);
     for(const item of users.slice(previous&&priorIndex>=0?priorIndex+1:0)){const intent=this.taskIntent(item.userText??item.text);if(intent==='replace'){goal=requestPoint(item);goalStatus='active';}else if(intent==='cancel')goalStatus='cancelled';}
-    if(!effective(goal))goal={text:'此目标来源已撤回，等待新的目标输入；原文仅供回查。',sources:[]};
+    if(!effective(goal)){
+      const sources=goal.sources.filter(source=>effective({text:'',sources:[source]}));
+      goal=sources.length?{text:sources.map(source=>readSourceSpan(ctx.readSource(source),source)).join(''),sources}:{text:'此目标来源已撤回，等待新的目标输入；原文仅供回查。',sources:[]};
+    }
     const constraints=users.flatMap(facts).filter(point=>/必须|不得|不要|禁止|务必|保留|只允许|不能|must|never|do not|don't|only|keep\b/iu.test(point.text));
     const decisions=capture.filter(item=>item.role==='assistant').flatMap(facts).filter(point=>/已确认|决定|采用|已完成|验证通过|decided|confirmed|verified|completed/iu.test(point.text)).slice(-12);
     const unfinished=users.flatMap(facts).filter(point=>/待办|下一步|尚未|还需要|未完成|todo|pending|next step|remaining/iu.test(point.text)).slice(-12);
@@ -299,10 +308,11 @@ export class RebuildController implements PluginController {
     };
   }
   private summary(field:WorkingField): string {
-    const render=(point:FieldPoint)=>`${point.text}\n来源: ${point.sources.map(source=>`${source.sessionId}/${source.entryId}`).join(', ')}`;
+    const render=(point:FieldPoint)=>`${point.text}\n来源: ${[...new Set(point.sources.map(source=>`${source.sessionId}/${source.entryId}`))].join(', ')}`;
     const currentTokens=new Set(tokens(field.goal.text));
     const score=(topic:TopicField)=>tokens(`${topic.label} ${topic.summary}`).filter(token=>currentTokens.has(token)).length;
-    const relevant=field.topics.filter(topic=>score(topic)>0).sort((a,b)=>score(b)-score(a)).slice(0,3);
+    const seenEntries=new Set<string>();
+    const relevant=field.topics.filter(topic=>score(topic)>0).sort((a,b)=>score(b)-score(a)).filter(topic=>{const key=topic.sources.map(entryKey).sort().join('|');if(seenEntries.has(key))return false;seenEntries.add(key);return true;}).slice(0,3);
     const other=field.topics.filter(topic=>!relevant.some(item=>item.id===topic.id)).slice(-2);
     const topicText=(topic:TopicField)=>`${topic.summary}\n来源入口: ${topic.sources.map(source=>`${source.sessionId}/${source.entryId}`).join(', ')}`;
     return [

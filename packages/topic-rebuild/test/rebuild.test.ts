@@ -406,7 +406,7 @@ test('progress requests preserve original goal through ten compactions and cold 
       const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
       const old=(c.snapshot(f.ctx).field as WorkingField|undefined)?.revision||0;
       f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
-      assert.equal(field.revision,old+1);assert.equal(field.goal.text,'实现数据库模块。');
+      assert.equal(field.revision,old+1);assert.equal(field.goal.text,'实现数据库模块。必须保留用户原始文件，不要并行写入数据库。');
       assert.equal(field.goal.sources[0]!.entryId,'u1');assert.equal(field.currentRequest?.sources[0]!.entryId,`progress-${round}`);
       assert.ok(field.constraints.some(point=>point.text.includes('保留用户原始文件')));
       assert.equal(field.goalStatus,'active');
@@ -421,8 +421,8 @@ test('explicit replacement and cancellation change goal identity while command m
   const f=fixture();const c=f.create();
   const adopt=()=>{const draft=c.checkpointDraft(f.ctx)!;assert.ok(draft);f.appendDraft(draft);return c.confirmCanonical(f.ctx)!;};
   try {
-    assert.equal(adopt().goal.text,'实现数据库模块。');
-    f.add('mention','user','实现取消当前任务按钮，保留界面布局。');assert.equal(adopt().goal.text,'实现数据库模块。');
+    assert.equal(adopt().goal.text,'实现数据库模块。必须保留用户原始文件，不要并行写入数据库。');
+    f.add('mention','user','实现取消当前任务按钮，保留界面布局。');assert.equal(adopt().goal.text,'实现数据库模块。必须保留用户原始文件，不要并行写入数据库。');
     f.add('replace','user','新任务：实现日志查看器。');let field=adopt();assert.equal(field.goal.text,'新任务：实现日志查看器。');assert.equal(field.goalStatus,'active');
     f.add('status','user','进度如何？');field=adopt();assert.equal(field.goal.sources[0]!.entryId,'replace');assert.equal(field.currentRequest?.text,'进度如何？');
     f.add('cancel','user','取消当前任务。');field=adopt();assert.equal(field.goalStatus,'cancelled');assert.equal(field.goal.sources[0]!.entryId,'replace');
@@ -477,12 +477,12 @@ test('optional runtime goal needs matching native receipt and literal trusted us
     const objective='下一步回到数据库：修复服务端事务，完成后检查原始文件。';
     const goal={id:'goal-a',revision:1,projectId:'project-a',sessionId:'session-a',origin:'user',status:'active',objective};
     f.ctx.request=async(plugin)=>{if(plugin==='runtime')return goal;throw new Error('not installed');};
-    const rejected=await c.beforeCompact(f.event(),f.ctx);assert.ok(rejected?.compaction);assert.equal((rejected.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。');
+    const rejected=await c.beforeCompact(f.event(),f.ctx);assert.ok(rejected?.compaction);assert.equal((rejected.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。必须保留用户原始文件，不要并行写入数据库。');
     c.compactFailed(f.ctx,'not adopted');f.ctx.appendEntry('friend-pi.goal.receipt',{goalId:'goal-a',revision:1,status:'active'});
     const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);const field=(result.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild;
     assert.equal(field.goal.text,objective);assert.equal(field.goal.sources[0]!.entryId,'u3');
     f.ctx.appendEntry('friend-pi.goal.receipt',{goalId:'goal-a',revision:2,status:'stopped'});f.appendCompaction(result.compaction);assert.equal(c.confirmCanonical(f.ctx),undefined);
-    goal.origin='agent';const agent=await c.beforeCompact(f.event(),f.ctx);assert.ok(agent?.compaction);assert.equal((agent.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。');
+    goal.origin='agent';const agent=await c.beforeCompact(f.event(),f.ctx);assert.ok(agent?.compaction);assert.equal((agent.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。必须保留用户原始文件，不要并行写入数据库。');
   }finally{c.dispose();f.cleanup();}
 });
 
@@ -524,5 +524,21 @@ test('remaining global page budget still samples a long entry tail',async()=>{
       return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});
     };
     const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.match(result.compaction.summary,/预算末尾约束/);
+  }finally{c.dispose();f.cleanup();}
+});
+
+
+test('multi-sentence task and current request retain every bounded subtask',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    f.add('multi-task','user','新任务：实现日志查看器。增加按时间筛选。必须保留用户配置。');
+    const first=c.checkpointDraft(f.ctx)!;f.appendDraft(first);const initial=c.confirmCanonical(f.ctx)!;
+    assert.match(initial.goal.text,/实现日志查看器/);assert.match(initial.goal.text,/增加按时间筛选/);assert.equal(initial.goal.sources.length,3);
+    f.add('status-with-detail','user','现在进展如何？请列出仍未完成的子任务。');
+    const next=c.checkpointDraft(f.ctx)!;f.appendDraft(next);const current=c.confirmCanonical(f.ctx)!;
+    assert.equal(current.goal.text,initial.goal.text);assert.match(current.currentRequest!.text,/请列出仍未完成的子任务/);
+    const retired=initial.goal.sources[2]!;c.memoryInvalidated({projectId:'project-a',ids:['config'],sources:[retired]},f.ctx);
+    const compacted=await c.beforeCompact(f.event(),f.ctx);assert.ok(compacted?.compaction);f.appendCompaction(compacted.compaction);const corrected=c.confirmCanonical(f.ctx)!;
+    assert.match(corrected.goal.text,/增加按时间筛选/);assert.doesNotMatch(corrected.goal.text,/保留用户配置/);
   }finally{c.dispose();f.cleanup();}
 });
