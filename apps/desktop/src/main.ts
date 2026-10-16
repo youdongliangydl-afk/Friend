@@ -342,7 +342,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
     return {items:[...files.items,...sessions],truncated:files.truncated};
   }
   if(method.startsWith('document.')){const workspace=resolveWorkspaceInput(input),path=projectFile(workspace.path,text(input.path));if(method==='document.pdf.page'){const result=await renderPdfPage(path,Number(input.pageIndex)||0);if(input.expectedHash&&result.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return result;}const doc=await documentReader.read(path);if(input.expectedHash&&doc.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return method==='document.read'?documentManifest(doc):paginateDocument(doc,{sectionId:typeof input.sectionId==='string'?input.sectionId:undefined,offset:Number(input.offset)||0,limit:Number(input.limit)||32000,rowOffset:Number(input.rowOffset)||0,maxRows:Number(input.maxRows)||40});}
-  if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加附件',properties:['openFile','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
+  if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加文件和文件夹',properties:['openFile','openDirectory','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
   if(method==='file.preview.revoke'){revokeHtmlPreview(text(input.token));return {revoked:true};}
   if(['file.search','file.read','file.tree','file.open','file.write','file.preview','git.diff'].includes(method)){
     const workspace=resolveWorkspaceInput(input);

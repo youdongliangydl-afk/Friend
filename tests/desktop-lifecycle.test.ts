@@ -34,7 +34,7 @@ const compiled=transformSync(mainSource,{loader:'ts',format:'cjs',target:'node24
 function fixture(){
   const directory=fs.mkdtempSync(path.join(tmpdir(),'friend-pi-desktop-lifecycle-'));
   const project=path.join(directory,'project'),dataDir=path.join(directory,'data');fs.mkdirSync(project);fs.mkdirSync(dataDir);
-  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;const control={psFailures:0,terminalFailures:0,born:'fixture',terminalGate:undefined as (()=>Promise<void>)|undefined,permissionGate:undefined as Promise<boolean>|undefined,terminalRequests:[] as string[]};let quitCalls=0;
+  const timers=new Map<number,{at:number;callback:()=>void}>(),children:any[]=[],signals:{pid:number;signal:string}[]=[],unlinkFailures=new Set<string>();let now=0,nextTimer=0;const control={pickedPaths:[] as string[],openDialogOptions:undefined as any,psFailures:0,terminalFailures:0,born:'fixture',terminalGate:undefined as (()=>Promise<void>)|undefined,permissionGate:undefined as Promise<boolean>|undefined,terminalRequests:[] as string[]};let quitCalls=0;
   const app:any=new EventEmitter();app.isPackaged=true;app.getAppPath=()=>root;app.getPath=()=>dataDir;app.setName=()=>{};app.setPath=()=>{};app.requestSingleInstanceLock=()=>true;app.whenReady=()=>new Promise(()=>{});app.quit=()=>{quitCalls++;};
   const fork=(_file:string,_args:unknown,options:unknown)=>{
     const child:any=new EventEmitter();child.pid=40000+children.length;child.connected=true;child.stderr=new EventEmitter();child.commands=[];child.options=options;
@@ -47,7 +47,7 @@ function fixture(){
     setTimeout:(callback:()=>void,delay:number)=>{const id=++nextTimer;timers.set(id,{at:now+delay,callback});return id;},clearTimeout:(id:number)=>timers.delete(id),
     process:{argv:['node','main.mjs'],execPath:'/fixture/Friend-Pi',env:{FRIEND_PI_DATA_DIR:dataDir,FRIEND_PI_NODE:'/fixture/node'},platform:'darwin',resourcesPath:'/fixture/resources',kill:(pid:number,signal:string)=>{signals.push({pid,signal});return true;}},
     require(specifier:string){
-      if(specifier==='electron')return {app,BrowserWindow:class{},ipcMain:{handle(){}},dialog:{showOpenDialog:async()=>({canceled:true}),showSaveDialog:async()=>({canceled:true})},Menu:{},shell:{openPath:async()=>'',openExternal:async()=>{}}};
+      if(specifier==='electron')return {app,BrowserWindow:class{},ipcMain:{handle(){}},dialog:{showOpenDialog:async(_owner:unknown,options:unknown)=>{control.openDialogOptions=options;return {canceled:!control.pickedPaths.length,filePaths:control.pickedPaths};},showSaveDialog:async()=>({canceled:true})},Menu:{},shell:{openPath:async()=>'',openExternal:async()=>{}}};
       if(specifier==='node:child_process')return {fork,execFile(){}};
       if(specifier==='node:fs')return {...fs,existsSync:(value:string)=>value==='/fixture/node'||fs.existsSync(value),unlinkSync:(value:string)=>{if(unlinkFailures.has(value))throw new Error('fixture EACCES');fs.unlinkSync(value);}};
       if(specifier==='node:path')return path;if(specifier==='node:crypto')return {randomUUID};if(specifier==='node:util')return {promisify:()=>()=>Promise.resolve({stdout:''})};if(specifier==='node:url')return {fileURLToPath};
@@ -100,6 +100,9 @@ function assertDeleted(f:ReturnType<typeof fixture>,record:ReturnType<ReturnType
   }finally{registry.close();swarm.close();}
 }
 
+test('attachment picker accepts files and directories together without creating or starting a session',async()=>{
+ const f=fixture();try{const file=path.join(f.project,'说明.txt'),folder=path.join(f.project,'材料');fs.writeFileSync(file,'UTF-8 中文');fs.mkdirSync(folder);f.control.pickedPaths=[file,folder];const picked=await f.api.handle('file.pick',{});assert.deepEqual(Array.from(f.control.openDialogOptions.properties),['openFile','openDirectory','multiSelections']);assert.deepEqual(JSON.parse(JSON.stringify(picked)),[{path:file,name:'说明.txt'},{path:folder,name:'材料'}]);assert.equal(f.children.length,0);f.control.pickedPaths=[];assert.equal((await f.api.handle('file.pick',{})).length,0);}finally{f.cleanup();}
+});
 test('registered missing original history rejects before forking and preserves its index',async()=>{
   const f=fixture();try{const value={...f.record('missing'),path:path.join(f.dataDir,'missing.jsonl')};f.api.store.put('session:missing',value);await assert.rejects(f.api.handle('session.open',{id:'missing'}),/原始会话历史缺失/);assert.equal(f.children.length,0);assert.equal(f.api.store.get('session:missing').value.path,value.path);}finally{f.cleanup();}
 });
