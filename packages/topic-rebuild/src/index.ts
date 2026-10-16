@@ -500,6 +500,11 @@ export class RebuildController implements PluginController {
     if(!await this.memoryStillValid(field,ctx)||!this.captureStillValid(candidate,ctx))throw new Error('整理期间来源或记忆版本已变化');
     signal.throwIfAborted();return candidate;
   }
+  private reusableCoverage(field:WorkingField,capture:HistoryItem[]):boolean {
+    // Old cached drafts may have skipped tools because a checkpoint incorrectly
+    // claimed them. Rebuild these once rather than promoting that old summary.
+    return !capture.some(item=>item.role==='toolResult')||Array.isArray(field.coverage?.toolRanges);
+  }
   /** Background preparation stores only derived text/references; Pi still owns adoption. */
   async prepareDraft(ctx:PluginContext,options:PrepareDraftOptions={}):Promise<{prepared:boolean;operationId?:string}> {
     this.index(ctx);if(!this.enabled(ctx)||isSessionDeleted(ctx.dataDir,ctx.sessionId))return {prepared:false};
@@ -508,7 +513,7 @@ export class RebuildController implements PluginController {
     const signal=options.signal||ctx.signal||new AbortController().signal;
     signal.throwIfAborted();await this.syncMemoryInvalidations(ctx);signal.throwIfAborted();
     const stored=this.database(ctx).get<StoredDraft>(`draft:${this.key(ctx)}`)?.value;
-    if(stored&&stored.field.sourceDigest===sourceDigest(capture)&&stored.baseRevision===(this.field(ctx)?.revision||0)&&stored.modelId===ctx.modelId&&stored.thinkingLevel===ctx.thinkingLevel&&await this.memoryStillValid(stored.field,ctx))return {prepared:false,operationId:stored.field.operationId};
+    if(stored&&this.reusableCoverage(stored.field,capture)&&stored.field.sourceDigest===sourceDigest(capture)&&stored.baseRevision===(this.field(ctx)?.revision||0)&&stored.modelId===ctx.modelId&&stored.thinkingLevel===ctx.thinkingLevel&&await this.memoryStillValid(stored.field,ctx))return {prepared:false,operationId:stored.field.operationId};
     const candidate=await this.prepareCandidate(ctx,capture,options.reason||'threshold',signal,options.memorySelection);
     signal.throwIfAborted();if(!this.enabled(ctx)||!this.captureStillValid(candidate,ctx))return {prepared:false};
     this.database(ctx).put(`draft:${this.key(ctx)}`,{field:candidate.field,summary:candidate.summary!,baseRevision:candidate.baseRevision,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel} satisfies StoredDraft);
@@ -531,7 +536,7 @@ export class RebuildController implements PluginController {
       await this.syncMemoryInvalidations(ctx);controller.signal.throwIfAborted();
       const previous=this.field(ctx),stored=this.database(ctx).get<StoredDraft>(`draft:${this.key(ctx)}`)?.value;
       let candidate:Candidate;
-      if(stored&&stored.baseRevision===(previous?.revision||0)&&stored.field.sourceDigest===sourceDigest(capture)&&stored.modelId===ctx.modelId&&stored.thinkingLevel===ctx.thinkingLevel&&await this.memoryStillValid(stored.field,ctx)){
+      if(stored&&this.reusableCoverage(stored.field,capture)&&stored.baseRevision===(previous?.revision||0)&&stored.field.sourceDigest===sourceDigest(capture)&&stored.modelId===ctx.modelId&&stored.thinkingLevel===ctx.thinkingLevel&&await this.memoryStillValid(stored.field,ctx)){
         candidate={field:{...stored.field,operationId:randomUUID(),reason:event.reason},capture,baseRevision:stored.baseRevision,summary:stored.summary};
       }else candidate=await this.prepareCandidate(ctx,capture,event.reason,controller.signal);
       candidate.field.firstKeptEntryId=event.preparation.firstKeptEntryId;candidate.field.compactedThroughId=covered.at(-1)!.id;

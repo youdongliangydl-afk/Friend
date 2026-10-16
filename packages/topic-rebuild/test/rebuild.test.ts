@@ -586,3 +586,19 @@ test('legacy checkpoint tool coverage is conservatively reread after cold start'
     const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);assert.equal(c.confirmCanonical(f.ctx)!.coverage!.toolRanges?.[0]?.entryId,'legacy-tool');
   }finally{c.dispose();f.cleanup();}
 });
+
+test('legacy cached draft cannot bypass tool rereading after cold restart',async()=>{
+  for(const route of ['foreground','background']){
+    const f=fixture();let c=f.create();let calls=0;
+    try {
+      f.add('cached-tool','toolResult','E902 /srv/site/settings.toml');
+      f.ctx.complete=async prompt=>{calls++;const entries=JSON.parse(prompt.split('原始条目：')[1]!) as {id:string;text:string}[];assert.match(entries.find(item=>item.id==='cached-tool')!.text,/E902.*\/srv\/site\/settings.toml/);return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});};
+      assert.equal((await c.prepareDraft(f.ctx)).prepared,true);assert.equal(calls,1);
+      const store=new RecordStore('topic-rebuild',f.dir),key='draft:project-a:session-a';const saved=store.get<{field:WorkingField;summary:string}>(key)!;
+      delete saved.value.field.coverage!.toolRanges;saved.value.summary='Old summary omitted all tool evidence';store.put(key,saved.value,saved.revision);store.close();c.dispose();c=f.create();
+      if(route==='background'){assert.equal((await c.prepareDraft(f.ctx)).prepared,true);assert.equal(calls,2);}
+      const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.equal(calls,2,'legacy cache must force exactly one fresh preparation');
+      assert.doesNotMatch(result.compaction.summary,/Old summary omitted/);assert.equal(c.snapshot(f.ctx).field,undefined);
+    }finally{c.dispose();f.cleanup();}
+  }
+});
