@@ -99,6 +99,17 @@ test('historical completed read-only Team keeps its native audit without waiving
  }finally{await f.close();}}
 });
 
+test('canonical V0 read-only Team delivery reaches Goal review while check and artifact contracts stay fenced',async()=>{
+ for(const scenario of ['required','none','V1','V2','artifact','contract-check','graph-check','deferred','missing-contract','pending','write']){const f=fixture();try{
+  f.setIdle(true);f.setBusy(false);f.controller.goals.update({progress:'Actual read-only member completed'},f.ctx);
+  const complete={...f.graph,status:'completed',schemaVersion:3,executionStyle:'team',deferPreparation:scenario==='deferred',checks:scenario==='graph-check'?[{id:'check'}]:[],contract:scenario==='missing-contract'?undefined:{version:1,verification:['V1','V2'].includes(scenario)?scenario:'V0',risk:'low',artifacts:scenario==='artifact'?[{id:'output'}]:[],checks:scenario==='contract-check'?[{id:'oracle'}]:[]},executionPolicy:{v:1,review:scenario==='none'?'none':'required'},tasks:f.graph.tasks.map(task=>({...task,mode:scenario==='write'?'write':'read',status:scenario==='pending'?'running':'completed'}))};
+  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'Independent read-only review',source:{sessionId:'native-reviewer'}};}throw new Error('Unexpected '+action);}};
+  const result=await f.controller.dispatch('goal.complete',{},ctx) as {status:string;audit:{independent?:boolean;reviewStatus?:string}};
+  const eligible=['required','none'].includes(scenario);assert.equal(result.status,eligible?'completed':'blocked',scenario);assert.equal(audits,scenario==='required'?1:0,scenario);
+  if(eligible)assert.equal(result.audit.independent,scenario==='required');
+ }finally{await f.close();}}
+});
+
 test('delayed drains after quit, reload and disposal never access retired Pi context or stores',async()=>{
  for(const reason of ['quit','reload','dispose']){const f=fixture();try{
   f.setIdle(true);f.setBusy(false);const delayed=new Promise<void>((done,reject)=>setImmediate(()=>{f.controller.drain().then(done,reject);}));

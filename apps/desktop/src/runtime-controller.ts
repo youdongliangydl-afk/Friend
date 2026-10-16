@@ -106,10 +106,15 @@ export class RuntimeController {
   // Legacy graphs retain their original independent-audit requirement.
   const snapshot=object(await ctx.request('swarm','snapshot',{},1000));
   const graphs=(Array.isArray(snapshot.graphs)?snapshot.graphs:[]).map(object).filter(graph=>graph.sessionId===ctx.sessionId&&graph.audit!==true&&(graph.goalId!==undefined?graph.goalId===goal.id:graph.runId===goal.sourceRunId));
-  // Historical read-only Team graphs settle at completed; they still need the
-  // original native audit, but have no prepare/integrate transition to require.
-  const legacyTeamRead=(graph:JsonObject)=>graph.schemaVersion===undefined&&graph.executionPolicy===undefined&&graph.executionStyle==='team'&&graph.status==='completed'&&Array.isArray(graph.tasks)&&graph.tasks.length>0&&graph.tasks.every(task=>object(task).mode==='read'&&object(task).status==='completed');
-  if(graphs.some(graph=>graph.status!=='integrated'&&!legacyTeamRead(graph)))return {approved:false,independent:false,findings:'协作图尚未完成客观检查与成果应用，请先完成 prepare/integrate。'};
+  // Read-only Team delivery has no apply transition. Canonical V0 graphs may
+  // also settle at completed; contracts with checks or artifacts still need integration.
+  const completedTeamRead=(graph:JsonObject)=>{
+   if(graph.executionStyle!=='team'||graph.status!=='completed'||!Array.isArray(graph.tasks)||!graph.tasks.length||!graph.tasks.every(task=>object(task).mode==='read'&&object(task).status==='completed'))return false;
+   if(graph.schemaVersion===undefined&&graph.executionPolicy===undefined)return true;
+   const contract=object(graph.contract??{});
+   return graph.schemaVersion===3&&object(graph.executionPolicy??{}).v===1&&graph.deferPreparation===false&&Array.isArray(graph.checks)&&!graph.checks.length&&contract.version===1&&contract.verification==='V0'&&contract.risk==='low'&&['checks','artifacts'].every(key=>Array.isArray(contract[key])&&!contract[key].length);
+  };
+  if(graphs.some(graph=>graph.status!=='integrated'&&!completedTeamRead(graph)))return {approved:false,independent:false,findings:'协作图尚未完成客观检查与成果应用，请先完成 prepare/integrate。'};
   if(graphs.length&&graphs.every(graph=>object(graph.executionPolicy??{}).v===1&&object(graph.executionPolicy??{}).review==='none'))return {
    approved:true,independent:false,reviewStatus:'not_requested',
    findings:'已核对当前目标的任务与已应用成果；本次策略未安排独立复核。',
