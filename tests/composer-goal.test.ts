@@ -49,6 +49,17 @@ test('opening Goal in an empty chat allocates its owner before mounting the edit
   await f.ctx.act({type:'goal.open',sessionId:'',epoch:3});assert.equal(f.ctx.openGoal.sessionId,'s');assert.equal(f.ctx.openGoal.epoch,3);assert.equal(f.ctx.stateRef.current.current.sessionId,'s');assert.equal(f.requests.length,0);
 });
 
+test('allocating an empty composer preserves its chosen thinking level and draft before Goal opens',async()=>{
+  const ensureSource=source.slice(source.indexOf('  const ensureUiSession=async()=>{'),source.indexOf('  const writeView=async'));
+  for(const thinkingLevel of ['off','medium']){
+    const requests:{method:string;input:any}[]=[],saved=new Map<string,string>(),draft='未发送的独立草稿',attachments=[{path:'/fixture/folder'}];
+    const ctx:any={sessionId:undefined,running:false,sendLock:{current:false},allocationLock:{current:false},navigating:false,migratingDraft:{current:false},beginNavigation(){ctx.navigating=true;},finishNavigation(){ctx.navigating=false;},draftRef:{current:draft},attachmentsRef:{current:attachments},planMode:true,mode:'team',permissionMode:'ask',permissionExplicit:true,pendingModel:'qa/thinker',pendingThinking:thinkingLevel,projectId:'fixture',localStorage:{setItem:(key:string,value:string)=>saved.set(key,value)},migratedComposerOwner:{current:''},setDraftOwner(value:string){ctx.owner=value;},applyState(next:any){ctx.current=next.current;},viewOwner:{current:''},viewRef:{current:{}},initialView:()=>({active:'conversation'}),setView(){},report(message:string){assert.fail(message);},window:{friendPi:{async request(method:string,input:any){requests.push({method,input});return {current:{sessionId:'native-new',thinkingLevel:method==='session.configure'?input.thinkingLevel:'high'}};}}}};
+    vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(ensureSource+'\nglobalThis.ensure=ensureUiSession;'),ctx);
+    assert.equal(await ctx.ensure(),'native-new');assert.equal(ctx.current.thinkingLevel,thinkingLevel);assert.deepEqual(requests.map(request=>request.method),['session.new','session.configure']);assert.equal(requests[1].input.sessionId,'native-new');
+    const captured=JSON.parse(saved.get('friend-pi.draft.v1:native-new')!);assert.equal(captured.text,draft);assert.deepEqual(captured.attachments,attachments);assert.equal(captured.planMode,true);assert.equal(captured.mode,'team');assert.equal(ctx.owner,'native-new');assert.equal(ctx.navigating,false);
+  }
+});
+
 const dialogSource=transformSync(readFileSync('apps/desktop/src/renderer/GoalDialog.tsx','utf8'),{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code;
 const flatten=(node:any):any[]=>!node?[]:Array.isArray(node)?node.flatMap(flatten):node.props?[node,...flatten(node.props.children)]:[];
 const label=(node:any):string=>typeof node==='string'?node:Array.isArray(node)?node.map(label).join(''):node?.props?label(node.props.children):'';

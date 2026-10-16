@@ -191,8 +191,11 @@ test('stopping a reviewer after native tool submission cannot adopt the result o
   try{await waitFor(()=>continuing);assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);reviewer.child.send({v:1,type:'stop'} satisfies MemberInput);finishResponse();const result=await reviewer.terminal;assert.equal(result.type,'failed');assert.equal(reviewer.messages.some(message=>message.type==='settled'),false);assert.equal(turns,2);assert.equal(readFileSync(join(env.project,'readme.txt'),'utf8'),'source fixture\n');}finally{finishResponse();reviewer.child.kill('SIGTERM');await env.cleanup();}
 });
 
-test('real SDK coordinator receives the legal Swarm protocol, copies the full graph id and reports only integrated', {timeout:25000},async()=>{
+test('real SDK coordinator receives the legal Swarm protocol, copies the full graph id and reports only integrated', {timeout:60000},async()=>{
   let copiedId='';let snapshots=0;let sawProtocol=false;
+  const bus=createEventBus();let completed!:(graph:Graph)=>void;
+  const terminal=new Promise<Graph>(done=>{completed=done;});
+  const offTerminal=bus.on('friend-pi:v1:event',raw=>{const graphs=(raw as {data?:{graphs?:Graph[]}})?.data?.graphs;const graph=graphs?.find(item=>item.id===copiedId);if(graph&&['integrated','paused','stopped','failed'].includes(graph.status))completed(graph);});
   const env=await environment(async input=>{
     const tools=input.tools as {function:{name:string;description:string;parameters:Record<string,unknown>}}[]|undefined;
     const tool=tools?.find(item=>item.function.name==='friend_swarm');
@@ -205,17 +208,19 @@ test('real SDK coordinator receives the legal Swarm protocol, copies the full gr
     if(results.length===1)return {tool:'friend_swarm',args:{action:'start',input:{graphId:copiedId}}};
     const queried=results.filter(result=>Array.isArray(result.graphs));const matched=queried.at(-1)?.graphs as {id:string;status:string}[]|undefined;
     if(matched?.some(graph=>graph.id===copiedId&&graph.status==='integrated'))return '目标任务图 integrated，两个只读成员及独立复核已完成。';
-    snapshots++;assert.ok(snapshots<6,'coordinator must not spin indefinitely');await new Promise(done=>setTimeout(done,1500));return {tool:'friend_swarm',args:{action:'snapshot',input:{}}};
+    // Wait for the real controller, rather than making member startup fit six timed polls.
+    snapshots++;assert.equal(snapshots,1,'completion must not depend on coordinator polling');
+    const final=await new Promise<Graph>((done,fail)=>{const timer=setTimeout(()=>fail(new Error('Swarm completion event timed out')),35000);terminal.then(graph=>{clearTimeout(timer);done(graph);});});assert.equal(final.status,'integrated',final.error);return {tool:'friend_swarm',args:{action:'snapshot',input:{}}};
   });
   const oldData=process.env.FRIEND_PI_DATA_DIR;const oldAgent=process.env.FRIEND_PI_AGENT_DIR;const oldWorker=process.env.FRIEND_PI_MEMBER_WORKER;
-  process.env.FRIEND_PI_DATA_DIR=join(env.root,'state');process.env.FRIEND_PI_AGENT_DIR=env.agentDir;process.env.FRIEND_PI_MEMBER_WORKER=env.worker;const bus=createEventBus();let session:AgentSession|undefined;const errors:string[]=[];
+  process.env.FRIEND_PI_DATA_DIR=join(env.root,'state');process.env.FRIEND_PI_AGENT_DIR=env.agentDir;process.env.FRIEND_PI_MEMBER_WORKER=env.worker;let session:AgentSession|undefined;const errors:string[]=[];
   try {
-    const runtime=await ModelRuntime.create({authPath:join(env.agentDir,'auth.json'),modelsPath:join(env.agentDir,'models.json'),allowModelNetwork:false});const model=runtime.getModel('swarm-fixture','fixture')!;const settings=SettingsManager.inMemory({extensions:[],packages:[],compaction:{enabled:false}});
+    const runtime=await ModelRuntime.create({authPath:join(env.agentDir,'auth.json'),modelsPath:join(env.agentDir,'models.json'),allowModelNetwork:false});const model=runtime.getModel('swarm-fixture','fixture')!;const settings=SettingsManager.inMemory({extensions:[],packages:[],compaction:{enabled:false},retry:{enabled:false},cacheWarming:'off'});
     const loader=new DefaultResourceLoader({cwd:env.project,agentDir:env.agentDir,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,eventBus:bus,extensionFactories:[swarmExtension]});await loader.reload();
     const created=await createAgentSession({cwd:env.project,agentDir:env.agentDir,modelRuntime:runtime,model,thinkingLevel:'off',resourceLoader:loader,settingsManager:settings,sessionManager:SessionManager.create(env.project,join(env.root,'host-sessions')),tools:['friend_swarm']});session=created.session;await session.bindExtensions({mode:'json',onError:error=>errors.push(error.error)});
     await session.prompt('Use the declared Swarm protocol to coordinate two read-only inspections.');const state=await requestPlugin(bus,'swarm','snapshot',{},1000,'user') as {graphs:Graph[]};const graph=state.graphs.find(item=>item.id===copiedId)!;
     assert.ok(sawProtocol);assert.equal(graph.status,'integrated');assert.equal(graph.tasks.length,2);assert.ok(graph.tasks.every(task=>task.mode==='read'&&task.status==='completed'));assert.ok(graph.integration?.review?.approved);assert.match(session.getLastAssistantText()!,/integrated/);assert.deepEqual(errors,[]);
-  }finally {if(session){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}bus.clear();if(oldData===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=oldData;if(oldAgent===undefined)delete process.env.FRIEND_PI_AGENT_DIR;else process.env.FRIEND_PI_AGENT_DIR=oldAgent;if(oldWorker===undefined)delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;await env.cleanup();}
+  }finally {if(session){await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});session.dispose();}offTerminal();bus.clear();if(oldData===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=oldData;if(oldAgent===undefined)delete process.env.FRIEND_PI_AGENT_DIR;else process.env.FRIEND_PI_AGENT_DIR=oldAgent;if(oldWorker===undefined)delete process.env.FRIEND_PI_MEMBER_WORKER;else process.env.FRIEND_PI_MEMBER_WORKER=oldWorker;await env.cleanup();}
 });
 
 test('real controller schedules standalone SDK member and a different independent SDK reviewer',async()=>{
