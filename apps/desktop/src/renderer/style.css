@@ -8,3 +8,10 @@
 .member-conversation{display:flex;flex-direction:column;flex:1;min-height:0}.member-transcript{flex:1;min-height:0;overflow-anchor:none}.member-empty{padding:24px;text-align:center;color:#73866d}.teammate-navigation{display:flex;align-items:center;gap:8px;flex:none}.member-back{font-size:12px;white-space:nowrap}.member-toolbar{justify-content:flex-end}.member-toolbar .send-button{margin-left:0}.member-toolbar .stop-button{margin-left:auto}.teammate-trigger{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.teammate-roster button:focus-visible{outline:2px solid #628e4f;outline-offset:2px}
 
 .member-pending-message{margin:16px 20px;padding:14px 18px;border:1px dashed var(--border);border-radius:12px;background:var(--surface)}.member-pending-message strong{font-size:12px;color:var(--muted)}.member-pending-message p{white-space:pre-wrap;margin:8px 0 0;overflow-wrap:anywhere}
+
+/* Capability forms remain compact within the existing workbench. */
+.profile-options{display:grid;gap:8px;max-height:280px;overflow:auto;padding:8px 0}
+.profile-options .check{align-items:flex-start}.profile-options small{display:block;color:var(--muted,#647064)}
+.swarm-creation-controls fieldset,.panel-content fieldset{border:0;margin:0;padding:0;min-width:0}
+.memory-feedback{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.memory-feedback [role=group]{display:inline-flex;gap:6px}.memory-feedback small{flex-basis:100%}
+.graph-execution-facts{margin:8px 0}.swarm-creation-controls textarea.mono{width:100%;resize:vertical}

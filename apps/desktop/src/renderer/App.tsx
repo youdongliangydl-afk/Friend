@@ -16,7 +16,7 @@ import {SessionStats} from './SessionStats.js';
 import {BrowserPane} from './BrowserPane.js';
 import type {BrowserSnapshot} from '../browser-host.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MemoryPanel } from './panels.js';
+import { MemoryPanel,RebuildDisclosure } from './panels.js';
 import { asList, asObject, contentText, errorText, pluginLabels, type AppState, type DialogRequest, type JsonObject, type PluginName, type Preferences, type WorkspaceTab } from './types.js';
 import { Badge, Empty, Field, JsonView, Markdown, RichMessage, Modal } from './ui.js';
 import {TurnIndex,messageAnchor} from './TurnIndex.js';
@@ -92,7 +92,8 @@ export function SettingsPanel({state,report,refresh,projectId,page,setPage,onClo
     {Boolean(state.current?.pendingConfiguration)&&<p className="settings-snapshot">能力配置将在当前会话空闲后生效。</p>}
     <section className="card environment-card"><h3>本地环境</h3><Field label="数据目录"><code>{settings.paths.dataDir||'读取中…'}</code></Field><Field label="Pi 源码版本"><code>{settings.piSource||'读取中…'}</code></Field></section></div>
     <div hidden={page!=='memory'}><section className="card"><label className="switch-row"><span>启用记忆</span><input type="checkbox" role="switch" disabled={saving||!settingsReady} checked={settings.preferences.defaultPlugins.includes('memory')} onChange={event=>void toggleCapability('memory',event.target.checked)}/></label></section><section className="card"><h3>自动学习</h3><p>项目经验和个人偏好由常驻后台串行整理，前台可以同时工作。</p><p className="hint">{learning.alive?'后台服务在线':'等待后台服务'} · {learning.paused?'已暂停':'自动学习'}</p><button onClick={()=>void window.friendPi.request(learning.paused?'learning.resume':'learning.pause').then(()=>window.friendPi.request('learning.state')).then(raw=>setLearning(asObject(raw))).catch(error=>report(String(error),true))}>{learning.paused?'恢复学习':'暂停学习'}</button></section>
-    {state.current?.plugins.includes('memory')&&<MemoryPanel sessionId={state.current.sessionId} report={report}/>}</div>
+    {state.current?.plugins.includes('memory')&&<MemoryPanel sessionId={state.current.sessionId} goal={String(asObject(asObject(state.current.runtime).goal).objective||'')} report={report}/>}
+    {state.current?.plugins.includes('topic-rebuild')&&<RebuildDisclosure key={state.current.sessionId} sessionId={state.current.sessionId} report={report}/>}</div>
     <div hidden={page!=='instructions'}><CustomInstructionsPanel onBusy={setInstructionsBusy} active={page==='instructions'}/></div>
     <div hidden={page!=='models'}><ProviderPanel state={{...state,models:settings.models,providers:settings.providers}} report={report} refresh={providerRefresh} onBusy={setProviderBusy}/></div>
     <div hidden={page!=='extensions'}>{state.current?<CapabilitiesPanel sessionId={state.current.sessionId} report={report}/>:<Empty title="打开会话后配置 MCP 与外部工具"/>}</div>
