@@ -82,6 +82,7 @@ const DEFAULT_SETTINGS: LearningSettings = { enabled: true, paused: false };
 const now = () => new Date().toISOString();
 const sourceKey = (source: SourceRef) => `${source.sessionId}:${source.entryId}`;
 const preciseKey = (source: SourceRef) => `${sourceKey(source)}:${source.start ?? ''}:${source.end ?? ''}:${source.hash ?? ''}`;
+const sourceIdentity = (sources:SourceRef[]) => digest([...new Set(sources.map(source=>JSON.stringify({sessionId:source.sessionId,entryId:source.entryId,start:source.start??null,end:source.end??null,hash:source.hash??null,factId:source.factId??null})))].sort());
 const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\s+/g,' ').trim();
 // Old SDK transcripts may include appended files without a valid input boundary.
 // Such text remains project material, but is not evidence of a user's preference/instruction.
@@ -428,7 +429,7 @@ export class MemoryController implements PluginController {
       store.db.prepare('INSERT INTO memory_versions(id,revision,json) VALUES(?,?,?)').run(record.id,record.revision,JSON.stringify(record));
       store.db.prepare('DELETE FROM memory_search WHERE id=?').run(record.id);
       store.db.prepare('INSERT INTO memory_search(id,project_id,scope,tokens) VALUES(?,?,?,?)').run(record.id,record.projectId,record.scope,searchTokens(`${record.title} ${record.content}`).join(' '));
-      if(previous?.json){const old=JSON.parse(String(previous.json)) as MemoryRecord;if(old.content!==record.content||record.status!=='active'||!record.enabled||!!record.conflictIds?.length)this.policy!.publishDependency({capability:'memory',id:old.id,projectId:old.scope==='personal'?'personal':old.projectId,version:old.revision,hash:old.hash,valid:false});}
+      if(previous?.json){const old=JSON.parse(String(previous.json)) as MemoryRecord;if(old.content!==record.content||sourceIdentity(old.sources)!==sourceIdentity(record.sources)||record.status!=='active'||!record.enabled||!!record.conflictIds?.length)this.policy!.publishDependency({capability:'memory',id:old.id,projectId:old.scope==='personal'?'personal':old.projectId,version:old.revision,hash:old.hash,valid:false});}
       this.index(record);
       for(const evidence of record.evidence||[])store.db.prepare('INSERT OR REPLACE INTO memory_evidence VALUES(?,?,?,?)').run(record.id,record.revision,evidence.evidenceId,JSON.stringify(evidence));
       for(const dependency of record.dependencies||[])store.db.prepare('INSERT OR REPLACE INTO memory_dependencies VALUES(?,?,?,?)').run(record.id,record.revision,dependency.id,JSON.stringify(dependency));
@@ -551,10 +552,10 @@ export class MemoryController implements PluginController {
     }
     return records.filter(record => record.id !== id && found.has(record.id));
   }
-  private invalidateChildren(record: MemoryRecord, reason: string, ctx: PluginContext): string[] {
+  private invalidateChildren(record: MemoryRecord, reason: string, ctx: PluginContext, suppress=true): string[] {
     const children = this.descendants(record.id,ctx);
     for (const child of children) {
-      this.suppress(child,reason,ctx);
+      if(suppress)this.suppress(child,reason,ctx);
       this.write({...child,revision:child.revision+1,status:'invalidated',enabled:false,invalidatedReason:reason,updatedAt:now()},ctx,child.revision);
     }
     return children.map(child => child.id);
@@ -1229,15 +1230,21 @@ export class MemoryController implements PluginController {
           const previous={...original,sources:this.refineSources(original.sources,original.content,ctx)};
           const rawContent=input.content??input.text??previous.content;text(rawContent,'记忆内容',50000);const content=redactMemorySecrets(rawContent as string);
           const changedBody=content!==previous.content||input.conditions!==undefined&&digest(input.conditions)!==digest(previous.conditions||[])||input.validFrom!==undefined||input.validTo!==undefined;
+          const nextSources=input.sources===undefined?undefined:this.refineSources(this.sources(input.sources,ctx),content,ctx);
+          const changedSources=nextSources!==undefined&&sourceIdentity(previous.sources)!==sourceIdentity(nextSources);
           if(changedBody)this.suppress(previous,'corrected',ctx);
           if (previous.status === 'invalidated' && ctx.origin !== 'user') throw new Error('来源无效的记忆仅可由用户纠正');
           const userConfirmed = ctx.origin === 'user';
-          const changed = this.write({...previous,...(userConfirmed&&changedBody&&input.sources===undefined?{sources:[],evidence:[]}:{}),revision:previous.revision+1,content,...(input.aliases!==undefined?{aliases:this.strings(input.aliases,'aliases')}:{}),...(input.conditions!==undefined?{conditions:this.strings(input.conditions,'conditions')}:{}),...(input.validFrom!==undefined?{validFrom:this.time(input.validFrom,'validFrom')}:{}),...(input.validTo!==undefined?{validTo:this.time(input.validTo,'validTo')}:{}),...(input.reviewAfter!==undefined?{reviewAfter:this.time(input.reviewAfter,'reviewAfter')}:{}),...(input.sources!==undefined?{sources:this.sources(input.sources,ctx),evidence:undefined}:{}),title:typeof input.title === 'string' ? redactMemorySecrets(text(input.title,'标题',200)) : previous.title===previous.content.slice(0,70)?content.slice(0,70):previous.title,fingerprint:digest(normalize(content)),status:userConfirmed ? 'active' : 'candidate',confidence:userConfirmed?'supported':'ambiguous',confirmedAt:userConfirmed?now():undefined,enabled:userConfirmed ? true : previous.enabled,confirmedBy:userConfirmed ? 'user' : undefined,invalidatedReason:userConfirmed ? undefined : previous.invalidatedReason,updatedAt:now()},ctx,previous.revision);
-          const children = changedBody?this.invalidateChildren(previous,'父记忆已纠正',ctx):[];
-          if(changedBody)this.persistInvalidation([previous.id,...children],'corrected',changed.revision,ctx,[...previous.sources,...this.descendants(previous.id,ctx).flatMap(child=>child.sources)],previous.scope==='personal');
-          return {record:changed,ids:changedBody?[previous.id,...children]:[],sources:[...this.refineSources(previous.sources,previous.content,ctx),...this.descendants(previous.id,ctx).flatMap(child=>child.sources)]};
+          const changed = this.write({...previous,...(userConfirmed&&changedBody&&input.sources===undefined?{sources:[],evidence:[]}:{}),revision:previous.revision+1,content,...(input.aliases!==undefined?{aliases:this.strings(input.aliases,'aliases')}:{}),...(input.conditions!==undefined?{conditions:this.strings(input.conditions,'conditions')}:{}),...(input.validFrom!==undefined?{validFrom:this.time(input.validFrom,'validFrom')}:{}),...(input.validTo!==undefined?{validTo:this.time(input.validTo,'validTo')}:{}),...(input.reviewAfter!==undefined?{reviewAfter:this.time(input.reviewAfter,'reviewAfter')}:{}),...(nextSources!==undefined?{sources:nextSources,evidence:undefined}:{}),title:typeof input.title === 'string' ? redactMemorySecrets(text(input.title,'标题',200)) : previous.title===previous.content.slice(0,70)?content.slice(0,70):previous.title,fingerprint:digest(normalize(content)),status:userConfirmed ? 'active' : 'candidate',confidence:userConfirmed?'supported':'ambiguous',confirmedAt:userConfirmed?now():undefined,enabled:userConfirmed ? true : previous.enabled,confirmedBy:userConfirmed ? 'user' : undefined,invalidatedReason:userConfirmed ? undefined : previous.invalidatedReason,updatedAt:now()},ctx,previous.revision);
+          const reason=changedBody?'corrected':'sources-changed';
+          // A changed provenance invalidates derived snapshots, not the still-valid native text.
+          const children = changedBody||changedSources?this.invalidateChildren(previous,changedBody?'父记忆已纠正':'父记忆来源已变化',ctx,changedBody):[];
+          const ids=changedBody||changedSources?[previous.id,...children]:[];
+          const sources=changedBody?[...previous.sources,...this.descendants(previous.id,ctx).flatMap(child=>child.sources)]:[];
+          if(ids.length)this.persistInvalidation(ids,reason,changed.revision,ctx,sources,previous.scope==='personal');
+          return {record:changed,ids,sources,reason};
         });
-        if(mutation.ids.length)this.invalidate(mutation.ids,'corrected',mutation.record.revision,ctx,mutation.sources);return mutation.record;
+        if(mutation.ids.length)this.invalidate(mutation.ids,mutation.reason,mutation.record.revision,ctx,mutation.sources);return mutation.record;
       }
       case 'toggle': {
         if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','停用记忆须由用户操作');

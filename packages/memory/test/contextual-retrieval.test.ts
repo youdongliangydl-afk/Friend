@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {MemoryController,memorySemanticDigest,type MemoryRecord,type MemoryFeedback} from '../src/index.js';
-import {CapabilityError,ConflictError,RecordStore,digest,readSourceSpan,type HistoryItem,type PluginContext} from '../../core/src/index.js';
+import {CapabilityError,ConflictError,RecordStore,SourcePolicy,digest,readSourceSpan,type HistoryItem,type PluginContext} from '../../core/src/index.js';
 
 function fixture(){
  const dir=mkdtempSync(join(tmpdir(),'memory-context-')),items:HistoryItem[]=[{id:'u',parentId:null,type:'message',role:'user',timestamp:new Date().toISOString(),text:'来自可信用户的长期事实。'}];let c=new MemoryController(),calls=0;
@@ -99,5 +99,42 @@ test('corrected, expired and forgotten records cannot be revived by contextual f
   const operation=await f.c.dispatch('operation.get',{operationId:'new-feedback'},f.ctx) as any;assert.equal(operation.result.bodyRemoved,true);assert.equal(operation.result.taskContext,undefined);
   await assert.rejects(f.c.dispatch('feedback',{...input,revision:revised.revision,operationId:'forgotten-feedback'},f.ctx));
   const store=new RecordStore('memory',f.dir);try{assert.equal(store.list('feedback:').length,0);}finally{store.close();}
+ }finally{await f.close();}
+});
+
+
+test('source-only changes invalidate frozen dependencies and descendants without retiring either original source',async()=>{
+ const f=fixture();try{
+  const body='部署前请检查配置。';f.items[0].text=body;f.items.push({...f.items[0],id:'source-b'});
+  const events:{name:string;value:any}[]=[];f.ctx.emit=(name,value)=>{events.push({name,value});};
+  const record=await f.save({content:body,sources:[{sessionId:'s',entryId:'u'}]});
+  const child=await f.save({content:'部署后检查派生结果。',parentIds:[record.id],sources:record.sources});
+  const independent=await f.save({content:'独立检查部署配置。',sources:record.sources});
+  const host=new RecordStore('source-change-consumer',f.dir),policy=new SourcePolicy(host);
+  try{
+   const dependency={capability:'memory' as const,id:record.id,version:record.revision,hash:record.hash,relation:'derived-from' as const};
+   const frozen=policy.capture({projectId:'p',sources:record.sources,dependencies:[dependency]}),raw=policy.capture({projectId:'p',sources:record.sources}),epoch=Number(f.c.snapshot(f.ctx).epoch);
+   const changed=await f.c.dispatch('update',{id:record.id,revision:record.revision,sources:[{sessionId:'s',entryId:'source-b'}]},f.ctx) as MemoryRecord;
+   assert.equal(changed.content,body);assert.equal(changed.revision,2);assert.equal(changed.sources[0].entryId,'source-b');assert.equal(changed.status,'active');
+   const invalidation=f.c.invalidationSnapshot(f.ctx) as any;assert.equal(invalidation.epoch,epoch+1);assert.ok(invalidation.ids.includes(record.id));assert.ok(invalidation.ids.includes(child.id));assert.deepEqual(invalidation.sources,[]);
+   const event=events.find(event=>event.name==='memory.invalidated')!.value;assert.equal(event.reason,'sources-changed');assert.deepEqual(event.sources,[]);
+   assert.throws(()=>policy.assert(frozen),{code:'SOURCE_UNAVAILABLE'});assert.doesNotThrow(()=>policy.assert(raw));
+   assert.equal((await f.c.dispatch('read',{id:child.id},f.ctx) as MemoryRecord).status,'invalidated');
+   assert.equal((await f.c.dispatch('read',{id:independent.id},f.ctx) as MemoryRecord).status,'active');
+   const agent={...f.ctx,origin:'agent' as const};assert.equal((await f.c.dispatch('source.read',{source:record.sources[0]},agent) as any).text,body);assert.equal((await f.c.dispatch('source.read',{source:changed.sources[0]},agent) as any).text,body);
+   assert.ok(f.c.search({query:'部署'},agent).some(value=>value.id===record.id));assert.ok(!f.c.search({query:'部署'},agent).some(value=>value.id===child.id));
+   const store=new RecordStore('memory',f.dir);try{assert.equal(store.list('retired-source:').length,0);assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_suppression').get()!.n,0);}finally{store.close();}
+   await f.cold();assert.equal(Number(f.c.snapshot(f.ctx).epoch),epoch+1);assert.ok((f.c.invalidationSnapshot(f.ctx).ids as string[]).includes(record.id));
+  }finally{host.close();}
+ }finally{await f.close();}
+});
+
+test('equivalent source references reordered or relabelled do not invalidate descendants or advance the invalidation epoch',async()=>{
+ const f=fixture();try{
+  f.items[0].text='部署前请检查配置。';f.items.push({...f.items[0],id:'source-b'});
+  const record=await f.save({content:f.items[0].text,sources:[{sessionId:'s',entryId:'u'},{sessionId:'s',entryId:'source-b'}]}),child=await f.save({content:'相关部署检查。',parentIds:[record.id]});
+  const epoch=f.c.snapshot(f.ctx).epoch,events:string[]=[];f.ctx.emit=name=>{events.push(name);};
+  const changed=await f.c.dispatch('update',{id:record.id,revision:record.revision,sources:[...record.sources].reverse().map(source=>({...source,label:'new display label'}))},f.ctx) as MemoryRecord;
+  assert.equal(changed.revision,2);assert.equal(f.c.snapshot(f.ctx).epoch,epoch);assert.ok(!events.includes('memory.invalidated'));assert.equal((await f.c.dispatch('read',{id:child.id},f.ctx) as MemoryRecord).status,'active');
  }finally{await f.close();}
 });
