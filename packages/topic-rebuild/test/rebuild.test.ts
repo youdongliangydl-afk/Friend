@@ -542,3 +542,47 @@ test('multi-sentence task and current request retain every bounded subtask',asyn
     assert.match(corrected.goal.text,/增加按时间筛选/);assert.doesNotMatch(corrected.goal.text,/保留用户配置/);
   }finally{c.dispose();f.cleanup();}
 });
+
+test('checkpoint leaves unrepresented tool evidence pending through cold start and failed preparation',async()=>{
+  const f=fixture();let c=f.create();let calls=0;
+  try {
+    f.originals.length=0;f.canonical.length=0;
+    f.add('u1','user','分析部署失败。');f.add('deploy-tool','toolResult','Deployment failed: E902 in /srv/site/settings.toml');f.add('u3','assistant','继续核对。');
+    const draft=c.checkpointDraft(f.ctx)!;f.appendDraft(draft);const checkpoint=c.confirmCanonical(f.ctx)!;
+    assert.equal(checkpoint.coverage?.complete,false);assert.equal(checkpoint.coveredThroughId,'u1');assert.deepEqual(checkpoint.coverage?.toolRanges,[]);
+    assert.ok(checkpoint.coverage!.pending.some(range=>range.entryId==='deploy-tool'&&range.start===0));
+    assert.doesNotMatch(JSON.stringify(checkpoint),/E902|\/srv\/site\/settings.toml/,'checkpoint stores refs, not a second tool transcript');
+    c.dispose();c=f.create();assert.equal(c.checkpointDraft(f.ctx),undefined,'tool-only pending ranges must not create empty checkpoint progress');
+    const cold=c.snapshot(f.ctx).field as WorkingField;assert.deepEqual(cold.coverage,checkpoint.coverage);
+    f.ctx.complete=async prompt=>{
+      calls++;const entries=JSON.parse(prompt.split('原始条目：')[1]!) as {id:string;text:string}[];
+      assert.equal(entries.filter(item=>item.id==='deploy-tool').length,1);assert.match(entries.find(item=>item.id==='deploy-tool')!.text,/E902.*\/srv\/site\/settings.toml/);
+      return JSON.stringify({constraints:[],decisions:[{text:'Deployment failed: E902 in /srv/site/settings.toml',sourceEntryIds:['deploy-tool']}],unfinished:[],topics:[]});
+    };
+    const failed=await c.beforeCompact(f.event(),f.ctx);assert.ok(failed?.compaction);c.compactFailed(f.ctx,'simulated journal failure');
+    assert.equal((c.snapshot(f.ctx).field as WorkingField).coverage?.complete,false);
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.equal(calls,2);
+    f.appendCompaction(result.compaction);const adopted=c.confirmCanonical(f.ctx)!;
+    assert.equal(adopted.coverage?.complete,true);assert.equal(adopted.coverage?.toolRanges?.[0]?.entryId,'deploy-tool');assert.match(result.compaction.summary,/E902.*\/srv\/site\/settings.toml/);
+    c.dispose();c=f.create();f.add('after-tool','user','进度如何？');const next=c.checkpointDraft(f.ctx)!;f.appendDraft(next);const after=c.confirmCanonical(f.ctx)!;
+    assert.deepEqual(after.coverage?.toolRanges,adopted.coverage?.toolRanges);assert.ok(after.decisions.some(point=>point.text.includes('E902')));
+    f.ctx.complete=async prompt=>{const entries=JSON.parse(prompt.split('原始条目：')[1]!) as {id:string}[];assert.equal(entries.some(item=>item.id==='deploy-tool'),false);assert.match(prompt.split('原始条目：')[0]!,/E902.*\/srv\/site\/settings.toml/);return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});};
+    assert.ok((await c.beforeCompact(f.event(),f.ctx))?.compaction);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('legacy checkpoint tool coverage is conservatively reread after cold start',async()=>{
+  const f=fixture();let c=f.create();
+  try {
+    f.originals.length=0;f.canonical.length=0;
+    f.add('u1','user','分析部署失败。');f.add('legacy-tool','toolResult','E902 /srv/site/settings.toml');f.add('u3','assistant','继续核对。');
+    const draft=c.checkpointDraft(f.ctx)!;f.appendDraft(draft);const checkpoint=c.confirmCanonical(f.ctx)!;
+    // Reproduce the old persisted contract that claimed every entry was covered.
+    const tool=historyItems(f.originals).find(item=>item.id==='legacy-tool')!;
+    checkpoint.coverage!.ranges.push({sessionId:'session-a',entryId:tool.id,start:0,end:tool.text.length,hash:digest(tool.text)});
+    checkpoint.coverage!.pending=[];checkpoint.coverage!.complete=true;delete checkpoint.coverage!.toolRanges;checkpoint.coveredThroughId='u3';
+    c.dispose();c=f.create();
+    f.ctx.complete=async prompt=>{const entries=JSON.parse(prompt.split('原始条目：')[1]!) as {id:string;text:string}[];assert.match(entries.find(item=>item.id==='legacy-tool')!.text,/E902.*\/srv\/site\/settings.toml/);return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});};
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);assert.equal(c.confirmCanonical(f.ctx)!.coverage!.toolRanges?.[0]?.entryId,'legacy-tool');
+  }finally{c.dispose();f.cleanup();}
+});

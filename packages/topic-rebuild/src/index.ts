@@ -24,7 +24,7 @@ export interface WorkingField {
   v: 1; operationId: string; revision: number; sessionId: string; projectId: string;
   reason: 'checkpoint' | 'manual' | 'threshold' | 'overflow';
   goal: FieldPoint; hostGoal?:{id:string;revision:number}; currentRequest?:FieldPoint; goalStatus?:'active'|'cancelled';
-  coverage?:{v:1;ranges:SourceRef[];pending:SourceRef[];complete:boolean};
+  coverage?:{v:1;ranges:SourceRef[];pending:SourceRef[];complete:boolean;toolRanges?:SourceRef[]};
   constraints: FieldPoint[]; decisions: FieldPoint[]; unfinished: FieldPoint[];
   topics: TopicField[]; sources: SourceRef[]; coveredThroughId: string | null;
   sourceDigest: string; invalidationEpoch: number; memoryRefs: RebuildMemoryRef[]; memoryEpoch?:number;
@@ -209,15 +209,17 @@ export class RebuildController implements PluginController {
     return points.map(point=>point.sources.every(source=>ctx.readSource(source).role==='assistant')&&!point.text.startsWith('助手陈述，未独立核验：')?{...point,text:`助手陈述，未独立核验：${point.text}`}:point);
   }
   /** Only adopted ranges seed the next page; a prepared draft is never a cursor. */
-  private page(ctx:PluginContext,capture:HistoryItem[],previous?:WorkingField) {
+  private page(ctx:PluginContext,capture:HistoryItem[],previous?:WorkingField,allowToolReads=true) {
     const ranges:SourceRef[]=[],pending:SourceRef[]=[],selected:SourceRef[]=[];let budget=36000;
     const ref=(item:HistoryItem,start:number,end:number):SourceRef=>({sessionId:ctx.sessionId,entryId:item.id,start,end,hash:digest(item.text.slice(start,end))});
     for(const item of capture){
-      const prior=(previous?.coverage?.ranges||[]).filter(source=>source.entryId===item.id&&source.sessionId===ctx.sessionId).filter(source=>{try{readSourceSpan(item,source);return hasSpan(source);}catch{return false;}}).sort((a,b)=>a.start!-b.start!);
+      // Legacy checkpoint ranges did not distinguish tool output never sent to
+      // a model. Only explicit canonical model-read tool ranges can skip it.
+      const prior=(item.role==='toolResult'?previous?.coverage?.toolRanges||[]:previous?.coverage?.ranges||[]).filter(source=>source.entryId===item.id&&source.sessionId===ctx.sessionId).filter(source=>{try{readSourceSpan(item,source);return hasSpan(source);}catch{return false;}}).sort((a,b)=>a.start!-b.start!);
       const gaps:{start:number;end:number}[]=[];let cursor=0;
       for(const source of prior){if(source.start!>cursor)gaps.push({start:cursor,end:source.start!});cursor=Math.max(cursor,source.end!);}
       if(cursor<item.text.length)gaps.push({start:cursor,end:item.text.length});
-      let allowance=Math.min(6000,budget);const chosen:SourceRef[]=[];
+      let allowance=item.role==='toolResult'&&!allowToolReads?0:Math.min(6000,budget);const chosen:SourceRef[]=[];
       // On first read include both ends, so crucial tail facts are immediately recoverable.
       if(!prior.length&&item.text.length>allowance&&allowance>1){const head=Math.ceil(allowance/2),tail=allowance-head;chosen.push(ref(item,0,head),ref(item,item.text.length-tail,item.text.length));allowance=0;}
       else for(const gap of gaps){if(allowance<=0)break;const end=Math.min(gap.end,gap.start+allowance);chosen.push(ref(item,gap.start,end));allowance-=end-gap.start;}
@@ -228,7 +230,8 @@ export class RebuildController implements PluginController {
       if(cursor<item.text.length)pending.push(ref(item,cursor,item.text.length));
     }
     let coveredThroughId:string|null=null;for(const item of capture){if(pending.some(source=>source.entryId===item.id))break;coveredThroughId=item.id;}
-    return {selected,coverage:{v:1 as const,ranges,pending,complete:pending.length===0},coveredThroughId};
+    const toolIds=new Set(capture.filter(item=>item.role==='toolResult').map(item=>item.id));
+    return {selected,coverage:{v:1 as const,ranges,pending,complete:pending.length===0,toolRanges:ranges.filter(range=>toolIds.has(range.entryId))},coveredThroughId};
   }
   private taskIntent(value:string):'replace'|'cancel'|'steer' {
     const command=value.trim();
@@ -270,7 +273,7 @@ export class RebuildController implements PluginController {
     const retired=this.retiredSources(ctx,supersededSources);
     const effective=(point:FieldPoint)=>this.effectivePoint(point,[...retired,...conflicts.flatMap(conflict=>conflict.sources)],ctx);
     const inherited=(previous?.constraints || []).map(point=>this.upgradePoint(point,ctx)).filter(effective);
-    const page=this.page(ctx,capture,previous);
+    const page=this.page(ctx,capture,previous,reason!=='checkpoint');
     const facts=(item:HistoryItem)=>sourceFactRefs(item,ctx.sessionId).filter(source=>source.end!-source.start!<=6000&&page.coverage.ranges.some(range=>range.entryId===item.id&&range.start!<=source.start!&&range.end!>=source.end!)&&page.selected.some(range=>range.entryId===item.id&&range.start!<source.end!&&range.end!>source.start!)).map(source=>({text:readSourceSpan(item,source),sources:[source]}));
     const requestPoint=(item:HistoryItem):FieldPoint=>{
       const sources=sourceFactRefs(item,ctx.sessionId).filter(source=>source.start!<3000).map(source=>{
@@ -357,7 +360,7 @@ export class RebuildController implements PluginController {
     if(!this.enabled(ctx)) return undefined;
     const capture=originalMessages(ctx.history()); const previous=this.field(ctx);
     if(previous && (previous.invalidationEpoch!==this.invalidation(ctx).epoch||previous.memoryEpoch!==undefined&&previous.memoryEpoch!==this.memoryEpoch(ctx))) return undefined;
-    if(!capture.length || previous?.sourceDigest===sourceDigest(capture)&&previous.coverage?.complete!==false) return undefined;
+    if(!capture.length || previous?.sourceDigest===sourceDigest(capture)&&!this.page(ctx,capture,previous,false).selected.length) return undefined;
     try {
       const field=this.deterministic(ctx,'checkpoint',capture,previous);
       if(this.summary(field).length>MAX_FIELD_CHARS) throw new Error('工作现场超过安全预算，保留上一个版本与原文');

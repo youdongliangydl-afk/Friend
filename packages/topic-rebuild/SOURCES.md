@@ -27,3 +27,9 @@ source was introduced. Pi source revision remains
 Focused tests use Node 24 and offline/faux providers, including real Pi SDK
 journal adoption and restart. Real models, packaged artifacts and Computer Use
 are NOT_RUN in this package handoff; integration owns that final candidate.
+
+Integration review correction (2026-10-17): deterministic checkpoints no longer
+claim unread tool results. Canonical model-read tool spans use an additive
+source-only coverage ledger; legacy checkpoint coverage causes conservative
+rereading after restart. Offline regressions reproduce E902/path evidence loss,
+failed journal adoption, cold recovery and later checkpoint inheritance.
