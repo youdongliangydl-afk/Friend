@@ -27,9 +27,24 @@ export interface MemoryRecord {
   hash: string; createdAt: string; updatedAt: string; confirmedBy?: 'user' | 'system'; invalidatedReason?: string;
   subject?: string; conflictIds?: string[];
   aliases?:string[];conditions?:string[];confidence?:'supported'|'ambiguous';
-  validFrom?:string;validTo?:string;reviewAfter?:string;assertedAt?:string;confirmedAt?:string;
+  validFrom?:string|null;validTo?:string|null;semanticDigest?:string;reviewAfter?:string;assertedAt?:string;confirmedAt?:string;
   evidence?:MemoryEvidence[];dependencies?:CapabilityDependency[];sourceEpoch?:number;policyEpoch?:number;legacy?:boolean;
   expertCandidateId?: string; expertDelivery?: 'pending' | 'delivered' | 'unavailable';
+}
+export interface MemoryTaskContext { goal?:string; scenario?:string; entities?:string[] }
+export interface MemoryFeedback {
+  id:string; revision:number; kind:'relevant'|'irrelevant'|'outdated'; projectId:string;
+  taskContext?:MemoryTaskContext; contextKey:string|null; reviewQueued:boolean; at:string; operationId:string;
+}
+/** Complete semantic identity shared by independently installed Memory and ReBuild. */
+export function memorySemanticDigest(record:MemoryRecord):string {
+  return digest({id:record.id,revision:record.revision,content:record.content,conditions:record.conditions||[],validFrom:record.validFrom??null,validTo:record.validTo??null,scope:record.scope});
+}
+function semanticRecord(record:MemoryRecord):MemoryRecord {
+  return {...record,conditions:[...record.conditions||[]],validFrom:record.validFrom??null,validTo:record.validTo??null,sources:record.sources.map(source=>({...source})),hash:digest(record.content),semanticDigest:memorySemanticDigest(record)};
+}
+function freezeSelection<T>(value:T):T {
+  if(value&&typeof value==='object'){for(const item of Object.values(value))freezeSelection(item);Object.freeze(value);}return value;
 }
 interface LearningSettings { enabled: boolean; paused: boolean }
 export interface LearningProposal {
@@ -167,6 +182,10 @@ export function wakeLearningJobs(dataDir:string,projectId?:string):void {
   }finally{store.close();}
 }
 
+function literalMatch(haystack:string,needle:string):boolean {
+  const escaped=normalize(needle).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp(`(?<![a-z0-9_./\\\\-])${escaped}(?![a-z0-9_./\\\\-])`,'u').test(normalize(haystack));
+}
 /** CJK bigrams augment unicode61 without requiring a native tokenizer dependency. */
 export function searchTokens(value: string): string[] {
   const tokens: string[] = [];
@@ -330,7 +349,7 @@ export class MemoryController implements PluginController {
   private cleanPrivacyBackups():void {
     if(!this.store)return;const root=join(this.store.dataDir,'memory-migration-backups');
     for(const task of this.store.list<{ids:string[];error?:string}>('privacy-cleanup:')){
-      try{const ids=new Set(task.value.ids);const redact=(raw:unknown):unknown=>{if(Array.isArray(raw))return raw.map(redact);if(!raw||typeof raw!=='object')return raw;const value=raw as Record<string,unknown>;if(ids.has(String(value.id))&&'content' in value)return {id:value.id,revision:value.revision,hash:value.hash,bodyRemoved:true};return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redact(item)]));};
+      try{const ids=new Set(task.value.ids);const redact=(raw:unknown):unknown=>{if(Array.isArray(raw))return raw.map(redact);if(!raw||typeof raw!=='object')return raw;const value=raw as Record<string,unknown>;if(ids.has(String(value.id))&&('content' in value||'contextKey' in value))return {id:value.id,revision:value.revision,hash:value.hash,bodyRemoved:true};return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redact(item)]));};
         if(existsSync(root))for(const file of readdirSync(root,{withFileTypes:true})){if(!file.isFile()||!file.name.endsWith('.sqlite'))continue;const db=new DatabaseSync(join(root,file.name));
           try{db.function('friend_pi_writer_version',{deterministic:true},()=>4);db.exec('PRAGMA secure_delete=ON');const has=(table:string)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
             db.exec('BEGIN IMMEDIATE');for(const id of ids){for(const table of ['memory_records','memory_versions','memory_search','memory_search_v2'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id);for(const table of ['memory_evidence','memory_dependencies'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE ${table==='memory_evidence'?'memory_id':'owner_id'}=?`).run(id);}
@@ -345,6 +364,7 @@ export class MemoryController implements PluginController {
   }
   private clearUsage(ids:string[],ctx:PluginContext,sources:SourceRef[]=[]):void {
     this.store!.put(`privacy-cleanup:${randomUUID()}`,{ids});this.store!.afterCommit(()=>this.cleanPrivacyBackups());this.store!.db.prepare('DELETE FROM memory_queries').run();
+    for(const row of this.store!.list<MemoryFeedback>('feedback:'))if(ids.includes(row.value.id))this.store!.remove(row.key);
     const forgotten=new Set(ids);if(this.contextReceipt?.records.some(record=>forgotten.has(record.id)))this.contextReceipt=undefined;if(this.requestReceipt?.records.some(record=>forgotten.has(record.id)))this.requestReceipt=undefined;
     for(const job of this.jobs(ctx))if(job.memoryIds.some(id=>forgotten.has(id))||job.sources.some(source=>sources.some(old=>sameEntryOverlap(source,old)))){this.writeJob({...job,proposals:undefined,proposalLedger:job.proposalLedger?.map(proposal=>proposal.memoryId&&forgotten.has(proposal.memoryId)?{...proposal,original:{forgotten:true},state:'rejected',reason:'用户已遗忘对应记忆'}:proposal),memoryIds:job.memoryIds.filter(id=>!forgotten.has(id)),state:job.state==='running'?'queued':job.state,stage:job.state==='running'&&!job.proposalLedger?'extract':job.stage,owner:undefined});}for(const row of this.store!.list<MemoryUsageReceipt>('usage:')){
       const receipt=row.value;if(!receipt.records.some(record=>forgotten.has(record.id)))continue;
@@ -355,7 +375,7 @@ export class MemoryController implements PluginController {
       const redacted={...receipt,directory:receipt.directory?.map(item=>forgotten.has(String(item.id))?{id:item.id,revision:item.revision,hash:item.hash,omittedReason:'forgotten'}:item),records:receipt.records.map(record=>forgotten.has(record.id)?{...record,content:'',title:'[forgotten]',aliases:[],conditions:[],sources:[],evidence:[],omittedReason:'forgotten'}:record)};this.store!.db.prepare('UPDATE memory_usage SET json=? WHERE receipt_id=?').run(JSON.stringify(redacted),String(row.receipt_id));
     }
     for(const row of this.store!.db.prepare('SELECT operation_id,json FROM memory_operations').all()){
-      const value=JSON.parse(String(row.json));if(JSON.stringify(value).includes('"content"')&&ids.some(id=>JSON.stringify(value).includes(id)))this.store!.db.prepare('UPDATE memory_operations SET json=? WHERE operation_id=?').run(JSON.stringify({forgotten:ids,bodyRemoved:true}),String(row.operation_id));
+      const value=JSON.parse(String(row.json));if((JSON.stringify(value).includes('"content"')||JSON.stringify(value).includes('"contextKey"'))&&ids.some(id=>JSON.stringify(value).includes(id)))this.store!.db.prepare('UPDATE memory_operations SET json=? WHERE operation_id=?').run(JSON.stringify({forgotten:ids,bodyRemoved:true}),String(row.operation_id));
     }
   }
   private scopeMatches(record:MemoryRecord,input:JsonObject,ctx:PluginContext):boolean {
@@ -371,12 +391,12 @@ export class MemoryController implements PluginController {
     const db = this.database(ctx).db;
     const rows = all ? db.prepare('SELECT json FROM memory_records ORDER BY rowid DESC').all()
       : db.prepare("SELECT json FROM memory_records WHERE project_id=? OR scope='personal' ORDER BY rowid DESC").all(ctx.projectId);
-    return rows.map(row => {const record=JSON.parse(String(row.json)) as MemoryRecord;return {...record,hash:digest(record.content)};});
+    return rows.map(row => {const record=JSON.parse(String(row.json)) as MemoryRecord;return semanticRecord(record);});
   }
   private get(id: unknown, ctx: PluginContext): MemoryRecord {
     const row = this.database(ctx).db.prepare("SELECT json FROM memory_records WHERE id=? AND (project_id=? OR scope='personal')").get(text(id,'记忆编号'),ctx.projectId);
     if (!row) throw new Error('记忆不存在或不属于当前项目');
-    const record=JSON.parse(String(row.json)) as MemoryRecord;return {...record,hash:digest(record.content)};
+    const record=JSON.parse(String(row.json)) as MemoryRecord;return semanticRecord(record);
   }
   private expected(input: JsonObject, previous: MemoryRecord): void {
     if (!Number.isInteger(input.expectedRevision??input.revision) || (input.expectedRevision??input.revision) !== previous.revision) throw new ConflictError();
@@ -416,7 +436,7 @@ export class MemoryController implements PluginController {
       this.policy!.setPersonalSourceGrants(record.id,record.sources,record.scope==='personal'&&record.status==='active'&&record.enabled);
       this.projectionDirty(record);
       const event={v:1,eventId:randomUUID(),projectId:ctx.projectId,epoch:this.epoch(ctx),recordIds:[record.id],revisions:{[record.id]:record.revision},reason:record.status};store.db.prepare('INSERT INTO memory_events VALUES(?,?,?)').run(event.eventId,event.epoch,JSON.stringify(event));store.afterCommit(()=>ctx.emit('memory.changed',event));
-      return record;
+      return semanticRecord(record);
     });
   }
   private suppress(record: MemoryRecord, reason: string, ctx: PluginContext): void {
@@ -610,21 +630,36 @@ export class MemoryController implements PluginController {
     },ctx);
   }
 
+  private taskContext(value:unknown):MemoryTaskContext|undefined {
+    if(value===undefined)return undefined;const input=object(value);
+    if(Object.keys(input).some(key=>!['goal','scenario','entities'].includes(key)))throw new CapabilityError('VALIDATION_ERROR','taskContext 字段无效');
+    const result:MemoryTaskContext={};
+    for(const key of ['goal','scenario'] as const)if(input[key]!==undefined){const value=normalize(redactMemorySecrets(text(input[key],key,4000)));if(value)result[key]=value;}
+    if(input.entities!==undefined){const entities=this.strings(input.entities,'entities',32).map(normalize).sort();if(entities.length)result.entities=[...new Set(entities)];}
+    return Object.keys(result).length?result:undefined;
+  }
+  private contextText(value?:MemoryTaskContext):string{return [value?.goal,value?.scenario,...value?.entities||[]].filter(Boolean).join(' ');}
+  private feedbacks(ctx:PluginContext):MemoryFeedback[]{return this.database(ctx).list<MemoryFeedback>(`feedback:${ctx.projectId}:`).map(row=>row.value).filter(value=>{try{return this.get(value.id,ctx).revision===value.revision;}catch{return false;}});}
+  private unavailable(record:MemoryRecord,input:JsonObject,ctx:PluginContext):string|undefined {
+    if(!this.scopeMatches(record,input,ctx))return 'scope';if(record.kind==='method')return 'legacy-method';
+    if(!record.enabled||record.status!=='active'&&!(input.includeCandidates===true&&record.status==='candidate'))return 'inactive';
+    if(!this.validTime(record))return 'validity';if(record.conflictIds?.length)return 'conflict';
+    if(record.content.includes('[REDACTED_SECRET]'))return 'secret';
+    if(record.sources.length&&!record.sources.some(source=>{try{return !isSessionDeleted(ctx.dataDir,source.sessionId)&&!this.sourceSuppressed(source,ctx)&&!!readSourceSpan(ctx.readSource(source),source);}catch{return false;}}))return 'source-unavailable';
+    if((record.evidence||[]).some(e=>e.kind==='artifact')&&!record.sources.length&&!(record.evidence||[]).some(e=>e.kind==='artifact'&&this.artifactEvidenceAvailable(e,ctx)))return 'artifact-unavailable';
+    if(!this.personalSourceSupported(record,ctx))return 'personal-source';
+    try{this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:record.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId)),dependencies:record.dependencies,artifacts:record.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));}catch{return 'source-policy';}
+    return undefined;
+  }
+
   private query(input:JsonObject,ctx:PluginContext):{records:MemoryRecord[];queryId:string;matches:JsonObject[];excluded:JsonObject[];terms:string[]} {
     if(input.includeCandidates!==undefined&&typeof input.includeCandidates!=='boolean')throw new CapabilityError('VALIDATION_ERROR','includeCandidates 必须为布尔值');
-    const query=text(input.query??input.text,'搜索词',200000);if(input.limit!==undefined&&(!Number.isInteger(input.limit)||Number(input.limit)<1||Number(input.limit)>100))throw new CapabilityError('VALIDATION_ERROR','limit 必须是 1 到 100 的整数');
+    const query=text(input.query??input.text??this.contextText(this.taskContext(input.taskContext)),'搜索词',200000);if(input.limit!==undefined&&(!Number.isInteger(input.limit)||Number(input.limit)<1||Number(input.limit)>100))throw new CapabilityError('VALIDATION_ERROR','limit 必须是 1 到 100 的整数');
     if(input.match!==undefined&&!['any','all','adaptive'].includes(String(input.match)))throw new CapabilityError('VALIDATION_ERROR','match 必须为 any、all 或 adaptive');
     const limit=Number(input.limit??20),db=this.database(ctx).db,excluded:JsonObject[]=[];
-    const visible=this.records(ctx).filter(record=>{
-      let reason:string|undefined;
-      if(!this.scopeMatches(record,input,ctx))reason='scope';else if(record.kind==='method')reason='legacy-method';else if(!record.enabled||record.status!=='active'&&!(input.includeCandidates===true&&record.status==='candidate'))reason='inactive';
-      else if(!this.validTime(record))reason='validity';else if(record.conflictIds?.length)reason='conflict';else if(record.content.includes('[REDACTED_SECRET]'))reason='secret';
-      else if(record.sources.length&&!record.sources.some(source=>{try{return !isSessionDeleted(ctx.dataDir,source.sessionId)&&!this.sourceSuppressed(source,ctx)&&!!readSourceSpan(ctx.readSource(source),source);}catch{return false;}}))reason='source-unavailable';
-      else if((record.evidence||[]).some(e=>e.kind==='artifact')&&!record.sources.length&&!(record.evidence||[]).some(e=>e.kind==='artifact'&&this.artifactEvidenceAvailable(e,ctx)))reason='artifact-unavailable';
-      else if(!this.personalSourceSupported(record,ctx))reason='personal-source';
-      if(!reason){try{this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:record.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId)),dependencies:record.dependencies,artifacts:record.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));}catch{reason='source-policy';}}
-      if(reason)excluded.push({id:record.id,reason});return !reason;
-    }).map(record=>({...record,sources:record.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId))}));
+    const visible=this.records(ctx).filter(record=>{const reason=this.unavailable(record,input,ctx);if(reason)excluded.push({id:record.id,reason});return !reason;}).map(record=>({...record,sources:record.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId))}));
+    const taskContext=this.taskContext(input.taskContext),contextKey=taskContext?digest(taskContext):null;
+    const contextTerms=searchTokens(this.contextText(taskContext)).slice(0,32);
     const all=searchTokens(query);const frequency=db.prepare('SELECT doc FROM memory_search_vocab WHERE term=?');
     const protectedTerms=new Set(searchTokens((query.match(/(?:[A-Za-z]:)?(?:[\w.-]+[\/\\])+[\w.-]+|\b(?:[A-Z][A-Z0-9_]{2,}|[a-z]+[A-Z][A-Za-z0-9]*|[A-Za-z]+_[A-Za-z0-9_]+)\b/gu)||[]).join(' ')));
     const terms=all.map((term,index)=>({term,index,count:Number(frequency.get(term)?.doc??0),protected:protectedTerms.has(term)})).sort((a,b)=>Number(b.protected)-Number(a.protected)||Number(a.count===0)-Number(b.count===0)||a.count-b.count||a.index-b.index).slice(0,32).map(v=>v.term);
@@ -633,19 +668,24 @@ export class MemoryController implements PluginController {
     if(terms.length){ranked=db.prepare('SELECT id,bm25(memory_search_v2,0,5,3,1) AS rank FROM memory_search_v2 WHERE memory_search_v2 MATCH ? ORDER BY rank LIMIT 400').all(phrase(input.match==='any'?' OR ':' AND ')).map(row=>({id:String(row.id),rank:Number(row.rank)}));
       if(input.match==='adaptive'&&ranked.length<Math.min(limit,3))ranked=db.prepare('SELECT id,bm25(memory_search_v2,0,5,3,1) AS rank FROM memory_search_v2 WHERE memory_search_v2 MATCH ? ORDER BY rank LIMIT 400').all(phrase(' OR ')).map(row=>({id:String(row.id),rank:Number(row.rank)}));}
     const scores=new Map(ranked.map(row=>[row.id,-row.rank]));const needle=normalize(query);
+    // Context terms augment local candidates; the explicit query's exact tier stays first.
+    if(contextTerms.length){const phrase=contextTerms.map(term=>`"${term.replaceAll('"','""')}"`).join(' OR ');
+      for(const row of db.prepare('SELECT id,bm25(memory_search_v2,0,5,3,1) AS rank FROM memory_search_v2 WHERE memory_search_v2 MATCH ? ORDER BY rank LIMIT 400').all(phrase))scores.set(String(row.id),(scores.get(String(row.id))||0)-Number(row.rank));}
+    const feedback=new Map(this.feedbacks(ctx).filter(value=>contextKey!==null&&value.contextKey===contextKey).map(value=>[value.id,value]));
+    const contextual=(record:MemoryRecord)=>{const tokens=new Set(searchTokens([record.title,...record.aliases||[],record.content,...record.conditions||[]].join(' ')));const match=contextTerms.filter(term=>tokens.has(term)).length/Math.max(1,contextTerms.length);const signal=feedback.get(record.id);return match*2+(signal?.kind==='relevant'?4:signal?.kind==='irrelevant'?-4:signal?.kind==='outdated'?-2:0);};
     for(const record of visible)if(normalize([record.id,record.title,...record.aliases||[],record.content].join(' ')).includes(needle))scores.set(record.id,(scores.get(record.id)||0)+1);
-    const literals=query.match(/[A-Za-z][A-Za-z0-9_./-]+/g)||[];
-    const exact=(record:MemoryRecord)=>record.id===query?4:normalize(record.title)===needle?3:(record.aliases||[]).some(alias=>normalize(alias)===needle)?2:literals.some(value=>normalize(record.title+' '+(record.aliases||[]).join(' ')+' '+record.content).includes(normalize(value)))?1:0;
-    const records=visible.filter(record=>scores.has(record.id)).sort((a,b)=>exact(b)-exact(a)||(scores.get(b.id)!-scores.get(a.id)!)||Number(b.projectId===ctx.projectId)-Number(a.projectId===ctx.projectId)||Date.parse(b.confirmedAt||b.updatedAt)-Date.parse(a.confirmedAt||a.updatedAt)||a.id.localeCompare(b.id)).slice(0,limit);
-    const matches=records.map(record=>({id:record.id,revision:record.revision,score:scores.get(record.id),matchedTerms:terms.filter(term=>searchTokens([record.title,...record.aliases||[],record.content].join(' ')).includes(term)),fields:{title:terms.filter(term=>searchTokens(record.title).includes(term)),aliases:terms.filter(term=>searchTokens((record.aliases||[]).join(' ')).includes(term)),body:terms.filter(term=>searchTokens(record.content).includes(term))},reviewDue:!!record.reviewAfter&&Date.parse(record.reviewAfter)<=Date.now()}));
-    const queryId=randomUUID();db.prepare('DELETE FROM memory_queries WHERE expires_at<?').run(now());db.prepare('INSERT INTO memory_queries VALUES(?,?,?)').run(queryId,new Date(Date.now()+86400000).toISOString(),JSON.stringify({queryId,projectId:ctx.projectId,ruleVersion:RULE_VERSION,terms,omittedTerms:all.filter(term=>!terms.includes(term)),protectedTerms:[...protectedTerms],matches,excluded,zeroHitBoundary:'零命中不代表历史不存在；可用少量有区分度关键词补查，只回溯已登记有效且有权读取的来源'}));
+    const literals=query.match(/(?:[A-Za-z]:)?[./\\]*[A-Za-z_][A-Za-z0-9_./\\-]*/g)||[];
+    const exact=(record:MemoryRecord)=>record.id===query?4:normalize(record.title)===needle?3:(record.aliases||[]).some(alias=>normalize(alias)===needle)?2:literals.some(value=>literalMatch(record.title+' '+(record.aliases||[]).join(' ')+' '+record.content,value))?1:0;
+    const records=visible.filter(record=>scores.has(record.id)).sort((a,b)=>exact(b)-exact(a)||contextual(b)-contextual(a)||(scores.get(b.id)!-scores.get(a.id)!)||Number(b.projectId===ctx.projectId)-Number(a.projectId===ctx.projectId)||Date.parse(b.confirmedAt||b.updatedAt)-Date.parse(a.confirmedAt||a.updatedAt)||a.id.localeCompare(b.id)).slice(0,limit);
+    const matches=records.map(record=>({id:record.id,revision:record.revision,score:scores.get(record.id),contextScore:contextual(record),feedback:feedback.get(record.id)?.kind??null,matchedTerms:terms.filter(term=>searchTokens([record.title,...record.aliases||[],record.content].join(' ')).includes(term)),fields:{title:terms.filter(term=>searchTokens(record.title).includes(term)),aliases:terms.filter(term=>searchTokens((record.aliases||[]).join(' ')).includes(term)),body:terms.filter(term=>searchTokens(record.content).includes(term))},reviewDue:!!record.reviewAfter&&Date.parse(record.reviewAfter)<=Date.now()}));
+    const queryId=randomUUID();db.prepare('DELETE FROM memory_queries WHERE expires_at<?').run(now());db.prepare('INSERT INTO memory_queries VALUES(?,?,?)').run(queryId,new Date(Date.now()+86400000).toISOString(),JSON.stringify({queryId,projectId:ctx.projectId,ruleVersion:RULE_VERSION,contextKey,contextTerms,terms,omittedTerms:all.filter(term=>!terms.includes(term)),protectedTerms:[...protectedTerms],matches,excluded,zeroHitBoundary:'零命中不代表历史不存在；可用少量有区分度关键词补查，只回溯已登记有效且有权读取的来源'}));
     return {records,queryId,matches,excluded,terms};
   }
-  search(input:JsonObject,ctx:PluginContext):MemoryRecord[]{return this.query(input,ctx).records;}
-  private directoryRecord(record:MemoryRecord):JsonObject{return {id:record.id,revision:record.revision,hash:record.hash,title:record.title,aliases:record.aliases||[],scope:record.scope,projectId:record.projectId,status:record.status,conditions:record.conditions||[],validFrom:record.validFrom,validTo:record.validTo,reviewAfter:record.reviewAfter,fullLength:record.content.length,readRef:{action:'read.range',id:record.id,revision:record.revision}};}
+  search(input:JsonObject,ctx:PluginContext):MemoryRecord[]{return freezeSelection(this.query(input,ctx).records);}
+  private directoryRecord(record:MemoryRecord):JsonObject{return {id:record.id,revision:record.revision,hash:record.hash,semanticDigest:record.semanticDigest,sources:record.sources,title:record.title,aliases:record.aliases||[],scope:record.scope,projectId:record.projectId,status:record.status,conditions:record.conditions||[],validFrom:record.validFrom,validTo:record.validTo,reviewAfter:record.reviewAfter,fullLength:record.content.length,readRef:{action:'read.range',id:record.id,revision:record.revision}};}
   private bounded(input:unknown,fallback:number,max:number):number{if(input===undefined)return fallback;if(!Number.isInteger(input)||Number(input)<0||Number(input)>max)throw new CapabilityError('VALIDATION_ERROR','budget/maxChars 必须为有界非负整数');return Number(input);}
   directory(input:JsonObject,ctx:PluginContext):JsonObject {
-    const found=input.query||input.goal?this.query({...input,query:input.query||input.goal,limit:input.limit??100,match:input.match||'adaptive'},ctx):{records:this.records(ctx).filter(record=>record.kind!=='method'&&record.enabled&&record.status==='active'&&this.validTime(record)&&!record.conflictIds?.length&&this.scopeMatches(record,input,ctx)).filter(record=>{try{this.policy!.capture({projectId:ctx.projectId,sources:record.sources,dependencies:record.dependencies,artifacts:record.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])});return true;}catch{return false;}}),queryId:undefined};const records:JsonObject[]=[],omitted:JsonObject[]=[];const budget=this.bounded(input.budget,DIRECTORY_BUDGET,24000);let used=0;
+    const found=input.query||input.goal||input.taskContext?this.query({...input,query:input.query||input.goal,limit:input.limit??100,match:input.match||'adaptive'},ctx):{records:this.records(ctx).filter(record=>!this.unavailable(record,input,ctx)).map(record=>({...record,sources:record.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId))})),queryId:undefined};const records:JsonObject[]=[],omitted:JsonObject[]=[];const budget=this.bounded(input.budget,DIRECTORY_BUDGET,24000);let used=0;
     for(const record of found.records){const item=this.directoryRecord(record),cost=JSON.stringify(item).length;if(used+cost>budget){omitted.push({id:record.id,reason:'directory-budget',fullLength:record.content.length});continue;}records.push(item);used+=cost;}
     return {records,queryId:found.queryId,epoch:this.epoch(ctx),ruleVersion:RULE_VERSION,budget:{unit:'utf16',limit:budget,used},omitted};
   }
@@ -924,17 +964,17 @@ export class MemoryController implements PluginController {
     const limit=this.bounded(input.limit,6,12),cap=this.bounded(typeof input.budget==='object'?object(input.budget).body:input.budget,BODY_BUDGET,24000);
     const found=this.query({...input,query:input.query??input.goal,limit:Math.max(1,limit*3),match:'any'},ctx);
     const personal=this.records(ctx).filter(record=>record.kind==='preference'&&record.status==='active'&&record.enabled&&this.validTime(record)&&!record.conflictIds?.length&&this.personalSourceSupported(record,ctx)&&this.scopeMatches(record,input,ctx)).filter(record=>{try{return this.query({query:record.id,scope:record.scope,limit:1},ctx).records.some(item=>item.id===record.id);}catch{return false;}});
-    const preferred=personal.filter(record=>this.applicablePreference(record,String(input.query??input.goal??''),found.records.some(item=>item.id===record.id),ctx)).slice(0,2);
+    const preferred=personal.filter(record=>this.applicablePreference(record,[input.query??input.goal??'',this.contextText(this.taskContext(input.taskContext))].join(' '),found.records.some(item=>item.id===record.id),ctx)).slice(0,2);
     found.records=[...preferred,...found.records.filter(record=>!preferred.some(preference=>preference.id===record.id)),...personal.filter(record=>!preferred.includes(record)&&!found.records.some(item=>item.id===record.id))];
     const records:MemoryRecord[]=[],omitted:JsonObject[]=[],directory:JsonObject[]=[];let used=0,directoryUsed=0;
     const directoryCap=this.bounded(typeof input.budget==='object'?object(input.budget).directory:undefined,DIRECTORY_BUDGET,24000);
     for(const record of found.records){const entry=this.directoryRecord(record),cost=JSON.stringify(entry).length;if(directoryUsed+cost<=directoryCap){directory.push(entry);directoryUsed+=cost;}else omitted.push({id:record.id,reason:'directory-budget'});
-      if(record.kind==='preference'&&!this.applicablePreference(record,String(input.query??input.goal??''),found.matches.some(match=>match.id===record.id),ctx)){omitted.push({id:record.id,reason:'preference-applicability-unknown',readRef:entry.readRef,bodyRead:false});continue;}
+      if(record.kind==='preference'&&!this.applicablePreference(record,[input.query??input.goal??'',this.contextText(this.taskContext(input.taskContext))].join(' '),found.matches.some(match=>match.id===record.id),ctx)){omitted.push({id:record.id,reason:'preference-applicability-unknown',readRef:entry.readRef,bodyRead:false});continue;}
       const body=record.content+(record.conditions?.length?'\n适用条件：'+record.conditions.join('；'):'');
       if(records.length>=limit||used+body.length>cap){omitted.push({id:record.id,reason:records.length>=limit?'record-limit':'body-budget',readRef:entry.readRef,conditionsComplete:true,fullLength:record.content.length,omittedRanges:[[0,record.content.length]],bodyRead:false});continue;}
       records.push(record);used+=body.length;
     }
-    return {records,directory,queryId:found.queryId,omitted,epoch:this.epoch(ctx),ruleVersion:RULE_VERSION,budget:{unit:'characters',limit:cap,used,directoryLimit:directoryCap,directoryUsed}};
+    return freezeSelection({records,directory,queryId:found.queryId,omitted,epoch:this.epoch(ctx),ruleVersion:RULE_VERSION,budget:{unit:'characters',limit:cap,used,directoryLimit:directoryCap,directoryUsed}});
   }
   beginRun(ctx:PluginContext):void {this.currentRunId=ctx.runId||randomUUID();this.contextReceipt=undefined;this.requestReceipt=undefined;this.database(ctx).put(`current-run:${ctx.sessionId}`,{runId:this.currentRunId});}
   /** A unique, explicit user correction takes effect before the next request, without a summarization model. */
@@ -1083,17 +1123,17 @@ export class MemoryController implements PluginController {
       candidates:records.filter(record => record.status === 'candidate' || record.status === 'invalidated'),
       learning:{...this.settings(ctx),running:jobs.some(job => job.state === 'running'),queued:jobs.filter(job => job.state === 'queued').length,jobs:jobs.map(job=>this.learningDiagnostic(job))},
       derivedRefs:records.filter(record => record.parentIds.length).map(record => ({id:record.id,parentIds:record.parentIds,status:record.status,revision:record.revision})),
-      usage:this.usage(ctx),epoch:this.epoch(ctx),schemaVersion:2,
+      usage:this.usage(ctx),feedback:this.feedbacks(ctx),epoch:this.epoch(ctx),schemaVersion:2,
     };
   }
 
   async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
     this.database(ctx);input=object(input);
     if(action==='source.read'){
-      if(input.artifact){const artifact=object(input.artifact) as unknown as ArtifactRef;if(!this.records(ctx).some(record=>record.enabled&&record.status==='active'&&record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===artifact.artifactId&&e.artifact.version===artifact.version&&e.artifact.sha256===artifact.sha256))&&ctx.origin!=='user')throw new CapabilityError('SOURCE_UNAVAILABLE','产物不是已登记有效记忆的来源');if(!ctx.readArtifact)throw new CapabilityError('CAPABILITY_UNAVAILABLE','宿主产物读取未提供');return ctx.readArtifact(object(input.artifact) as unknown as ArtifactRef,{observationReceiptId:typeof input.observationReceiptId==='string'?input.observationReceiptId:undefined,cursor:input.cursor===undefined?undefined:this.bounded(input.cursor,0,Number.MAX_SAFE_INTEGER),maxChars:this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET)});}
-      const source=object(input.source||input.ref) as unknown as SourceRef;this.policy!.assertSource(source);if(ctx.origin!=='user'&&(!this.records(ctx).some(record=>record.enabled&&record.status==='active'&&!record.conflictIds?.length&&record.sources.some(ref=>ref.sessionId===source.sessionId&&ref.entryId===source.entryId&&(ref.start??0)<=(source.start??0)&&(source.end??Infinity)<=(ref.end??Infinity)))||this.sourceSuppressed(source,ctx)))throw new CapabilityError('SOURCE_UNAVAILABLE','原文回溯仅限已登记且有效的记忆来源');const item=ctx.readSource(source),span=readSourceSpan(item,source);const cursor=this.bounded(input.cursor,0,span.length),max=this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET),end=Math.min(span.length,cursor+max);return {source,text:span.slice(cursor,end),hash:digest(span),sentSliceHash:digest(span.slice(cursor,end)),fullLength:span.length,visibleRanges:[[cursor,end]],...(end<span.length?{nextCursor:end,omittedRanges:[[end,span.length]]}:{})};
+      if(input.artifact){const artifact=object(input.artifact) as unknown as ArtifactRef;if(!this.records(ctx).some(record=>!this.unavailable(record,{},ctx)&&record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===artifact.artifactId&&e.artifact.version===artifact.version&&e.artifact.sha256===artifact.sha256))&&ctx.origin!=='user')throw new CapabilityError('SOURCE_UNAVAILABLE','产物不是已登记有效记忆的来源');if(!ctx.readArtifact)throw new CapabilityError('CAPABILITY_UNAVAILABLE','宿主产物读取未提供');return ctx.readArtifact(object(input.artifact) as unknown as ArtifactRef,{observationReceiptId:typeof input.observationReceiptId==='string'?input.observationReceiptId:undefined,cursor:input.cursor===undefined?undefined:this.bounded(input.cursor,0,Number.MAX_SAFE_INTEGER),maxChars:this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET)});}
+      const source=object(input.source||input.ref) as unknown as SourceRef;this.policy!.assertSource(source);if(ctx.origin!=='user'&&(!this.records(ctx).some(record=>!this.unavailable(record,{},ctx)&&record.sources.some(ref=>ref.sessionId===source.sessionId&&ref.entryId===source.entryId&&(ref.start??0)<=(source.start??0)&&(source.end??Infinity)<=(ref.end??Infinity)))||this.sourceSuppressed(source,ctx)))throw new CapabilityError('SOURCE_UNAVAILABLE','原文回溯仅限已登记且有效的记忆来源');const item=ctx.readSource(source),span=readSourceSpan(item,source);const cursor=this.bounded(input.cursor,0,span.length),max=this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET),end=Math.min(span.length,cursor+max);return {source,text:span.slice(cursor,end),hash:digest(span),sentSliceHash:digest(span.slice(cursor,end)),fullLength:span.length,visibleRanges:[[cursor,end]],...(end<span.length?{nextCursor:end,omittedRanges:[[end,span.length]]}:{})};
     }
-    const writes=new Set(['save','update','accept','toggle','forget','source.deleted','learning.run','learning.retry','learning.pause','learning.resume','learning.settings','learning.configuration']);
+    const writes=new Set(['feedback','save','update','accept','toggle','forget','source.deleted','learning.run','learning.retry','learning.pause','learning.resume','learning.settings','learning.configuration']);
     if(!writes.has(action)){const result=this.action(action,input,ctx);if(action==='projection.status'||action==='projection.rebuild')return this.projectViews(ctx);return result;}
     const operationId=input.operationId===undefined?randomUUID():text(input.operationId,'operationId',200);
     if(input.origin!==undefined)throw new CapabilityError('PERMISSION_DENIED','origin 由可信入口提供');
@@ -1115,17 +1155,27 @@ export class MemoryController implements PluginController {
       case 'diagnostics': return {jobs:this.jobs(ctx).filter(job=>!input.jobId||job.id===input.jobId).map(job=>this.learningDiagnostic(job)),usage:this.usage(ctx),recallBoundary:'分别核对选中、上下文观察、请求准备与响应观察；读取收据不代表模型采纳或答案正确'};
       case 'list': {const records=this.records(ctx).filter(record=>this.scopeMatches(record,input,ctx)&&(!input.status||record.status===input.status));const cursor=this.bounded(input.cursor,0,records.length),limit=this.bounded(input.limit,100,100);return {...this.snapshot(ctx),records:records.slice(cursor,cursor+limit),nextCursor:cursor+limit<records.length?cursor+limit:undefined};}
       case 'save': return this.save(input,ctx);
+      case 'feedback': {
+        if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','记忆反馈必须来自可信用户入口');
+        const record=this.get(input.id,ctx);if(!Number.isInteger(input.revision)||input.revision!==record.revision)throw new ConflictError();
+        if(this.unavailable(record,{},ctx))throw new CapabilityError('SOURCE_UNAVAILABLE','反馈目标必须是当前有效记忆');
+        if(!['relevant','irrelevant','outdated'].includes(String(input.kind)))throw new CapabilityError('VALIDATION_ERROR','feedback kind 无效');
+        const taskContext=this.taskContext(input.taskContext),contextKey=taskContext?digest(taskContext):null;
+        const value:MemoryFeedback={id:record.id,revision:record.revision,kind:input.kind as MemoryFeedback['kind'],projectId:ctx.projectId,taskContext,contextKey,reviewQueued:input.kind==='outdated',at:now(),operationId:String(input.operationId)};
+        this.store!.put(`feedback:${ctx.projectId}:${digest([record.id,record.revision,contextKey])}`,value);
+        return value;
+      }
       case 'search': return this.search(input,ctx);
       case 'select': return this.select(input,ctx);
       case 'directory': return this.directory(input,ctx);
       case 'search.explain': {if(input.queryId){const row=this.store!.db.prepare('SELECT json FROM memory_queries WHERE query_id=? AND expires_at>?').get(text(input.queryId),now());if(!row)throw new CapabilityError('SOURCE_UNAVAILABLE','检索解释已过期');const value=JSON.parse(String(row.json));if(value.projectId!==ctx.projectId)throw new CapabilityError('PERMISSION_DENIED','检索解释不属于当前项目');return value;}const result=this.query(input,ctx);return {queryId:result.queryId,ruleVersion:RULE_VERSION,terms:result.terms,matches:result.matches,excluded:result.excluded};}
-      case 'read.range': {const record=this.get(input.id,ctx);if(ctx.origin!=='user'&&(!record.enabled||record.status!=='active'||record.conflictIds?.length))throw new CapabilityError('SOURCE_UNAVAILABLE','记忆当前版本未生效');this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:record.sources,dependencies:record.dependencies,artifacts:record.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));if(!Number.isInteger(input.revision)||input.revision!==record.revision)throw new ConflictError();
+      case 'read.range': {const record=this.get(input.id,ctx);if(ctx.origin!=='user'&&this.unavailable(record,{},ctx))throw new CapabilityError('SOURCE_UNAVAILABLE','记忆当前版本未生效');this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:record.sources,dependencies:record.dependencies,artifacts:record.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));if(!Number.isInteger(input.revision)||input.revision!==record.revision)throw new ConflictError();
         const cursor=this.bounded(input.cursor,0,record.content.length),max=this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET),conditionChars=(record.conditions||[]).join('；').length;
         if(max<=conditionChars)throw new CapabilityError('BUDGET_EXHAUSTED','正文预算无法保留适用条件');let end=Math.min(record.content.length,cursor+max-conditionChars);
         if(end<record.content.length){const boundary=Math.max(record.content.lastIndexOf('\n',end),record.content.lastIndexOf('。',end),record.content.lastIndexOf('. ',end));if(boundary>cursor)end=boundary+1;else if(/[\uD800-\uDBFF]/u.test(record.content[end-1]))end--;}
         const content=record.content.slice(cursor,end);return {...record,content,fullLength:record.content.length,visibleRanges:[[cursor,end]],sentSliceHash:digest(content),...(end<record.content.length?{nextCursor:end,omittedRanges:[[end,record.content.length]],bodyComplete:false}:{bodyComplete:cursor===0})};}
       case 'learning.status': return {settings:this.settings(ctx),jobs:this.jobs(ctx).filter(job=>!input.jobId||job.id===input.jobId).map(job=>this.learningDiagnostic(job)),ruleVersion:RULE_VERSION};
-      case 'operation.get': {const operationId=text(input.operationId),row=this.store!.db.prepare('SELECT state,json FROM memory_operations WHERE operation_id=?').get(operationId);if(row)return {operationId,state:row.state,result:JSON.parse(String(row.json))};const job=this.jobs(ctx).find(job=>job.operationId===operationId||job.modelOperations?.some(operation=>operation.operationId===operationId));if(!job)return {operationId,state:'unknown'};return {operationId,jobId:job.id,state:job.state,modelOperations:(job.modelOperations||[]).map(operation=>({...operation,call:(()=>{const call=job.budgetId?new LearningBudget(this.store!).readCall(job.budgetId,operation.operationId):undefined;if(!call)return undefined;const {result,...metadata}=call;return {...metadata,...(result?{resultHash:digest(result)}:{})};})()}))};}
+      case 'operation.get': {const operationId=text(input.operationId),row=this.store!.db.prepare('SELECT state,json FROM memory_operations WHERE operation_id=?').get(operationId);if(row){const result=JSON.parse(String(row.json));if(result&&typeof result==='object'&&'contextKey' in result&&result.projectId!==ctx.projectId)throw new CapabilityError('PERMISSION_DENIED','反馈操作不属于当前项目');return {operationId,state:row.state,result};}const job=this.jobs(ctx).find(job=>job.operationId===operationId||job.modelOperations?.some(operation=>operation.operationId===operationId));if(!job)return {operationId,state:'unknown'};return {operationId,jobId:job.id,state:job.state,modelOperations:(job.modelOperations||[]).map(operation=>({...operation,call:(()=>{const call=job.budgetId?new LearningBudget(this.store!).readCall(job.budgetId,operation.operationId):undefined;if(!call)return undefined;const {result,...metadata}=call;return {...metadata,...(result?{resultHash:digest(result)}:{})};})()}))};}
       case 'projection.status': case 'projection.rebuild': return null;
       case 'usage': return this.usage(ctx,typeof input.runId==='string'?input.runId:undefined);
       case 'invalidation.snapshot': return this.invalidationSnapshot(ctx);
@@ -1158,12 +1208,12 @@ export class MemoryController implements PluginController {
         if(mutation.ids.length)this.invalidate(mutation.ids,'deleted',0,ctx,mutation.sources);return {withdrawn:mutation.ids};
       }
       case 'read': {
-        const current = this.get(input.id,ctx);if(ctx.origin!=='user'&&(!current.enabled||current.status!=='active'||current.conflictIds?.length))throw new CapabilityError('SOURCE_UNAVAILABLE','记忆当前版本未生效');if(ctx.origin!=='user')this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:current.sources,dependencies:current.dependencies,artifacts:current.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));let stored=current;let historical=false;
-        if(input.revision!==undefined){if(!Number.isInteger(input.revision)||Number(input.revision)<1)throw new Error('记忆版本无效');if(input.revision!==current.revision){const saved=this.database(ctx).db.prepare('SELECT json FROM memory_versions WHERE id=? AND revision=?').get(current.id,Number(input.revision));if(!saved)throw new Error('记忆历史版本不存在');stored=JSON.parse(String(saved.json)) as MemoryRecord;historical=true;}}
-        const sources=stored.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId));const record={...stored,sources,...(stored.sources.length&&!sources.length?{status:'invalidated' as const,enabled:false,invalidatedReason:'原始来源已删除；历史版本不再作为有效记忆'}:{}),...(historical?{historical:true,currentRevision:current.revision}:{})};
+        const current = this.get(input.id,ctx);if(ctx.origin!=='user'&&this.unavailable(current,{},ctx))throw new CapabilityError('SOURCE_UNAVAILABLE','记忆当前版本未生效');if(ctx.origin!=='user')this.policy!.assert(this.policy!.capture({projectId:ctx.projectId,sources:current.sources,dependencies:current.dependencies,artifacts:current.evidence?.flatMap(e=>e.kind==='artifact'?[e.artifact]:[])}));let stored=current;let historical=false;
+        if(input.revision!==undefined){if(!Number.isInteger(input.revision)||Number(input.revision)<1)throw new Error('记忆版本无效');if(input.revision!==current.revision){const saved=this.database(ctx).db.prepare('SELECT json FROM memory_versions WHERE id=? AND revision=?').get(current.id,Number(input.revision));if(!saved)throw new Error('记忆历史版本不存在');if(ctx.origin!=='user')throw new CapabilityError('SOURCE_UNAVAILABLE','历史版本仅供用户审阅');stored=JSON.parse(String(saved.json)) as MemoryRecord;historical=true;}}
+        const sources=stored.sources.filter(source=>!isSessionDeleted(ctx.dataDir,source.sessionId));const record={...semanticRecord(stored),sources,...(stored.sources.length&&!sources.length?{status:'invalidated' as const,enabled:false,invalidatedReason:'原始来源已删除；历史版本不再作为有效记忆'}:{}),...(historical?{historical:true,currentRevision:current.revision}:{})};
         return input.source === true ? {memory:record,historical,currentRevision:current.revision,originals:record.sources.map(source => { try { if(ctx.origin!=='user'&&(this.sourceSuppressed(source,ctx)||!current.sources.some(ref=>preciseKey(ref)===preciseKey(source))))throw new CapabilityError('SOURCE_UNAVAILABLE','历史来源已失效或不属于当前有效版本');this.policy!.assertSource(source);const item=ctx.readSource(source);return {source,item:{...item,text:readSourceSpan(item,source),userText:undefined}}; } catch (error) { return {source,error:errorMessage(error)}; } })} : record;
       }
-      case 'versions': { const record = this.get(input.id,ctx); return this.store!.db.prepare('SELECT json FROM memory_versions WHERE id=? ORDER BY revision DESC').all(record.id).map(row => JSON.parse(String(row.json))); }
+      case 'versions': { const record = this.get(input.id,ctx); return this.store!.db.prepare('SELECT json FROM memory_versions WHERE id=? ORDER BY revision DESC').all(record.id).map(row => semanticRecord(JSON.parse(String(row.json)))); }
       case 'accept': {
         if (ctx.origin !== 'user') throw new Error('候选记忆需要用户确认，模型自评不能采用');
         return this.store!.transaction(() => {
@@ -1279,9 +1329,9 @@ export class MemoryController implements PluginController {
 const extension: ExtensionFactory = (pi: ExtensionAPI) => {
   const controller = new MemoryController();
   registerPlugin(pi,'memory',controller,'有来源、可纠正和遗忘的项目记忆',{toolDescription:`读取有来源的项目记忆与个人偏好。调用格式为 {"action":"动作名","input":{...}}，模型只使用以下真实读取动作：
-- search：搜索当前有效记忆。最小 input {"query":"关键词"}，可加 limit（1–100）、scope（project/personal）、match（all/any/adaptive）。
+- search：搜索当前有效记忆。最小 input {"query":"关键词"}，可加 limit（1–100）、scope（project/personal）、match（all/any/adaptive）、taskContext:{goal?,scenario?,entities?:string[]}，直接使用当前任务信息，无需额外模型改写。
 - directory：读取目录。最小 input {}，可加 {"query":"关键词"}；返回 id、revision、hash、适用条件及 readRef，目录可见不等于正文已读。
-- select：按目标召回完整语义正文。最小 input {"query":"当前目标"}，可加 limit（最多12）、budget（字符数或 {"directory":1500,"body":3500}）；返回 records 正文、directory 目录及 omitted 未读项。超预算正文不会被截断，需另行分页读取。
+- select：按目标召回完整语义正文。最小 input {"query":"当前目标"}，可加 limit（最多12）、budget（字符数或 {"directory":1500,"body":3500}）；可加 taskContext:{goal?,scenario?,entities?:string[]}；返回 records 正文、完整 conditions/validFrom/validTo、semanticDigest、directory 目录及 omitted 未读项。超预算正文不会被截断，需另行分页读取。
 - read：读取指定记忆。最小 input {"id":"从检索结果取得的ID"}；可加 revision 或 source:true 核对版本和原始来源。
 - read.range：分页读取正文。最小 input {"id":"从检索结果取得的ID","revision":1}，revision 必须复制实际版本；可加 cursor:0、maxChars:8000。按 nextCursor 继续，保留适用条件，bodyComplete:false 表示尚未读完。
 - source.read：读取精确来源片段。最小 input {"source":{"sessionId":"实际来源会话","entryId":"实际来源条目","start":0,"end":10,"hash":"实际片段摘要"}}；source 必须原样复制记忆返回的来源引用，勿编造范围或摘要。可加 cursor:0、maxChars:8000。产物来源则传 {"artifact":实际ArtifactRef,"observationReceiptId":"实际观察收据ID"}，按返回 nextCursor 分页。
