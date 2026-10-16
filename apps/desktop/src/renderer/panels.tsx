@@ -1,9 +1,11 @@
+import {MemoryFeedbackButtons,MemoryFeedbackSummary,memoryFeedbackAvailable,memoryTaskContext} from './memory-feedback.js';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { asList, asObject, errorText, type BridgeEvent, type JsonObject, type PluginName } from './types.js';
 import { Badge, Card, Empty, Field, JsonView, Markdown, Modal, TextDiff } from './ui.js';
+import {ExpertProfiles,type ProfilePanelProps} from './expert-profiles.js';
 import {memorySummary,memoryView,memoryLearningView,memoryRecallView,memoryImpactDraft,memoryImpactMutation,memoryImpactChanged,type MemoryImpactDraft,type MemoryViewScope} from './memory-view.js';
 
-interface PanelProps { sessionId: string; report(message: string, error?: boolean): void }
+interface PanelProps { goal?:string;sessionId: string; report(message: string, error?: boolean): void }
 export function pluginEventUpdate(plugin:PluginName,sessionId:string,event:BridgeEvent):JsonObject|'refresh'|undefined {
   if(event.type!=='plugin'||event.sessionId&&event.sessionId!==sessionId)return;
   const data=asObject(event.data);
@@ -15,14 +17,16 @@ function usePlugin(plugin: PluginName, { sessionId, report }: PanelProps) {
   const [snapshot, setSnapshot] = useState<JsonObject>({});
   const [pending, setPending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const refreshGeneration=useRef(0),owner=useRef(sessionId),mounted=useRef(true);owner.current=sessionId;
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;refreshGeneration.current++;};},[]);
   const request = useCallback((action: string, input: JsonObject = {}) => window.friendPi.request('plugin.call', { sessionId, plugin, action, input }), [sessionId, plugin]);
-  const refresh = useCallback(async () => { try { setSnapshot(asObject(await request('snapshot'))); } finally { setLoading(false); } }, [request]);
+  const refresh = useCallback(async () => {const generation=++refreshGeneration.current,session=sessionId;try {const next=asObject(await request('snapshot'));if(mounted.current&&owner.current===session&&generation===refreshGeneration.current)setSnapshot(next);}finally{if(mounted.current&&owner.current===session&&generation===refreshGeneration.current)setLoading(false);}}, [request,sessionId]);
   useEffect(() => {
     void refresh().catch(error => report(errorText(error), true));
     return window.friendPi.onEvent(event => {
       const update=pluginEventUpdate(plugin,sessionId,event);
       if(update==='refresh')void refresh().catch(error=>report(errorText(error),true));
-      else if(update)setSnapshot(update);
+      else if(update){refreshGeneration.current++;setSnapshot(update);setLoading(false);}
     });
   }, [refresh, plugin, sessionId, report]);
   const perform = async (action: string, input: JsonObject = {}, success?: string) => {
@@ -95,7 +99,8 @@ function SkillDirectory({snapshot,pending,perform}:{snapshot:JsonObject;pending:
 interface Expert { id: string; version: number; revision: number; title: string; prompt: string; tools: string[]; skills: string[]; enabled: boolean; scope: string }
 interface Candidate { id: string; title: string; method: string; status: string; error?: string; checks: { caseId: string; passed: boolean; baselinePassed: boolean; output: string }[] }
 interface CaseDraft { id: string; kind: 'positive' | 'negative'; input: string; expected: string }
-export function ExpertPanel(props: PanelProps) {
+export function ExpertPanel(props: ProfilePanelProps) {return <div className="panel-content"><ExpertProfiles key={props.sessionId} {...props}/><details><summary>高级方法目录与成长验证</summary><LegacyExpertPanel key={props.sessionId} {...props}/></details></div>;}
+function LegacyExpertPanel(props: PanelProps) {
   const { snapshot, pending, act, perform, refresh } = usePlugin('expert', props);
   const validation=asObject(snapshot.validation);const [validationPending,setValidationPending]=useState(false);
   const toggleValidation=()=>{
@@ -157,7 +162,7 @@ export function MemoryImpactPreview({preview}:{preview:JsonObject}){
 }
 export function MemoryPanel(props:PanelProps){return <MemoryManager key={props.sessionId} {...props}/>;}
 function MemoryManager(props: PanelProps) {
-  const { snapshot, pending, perform, act } = usePlugin('memory', props);
+  const { snapshot, pending, perform, act,refresh } = usePlugin('memory', props);
   const [query, setQuery] = useState(''); const [results, setResults] = useState<Memory[] | null>(null);
   const [viewScope,setViewScope]=useState<MemoryViewScope>('project'),[expanded,setExpanded]=useState(new Set<string>());const searchGeneration=useRef(0);
   const [editing, setEditing] = useState<Memory | null>(null); const [editorOpen, setEditorOpen] = useState(false);
@@ -168,7 +173,7 @@ function MemoryManager(props: PanelProps) {
   const {memories,candidates}=memoryView(asList<Memory>(snapshot.memories),asList<Memory>(snapshot.candidates),viewScope,results);
   const learning = asObject(snapshot.learning);const learningPaused=learning.paused===true||learning.enabled===false;
   useEffect(()=>{if(!draft.preview||saving||!memoryImpactChanged(draft.preview,snapshot))return;const generation=draft.generation;setDraft(previous=>memoryImpactDraft(previous,{type:'error',generation,error:editing?'影响已变化，请重新预览；编辑草稿已保留。':'相关记忆已变化，请重新预览后确认。'}));},[snapshot,draft.preview,draft.generation,saving,editing]);
-  const search=async(nextScope=viewScope)=>{const generation=++searchGeneration.current;if(!query.trim()){setResults(null);return;}try{const value=await perform('search',{query,includeCandidates:true,...(nextScope==='all'?{}:{scope:nextScope})});if(generation===searchGeneration.current)setResults(asList<Memory>(value));}catch{}};
+  const search=async(nextScope=viewScope)=>{const generation=++searchGeneration.current;if(!query.trim()){setResults(null);return;}try{const value=await perform('search',{query,taskContext:memoryTaskContext(props.goal,query),includeCandidates:true,...(nextScope==='all'?{}:{scope:nextScope})});if(generation===searchGeneration.current)setResults(asList<Memory>(value));}catch{}};
   const clearImpact=()=>{const generation=++impactGeneration.current;setDraft(previous=>memoryImpactDraft(previous,{type:'start',generation}));};
   const changeDraft=(patch:{title?:string;content?:string})=>{const generation=++impactGeneration.current;setDraft(previous=>memoryImpactDraft(previous,{type:'change',generation,...patch}));};
   const open = (memory: Memory | null) => {const generation=++impactGeneration.current;setEditing(memory);setForgetting(null);setDraft(previous=>memoryImpactDraft(previous,{type:'open',generation,title:memory?.title||'',content:memory?.content||''}));setKind(memory?.kind||'fact');setScope(memory?.scope||(viewScope==='personal'?'personal':'project'));setEditorOpen(true);};
@@ -180,7 +185,7 @@ function MemoryManager(props: PanelProps) {
     <button onClick={() => open(memory)}>纠正</button><button disabled={pending} onClick={() => act('toggle', { id: memory.id, revision: memory.revision, enabled: !memory.enabled })}>{memory.enabled ? '停用' : '启用'}</button>
     <button disabled={pending} onClick={() => { void perform('read', { id: memory.id, source: true }).then(value => setDetail({ title: `${memory.title} · 原始来源`, value })).catch(() => {}); }}>来源</button>
     <button disabled={pending} onClick={() => { void perform('versions', { id: memory.id }).then(value => setDetail({ title: `${memory.title} · 历史版本`, value })).catch(() => {}); }}>版本</button>
-    <button className="danger-text" disabled={pending} onClick={() => openForget(memory)}>遗忘</button>
+    <button className="danger-text" disabled={pending} onClick={() => openForget(memory)}>遗忘</button><MemoryFeedbackButtons sessionId={props.sessionId} id={memory.id} revision={memory.revision} goal={props.goal} query={query} disabled={pending||!memoryFeedbackAvailable(memory)} report={props.report} onSaved={()=>{void refresh().catch(error=>props.report(errorText(error),true));}}/>
   </>}/>;
   return <div className="panel-content memory-manager"><div className="panel-intro"><h2>留下经验，随时纠正</h2><p>项目记忆保留来源和版本。纠正或遗忘会同步撤回相关派生内容。</p></div>
     <Card title="记忆" actions={<button className="text-button" onClick={() => open(null)}>＋ 记住一条</button>}>
@@ -192,7 +197,7 @@ function MemoryManager(props: PanelProps) {
     </Card>
     <details className="card memory-candidates"><summary>候选与失效记录 · {candidates.length}{candidates.some(memory=>memory.status==='invalidated')&&<span className="hint"> · 失效 {candidates.filter(memory=>memory.status==='invalidated').length} 条</span>}{candidates.some(memory=>memory.conflictIds?.length)&&<span className="inline-error"> · 存在待核验冲突</span>}</summary>{candidates.map(memory=>memoryCard(memory))}{candidates.length===0&&<Empty title={results!==null?'此范围没有匹配的候选':'此范围暂无候选与失效记录'}/>}</details>
     <Card title="后台学习" actions={<Badge value={learning.running?'running':learning.enabled===false?'inactive':learningPaused?'paused':'active'}/>}><p className="hint">Memory 独立处理来源与提案，前台可以同时工作。进度只覆盖本批已保存提案。</p><div className="button-row"><button disabled={pending} onClick={()=>act(learning.enabled===false?'learning.settings':learningPaused?'learning.resume':'learning.pause',learning.enabled===false?{enabled:true,paused:false}:{},learningPaused?'学习已恢复':'学习已暂停')}>{learningPaused?'恢复学习':'暂停学习'}</button><button disabled={pending} onClick={()=>act('learning.run',{},'学习已排入后台队列')}>立即学习</button></div><p className="memory-diagnostic-caption">{Number(learning.queued||0)} 项等待后台处理</p><MemoryLearningDiagnostics jobs={asList<JsonObject>(learning.jobs)} pending={pending} onRetry={id=>act('learning.retry',{id})}/></Card>
-    <Card title="检索与使用记录"><MemoryRecallDiagnostics usage={snapshot.usage}/></Card>
+    <Card title="检索与使用记录"><MemoryRecallDiagnostics usage={snapshot.usage}/><MemoryFeedbackSummary feedback={snapshot.feedback}/></Card>
     {editorOpen&&<Modal className="memory-impact-modal" title={editing?'纠正记忆':'明确记住一条'} closeDisabled={saving} onClose={()=>{setEditorOpen(false);clearImpact();}}><Field label="标题"><input disabled={saving} value={draft.title} onChange={event=>changeDraft({title:event.target.value})}/></Field><Field label="内容"><textarea disabled={saving} rows={6} value={draft.content} aria-describedby={draft.error?'memory-editor-error':undefined} onChange={event=>changeDraft({content:event.target.value})}/></Field>{!editing&&<div className="form-row"><Field label="类型"><select value={kind} disabled={saving} onChange={event=>{setKind(event.target.value);if(event.target.value==='preference')setScope('personal');}}><option value="fact">项目事实</option><option value="experience">项目经验</option><option value="preference">个人偏好</option></select></Field><Field label="范围"><select value={scope} disabled={saving} onChange={event=>setScope(event.target.value)}><option value="project" disabled={kind==='preference'}>本项目</option><option value="personal">个人</option></select></Field></div>}{draft.preview&&editing&&<MemoryImpactPreview preview={draft.preview}/>}<p className="hint">{editing?'先查看影响，再确认保存。修改草稿后需要重新预览。':'点击记住表示你明确要求保存此内容。'}</p>{draft.error&&<p id="memory-editor-error" className="memory-diagnostic-error" role="alert">{draft.error}</p>}<button className="primary full" disabled={pending||saving||!draft.content.trim()} onClick={()=>void save()}>{saving?'正在保存…':editing?draft.preview?'保存纠正':'预览纠正影响':'记住'}</button></Modal>}
     {detail && <Modal title={detail.title} wide onClose={() => setDetail(null)}>{Array.isArray(asObject(detail.value).originals) ? asList<JsonObject>(asObject(detail.value).originals).map((source, i) => <Card key={i} title={String(asObject(source.item).id || '来源不可用')}>{source.error ? <p className="inline-error">{String(source.error)}</p> : <Markdown text={String(asObject(source.item).text || '')} />}</Card>) : Array.isArray(detail.value) ? asList<Memory>(detail.value).map(version => <Card key={version.revision} title={`v${version.revision}`}><Markdown text={version.content} /></Card>) : <JsonView value={detail.value} />}{Array.isArray(asObject(detail.value).originals) && asList(asObject(detail.value).originals).length === 0 && <Empty title="此记忆由用户明确输入" />}</Modal>}
     {forgetting&&<Modal className="memory-impact-modal" title="遗忘这条记忆" closeDisabled={saving} onClose={()=>{setForgetting(null);clearImpact();}}><p>将遗忘「{forgetting.title}」及其派生内容，并阻止从旧来源重新学习。原始 Pi 会话历史保留。</p>{pending&&!draft.preview&&<p role="status" className="hint">正在核对影响…</p>}{draft.preview&&<MemoryImpactPreview preview={draft.preview}/>}{draft.error&&<p className="memory-diagnostic-error" role="alert">{draft.error}</p>}<button className={draft.preview?'danger full':'primary full'} disabled={pending||saving} onClick={()=>void forget()}>{saving?'正在遗忘…':draft.preview?'确认遗忘':'重新预览影响'}</button></Modal>}
@@ -200,11 +205,12 @@ function MemoryManager(props: PanelProps) {
   </div>;
 }
 
+export function RebuildDisclosure(props:PanelProps){const [open,setOpen]=useState(false);return <details className="card" open={open} onToggle={event=>setOpen(event.currentTarget.open)}><summary>上下文与目标时间线</summary>{open&&<RebuildPanel key={props.sessionId} {...props}/>}</details>;}
 export function RebuildPanel(props: PanelProps) {
   const { snapshot, pending, act, perform } = usePlugin('topic-rebuild', props);
   const [query, setQuery] = useState(''); const [history, setHistory] = useState<JsonObject[]>([]); const [detail, setDetail] = useState<unknown>(null);
   const field = asObject(snapshot.field || snapshot.workingField); const status = asObject(snapshot.status);
-  const phase = String(status.phase || 'idle');
+  const phase = String(status.phase || 'idle');const coverage=asObject(field.coverage);const searchGeneration=useRef(0);
   const phaseLabels: Record<string, string> = { idle: '准备就绪', preparing: '正在整理', 'awaiting-adoption': '等待采用', applied: '已采用', fallback: '使用 Pi 原生压缩' };
   const busy = pending || ['preparing', 'awaiting-adoption'].includes(phase);
   const original = (source: JsonObject) => { void perform('history.read', { id: source.entryId, sessionId: source.sessionId }).then(setDetail).catch(() => {}); };
@@ -220,8 +226,10 @@ export function RebuildPanel(props: PanelProps) {
       {Boolean(status.error) && <p className="inline-error">{String(status.error)}</p>}
       {snapshot.invalidated === true && <p className="inline-error">相关记忆已变化，当前派生现场等待安全重建。</p>}
     </Card>
-    <Card title="当前工作现场">{Object.keys(field).length ? <div className="working-field"><div><small>当前目标</small>{point(field.goal, 0)}</div>{(['constraints', 'decisions', 'unfinished'] as const).map(key => <div key={key}><small>{{ constraints: '有效约束', decisions: '关键决定', unfinished: '未完成工作' }[key]}</small>{asList(field[key]).length ? asList(field[key]).map(point) : <p className="hint">暂无记录</p>}</div>)}<small>{String(field.createdAt || '')}</small></div> : <Empty title="尚未采用重建现场">原始会话仍由 Pi 管理，整理后在这里展示。</Empty>}</Card>
-    <Card title="回查原始历史"><small>{Number(snapshot.historyIndexed || 0)} 条历史记录可回查</small><form className="search-row" onSubmit={event => { event.preventDefault(); if (!query.trim()) return; void perform('history.search', { query }).then(value => setHistory(Array.isArray(value) ? asList<JsonObject>(value) : asList<JsonObject>(asObject(value).items || asObject(value).results))).catch(() => {}); }}><input aria-label="搜索历史" value={query} placeholder="目标、决定或历史关键词" onChange={event => setQuery(event.target.value)} /><button type="submit" disabled={pending || !query.trim()}>查找</button></form>{history.map((raw, i) => { const item = asObject(raw.item || raw); const source = asObject(raw.source); const input = { id: source.entryId || item.id, ...(source.sessionId ? { sessionId: source.sessionId } : {}) }; return <article className="history-result" key={`${String(source.sessionId)}:${String(item.id || i)}`}><small>{String(item.role || item.type || '历史')} · {String(item.timestamp || '')}</small><p>{String(item.text || item.preview || '').slice(0, 220)}</p><div className="button-row"><button onClick={() => { void perform('history.read', input).then(setDetail).catch(() => {}); }}>原文</button><button onClick={() => { void perform('history.around', input).then(setDetail).catch(() => {}); }}>前后文</button></div></article>; })}</Card>
+    <Card title="当前工作现场">{Object.keys(field).length ? <div className="working-field"><div><small>原始目标 · {field.goalStatus==='cancelled'?'已取消':'进行中'}</small>{point(field.goal, 0)}<small>当前请求</small>{point(field.currentRequest||field.goal, 1)}</div>{(['constraints', 'decisions', 'unfinished'] as const).map(key => <div key={key}><small>{{ constraints: '有效约束', decisions: '关键决定', unfinished: '未完成工作' }[key]}</small>{asList(field[key]).length ? asList(field[key]).map(point) : <p className="hint">暂无记录</p>}</div>)}<small>{String(field.createdAt || '')}</small></div> : <Empty title="尚未采用重建现场">原始会话仍由 Pi 管理，整理后在这里展示。</Empty>}</Card>
+    <Card title="覆盖进度"><p className="hint">已采用范围 {asList(coverage.ranges).length} 条 · 待覆盖 {asList(coverage.pending).length} 条 · {coverage.complete===true?'当前范围已完整覆盖':'覆盖尚未完成或未记录'}。仅 Pi 实际采用后更新有效覆盖。</p><details><summary>精确覆盖来源</summary><JsonView value={coverage}/></details></Card>
+    <Card title="目标与请求时间线"><p className="hint">根据 Pi 来源派生的只读视图，保留目标、当前请求、事实与冲突。</p>{asList<JsonObject>(snapshot.timeline).map((entry,index)=><details key={String(entry.id||index)}><summary>v{String(entry.revision)} · {({prepared:'已准备',adopted:'已采用',fallback:'回退原生',canonical:'原生记录'} as Record<string,string>)[String(entry.status)]||String(entry.status)} · {String(entry.createdAt||'')}</summary><p>目标状态：{entry.goalStatus==='cancelled'?'已取消':'进行中'}</p><strong>原始目标</strong>{point(entry.goal,0)}<strong>当前请求</strong>{point(entry.currentRequest,1)}<strong>保留事实</strong>{asList(entry.preservedFacts).map(point)}<strong>待处理冲突</strong>{asList<JsonObject>(entry.conflicts).map((conflict,i)=><div key={i}>{point(conflict,i)}<p>{String(conflict.reason||'')}</p></div>)}{Boolean(entry.error)&&<p role="alert">{String(entry.error)}</p>}<details><summary>来源与覆盖依据</summary><JsonView value={{sourceEntries:entry.sourceEntries,coverage:entry.coverage,coveredThroughId:entry.coveredThroughId}}/></details></details>)}{!asList(snapshot.timeline).length&&<Empty title="尚无上下文时间线记录"/>}</Card>
+    <Card title="回查原始历史"><small>{Number(snapshot.historyIndexed || 0)} 条历史记录可回查</small><form className="search-row" onSubmit={event => { event.preventDefault(); if (!query.trim()) return; const generation=++searchGeneration.current;void perform('history.search', { query }).then(value => {if(generation===searchGeneration.current)setHistory(Array.isArray(value) ? asList<JsonObject>(value) : asList<JsonObject>(asObject(value).items || asObject(value).results));}).catch(() => {}); }}><input aria-label="搜索历史" value={query} placeholder="目标、决定或历史关键词" onChange={event => {searchGeneration.current++;setQuery(event.target.value);setHistory([]);}} /><button type="submit" disabled={pending || !query.trim()}>查找</button></form>{history.map((raw, i) => { const item = asObject(raw.item || raw); const source = asObject(raw.source); const input = { id: source.entryId || item.id, ...(source.sessionId ? { sessionId: source.sessionId } : {}) }; return <article className="history-result" key={`${String(source.sessionId)}:${String(item.id || i)}`}><small>{String(item.role || item.type || '历史')} · {String(item.timestamp || '')}</small><p>{String(item.text || item.preview || '').slice(0, 220)}</p><div className="button-row"><button onClick={() => { void perform('history.read', input).then(setDetail).catch(() => {}); }}>原文</button><button onClick={() => { void perform('history.around', input).then(setDetail).catch(() => {}); }}>前后文</button></div></article>; })}</Card>
     {detail !== null && <Modal title="原始历史" wide onClose={() => setDetail(null)}>{Array.isArray(detail) ? asList<JsonObject>(detail).map(historyItem) : historyItem(asObject(detail), 0)}</Modal>}
   </div>;
 }

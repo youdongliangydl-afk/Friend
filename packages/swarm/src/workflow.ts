@@ -1,3 +1,6 @@
+import {builtinWorkflowTemplates} from './workflow-templates.js';
+import {executionPolicy,expertOverrides} from './execution-policy.js';
+import type {ExecutionPolicy} from './types.js';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { CapabilityError,ConflictError, RecordStore, SourcePolicy,digest, object, text, type JsonObject, type PluginContext,type SourceFence } from '@friend-pi/core';
@@ -8,10 +11,10 @@ export type WorkflowValue=null|boolean|number|string|WorkflowValue[]|{[key:strin
 export type WorkflowPredicate={taskId:string;path?:string[];op:'eq'|'ne'|'exists';value?:WorkflowValue}|{all:WorkflowPredicate[]}|{any:WorkflowPredicate[]}|{not:WorkflowPredicate};
 export interface WorkflowNode {
   id:string;title:string;prompt:string;dependencies:string[];mode:'read'|'write';writeScopes:string[];
-  phase?:string;expertId?:string;modelId?:string;thinkingLevel?:string;inputs?:WorkflowValue;
+  expertOverrides?:import('@friend-pi/core').ExpertSpawnOverrides;phase?:string;expertId?:string;modelId?:string;thinkingLevel?:string;inputs?:WorkflowValue;
   codePaths:string[];when?:WorkflowPredicate;retryWhen?:WorkflowPredicate;maxRetries:number;
 }
-export interface WorkflowDefinition {v:1;title:string;goal:string;nodes:WorkflowNode[];parameters:WorkflowValue;maxWorkers:number}
+export interface WorkflowDefinition {checks?:{command:string;args:string[]}[];executionPolicy?:ExecutionPolicy;v:1;title:string;goal:string;nodes:WorkflowNode[];parameters:WorkflowValue;maxWorkers:number}
 export interface WorkflowBackend {dispatch(action:string,input:JsonObject,context:PluginContext):unknown|Promise<unknown>;readRecoveryGraph?(graphId:string,context:PluginContext):BackendGraph}
 export type WorkflowNodeStatus='pending'|'running'|'completed'|'skipped'|'failed'|'unknown';
 export interface WorkflowNodeState {
@@ -67,7 +70,7 @@ export function validateWorkflowDefinition(value:unknown):WorkflowDefinition {
     const dependencies=node.dependencies??[];if(!Array.isArray(dependencies)||dependencies.some(dep=>typeof dep!=='string'))throw new Error('流程依赖无效');
     const scopes=node.writeScopes??(node.mode==='write'?['.']:[]);if(!Array.isArray(scopes)||scopes.length>32||node.mode==='write'&&!scopes.length||scopes.some(scope=>typeof scope!=='string'||isAbsolute(scope)||scope.split(/[\\/]/).includes('..')))throw new Error('流程写入范围无效');
     const paths=node.codePaths??(scopes.length?scopes:['.']);if(!Array.isArray(paths)||paths.length<1||paths.length>32||paths.some(path=>typeof path!=='string'||!path||isAbsolute(path)||path.split(/[\\/]/).includes('..')))throw new Error('流程 codePaths 必须是项目内相对路径');
-    return {id:id(node.id),title:text(node.title,'节点标题',200),prompt:text(node.prompt,'节点要求',100000),dependencies:[...new Set(dependencies.map(id))],mode:node.mode,writeScopes:scopes as string[],codePaths:paths as string[],maxRetries:integer(node.maxRetries,2,0,2,'单节点重试额度'),
+    return {expertOverrides:expertOverrides(node.expertOverrides),id:id(node.id),title:text(node.title,'节点标题',200),prompt:text(node.prompt,'节点要求',100000),dependencies:[...new Set(dependencies.map(id))],mode:node.mode,writeScopes:scopes as string[],codePaths:paths as string[],maxRetries:integer(node.maxRetries,2,0,2,'单节点重试额度'),
       ...Object.fromEntries(['phase','expertId','modelId','thinkingLevel'].filter(key=>node[key]!==undefined).map(key=>[key,text(node[key],key,200)])),
       ...(node.inputs===undefined?{}:{inputs:plain(node.inputs)}),...(node.when===undefined?{}:{when:predicate(node.when)}),...(node.retryWhen===undefined?{}:{retryWhen:predicate(node.retryWhen)})};
   });
@@ -77,9 +80,11 @@ export function validateWorkflowDefinition(value:unknown):WorkflowDefinition {
   nodes.forEach(visit);
   const reachability=graphReachability(nodes);
   for(const node of nodes){if(!node.when&&!node.retryWhen)continue;const available=reachability.ancestors(node.id);if(node.when&&predicateSources(node.when).some(source=>!available.has(source)))throw new Error('分支条件必须引用本节点的前置成果');if(node.retryWhen&&predicateSources(node.retryWhen).some(source=>source!==node.id&&!available.has(source)))throw new Error('重试条件必须引用当前节点或前置成果');}
-  const definition:WorkflowDefinition={v:1,title:text(raw.title,'流程名称',200),goal:text(raw.goal,'流程目标',100000),nodes,parameters:plain(raw.parameters??{}),maxWorkers:integer(raw.maxWorkers,4,1,16,'流程并发')};
+  const checks=raw.checks===undefined?undefined:Array.isArray(raw.checks)?raw.checks.map(item=>{const c=object(item);if(!Array.isArray(c.args)||c.args.some(a=>typeof a!=='string'))throw new Error('流程检查args无效');return {command:text(c.command,'command',1000),args:c.args as string[]};}):(()=>{throw new Error('流程checks无效');})();
+  const definition:WorkflowDefinition={...(checks?{checks}:{}),...(raw.executionPolicy===undefined?{}:{executionPolicy:executionPolicy(raw.executionPolicy)}),v:1,title:text(raw.title,'流程名称',200),goal:text(raw.goal,'流程目标',100000),nodes,parameters:plain(raw.parameters??{}),maxWorkers:integer(raw.maxWorkers,4,1,16,'流程并发')};
   if(JSON.stringify(definition).length>512000)throw new Error('流程定义超过 512 KB');return definition;
 }
+function interpolate(template:string,parameters:WorkflowValue):string {return template.replace(/\{\{args\.([A-Za-z0-9_.-]+)\}\}/g,(_match,path:string)=>{let value:unknown=parameters;for(const part of path.split('.')){if(!value||typeof value!=='object'||!Object.hasOwn(value,part))throw new Error(`流程参数 ${path} 缺失`);value=(value as JsonObject)[part];}return typeof value==='string'?value:JSON.stringify(value);});}
 function resultValue(summary:string|undefined):WorkflowValue {if(summary===undefined)throw new Error('已完成节点缺少真实成果');try{return plain(JSON.parse(summary));}catch{return summary;}}
 function runKey(ctx:PluginContext,workflowId:string){return `run:${ctx.projectId}:${workflowId}`;}
 function alive(pid:number):boolean {try{process.kill(pid,0);return true;}catch{return false;}}
@@ -106,21 +111,21 @@ export class DynamicWorkflowController {
   private async serial<T>(key:string,operation:()=>Promise<T>):Promise<T> {const previous=this.locks.get(key)||Promise.resolve();const current=previous.catch(()=>{}).then(operation);this.locks.set(key,current);try{return await current;}finally{if(this.locks.get(key)===current)this.locks.delete(key);}}
   snapshot(ctx:PluginContext):{workflows:WorkflowRun[];templates:WorkflowTemplate[];status:string} {
     const workflows=this.store(ctx).list<WorkflowRun>(`run:${ctx.projectId}:`).map(item=>item.value).filter(run=>run.sessionId===ctx.sessionId);
-    const templates=this.store(ctx).list<WorkflowTemplate>(`template-current:${ctx.projectId}:`).map(item=>item.value);
+    const saved=this.store(ctx).list<WorkflowTemplate>(`template-current:${ctx.projectId}:`).map(item=>item.value);const templates=[...builtinWorkflowTemplates().filter(t=>!saved.some(s=>s.id===t.id)),...saved];
     return {workflows,templates,status:workflows.some(run=>['running','waiting_review'].includes(run.status))?'running':'idle'};
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
     if(this.disposed||this.closing)throw new Error('Workflow 已关闭');
     if(action==='snapshot'||action==='list')return this.snapshot(ctx);
     if(action==='template.list')return this.snapshot(ctx).templates;
-    if(action==='template.read'){const templateId=id(input.templateId),version=input.version;return version===undefined?this.store(ctx).get<WorkflowTemplate>(`template-current:${ctx.projectId}:${templateId}`)?.value:this.store(ctx).get<WorkflowTemplate>(`template:${ctx.projectId}:${templateId}:${integer(version,1,1,100000,'模板版本')}`)?.value;}
+    if(action==='template.read'){const templateId=id(input.templateId),version=input.version;const saved=version===undefined?this.store(ctx).get<WorkflowTemplate>(`template-current:${ctx.projectId}:${templateId}`)?.value:this.store(ctx).get<WorkflowTemplate>(`template:${ctx.projectId}:${templateId}:${integer(version,1,1,100000,'模板版本')}`)?.value;return saved??builtinWorkflowTemplates().find(t=>t.id===templateId&&(version===undefined||version===1));}
     if(action==='template.save'){
       const templateId=id(input.templateId),definition=validateWorkflowDefinition(input.definition),key=`template-current:${ctx.projectId}:${templateId}`;
-      return this.store(ctx).transaction(()=>{const prior=this.store(ctx).get<WorkflowTemplate>(key);if(input.revision!==undefined&&prior?.revision!==input.revision)throw new ConflictError();const template:WorkflowTemplate={v:1,id:templateId,version:(prior?.value.version||0)+1,definition,hash:digest(definition),createdAt:now()};this.store(ctx).put(`template:${ctx.projectId}:${templateId}:${template.version}`,template,null);this.store(ctx).put(key,template,prior?.revision??null);return template;});
+      return this.store(ctx).transaction(()=>{const prior=this.store(ctx).get<WorkflowTemplate>(key);if(input.revision!==undefined&&prior?.revision!==input.revision)throw new ConflictError();const template:WorkflowTemplate={v:1,id:templateId,version:(prior?.value.version||builtinWorkflowTemplates().find(t=>t.id===templateId)?.version||0)+1,definition,hash:digest(definition),createdAt:now()};this.store(ctx).put(`template:${ctx.projectId}:${templateId}:${template.version}`,template,null);this.store(ctx).put(key,template,prior?.revision??null);return template;});
     }
     if(action==='create'){
       this.mode(ctx);const template=input.templateId===undefined?undefined:await this.dispatch('template.read',input,ctx) as WorkflowTemplate|undefined;if(input.templateId!==undefined&&!template)throw new Error('流程模板不存在');
-      const source=object(input.definition??template?.definition);const definition=validateWorkflowDefinition({...source,...(input.parameters===undefined?{}:{parameters:input.parameters})});
+      const source=object(input.definition??template?.definition);const definition=validateWorkflowDefinition({...source,...(input.parameters===undefined?{}:{parameters:input.parameters})});definition.goal=interpolate(definition.goal,definition.parameters);
       const run:WorkflowRun={v:1,id:randomUUID(),projectId:ctx.projectId,sessionId:ctx.sessionId,definition,definitionRevision:1,status:'created',nodes:definition.nodes.map(node=>({id:node.id,status:'pending',materialized:false,retries:0})),createdAt:now(),updatedAt:now()};
       this.save(run,ctx);ctx.appendEntry('friend-pi.workflow.created',{v:1,workflowId:run.id,definitionHash:digest(definition)});return run;
     }
@@ -188,8 +193,8 @@ export class DynamicWorkflowController {
     return graph;
   }
   private taskSpec(run:WorkflowRun,node:WorkflowNode):JsonObject {
-    const prompt=node.prompt.replace(/\{\{args\.([A-Za-z0-9_.-]+)\}\}/g,(_match,path:string)=>{let value:unknown=run.definition.parameters;for(const part of path.split('.')){if(!value||typeof value!=='object'||!Object.hasOwn(value,part))throw new Error(`流程参数 ${path} 缺失`);value=(value as JsonObject)[part];}return typeof value==='string'?value:JSON.stringify(value);});
-    return {id:node.id,title:node.title,prompt:node.inputs===undefined?prompt:`${prompt}\n流程输入：${JSON.stringify(node.inputs)}`,dependencies:node.dependencies.filter(dep=>run.nodes.find(state=>state.id===dep)!.materialized),mode:node.mode,writeScopes:node.writeScopes.length?node.writeScopes:['.'],expertId:node.expertId,modelId:node.modelId,thinkingLevel:node.thinkingLevel,logicalStepId:`workflow:${digest(run.definition.goal).slice(0,24)}:${node.id}`,workflowHeld:false};
+    const prompt=interpolate(node.prompt,run.definition.parameters);
+    return {id:node.id,title:node.title,prompt:node.inputs===undefined?prompt:`${prompt}\n流程输入：${JSON.stringify(node.inputs)}`,dependencies:node.dependencies.filter(dep=>run.nodes.find(state=>state.id===dep)!.materialized),mode:node.mode,writeScopes:node.writeScopes.length?node.writeScopes:['.'],expertId:node.expertId,expertOverrides:node.expertOverrides,modelId:node.modelId,thinkingLevel:node.thinkingLevel,logicalStepId:`workflow:${digest(run.definition.goal).slice(0,24)}:${node.id}`,workflowHeld:false};
   }
   private async reset(run:WorkflowRun,state:WorkflowNodeState,ctx:PluginContext,reason:string,confirmUnknown=false):Promise<void> {
     if(state.retries>=this.node(run,state.id).maxRetries){state.status='failed';state.error='节点累计重试额度耗尽';return;}
@@ -250,7 +255,7 @@ export class DynamicWorkflowController {
       if(ready.length){
         for(const state of ready)if(!state.launch){const node=this.node(run,state.id);state.launch={inputHash:this.inputHash(run,node),dependencyHash:this.dependencyHash(run,node),codeHash:workflowCodeDigest(ctx.projectDir,node.codePaths,ctx.dataDir)};}
         const tasks=ready.filter(state=>!state.materialized).map(state=>this.taskSpec(run,this.node(run,state.id)));
-        if(!run.graphId){const created=object(await this.backend.dispatch('create',{goal:run.definition.goal,tasks,maxWorkers:run.definition.maxWorkers,executionStyle:'swarm',workflowId:run.id,deferPreparation:true},ctx));run.graphId=text(created.id,'Swarm 图标识');this.save(run,ctx);}
+        if(!run.graphId){const created=object(await this.backend.dispatch('create',{goal:run.definition.goal,tasks,maxWorkers:run.definition.maxWorkers,checks:run.definition.checks,executionPolicy:run.definition.executionPolicy,executionStyle:'swarm',workflowId:run.id,deferPreparation:true},ctx));run.graphId=text(created.id,'Swarm 图标识');this.save(run,ctx);}
         else {
           if(tasks.length)await this.backend.dispatch('append',{graphId:run.graphId,tasks},ctx);
           for(const state of ready.filter(item=>item.materialized))if(graph?.tasks.find(task=>task.id===state.id)?.workflowHeld)await this.backend.dispatch('update_task',{graphId:run.graphId,taskId:state.id,workflowHeld:false,gateOnly:true},ctx);

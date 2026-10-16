@@ -9,6 +9,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import * as rendererTypes from '../apps/desktop/src/renderer/types.js';
 import * as ui from '../apps/desktop/src/renderer/ui.js';
 import {TaskGraphCanvas,TaskEvidenceSummary} from '../apps/desktop/src/renderer/TaskGraph.js';
+import * as swarmControls from '../apps/desktop/src/renderer/swarm-controls.js';
 import * as graphModel from '../apps/desktop/src/renderer/task-graph-model.js';
 import {openTool} from '../apps/desktop/src/renderer/view-tabs.js';
 import type {AppState,JsonObject} from '../apps/desktop/src/renderer/types.js';
@@ -33,6 +34,7 @@ function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure,previews=[]
  const state:AppState={projects:[],sessions:[],models:[],providers:[],current:{sessionId:'desktop-session',piSessionId:'native-session',projectId:'project',messages:[],isRunning:false,modelId:'fixture/model',thinkingLevel:'off',plugins:['swarm'],executionMode:mode,runId:'run',receipts}};let failures=0,previewIndex=0;
  const context:any={module:{exports:{}},require(name:string){
   if(name==='react')return hooks;if(name==='react/jsx-runtime')return jsxRuntime;
+  if(name==='./swarm-controls.js')return swarmControls;
   if(name==='./types.js')return rendererTypes;if(name==='./ui.js')return ui;
   if(name==='./TaskGraph.js')return {TaskGraphCanvas,TaskEvidenceSummary};if(name==='./task-graph-model.js')return graphModel;if(name==='./view-tabs.js')return {openTool};
   if(name==='./Teammates.js')return {TeammateRoster:({rootSessionId}:{rootSessionId:string})=>createElement('div',{'data-members-for':rootSessionId}),openTeammate(){throw new Error('SSR must not open a teammate');}};
@@ -60,9 +62,9 @@ function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure,previews=[]
 const goal=(status='active')=>({id:'goal',objective:'已记录目标',status,progress:'已完成范围核查',nextAction:'复核成果',mode:'swarm',tokens:100,tokenBudget:1000});
 const flow=(id:string,status:string)=>({id,sessionId:'native-session',status,title:'阶段 '+id,definition:{title:'阶段 '+id,nodes:[{id:'a',title:'只读阶段成果',dependencies:[]}]},nodes:[{id:'a',status:'completed',result:'保留的阶段成果'}]});
 
-test('empty TaskPanel directs goals to Swarm conversation without creation or configuration forms',async()=>{
+test('empty TaskPanel directs goals to Swarm conversation with collapsed manual collaboration controls',async()=>{
  const f=fixture();await f.flush();const markup=f.markup();
- assert.match(markup,/在 Swarm 模式的对话中说明目标/);assert.match(markup,/本轮尚未建立任务依赖图/);assert.match(markup,/当前会话队友/);assert.match(markup,/data-members-for="desktop-session"/);
+ assert.match(markup,/在 Swarm 模式的对话中说明目标/);assert.match(markup,/本轮尚未建立任务依赖图/);assert.match(markup,/当前会话队友/);assert.match(markup,/<details[^>]*><summary>手动协作与工作流模板/);assert.match(markup,/data-members-for="desktop-session"/);
  assert.doesNotMatch(markup,forbidden);assert.doesNotMatch(markup,/<input|<textarea|<select|目标与步骤|动态工作流|后台命令/);
  assert.ok(f.requests.every(request=>request.input.action==='snapshot'),'opening the task page only reads snapshots');
 });

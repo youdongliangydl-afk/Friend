@@ -16,3 +16,28 @@ original implementations using the fixed Pi public extension API; no loop,
 third-party source closure or authentication code was copied. Source-fragment
 helpers are supplied by the ordinary Friend-Pi core library. Tests exercise the
 public SDK with offline providers and do not represent GUI or real-model QA.
+
+Four-capability changes (2026-10-17): retained original goal/current request,
+conservative source-backed optional runtime goal lookup, canonical incremental
+range coverage with explicit pending spans and long-entry tail sampling,
+conditional Memory semantic identity and derived canonical timeline. Original
+Friend-Pi code; no additional runtime, model loop, transcript store or third-party
+source was introduced. Pi source revision remains
+`eb326d265ae0b88489a6d10319307780df827cdf` from `pi-source.lock.json`.
+Focused tests use Node 24 and offline/faux providers, including real Pi SDK
+journal adoption and restart. Real models, packaged artifacts and Computer Use
+are NOT_RUN in this package handoff; integration owns that final candidate.
+
+Integration review correction (2026-10-17): deterministic checkpoints no longer
+claim unread tool results. Canonical model-read tool spans use an additive
+source-only coverage ledger; legacy checkpoint coverage causes conservative
+rereading after restart. Offline regressions reproduce E902/path evidence loss,
+failed journal adoption, cold recovery and later checkpoint inheritance.
+
+Canonical Memory adoption correction (2026-10-17): asynchronous public Pi and
+controller boundaries revalidate frozen Memory revisions, semantics and sources
+before the effective field advances. The synchronous checkpoint API defers
+Memory-backed adoption; final source/epoch/receipt checks and the receipt write
+share a SQLite write transaction. Offline tests cover source-only changes with
+unchanged epochs, cold prepared recovery, pending visibility and an invalidation
+during the final Memory read. No private Pi API or execution loop was added.
