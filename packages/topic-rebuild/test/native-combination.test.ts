@@ -9,8 +9,26 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import memoryExtension from '../../memory/src/index.js';
 import rebuildExtension, {type WorkingField} from '../src/index.js';
-import {installFixtureProvider,requestPlugin,visibleText,sourceFactRefs,historyItems,RecordStore,projectIdentity,type JsonObject} from '../../core/src/index.js';
+import {requestPlugin,visibleText,sourceFactRefs,historyItems,RecordStore,projectIdentity,type JsonObject} from '../../core/src/index.js';
 import {fauxProvider,fauxAssistantMessage} from '@earendil-works/pi-ai/providers/faux';
+
+// Incremental preparation may contain no new raw spans after a canonical
+// checkpoint. The offline provider accepts the source-backed previous field too.
+function previousField(content:string):WorkingField {
+  return JSON.parse(content.split('此前现场：')[1]!.split('\n此次参考记忆')[0]!) as WorkingField;
+}
+async function installRebuildProvider(runtime:ModelRuntime) {
+  const fixture=fauxProvider({provider:'rebuild-incremental-fixture',models:[{id:'offline',name:'Incremental rebuild fixture',reasoning:false,input:['text'],contextWindow:32000,maxTokens:4096}]});
+  const respond:Parameters<typeof fixture.setResponses>[0][number]=context=>{
+    fixture.appendResponses([respond]);const content=context.messages.map(message=>visibleText(message.content)).join('\n');
+    if(content.includes('FRIEND_PI_REBUILD_JSON')){
+      const field=previousField(content);
+      return fauxAssistantMessage(JSON.stringify({goal:{text:field.goal.text,sourceEntryIds:field.goal.sources.map(source=>source.entryId)},constraints:[],decisions:[],unfinished:[],topics:[]}));
+    }
+    return fauxAssistantMessage('离线增量整理检查完成，不代表真实模型质量。');
+  };
+  fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('rebuild-incremental-fixture','fixture');return fixture.getModel();
+}
 
 test('native Pi combination journals canonical fields, compacts, recalls mixed tokens and resumes cold',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-pi-native-memory-rebuild-'));
@@ -19,7 +37,7 @@ test('native Pi combination journals canonical fields, compacts, recalls mixed t
   try {
     initTheme('light',false);
     const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),allowModelNetwork:false});
-    const model=await installFixtureProvider(runtime);
+    const model=await installRebuildProvider(runtime);
     const settings=SettingsManager.inMemory({extensions:[],packages:[],defaultTools:['read'],compaction:{enabled:true,reserveTokens:128,keepRecentTokens:128}});
     const open=async(sessionFile?:string)=>{
       const loader=new DefaultResourceLoader({cwd:dir,agentDir:join(dir,'agent'),settingsManager:settings,noSkills:true,noPromptTemplates:true,noThemes:true,eventBus:bus,extensionFactories:[
@@ -78,7 +96,7 @@ test('independent native Pi defaults to native, explicitly opts into infinite, a
     const fixture=fauxProvider({provider:'rebuild-only-fixture',models:[{id:'offline',name:'Independent rebuild fixture',reasoning:false,input:['text'],contextWindow:32000,maxTokens:4096}]});
     const respond:Parameters<typeof fixture.setResponses>[0][number]=context=>{
       fixture.appendResponses([respond]);providerCalls++;const content=context.messages.map(message=>visibleText(message.content)).join('\n');
-      if(content.includes('FRIEND_PI_REBUILD_JSON')){rebuildCalls++;const originals=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const goal=[...originals].reverse().find(item=>item.role==='user')!;return fauxAssistantMessage(JSON.stringify({goal:{text:goal.text.slice(0,500),sourceEntryIds:[goal.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}
+      if(content.includes('FRIEND_PI_REBUILD_JSON')){rebuildCalls++;const originals=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const previous=previousField(content);const goal=[...originals].reverse().find(item=>item.role==='user')||{text:previous.currentRequest!.text,id:previous.currentRequest!.sources[0]!.entryId};return fauxAssistantMessage(JSON.stringify({goal:{text:goal.text.slice(0,500),sourceEntryIds:[goal.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}
       return fauxAssistantMessage('离线原生Pi摘要与消息测试。');
     };
     fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('rebuild-only-fixture','fixture');
@@ -105,7 +123,7 @@ test('native Memory controller correction and forgetting suppress old Pi sources
     const fixture=fauxProvider({provider:'source-origin-fixture',models:[{id:'offline',name:'Origin suppression fixture',reasoning:false,input:['text'],contextWindow:32000,maxTokens:4096}]});
     const respond:Parameters<typeof fixture.setResponses>[0][number]=context=>{
       fixture.appendResponses([respond]);const content=context.messages.map(message=>visibleText(message.content)).join('\n');
-      if(content.includes('FRIEND_PI_REBUILD_JSON')){const originals=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const goal=[...originals].reverse().find(item=>item.role==='user')!;return fauxAssistantMessage(JSON.stringify({goal:{text:stale.size?[...stale.values()][0]:goal.text,sourceEntryIds:[goal.id,...stale.keys()]},constraints:[...stale].map(([id,text])=>({text,sourceEntryIds:[id,goal.id]})),decisions:[],unfinished:[],topics:[]}));}
+      if(content.includes('FRIEND_PI_REBUILD_JSON')){const originals=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const previous=previousField(content);const goal=[...originals].reverse().find(item=>item.role==='user')||{text:previous.currentRequest!.text,id:previous.currentRequest!.sources[0]!.entryId};return fauxAssistantMessage(JSON.stringify({goal:{text:stale.size?[...stale.values()][0]:goal.text,sourceEntryIds:[goal.id,...stale.keys()]},constraints:[...stale].map(([id,text])=>({text,sourceEntryIds:[id,goal.id]})),decisions:[],unfinished:[],topics:[]}));}
       return fauxAssistantMessage('离线来源引用测试完成，不代表真实模型质量。');
     };
     fixture.setResponses([respond]);runtime.registerNativeProvider(fixture.provider);await runtime.setRuntimeApiKey('source-origin-fixture','fixture');const model=fixture.getModel();

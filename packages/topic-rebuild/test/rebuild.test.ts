@@ -236,7 +236,8 @@ test('standalone operation has no Memory dependency; manual request requires act
 test('compact selects memory once and records exact revision/hash/source without normal-turn recall',async()=>{
   const f=fixture();const c=f.create();let selections=0;let completions=0;
   const source=sourceFactRefs(historyItems(f.originals)[0]!,'session-a')[1]!;
-  const record={id:'m1',revision:7,hash:digest('有效项目方法'),content:'有效项目方法',sources:[source],status:'active',enabled:true};
+  const semantic={id:'m1',revision:7,content:'有效项目方法',conditions:['仅适用于本项目','验证通过后适用'],validFrom:null,validTo:null,scope:'project'};
+  const record={...semantic,hash:digest(semantic.content),semanticDigest:digest(semantic),sources:[source],status:'active',enabled:true};
   try {
     const complete=f.ctx.complete;f.ctx.complete=async(prompt,options)=>{completions++;assert.match(prompt,/有效项目方法/);return complete(prompt,options);};
     f.ctx.request=async(_plugin,action)=>{if(action==='invalidation.snapshot')return {projectId:'project-a',epoch:0,ids:[],sources:[]};if(action==='select'){selections++;return {records:[record],epoch:0};}if(action==='read')return record;throw new Error('unexpected action');};
@@ -244,7 +245,7 @@ test('compact selects memory once and records exact revision/hash/source without
     const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
     assert.equal(selections,1);assert.equal(completions,1);
     f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
-    assert.deepEqual(field.memoryRefs,[{id:'m1',revision:7,hash:record.hash,sources:[source]}]);
+    assert.deepEqual(field.memoryRefs,[{id:'m1',revision:7,hash:record.hash,sources:[source],conditions:record.conditions,validFrom:null,validTo:null,scope:'project',semanticDigest:record.semanticDigest}]);
     assert.doesNotMatch(result.compaction.summary,/有效项目方法/);
   }finally{c.dispose();f.cleanup();}
 });
@@ -393,5 +394,135 @@ test('cold restart reconciles a real canonical save made before the adoption cal
     const field=c.confirmCanonical(f.ctx)!;assert.ok(field);assert.equal((c.snapshot(f.ctx).status as {phase:string}).phase,'applied');
     const store=new RecordStore('topic-rebuild',f.dir);const operation=store.get<{state:string;canonicalEntryId:string}>(`operation:project-a:session-a:${field.operationId}`)!.value;
     assert.equal(operation.state,'adopted');assert.equal(operation.canonicalEntryId,entry.id);store.close();
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('progress requests preserve original goal through ten compactions and cold recovery',async()=>{
+  const f=fixture();let c=f.create();let calls=0;
+  try {
+    const complete=f.ctx.complete;f.ctx.complete=async(...args)=>{calls++;return complete(...args);};
+    for(let round=0;round<10;round++){
+      f.add(`progress-${round}`,'user',round%2?'现在进度怎么样？':'还剩什么，继续完成。');
+      const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
+      const old=(c.snapshot(f.ctx).field as WorkingField|undefined)?.revision||0;
+      f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
+      assert.equal(field.revision,old+1);assert.equal(field.goal.text,'实现数据库模块。');
+      assert.equal(field.goal.sources[0]!.entryId,'u1');assert.equal(field.currentRequest?.sources[0]!.entryId,`progress-${round}`);
+      assert.ok(field.constraints.some(point=>point.text.includes('保留用户原始文件')));
+      assert.equal(field.goalStatus,'active');
+      if(round===4){c.dispose();c=f.create();}
+    }
+    assert.equal(calls,10);const timeline=await c.dispatch('timeline',{},f.ctx) as {goal:{text:string};currentRequest:{text:string};status:string;preservedFacts:unknown[]}[];
+    assert.equal(timeline.length,10);assert.equal(timeline.at(-1)!.status,'adopted');assert.ok(timeline.at(-1)!.preservedFacts.length);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('explicit replacement and cancellation change goal identity while command mentions do not',()=>{
+  const f=fixture();const c=f.create();
+  const adopt=()=>{const draft=c.checkpointDraft(f.ctx)!;assert.ok(draft);f.appendDraft(draft);return c.confirmCanonical(f.ctx)!;};
+  try {
+    assert.equal(adopt().goal.text,'实现数据库模块。');
+    f.add('mention','user','实现取消当前任务按钮，保留界面布局。');assert.equal(adopt().goal.text,'实现数据库模块。');
+    f.add('replace','user','新任务：实现日志查看器。');let field=adopt();assert.equal(field.goal.text,'新任务：实现日志查看器。');assert.equal(field.goalStatus,'active');
+    f.add('status','user','进度如何？');field=adopt();assert.equal(field.goal.sources[0]!.entryId,'replace');assert.equal(field.currentRequest?.text,'进度如何？');
+    f.add('cancel','user','取消当前任务。');field=adopt();assert.equal(field.goalStatus,'cancelled');assert.equal(field.goal.sources[0]!.entryId,'replace');
+    f.add('status2','user','停止后状态如何？');assert.equal(adopt().goalStatus,'cancelled');
+    f.add('restart','user','改做配置编辑器。');assert.equal(adopt().goalStatus,'active');
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('long entry tail and cross-page constraints survive bounded incremental preparation',async()=>{
+  const f=fixture();let c=f.create();const prompts:string[]=[];
+  try {
+    const cross='必须保留跨页约束。';const long='x'.repeat(2994)+'。'+cross+'\n'+'y'.repeat(10000)+'。\n必须保留长条目尾部约束。';
+    f.add('oversized','user',long);
+    f.ctx.complete=async prompt=>{prompts.push(prompt);return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});};
+    const first=await c.beforeCompact(f.event(),f.ctx);assert.ok(first?.compaction);const prepared=(first.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild;
+    assert.equal(prepared.coverage?.complete,false);assert.ok(prepared.coverage!.pending.some(range=>range.entryId==='oversized'));
+    assert.ok(prepared.constraints.some(point=>point.text.includes('长条目尾部约束')));assert.notEqual(prepared.coveredThroughId,'oversized');
+    const firstInput=JSON.parse(prompts[0]!.split('原始条目：')[1]!) as {id:string;text:string}[];
+    assert.ok(firstInput.filter(item=>item.id==='oversized').reduce((sum,item)=>sum+item.text.length,0)<=6000);
+    assert.equal(c.snapshot(f.ctx).field,undefined,'unadopted preparation never advances coverage');
+    f.appendCompaction(first.compaction);c.confirmCanonical(f.ctx);c.dispose();c=f.create();
+    for(let page=0;page<3;page++){
+      const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);c.confirmCanonical(f.ctx);
+    }
+    const final=c.snapshot(f.ctx).field as WorkingField;
+    assert.equal(final.coverage?.complete,true);assert.equal(final.coveredThroughId,'oversized');
+    assert.ok(final.constraints.some(point=>point.text===cross));assert.ok(final.constraints.some(point=>point.text.includes('长条目尾部约束')));
+    const laterInput=JSON.parse(prompts[1]!.split('原始条目：')[1]!) as {id:string;text:string}[];
+    assert.equal(laterInput.some(item=>item.id==='u1'),false,'already adopted old entries are not resent');
+    assert.ok(prompts[1]!.includes('保留用户原始文件'),'early constraint remains as source-backed field');
+    const database=new DatabaseSync(join(f.dir,'plugins.sqlite'));const stored=JSON.stringify(database.prepare("SELECT json FROM documents WHERE namespace='topic-rebuild'").all());database.close();assert.equal(stored.includes(long),false);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('explicit new task or cancel during asynchronous compaction rejects stale goal even after restart',async()=>{
+  for(const input of ['新任务：实现日志查看器。','取消当前任务。']){
+    const f=fixture();let c=f.create();let finish!:()=>void;let started!:()=>void;
+    const ready=new Promise<void>(resolve=>{started=resolve;});const gate=new Promise<void>(resolve=>{finish=resolve;});
+    try {
+      const complete=f.ctx.complete;f.ctx.complete=async(...args)=>{started();await gate;return complete(...args);};
+      const pending=c.beforeCompact(f.event(),f.ctx);await ready;f.add('new-intent','user',input);finish();assert.equal(await pending,undefined);
+      c.dispose();c=f.create();assert.equal(c.snapshot(f.ctx).field,undefined);
+      const draft=c.checkpointDraft(f.ctx)!;f.appendDraft(draft);const field=c.confirmCanonical(f.ctx)!;
+      assert.equal(field.goalStatus,input.startsWith('取消')?'cancelled':'active');if(input.startsWith('新任务'))assert.equal(field.goal.sources[0]!.entryId,'new-intent');
+    }finally{finish();c.dispose();f.cleanup();}
+  }
+});
+
+test('optional runtime goal needs matching native receipt and literal trusted user provenance',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    const objective='下一步回到数据库：修复服务端事务，完成后检查原始文件。';
+    const goal={id:'goal-a',revision:1,projectId:'project-a',sessionId:'session-a',origin:'user',status:'active',objective};
+    f.ctx.request=async(plugin)=>{if(plugin==='runtime')return goal;throw new Error('not installed');};
+    const rejected=await c.beforeCompact(f.event(),f.ctx);assert.ok(rejected?.compaction);assert.equal((rejected.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。');
+    c.compactFailed(f.ctx,'not adopted');f.ctx.appendEntry('friend-pi.goal.receipt',{goalId:'goal-a',revision:1,status:'active'});
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);const field=(result.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild;
+    assert.equal(field.goal.text,objective);assert.equal(field.goal.sources[0]!.entryId,'u3');
+    f.ctx.appendEntry('friend-pi.goal.receipt',{goalId:'goal-a',revision:2,status:'stopped'});f.appendCompaction(result.compaction);assert.equal(c.confirmCanonical(f.ctx),undefined);
+    goal.origin='agent';const agent=await c.beforeCompact(f.event(),f.ctx);assert.ok(agent?.compaction);assert.equal((agent.compaction.details as {friendPiRebuild:WorkingField}).friendPiRebuild.goal.text,'实现数据库模块。');
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('memory condition or source drift fences the same-content record during preparation',async()=>{
+  for(const change of ['condition','source']){
+    const f=fixture();const c=f.create();
+    const semantic={id:'conditional',revision:2,content:'有效方法',conditions:['仅发布前'],validFrom:'2026-01-01T00:00:00Z',validTo:'2099-01-01T00:00:00Z',scope:'project'};
+    const record={...semantic,hash:digest(semantic.content),semanticDigest:digest(semantic),sources:[sourceFactRefs(historyItems(f.originals)[0]!,'session-a')[1]!],status:'active',enabled:true};
+    try {
+      f.ctx.request=async(plugin,action)=>{if(plugin!=='memory')throw new Error('not installed');if(action==='invalidation.snapshot')return {epoch:0,ids:[],sources:[]};if(action==='select')return {records:[record],epoch:0};if(action==='read')return change==='condition'?{...record,conditions:['所有场景']}:{...record,sources:[]};throw new Error('unexpected');};
+      const complete=f.ctx.complete;f.ctx.complete=async(prompt,...rest)=>{assert.match(prompt,/仅发布前/);assert.match(prompt,/2099-01-01/);return complete(prompt,...rest);};
+      assert.equal(await c.beforeCompact(f.event(),f.ctx),undefined);assert.equal(c.snapshot(f.ctx).field,undefined);
+    }finally{c.dispose();f.cleanup();}
+  }
+});
+
+test('canonical checkpoints continue pending ranges without rereading adopted pages',()=>{
+  const f=fixture();let c=f.create();
+  try {
+    f.add('long-checkpoint','user','z'.repeat(15000)+'。\n必须保留最后的限制。');
+    const draft=c.checkpointDraft(f.ctx)!;assert.equal(draft.type,'custom');if(draft.type!=='custom')throw new Error('missing custom draft');
+    const first=draft.data as WorkingField;assert.equal(first.coverage?.complete,false);
+    const retry=c.checkpointDraft(f.ctx)!;if(retry.type!=='custom')throw new Error('missing custom retry');assert.deepEqual((retry.data as WorkingField).coverage,first.coverage);
+    f.appendDraft(draft);c.confirmCanonical(f.ctx);c.dispose();c=f.create();
+    for(let count=0;count<3;count++){const next=c.checkpointDraft(f.ctx);if(!next)break;f.appendDraft(next);c.confirmCanonical(f.ctx);}
+    const final=c.snapshot(f.ctx).field as WorkingField;assert.equal(final.coverage?.complete,true);assert.ok(final.constraints.some(point=>point.text.includes('最后的限制')));assert.equal(c.checkpointDraft(f.ctx),undefined);
+  }finally{c.dispose();f.cleanup();}
+});
+
+test('remaining global page budget still samples a long entry tail',async()=>{
+  const f=fixture();const c=f.create();
+  try {
+    for(let n=0;n<6;n++)f.add(`large-tool-${n}`,'toolResult','x'.repeat(5500));
+    f.add('late-long-user','user','y'.repeat(10000)+'。\n必须保留预算末尾约束。');
+    f.ctx.complete=async prompt=>{
+      const entries=JSON.parse(prompt.split('原始条目：')[1]!) as {id:string;text:string}[];
+      assert.ok(entries.reduce((sum,item)=>sum+item.text.length,0)<=36000);
+      const late=entries.filter(item=>item.id==='late-long-user');assert.equal(late.length,2);assert.match(late.at(-1)!.text,/预算末尾约束/);
+      return JSON.stringify({constraints:[],decisions:[],unfinished:[],topics:[]});
+    };
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);assert.match(result.compaction.summary,/预算末尾约束/);
   }finally{c.dispose();f.cleanup();}
 });
