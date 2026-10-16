@@ -64,3 +64,16 @@ test('memory feedback binds record revision and goal context without submitting 
 test('ReBuild view keeps goal and current request separate and marks incomplete adopted coverage',async()=>{
  const f=fixture('panels.tsx','RebuildPanel');const point=(text:string)=>({text,sources:[]});f.request('snapshot').resolve({field:{goal:point('原始交付目标'),currentRequest:point('现在只问进度'),goalStatus:'active',coverage:{v:1,ranges:[{entryId:'one'}],pending:[{entryId:'two'}],complete:false}},timeline:[{id:'entry',revision:2,status:'adopted',goal:point('原始交付目标'),currentRequest:point('现在只问进度'),preservedFacts:[point('必须保留的事实')],conflicts:[{...point('待核对冲突'),reason:'来源不同'}],sourceEntries:[{sessionId:'pi',entryId:'source'}]}]});await f.flush();const html=f.html();for(const text of ['原始交付目标','现在只问进度','必须保留的事实','待核对冲突','来源不同','已采用范围 1 条','待覆盖 1 条','覆盖尚未完成或未记录']){assert.ok(html.includes(text),text);}assert.match(html,/仅 Pi 实际采用后更新有效覆盖/);
 });
+
+
+test('memory review count renders the actual queued feedback entries',()=>{
+ const snapshot={feedback:[{id:'outdated',kind:'outdated',reviewQueued:true},{id:'relevant',kind:'relevant',reviewQueued:false},{id:'already-reviewed',kind:'outdated',reviewQueued:false}]};
+ const html=renderToStaticMarkup(React.createElement(feedback.MemoryFeedbackSummary,{feedback:snapshot.feedback}));assert.match(html,/过时反馈待复核：1 条/);assert.match(html,/不修改原事实/);
+ assert.match(renderToStaticMarkup(React.createElement(feedback.MemoryFeedbackSummary,{feedback:[]})),/过时反馈待复核：0 条/);
+});
+test('memory feedback rejects inactive, candidate, invalidated and out-of-validity records in the UI',()=>{
+ const now=Date.parse('2026-10-17T12:00:00Z'),active={status:'active',enabled:true,validFrom:'2026-10-16T12:00:00Z',validTo:'2026-10-18T12:00:00Z'};
+ assert.equal(feedback.memoryFeedbackAvailable(active,now),true);
+ for(const record of [{...active,status:'candidate'},{...active,status:'inactive'},{...active,enabled:false},{...active,invalidatedReason:'来源已撤回'},{...active,validFrom:'2026-10-18T12:00:00Z'},{...active,validTo:'2026-10-16T12:00:00Z'}])assert.equal(feedback.memoryFeedbackAvailable(record,now),false);
+ const f=fixture('memory-feedback.tsx','MemoryFeedbackButtons',{id:'inactive',revision:1,disabled:true});assert.equal(f.button('已过时').disabled,true);f.button('已过时').onClick();assert.equal(f.requests.length,0);
+});
