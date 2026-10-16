@@ -72,6 +72,19 @@ test('queue suspension detaches the old Goal without stopping steps or accepting
  const f=fixture();try{f.setIdle(true);f.setBusy(false);const task=f.controller.tasks.create({title:'Old goal step'},f.ctx,f.goal.id);const held=f.controller.suspendForQueuedInput();assert.equal(held?.id,f.goal.id);assert.equal(f.controller.currentGoal(),undefined);assert.equal(f.controller.goals.read(f.goal.id,f.ctx).status,'paused');assert.equal(f.controller.tasks.read(task.id,f.ctx).status,'pending');const other={...f.ctx,origin:'agent' as const,runId:'queued-run'};await assert.rejects(f.controller.dispatch('task.start',{id:task.id},other),/当前执行/);await assert.rejects(f.controller.dispatch('goal.update',{goalId:f.goal.id,progress:'foreign write'},other),/当前执行/);f.controller.account(500,'foreign','queued-run');assert.equal(f.controller.goals.read(f.goal.id,f.ctx).tokens,0);}finally{await f.close();}
 });
 
+test('goal completion respects controller-owned optional review and keeps legacy/required audits',async()=>{
+ for(const policy of ['none','required','legacy','unversioned','foreign','unfinished','unchecked']){const f=fixture();try{
+  f.setIdle(true);f.setBusy(false);
+  f.controller.goals.update({progress:'已检查实际成果和当前任务记录'},f.ctx);
+  const complete={...f.graph,status:policy==='unfinished'?'running':policy==='unchecked'?'completed':'integrated',tasks:f.graph.tasks.map(task=>({...task,status:'completed'})),...(policy==='legacy'?{}:{executionPolicy:{...(policy==='unversioned'?{}:{v:1}),review:policy==='required'?'required':'none'}}),...(policy==='foreign'?{goalId:'another-goal'}:{})};
+  if(!['unfinished','unchecked','foreign'].includes(policy))f.controller.observeSwarm({graphs:[complete]});
+  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'actual independent review',source:{sessionId:'reviewer'}};}throw new Error('Unexpected request '+action);}};
+  const result=await f.controller.dispatch('goal.complete',{review:'none'},ctx) as {status:string;audit:{independent?:boolean;reviewStatus?:string}};
+  assert.equal(result.status,['unfinished','unchecked'].includes(policy)?'blocked':'completed');assert.equal(audits,['none','unfinished','unchecked'].includes(policy)?0:1,policy);
+  if(policy==='none'){assert.equal(result.audit.independent,false);assert.equal(result.audit.reviewStatus,'not_requested');}
+ }finally{await f.close();}}
+});
+
 test('delayed drains after quit, reload and disposal never access retired Pi context or stores',async()=>{
  for(const reason of ['quit','reload','dispose']){const f=fixture();try{
   f.setIdle(true);f.setBusy(false);const delayed=new Promise<void>((done,reject)=>setImmediate(()=>{f.controller.drain().then(done,reject);}));

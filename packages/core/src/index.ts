@@ -377,7 +377,7 @@ export async function installFixtureProvider(runtime:ModelRuntime) {
     if(latestUser.includes('QA_QUEUE_UI'))return fauxAssistantMessage('正在验证消息队列与侧边草稿。'.repeat(3000));
     if(latestUser.includes('QA_SLOW'))return fauxAssistantMessage('正在进行可中止的离线流式验证。'.repeat(300));
     if(content.includes('FRIEND_PI_REBUILD_JSON')){
-      try{const entries=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const user=[...entries].reverse().find(item=>item.role==='user')||entries.at(-1);if(user)return fauxAssistantMessage(JSON.stringify({goal:{text:user.text.slice(0,400),sourceEntryIds:[user.id]},constraints:[],decisions:[],unfinished:[],topics:[]}));}catch{}
+      try{const entries=JSON.parse(content.slice(content.lastIndexOf('原始条目：')+'原始条目：'.length)) as {id:string;role:string;text:string}[];const user=[...entries].reverse().find(item=>item.role==='user')||entries.at(-1);return fauxAssistantMessage(JSON.stringify({...(user?{goal:{text:user.text.slice(0,400),sourceEntryIds:[user.id]}}:{}),constraints:[],decisions:[],unfinished:[],topics:[]}));}catch{}
     }
     if(content.includes('只返回JSON，结构为'))return fauxAssistantMessage(JSON.stringify({v:1,title:'离线工作流',goal:'只读检查项目',maxWorkers:4,nodes:[{id:'inspect',title:'读取',prompt:'只读说明当前项目',dependencies:[],mode:'read'},{id:'summarize',title:'汇总',prompt:'汇总读取成果',dependencies:['inspect'],mode:'read'}]}));
     if(content.includes('你是项目经验提取器'))return fauxAssistantMessage('{"memories":[]}');

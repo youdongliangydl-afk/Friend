@@ -100,7 +100,19 @@ export class RuntimeController {
   if(action==='snapshot')return this.snapshot(ctx);
   throw new Error('未知宿主能力');
  }
- private async auditGoal(goal:GoalRecord,ctx:PluginContext){const result=object(await ctx.request('swarm','audit',{goalId:goal.id,objective:goal.objective,evidence:{progress:goal.progress,tasks:this.tasks.list(ctx,goal.id)},modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel},120000));return {...result,approved:result.approved===true&&result.independent===true&&!!result.source,findings:String(result.findings||'独立审核没有结论')};}
+ private async auditGoal(goal:GoalRecord,ctx:PluginContext){
+  // Read the controller's frozen policy, never a goal.complete tool argument.
+  // Legacy graphs retain their original independent-audit requirement.
+  const snapshot=object(await ctx.request('swarm','snapshot',{},1000));
+  const graphs=(Array.isArray(snapshot.graphs)?snapshot.graphs:[]).map(object).filter(graph=>graph.sessionId===ctx.sessionId&&graph.audit!==true&&(graph.goalId!==undefined?graph.goalId===goal.id:graph.runId===goal.sourceRunId));
+  if(graphs.some(graph=>graph.status!=='integrated'))return {approved:false,independent:false,findings:'协作图尚未完成客观检查与成果应用，请先完成 prepare/integrate。'};
+  if(graphs.length&&graphs.every(graph=>object(graph.executionPolicy??{}).v===1&&object(graph.executionPolicy??{}).review==='none'))return {
+   approved:true,independent:false,reviewStatus:'not_requested',
+   findings:'已核对当前目标的任务与已应用成果；本次策略未安排独立复核。',
+   source:{graphs:graphs.map(graph=>({id:graph.id,revision:graph.revision,candidateDigest:object(graph.integration??{}).candidateDigest}))},
+  };
+  const result=object(await ctx.request('swarm','audit',{goalId:goal.id,objective:goal.objective,evidence:{progress:goal.progress,tasks:this.tasks.list(ctx,goal.id)},modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel},120000));return {...result,approved:result.approved===true&&result.independent===true&&!!result.source,findings:String(result.findings||'独立审核没有结论')};
+ }
  settled(outcome='completed'){
   const ctx=this.context();if(['failed','stopped','interrupted'].includes(outcome)){const goal=this.goals.current(ctx);if(goal&&['active','waiting'].includes(goal.status))this.goals.setState('paused',ctx,'模型或执行未正常完成，请检查后显式接续');this.hooks.publish('runtime',this.snapshot(ctx));return;}const current=this.goals.current(ctx);const blocked=this.tasks.list(ctx,current?.id).filter(task=>current||task.runId===ctx.runId).find(task=>task.status==='blocked'||task.status==='unknown');if(blocked){this.goals.setState('blocked',ctx,blocked.error||'步骤阻塞');this.hooks.publish('runtime',this.snapshot(ctx));return;}
   const safe=this.safeObjects();this.goals.checkpoint(ctx,safe);const goal=this.goals.current(ctx);

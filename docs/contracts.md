@@ -9,9 +9,9 @@ Pi EventBus 请求频道 `friend-pi:v1:request`：`{v:1,id,plugin,action,input,o
 | 插件 | 核心 actions |
 |---|---|
 | Swarm | snapshot/create/start/pause/stop/resume/prepare/integrate/send/shared.read/shared.write/shared.conflicts/shared.readVersion/rework |
-| Expert | snapshot/create/update/toggle/versions/rollback/select/freeze/use/candidate.submit/validation.suite/validation.run/settings/candidate.withdraw |
-| Memory | snapshot/save/search/read/update/toggle/forget/accept/versions/export/learning.run/learning.pause/learning.resume/learning.settings/select/usage/invalidation.snapshot/source.deleted |
-| Topic & ReBuild | snapshot/settings/rebuild/prepare/history.search/history.read/history.around |
+| Expert | profile.list/read/create/update/copy/toggle、spawn.resolve；保留 snapshot/create/update/toggle/versions/rollback/select/freeze/use/candidate.submit/validation.suite/validation.run/settings/candidate.withdraw |
+| Memory | snapshot/save/search/read/feedback/update/toggle/forget/accept/versions/export/learning.run/learning.pause/learning.resume/learning.settings/select/usage/invalidation.snapshot/source.deleted |
+| Topic & ReBuild | snapshot/settings/rebuild/prepare/timeline/history.search/history.read/history.around |
 
 GUI 请求为用户 origin，模型工具为 agent，插件相互请求为 plugin。用户管理权限由控制器判断；origin 不是模型输入字段，模型不能自行提升为用户。方法幂等键还绑定项目和来源摘要，同一键内容变化会冲突。
 
@@ -66,3 +66,14 @@ Desktop `session.new {forSend:true}` verifies before allocating a workspace. `se
 | Agent service stop | Confirm | Allow | Allow |
 
 Strategies resolve Friend permission requests, not business approvals or an OS sandbox. Plan read-only policy, frozen member role/tool/write scope, recursive dispatch restrictions, exact model readiness and terminal ownership/authority epoch remain enforced. Opaque shell expansion/options require confirmation in auto. GUI terminal typing represents direct user action; it takes ownership without an Agent approval dialog. SDK, members and shared process controller record native `friend-pi.permission.decision` receipts with operation, strategy and a message digest. Stop invalidates unanswered requests before waiting for admission cleanup; delayed terminal approvals are fenced by worker identity, execution run, permission strategy and cancellation epoch.
+
+## 四项功能修订协议（2026-10-17）
+
+所有新增能力仍使用 v1 Pi 请求信封；冻结记录有各自的 v 字段，缺席插件保持可选。精确共享类型见 `packages/core/src/spawn-profile.ts`，完整兼容合同见 `docs/implementation/2026-10-17-four-capabilities.md`。
+
+- Swarm 新图 `executionPolicy:{v:1,workspace:'isolated'|'shared',review:'required'|'none',dirtyBaseline:'snapshot'|'reject'}`。省略策略按原版本语义恢复，不将旧复核收据升级。任务 `expertId`／`expertOverrides` 通过 Expert `spawn.resolve` 解析；旧角色无覆盖仍保留原采用／试用确认。最大并发 16、累计逻辑节点 64，目录数量不受其限制。
+- Expert `profile.list {query?,cursor?,limit?}` 返回 items/total/nextCursor、可用模型／工具／Skill。profile.create/update/copy/toggle 只允许可信用户持久管理；Agent 可 list/read/spawn.resolve。`spawn.resolve {expertId,overrides?}` 返回 v1 冻结配置，优先级覆盖→预设→宿主。Skill／工具显式列表替换，toolsMode=inherit 继承授权集合，allowlist+[] 不开放工具。模型／Skill／工具不可用明确失败。
+- Memory `search {query,taskContext?:{goal?,scenario?,entities?}}` 返回目录，read/read.range 返回完整条件和来源。`semanticDigest=digest({id,revision,content,conditions:[],validFrom:null|string,validTo:null|string,scope})`，正文、条件、有效期一起验证。`feedback {id,revision,kind:'relevant'|'irrelevant'|'outdated',taskContext?,operationId?}` 不改写事实版本；过时反馈进入复查。source.read 限登记原文。
+- ReBuild WorkingField 增加 `currentRequest`、`goalStatus:'active'|'cancelled'` 和 `coverage:{v:1,ranges,pending,complete}`。timeline 返回有效目标、本轮请求、保留事实、冲突、状态和原文入口。仅 canonical Pi checkpoint/compaction 推进已采用覆盖，后台草稿不推进。活动约束保留精确来源，长条目未覆盖范围明确登记。
+- `workflow template.list` 返回四类不可变版本模板；`template.save {templateId,definition}` 新建版本；`workflow create {templateId,parameters?:{target},definition?}` 可使用编辑后的定义；start 使用返回的 workflowId。
+- `citations.validate` 只返回登记片段是否仍绑定，`entailmentVerified:false`；snapshot.summaries 的 observed 耗时／Token 未知项明确标记，estimatedSavings:null。
