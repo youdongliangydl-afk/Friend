@@ -629,7 +629,17 @@ export class SwarmController implements PluginController {
     const expert=object(this.taskExpert(resolveSpawn?{...task,expertId:undefined}:task,catalog));
     if(resolveSpawn){
       const overrides={...task.expertOverrides,...(task.modelId?{modelId:task.modelId}:{}),...(task.thinkingLevel?{thinkingLevel:task.thinkingLevel}:{})};
+      let fallbackProfile:JsonObject|undefined;
+      if(overrides.modelId===undefined&&attempt.modelId!==undefined&&attempt.modelId!==ctx.modelId||overrides.thinkingLevel===undefined&&attempt.thinkingLevel!==undefined&&attempt.thinkingLevel!==ctx.thinkingLevel){
+        fallbackProfile=object(await ctx.request('expert','profile.read',{id:task.expertId},1500));
+        if(typeof fallbackProfile.id!=='string'||!Number.isInteger(fallbackProfile.version)||['modelId','thinkingLevel'].some(key=>fallbackProfile![key]!==undefined&&typeof fallbackProfile![key]!=='string'))throw new CapabilityError('VALIDATION_ERROR','Expert继承预设响应无效');
+        // Supply the execution default only for an unset preset field. Never let a
+        // graph default override an explicit preset or per-spawn/task selection.
+        if(overrides.modelId===undefined&&fallbackProfile.modelId===undefined&&attempt.modelId!==undefined)overrides.modelId=attempt.modelId;
+        if(overrides.thinkingLevel===undefined&&fallbackProfile.thinkingLevel===undefined&&attempt.thinkingLevel!==undefined)overrides.thinkingLevel=attempt.thinkingLevel;
+      }
       const snapshot=object(await ctx.request('expert','spawn.resolve',{expertId:task.expertId,overrides},1500));
+      if(fallbackProfile&&(snapshot.id!==fallbackProfile.id||snapshot.version!==fallbackProfile.version))throw new CapabilityError('VERSION_CONFLICT','专家预设在解析继承默认值期间变化，请重新派生');
       if(snapshot.v!==1||typeof snapshot.id!=='string'||typeof snapshot.hash!=='string'||!Number.isInteger(snapshot.version)||typeof snapshot.prompt!=='string'||!Array.isArray(snapshot.skills)||!Array.isArray(snapshot.tools)||!['inherit','allowlist'].includes(String(snapshot.toolsMode)))throw new CapabilityError('VALIDATION_ERROR','Expert spawn.resolve响应无效');
       for(const raw of snapshot.skills){const skill=object(raw);if(typeof skill.id!=='string'||typeof skill.body!=='string'||typeof skill.hash!=='string'||!Number.isInteger(skill.version))throw new CapabilityError('VALIDATION_ERROR','Expert冻结Skill无效');}
       const modelId=typeof snapshot.modelId==='string'?snapshot.modelId:attempt.modelId,level=thinkingLevel(snapshot.thinkingLevel,attempt.thinkingLevel);
