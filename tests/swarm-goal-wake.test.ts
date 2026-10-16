@@ -85,6 +85,17 @@ test('goal completion respects controller-owned optional review and keeps legacy
  }finally{await f.close();}}
 });
 
+test('historical completed read-only Team keeps its native audit without waiving new graph checks',async()=>{
+ for(const scenario of ['legacy-read','legacy-write','new-policy','schema-three','pending-task']){const f=fixture();try{
+  f.setIdle(true);f.setBusy(false);f.controller.goals.update({progress:'实际读取已完成'},f.ctx);
+  const complete={...f.graph,status:'completed',executionStyle:'team',tasks:f.graph.tasks.map(task=>({...task,mode:scenario==='legacy-write'?'write':'read',status:scenario==='pending-task'?'running':'completed'})),...(scenario==='new-policy'?{executionPolicy:{v:1,review:'none'}}:scenario==='schema-three'?{schemaVersion:3}:{})};
+  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'历史 Team 独立审核',source:{sessionId:'native-reviewer'}};}throw new Error('Unexpected '+action);}};
+  const result=await f.controller.dispatch('goal.complete',{},ctx) as {status:string;audit:{independent?:boolean}};
+  assert.equal(result.status,scenario==='legacy-read'?'completed':'blocked',scenario);assert.equal(audits,scenario==='legacy-read'?1:0,scenario);
+  if(scenario==='legacy-read')assert.equal(result.audit.independent,true);
+ }finally{await f.close();}}
+});
+
 test('delayed drains after quit, reload and disposal never access retired Pi context or stores',async()=>{
  for(const reason of ['quit','reload','dispose']){const f=fixture();try{
   f.setIdle(true);f.setBusy(false);const delayed=new Promise<void>((done,reject)=>setImmediate(()=>{f.controller.drain().then(done,reject);}));
