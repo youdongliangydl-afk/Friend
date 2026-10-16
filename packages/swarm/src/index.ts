@@ -133,6 +133,7 @@ export class SwarmController implements PluginController {
   private readonly rosters=new Map<string,TeammateStore>();
   private readonly runtime=randomUUID();
   private readonly leaseHeartbeats=new Map<string,ReturnType<typeof setInterval>>();
+  private readonly memberStartups=new Map<string,ReturnType<typeof setTimeout>>();
   private readonly members=new Map<string,{handle:MemberHandle;graphId:string;context:PluginContext}>();
   private readonly pumping=new Set<string>();
   private readonly resourceRetries=new Map<string,ReturnType<typeof setTimeout>>();
@@ -147,6 +148,7 @@ export class SwarmController implements PluginController {
   private nativeConfirm?: (title:string,message:string)=>Promise<boolean>;
   private disposed=false;
   constructor(private readonly launcher:MemberLauncher=productionLauncher) {}
+  private clearMemberStartup(attemptId:string):void {const timer=this.memberStartups.get(attemptId);if(timer)clearTimeout(timer);this.memberStartups.delete(attemptId);}
   private async runtimeRequest(ctx:PluginContext,action:string,input:JsonObject):Promise<unknown>{if(ctx.policy)return ctx.request('runtime',action,input);if(['task.identity','task.repair.claimBatch','task.repair.claim'].includes(action)){let ledger=this.nativeTaskLedgers.get(ctx.dataDir);if(!ledger){ledger=new TaskLedger(ctx.dataDir);this.nativeTaskLedgers.set(ctx.dataDir,ledger);}return action==='task.identity'?ledger.resolveIdentity(input,ctx):action==='task.repair.claimBatch'?ledger.claimRepairBatch(input,ctx):ledger.claimRepair(input,ctx);}let service=this.nativeServices.get(ctx.dataDir);if(!service){service=new RuntimeCapabilityServices(ctx.dataDir);this.nativeServices.set(ctx.dataDir,service);}return service.dispatch(action,input,{...ctx,origin:'plugin'});}
   private async identify(tasks:Task[],ctx:PluginContext):Promise<void>{for(const task of tasks){const result=object(await this.runtimeRequest(ctx,'task.identity',{title:task.title,mode:task.mode,acceptance:[task.originalPrompt||task.prompt],logicalStepId:task.logicalStepId}));task.logicalStepId=text(result.logicalStepId);}}
   private registerChild(sessionId:string|undefined,file:string|undefined,cwd:string,ctx:PluginContext,sessionDir:string):void {if(!sessionId||!file||!existsSync(file)||!contains(sessionDir,file))throw new CapabilityError('SOURCE_UNAVAILABLE','成员原史尚未持久保存');const header=object(JSON.parse(readFileSync(file,'utf8').split('\n',1)[0])),nativeCwd=text(header.cwd);const workspaces=join(ctx.policy?.temporaryWriteRoot||ctx.dataDir,'swarm-workspaces',ctx.projectId);if(realpathSync(nativeCwd)!==realpathSync(ctx.projectDir)&&!contains(workspaces,nativeCwd)&&realpathSync(nativeCwd)!==realpathSync(cwd))throw new CapabilityError('SOURCE_UNAVAILABLE','成员原史工作区未核验');registerSourceSession({sessionId,path:file,projectDir:ctx.projectDir,nativeCwd},ctx.dataDir);}
@@ -292,7 +294,7 @@ export class SwarmController implements PluginController {
   private track<T>(id:string,promise:Promise<T>):Promise<T> {const run=this.execution(id);run.activities.add(promise);void promise.then(()=>run.activities.delete(promise),()=>run.activities.delete(promise));return promise;}
   private own(id:string,operation:{id:string;stop:()=>Promise<StopObject>;ended?:Promise<StopObject>}):void {const run=this.execution(id);run.operations.set(operation.id,operation);if(operation.ended)void operation.ended.then(receipt=>{run.receipts.set(operation.id,receipt);run.operations.delete(operation.id);});}
   private memberOwned(id:string,attemptId:string,handle:MemberHandle,ctx:PluginContext):void {
-    const clearHeartbeat=()=>{const timer=this.leaseHeartbeats.get(attemptId);if(timer)clearInterval(timer);this.leaseHeartbeats.delete(attemptId);};
+    const clearHeartbeat=()=>{this.clearMemberStartup(attemptId);const timer=this.leaseHeartbeats.get(attemptId);if(timer)clearInterval(timer);this.leaseHeartbeats.delete(attemptId);};
     const resource=this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId)?.resourceReservationId;
     if(resource){let checking=false;const timer=setInterval(()=>{if(this.disposed||!this.members.has(attemptId)||this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId)?.status!=='running'){clearHeartbeat();return;}if(checking)return;checking=true;void this.runtimeRequest(ctx,'resource.check',{reservationId:resource}).then(()=>{this.fence(this.get(id,ctx).value,ctx);}).catch(async error=>{clearHeartbeat();await this.fail(id,attemptId,error,ctx,true);}).catch(()=>{this.changed(ctx);}).finally(()=>{checking=false;});},20000);timer.unref();this.leaseHeartbeats.set(attemptId,timer);}
     this.own(id,{id:attemptId,ended:handle.closed,stop:async()=>{try{return await handle.stop()||{id:attemptId,kind:'member',status:'unknown',pid:handle.pid,detail:'成员适配器没有提供退出回执'};}finally{clearHeartbeat();}}});
@@ -635,11 +637,17 @@ export class SwarmController implements PluginController {
     if(graph.schemaVersion===3||handoff.required)this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.startPromptDigest=digest(memberPrompt(start));});
     this.update(id,ctx,g=>{g.attempts.find(a=>a.id===attempt.id)!.childCreationStarted=true;});
     const handle=this.launcher(start,message=>void this.track(id,this.memberOutput(id,attempt.id,message,ctx)),code=>{
+      this.clearMemberStartup(attempt.id);
       if (this.disposed) return;
       this.members.delete(attempt.id);const current=this.get(id,ctx).value.attempts.find(a=>a.id===attempt.id);
       if (current?.status==='running' && !this.finishing.has(attempt.id)) void this.fail(id,attempt.id,`成员进程退出，状态未知（${code ?? 'signal'}）`,ctx,true);
     });
-    if(attempt.memberId){const timer=setTimeout(()=>{if(!this.disposed&&!this.get(id,ctx).value.attempts.find(item=>item.id===attempt.id)?.sessionId)void this.fail(id,attempt.id,'运行器未声明 v2 支持或启动超时，现场保留',ctx);},10000);timer.unref();}
+    const starting=this.get(id,ctx).value.attempts.find(item=>item.id===attempt.id);
+    if(starting?.memberId&&starting.status==='running'&&!starting.sessionId){const timer=setTimeout(()=>{
+      this.memberStartups.delete(attempt.id);if(this.disposed)return;
+      const graph=this.get(id,ctx).value,current=graph.attempts.find(item=>item.id===attempt.id);
+      if(graph.status==='running'&&current?.status==='running'&&!current.sessionId&&graph.tasks.some(task=>task.currentAttempt===attempt.id))void this.fail(id,attempt.id,'运行器未声明 v2 支持或启动超时，现场保留',ctx);
+    },45000);timer.unref();this.memberStartups.set(attempt.id,timer);}
     this.members.set(attempt.id,{handle,graphId:id,context:ctx});this.memberOwned(id,attempt.id,handle,ctx);this.deliverPending(id,attempt.id,ctx);this.changed(ctx);
   }
   private taskWait(graph:Graph,task:Task,ctx:PluginContext):TaskWait|undefined {
@@ -684,6 +692,7 @@ export class SwarmController implements PluginController {
     const active=this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId);
     if(active?.memberId&&(!this.roster(ctx).owns(this.roster(ctx).get(active.memberId,ctx),attemptId,active.generation)||message.protocol!==2||message.memberId!==active.memberId||message.generation!==active.generation||message.attemptId!==attemptId))return;
     if (!this.get(id,ctx).value.attempts.some(attempt=>attempt.id===attemptId && attempt.status==='running')) return;
+    if(['ready','failed','settled'].includes(message.type))this.clearMemberStartup(attemptId);
     if (message.type==='settled') {await this.finish(id,attemptId,message,ctx);return;}
     if (message.type==='failed') {await this.fail(id,attemptId,message.error,ctx);return;}
     if(message.type==='received'||message.type==='context'){this.changed(ctx);return;}
@@ -767,6 +776,7 @@ export class SwarmController implements PluginController {
     })();this.releasingAttempts.set(key,run);try{await run;}finally{this.releasingAttempts.delete(key);}
   }
   private async fail(id:string,attemptId:string,rawError:string|Error,ctx:PluginContext,unknown=false,noChild=false):Promise<void> {
+    this.clearMemberStartup(attemptId);
     const error=errorText(rawError),publicError=normalizeCapabilityError(rawError);if(this.disposed)return;const active=this.get(id,ctx).value.attempts.find(attempt=>attempt.id===attemptId);if(!active||active.status!=='running')return;
     this.update(id,ctx,g=>{const attempt=g.attempts.find(a=>a.id===attemptId)!;attempt.status=unknown?'unknown':'failed';attempt.trialTerminalOutcome=unknown?'unknown':'failed';attempt.error=error;attempt.finishedAt=now();const task=g.tasks.find(t=>t.currentAttempt===attemptId);if(task)task.status=unknown?'unknown':'blocked';g.status='paused';g.error=error;g.pauseReason={code:unknown?'OPERATION_UNKNOWN':publicError.code,message:error};});
     let receipt:StopObject;
@@ -942,6 +952,7 @@ export class SwarmController implements PluginController {
   }
   async dispose(): Promise<void> {
     if(this.disposed)return;
+    for(const timer of this.memberStartups.values())clearTimeout(timer);this.memberStartups.clear();
     for(const timer of this.resourceRetries.values())clearTimeout(timer);this.resourceRetries.clear();
     await Promise.allSettled([...this.executions.values()].flatMap(run=>run.context?this.roster(run.context).list(run.context).filter(member=>member.state==='running').map(member=>this.interruptMember(member.id,run.context!)):[]));
     await Promise.allSettled([...this.executions].map(async([id,run])=>{const active=run.operations.size||run.activities.size||(run.context&&['running','awaiting_review','ready','stopping'].includes(this.get(id,run.context).value.status));if(active&&run.context&&this.get(id,run.context).value.status!=='integrated')await this.stop(id,run.context,true);else {run.abort.abort();await Promise.allSettled([...run.operations.values()].map(operation=>operation.stop()));}}));
