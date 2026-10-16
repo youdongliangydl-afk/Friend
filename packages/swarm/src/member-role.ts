@@ -21,4 +21,9 @@ export function validateMemberDelivery(role:JsonObject|undefined,summary:string)
   }
 }
 
-export function memberPrompt(start:{expert?:unknown;prompt:string;frozen?:unknown}):string {const expert=start.expert&&typeof start.expert==='object'?start.expert as JsonObject:undefined;return `${roleInstructions(memberRole(expert))}\n${start.frozen&&Array.isArray(expert?.selectedIds)&&expert.selectedIds.length?'':expert?.prompt||''}\n${start.prompt}`;}
+export function memberPrompt(start:{expert?:unknown;prompt:string;frozen?:unknown}):string {
+  const expert=start.expert&&typeof start.expert==='object'?start.expert as JsonObject:undefined;
+  const spawn=expert?.spawn?object(expert.spawn):undefined;
+  const methods=spawn?`${spawn.prompt}${(Array.isArray(spawn.skills)?spawn.skills:[]).map(raw=>{const skill=object(raw);return `\n\nSkill ${skill.id} v${skill.version} (${skill.hash})\n${skill.body}`;}).join('')}`:start.frozen&&Array.isArray(expert?.selectedIds)&&expert.selectedIds.length?'':expert?.prompt||'';
+  return `${roleInstructions(memberRole(expert))}\n${methods}\n${start.prompt}`;
+}

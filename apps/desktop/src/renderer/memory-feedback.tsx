@@ -1,0 +1,12 @@
+import {useRef,useState} from 'react';
+import {asList,asObject,errorText,type JsonObject} from './types.js';
+export function memoryFeedbackAvailable(record:{status:string;enabled:boolean;validFrom?:string;validTo?:string;invalidatedReason?:string},now=Date.now()):boolean{return record.status==='active'&&record.enabled&&!record.invalidatedReason&&(!record.validFrom||Date.parse(record.validFrom)<=now)&&(!record.validTo||Date.parse(record.validTo)>=now);}
+export function MemoryFeedbackSummary({feedback}:{feedback:unknown}){const queued=asList<unknown>(feedback).filter(item=>asObject(item).reviewQueued===true).length;return <p className="hint">过时反馈待复核：{queued} 条。相关性反馈仅影响相同任务的排序，不修改原事实。</p>;}
+export type MemoryFeedbackKind='relevant'|'irrelevant'|'outdated';
+export function memoryTaskContext(goal?:string,query?:string):JsonObject{const text=goal?.trim()||query?.trim();return text?{goal:text}:{};}
+export function memoryFeedbackInput(id:string,revision:number,kind:MemoryFeedbackKind,goal:string|undefined,query:string|undefined,operationId:string):JsonObject{return {id,revision,kind,taskContext:memoryTaskContext(goal,query),operationId};}
+export function MemoryFeedbackButtons({sessionId,id,revision,goal,query,disabled=false,report,onSaved}:{sessionId:string;id:string;revision:number;goal?:string;query?:string;disabled?:boolean;report(message:string,error?:boolean):void;onSaved?():void}){
+ const [pending,setPending]=useState(false),[message,setMessage]=useState('');const owner=useRef(sessionId);owner.current=sessionId;
+ const send=async(kind:MemoryFeedbackKind)=>{if(disabled||pending)return;const session=sessionId;setPending(true);setMessage('');try{await window.friendPi.request('plugin.call',{sessionId,plugin:'memory',action:'feedback',input:memoryFeedbackInput(id,revision,kind,goal,query,crypto.randomUUID())});if(owner.current!==session)return;setMessage(kind==='outdated'?'已标记待复核，原事实保留':'已记录此任务的相关性反馈');onSaved?.();}catch(error){if(owner.current===session){setMessage(errorText(error));report(errorText(error),true);}}finally{if(owner.current===session)setPending(false);}};
+ return <span className="memory-feedback"><span role="group" aria-label="这条记忆对当前任务的帮助">{([['relevant','相关'],['irrelevant','不相关'],['outdated','已过时']] as const).map(([kind,label])=><button type="button" key={kind} disabled={disabled||pending} onClick={()=>void send(kind)}>{label}</button>)}</span>{message&&<small role="status">{message}</small>}</span>;
+}

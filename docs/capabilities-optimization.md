@@ -1,6 +1,6 @@
 # Swarm, Memory and Expert optimization contract
 
-Approved scope: SW-01–04, ME-01–04, EX-01–04 and CX-01–03. ME-05, critical-path sorting, adaptive concurrency, undeclared-history search and Topic/Rebuild dependencies are excluded. Integration starts from `e8846297a186f252e20e8aa9d2ab20e90ea805a3`; previous test counts and client evidence are not acceptance of this work.
+Current approved scope is the 2026-10-17 four-capability revision in `implementation/2026-10-17-four-capabilities.md`, based on fresh main `cec5bc975001851260de90875e8af9b8621137cb`. This supersedes mandatory clean-baseline, isolated-worktree and independent-review requirements for newly configured product Swarm runs. Historical test counts and client evidence are not acceptance of this candidate. Existing automatic learning/evaluation safeguards below remain separate from user-managed Expert profiles.
 
 ## Ownership and authority
 
@@ -44,4 +44,14 @@ Memory and Expert operate independently. Database schema changes require scoped 
 
 Final acceptance binds one new source candidate, Pi SHA, dependency/model/input/data snapshots, App/Bundle/data directory/PID/window and artifact digest. Build, types, tests, real-model journeys, Computer Use, remote merge and evidence sealing remain separate PASS/FAIL/BLOCKED/NOT_RUN gates. Four fixed scenario pairs and targeted feature-off controls test claimed benefits without removing authorization or mandatory checks. Only the integration chat creates and merges the PR after all final gates pass.
 
-Initial code checks compare a finite set of registered source forms conservatively; they do not execute arbitrary generated programs or prove general code quality. Release contracts differ from validation contracts; random private case data is frozen after the candidate and never exposed through public family IDs. Out-of-scope cases require both the declared output and zero native tool attempts. The primary new-tab tool list remains unchanged; task evidence can link directly to the existing fullscreen Expert record.
+Initial code checks compare a finite set of registered source forms conservatively; they do not execute arbitrary generated programs or prove general code quality. Release contracts differ from validation contracts; random private case data is frozen after the candidate and never exposed through public family IDs. Out-of-scope cases require both the declared output and zero native tool attempts. The Expert management tab exposes unified user profiles; the existing method-growth and evidence pages remain available as advanced controls.
+
+## Approved four-capability revision
+
+New Swarm runs freeze explicit workspace, dirty-baseline and review policies. Old graphs keep old version behavior. Dirty snapshots retain staged/unstaged/untracked content and integration applies only the task delta with target-content CAS; shared members cannot commit or switch Git state. Concurrency remains 4 default/16 maximum and 64 cumulative logical nodes. Role catalog pagination does not cap role count. User-required reviews remain required; optional-review completion says no independent review.
+
+User-created Expert profiles are immediately usable after save/enable. The strict automatic method-growth evaluation above is not a prerequisite for configuration use. Spawn override > preset > host defaults; explicit Skill/tool lists replace, inherit tools and allowlist [] differ, all effective tools intersect host/task authority. Prompt, exact Skill bodies/versions, tools and model freeze before execution, and invalid resources fail explicitly. Acceptance checks configuration reaching actual requests, restrictions, selected models, local overrides and frozen in-flight versions.
+
+Memory uses task goal/scenario/entities/aliases with local FTS5/BM25/CJK and exact literals first. Progressive directory/body/original reads preserve conditions, validity and sources; semanticDigest binds all semantic fields. Feedback is task-scoped and never silently promotes global preference. ReBuild separates original goal/current request, retains exact active facts and bounded long-entry ranges, and exposes adopted coverage/pending intervals in a timeline. Only canonical Pi history advances adoption.
+
+Four independent startup paths and all 15 nonempty combinations require smoke checks. Real configured models and actual Computer Use are separate gates on the final exact candidate. No historical receipt is upgraded into current verification.

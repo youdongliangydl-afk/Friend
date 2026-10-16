@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedOn": "2026-10-09",
+  "checkedOn": "2026-10-17",
   "policy": "Four native capability packages remain independently usable. Pi is unmodified and owns model execution and JSONL. Host controllers are original; the ISC pi-background-tasks process backend is retained with documented adaptations and source integrity. DeepSeek roster/mailbox and TeamAction interactions are adapted with retained MIT notices; remaining frameworks are references only.",
   "sources": [
     {
@@ -99,7 +99,17 @@
       "licensePath": "LICENSE",
       "mode": "reference",
       "modified": false,
-      "use": "Context rebuilding and coverage/watermark research; no implementation files incorporated."
+      "use": "Context rebuilding and coverage/watermark research; no implementation files incorporated.",
+      "additionalReferences": [
+        {
+          "commit": "bf0563ddc201b44e3f59c35b18dba17c4386564d",
+          "files": [
+            "packages/cli/src/memory/service.ts",
+            "packages/cli/src/session/auto-dream.ts"
+          ],
+          "use": "Progressive keyword directory/body/source retrieval and independent background organization; original local FTS5 implementation, no authoritative-hit or cross-scope widening."
+        }
+      ]
     },
     {
       "name": "pi-gui",
@@ -309,6 +319,16 @@
       "sourceRecord": "third-party/deepseek-harness/SOURCE.json",
       "adaptations": "third-party/deepseek-harness/ADAPTATIONS.md",
       "use": "500ms lazy Diff hover, bounded portal positioning, per-turn review navigation and shared comparison rendering; original Friend-Pi SDK/IPC adapters, no DSH runtime dependency."
+    },
+    {
+      "name": "OpenSwarm",
+      "repository": "https://github.com/VRSEN/OpenSwarm",
+      "commit": "ca0aeb278aee013b12f8e2db71b8d84261153168",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Specialist capability routing, independent-task parallelism and unified delivery from orchestrator/instructions.md and swarm.py; ideas only, no runtime or source copied."
     }
   ],
   "providerConfigurationSources": {

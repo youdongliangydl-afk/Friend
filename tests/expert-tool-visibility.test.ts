@@ -12,9 +12,9 @@ import type {AppState} from '../apps/desktop/src/renderer/types.js';
 const visibleTools:ToolPage[]=['file','diff','terminal','swarm','memory'];
 const toolTabs:ViewTab[]=[...visibleTools,'expert' as const].map(page=>({id:`tool-${page}`,kind:'tool',page}));
 
-test('new tab hides Expert while retaining every other tool and browser entry',()=>{
+test('new tab exposes Expert presets alongside other tools and browser entry',()=>{
  const html=renderToStaticMarkup(React.createElement(NewTabPage,{onTool(){},onNavigate:async()=>{}}));
- assert.doesNotMatch(html,/>Expert<\/span>/);
+ assert.match(html,/>Expert<\/span>/);
  for(const title of ['文件','Diff','终端','任务','Memory'])assert.ok(html.includes(`<span>${title}</span>`));
  assert.match(html,/aria-label="新标签页网址"/);assert.match(html,/>打开网页 ↗<\/button>/);
 });

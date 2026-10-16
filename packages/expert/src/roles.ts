@@ -65,7 +65,7 @@ export function freezeRole(definition:RoleDefinition,cap:RoleCapability={}):Froz
   const effectiveTools=tools.filter(tool=>!(['write','edit','bash'].includes(tool)&&!scopes.length)&&!(tool==='bash'&&!scopes.includes('.')));
   return {...structuredClone(definition),modelSource:definition.modelId?'role':'inherited',thinkingSource:definition.thinkingLevel?'role':'inherited',effectiveTools,effectiveWriteScopes:scopes,...(definition.modelId||cap.modelId?{modelId:definition.modelId||cap.modelId}:{}),...(definition.thinkingLevel||cap.thinkingLevel?{thinkingLevel:definition.thinkingLevel||cap.thinkingLevel}:{}),...(cap.revision!==undefined?{policyRevision:cap.revision}:{}),...(cap.stage?{stage:cap.stage}:{}),independent:false};
 }
-const readExpertActions=new Set(['snapshot','list','freeze','freeze.role','adopt.frozen','versions','use','role.snapshot','role.read','role.versions']);
+const readExpertActions=new Set(['profile.list','profile.read','spawn.resolve','spawn.validate','snapshot','list','freeze','freeze.role','adopt.frozen','versions','use','role.snapshot','role.read','role.versions']);
 const metadataTools=new Set(['friend_goal','friend_task','friend_workflow','friend_jobs','friend_plan']);
 const readMetadataActions=new Set(['read','list','status','snapshot','get','versions','history','history.read','history.search','history.around']);
 function within(root:string,path:string):boolean {const rel=relative(root,path);return !isAbsolute(rel)&&rel!=='..'&&!rel.startsWith(`..${sep}`);}
