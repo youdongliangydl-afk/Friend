@@ -9,9 +9,9 @@ import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/rendere
 import {submissionSettled} from '../apps/desktop/src/renderer/submission-state.js';
 
 function fixture(){
- const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8'),begin=source.indexOf('  const applyState=useCallback('),end=source.indexOf('\n  const refresh=',begin);
+ const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8'),begin=source.indexOf('  const commitState=useCallback('),end=source.indexOf('\n  const refresh=',begin);
  assert.ok(begin>=0&&end>begin);const initial={revision:1,current:{sessionId:'session',runId:'old',isRunning:false,lifecycleStatus:'completed'}};
- const ctx:any={EMPTY:{},stateRef:{current:initial},state:initial,localRunning:true,lastSubmitted:{current:{sessionId:'session',previousRunId:'old',accepted:false}},submissionSettled,useCallback:(callback:unknown)=>callback,setState:(state:unknown)=>{ctx.state=state;},setLocalRunning:(value:boolean)=>{ctx.localRunning=value;}};
+ const ctx:any={EMPTY:{},navigationState:{current:undefined},setNavigating(){},stateRef:{current:initial},state:initial,localRunning:true,lastSubmitted:{current:{sessionId:'session',previousRunId:'old',accepted:false}},submissionSettled,useCallback:(callback:unknown)=>callback,setState:(state:unknown)=>{ctx.state=state;},setLocalRunning:(value:boolean)=>{ctx.localRunning=value;}};
  vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(source.slice(begin,end)+'\nglobalThis.applyState=applyState;'),ctx);return ctx;
 }
 const composer:ComposerSnapshot={sessionId:'session',epoch:1,draft:'next',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:true,mode:'swarm',plugins:['swarm'],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'准备就绪'};
@@ -50,7 +50,7 @@ test('successful session recovery clears its stale error while failed recovery k
   const oldNotice={message:'old initialization timeout',error:true},newNotice={...oldNotice};
   const ctx:any={navigating:false,sending:false,allocationLock:{current:false},migratingDraft:{current:false},sendLock:{current:false},navigationEpoch:{current:0},deferredDialogs:{current:new Map()},projectId:'project',pendingModel:'model',permissionMode:'auto',ownerKey:'pending',notice:oldNotice,errorText:(error:Error)=>error.message,setNavigating:(value:boolean)=>{ctx.navigating=value;},setNotice:(value:any)=>{ctx.notice=typeof value==='function'?value(ctx.notice):value;},setDraftOwner:()=>{},applyState:()=>{},restoreDialogs:()=>{},setMaterial:()=>{},report:(message:string)=>{ctx.notice={message,error:true};}};
   const attempt=async()=>{if(outcome==='failure'){ctx.notice={message:'current recovery failed',error:true};throw Error('current recovery failed');}if(outcome==='new-warning')ctx.notice=newNotice;return {createdSessionId:'session',current:{sessionId:'session'}};};
-  ctx.invoke=attempt;ctx.window={friendPi:{request:attempt}};vm.createContext(ctx);
+  ctx.sessionId='current-session';ctx.beginNavigation=()=>{ctx.navigating=true;};ctx.finishNavigation=()=>{ctx.navigating=false;};ctx.navigate=attempt;ctx.window={friendPi:{request:attempt}};vm.createContext(ctx);
   const begin=source.indexOf('  const '+name+'=async'),end=source.indexOf(endMarker,begin);assert.ok(begin>=0&&end>begin);
   vm.runInContext(stripTypeScriptTypes(source.slice(begin,end)+'\nglobalThis.recover='+name+';'),ctx);
   await ctx.recover(name==='traverseSession'?1:'session');
