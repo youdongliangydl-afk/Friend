@@ -73,6 +73,7 @@ export class RebuildController implements PluginController {
   private native?: ExtensionContext;
   private current?: PluginContext;
   private pending = new Map<string,Candidate>();
+  private adoptionChecks = new Map<string,{key:string;promise:Promise<WorkingField|undefined>}>();
   private status = new Map<string,{phase:'idle'|'preparing'|'awaiting-adoption'|'applied'|'fallback'|'cancelled';error?:string;pendingOperationId?:string}>();
   private abort?: AbortController;
   private compactRequested = new Set<string>();
@@ -145,7 +146,7 @@ export class RebuildController implements PluginController {
       const field=this.operationField(entry);
       if (field && field.projectId===ctx.projectId && field.sessionId===ctx.sessionId) {
         const operation=this.database(ctx).get<OperationRef>(`operation:${this.key(ctx)}:${field.operationId}`);
-        if(operation?.value.state==='failed') continue;
+        if(operation?.value.state==='failed'||operation?.value.state==='prepared'||field.memoryRefs.length&&operation?.value.state!=='adopted') continue;
         try {
           const originals=field.sources.map(source=>ctx.readSource(source));
           if(sourceDigest(originals)===field.sourceDigest) latest=field;
@@ -357,7 +358,7 @@ export class RebuildController implements PluginController {
   /** Preserve caller drafts. This draft is adopted only once Pi has appended it. */
   checkpointDraft(ctx:PluginContext): SessionBoundaryDraft | undefined {
     this.index(ctx);
-    if(!this.enabled(ctx)) return undefined;
+    if(!this.enabled(ctx)||[...this.adoptionChecks.values()].some(check=>check.key===this.key(ctx))) return undefined;
     const capture=originalMessages(ctx.history()); const previous=this.field(ctx);
     if(previous && (previous.invalidationEpoch!==this.invalidation(ctx).epoch||previous.memoryEpoch!==undefined&&previous.memoryEpoch!==this.memoryEpoch(ctx))) return undefined;
     if(!capture.length || previous?.sourceDigest===sourceDigest(capture)&&!this.page(ctx,capture,previous,false).selected.length) return undefined;
@@ -377,20 +378,51 @@ export class RebuildController implements PluginController {
       let candidate=this.pending.get(field.operationId);
       if(!candidate){
         const operation=this.database(ctx).get<OperationRef>(`operation:${this.key(ctx)}:${field.operationId}`);
-        if(operation?.value.state!=='prepared')continue;
+        if(operation?.value.state!=='prepared'&&(operation||!field.memoryRefs.length))continue;
         try {candidate={field,capture:field.sources.map(source=>ctx.readSource(source)),baseRevision:field.revision-1};}
         catch{continue;}
       }
-      if(!this.captureStillValid(candidate,ctx) || field.sourceDigest!==candidate.field.sourceDigest) {
-        this.writeOperation(candidate,ctx,'failed',undefined,'采用前来源或记忆版本已变化');
-        this.pending.delete(field.operationId); this.status.set(this.key(ctx),{phase:'fallback',error:'整理结果已失效，需要安全重建'}); continue;
+      if(field.memoryRefs.length){
+        if(!this.adoptionChecks.has(field.operationId)){
+          const frozen={...candidate,field:structuredClone(candidate.field)};
+          const promise=this.memoryStillValid(frozen.field,ctx)
+            .then(valid=>this.finishCanonical(frozen,entry.id,ctx,valid))
+            .catch(()=>this.finishCanonical(frozen,entry.id,ctx,false))
+            .finally(()=>this.adoptionChecks.delete(field.operationId));
+          this.adoptionChecks.set(field.operationId,{key:this.key(ctx),promise});
+        }
+        continue;
       }
-      this.writeOperation(candidate,ctx,'adopted',entry.id);
-      this.pending.delete(field.operationId); adopted=field;
-      this.status.set(this.key(ctx),{phase:'applied'});
-      ctx.emit('topic-rebuild.changed',this.snapshot(ctx));
+      adopted=this.finishCanonical(candidate,entry.id,ctx,true)||adopted;
     }
     return adopted;
+  }
+
+  /** Async Pi/event-bus boundaries wait here; the synchronous boundary stays nonblocking. */
+  async confirmCanonicalAsync(ctx:PluginContext):Promise<WorkingField|undefined> {
+    const immediate=this.confirmCanonical(ctx);
+    const checks=[...this.adoptionChecks.values()].filter(check=>check.key===this.key(ctx));
+    const completed=await Promise.all(checks.map(check=>check.promise));
+    return completed.filter((field):field is WorkingField=>!!field).at(-1)||immediate;
+  }
+  private finishCanonical(candidate:Candidate,entryId:string,ctx:PluginContext,memoryValid:boolean):WorkingField|undefined {
+    if(this.disposed)return undefined;
+    const field=candidate.field,store=this.database(ctx);
+    const state=store.transaction(()=>{
+      const receipt=store.get<OperationRef>(`operation:${this.key(ctx)}:${field.operationId}`)?.value;
+      if(receipt?.state==='failed'||receipt?.state==='adopted')return 'unchanged';
+      const canonical=this.entries(ctx).find(entry=>entry.id===entryId);
+      // Final capture/epoch/receipt checks and receipt write share the SQLite
+      // write transaction. A cross-process invalidation cannot race this CAS.
+      if(!memoryValid||!canonical||digest(this.operationField(canonical))!==digest(field)||!this.captureStillValid(candidate,ctx)){
+        this.writeOperation(candidate,ctx,'failed',undefined,'采用前来源或记忆版本已变化');return 'failed';
+      }
+      this.writeOperation(candidate,ctx,'adopted',entryId);return 'adopted';
+    });
+    this.pending.delete(field.operationId);
+    if(state==='unchanged')return undefined;
+    if(state==='failed'){this.status.set(this.key(ctx),{phase:'fallback',error:'整理结果已失效，需要安全重建'});return undefined;}
+    this.status.set(this.key(ctx),{phase:'applied'});ctx.emit('topic-rebuild.changed',this.snapshot(ctx));return field;
   }
 
   private async syncMemoryInvalidations(ctx:PluginContext):Promise<void> {
@@ -508,6 +540,7 @@ export class RebuildController implements PluginController {
   /** Background preparation stores only derived text/references; Pi still owns adoption. */
   async prepareDraft(ctx:PluginContext,options:PrepareDraftOptions={}):Promise<{prepared:boolean;operationId?:string}> {
     this.index(ctx);if(!this.enabled(ctx)||isSessionDeleted(ctx.dataDir,ctx.sessionId))return {prepared:false};
+    await this.confirmCanonicalAsync(ctx);
     this.memoryProbe.delete(this.key(ctx));
     const capture=originalMessages(ctx.history());if(!capture.some(item=>item.role==='user'))return {prepared:false};
     const signal=options.signal||ctx.signal||new AbortController().signal;
@@ -521,6 +554,7 @@ export class RebuildController implements PluginController {
   }
   async beforeCompact(event:SessionBeforeCompactEvent,ctx:PluginContext):Promise<SessionBeforeCompactResult|undefined> {
     this.index(ctx);if(!this.enabled(ctx))return undefined;
+    await this.confirmCanonicalAsync(ctx);
     this.memoryProbe.delete(this.key(ctx));
     if(event.signal.aborted||isSessionDeleted(ctx.dataDir,ctx.sessionId))return {cancel:true};
     const currentHistory=historyItems(event.branchEntries),capture=originalMessages(currentHistory);
@@ -588,7 +622,7 @@ export class RebuildController implements PluginController {
       return;
     }
     if(this.native?.sessionManager.getSessionId()!==ctx.sessionId) { this.compactRequested.delete(this.key(ctx)); throw new Error('Pi 压缩接口尚未绑定'); }
-    this.native.compact({onComplete:()=>{this.compactRequested.delete(this.key(ctx));this.confirmCanonical(ctx);},onError:error=>{this.compactFailed(ctx,error.message);ctx.notify(`整理失败：${error.message}`,'warning');}});
+    this.native.compact({onComplete:()=>{this.compactRequested.delete(this.key(ctx));void this.confirmCanonicalAsync(ctx);},onError:error=>{this.compactFailed(ctx,error.message);ctx.notify(`整理失败：${error.message}`,'warning');}});
   }
   settled(ctx:PluginContext): void {
     this.index(ctx); this.confirmCanonical(ctx);
@@ -620,6 +654,7 @@ export class RebuildController implements PluginController {
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
     this.index(ctx);
+    if(action!=='settings')await this.confirmCanonicalAsync(ctx);
     switch(action) {
       case 'snapshot': return this.snapshot(ctx);
       case 'timeline': return this.timeline(ctx);
@@ -669,15 +704,15 @@ const extension:ExtensionFactory=(pi:ExtensionAPI)=>{
   let native:ExtensionContext|undefined;
   registerPlugin(pi,'topic-rebuild',controller,'连续工作现场、上下文整理与原史回查');
   const bind=(ctx:ExtensionContext)=>{native=ctx;controller.setNativeContext(ctx);return makeContext(pi,ctx);};
-  pi.on('session_start',(_event,ctx)=>{const context=bind(ctx);controller.confirmCanonical(context);});
-  pi.on('before_agent_start',(_event,ctx)=>{bind(ctx);});
+  pi.on('session_start',async(_event,ctx)=>{await controller.confirmCanonicalAsync(bind(ctx));});
+  pi.on('before_agent_start',async(_event,ctx)=>{await controller.confirmCanonicalAsync(bind(ctx));});
   pi.on('agent_before_settle',(event,ctx)=>{
     const draft=controller.checkpointDraft(bind(ctx));
     if(draft) return {entries:[...event.entries,draft],continue:event.continue};
   });
-  pi.on('agent_settled',(_event,ctx)=>{controller.settled(bind(ctx));});
+  pi.on('agent_settled',async(_event,ctx)=>{const context=bind(ctx);await controller.confirmCanonicalAsync(context);controller.settled(context);});
   pi.on('session_before_compact',(event,ctx)=>controller.beforeCompact(event,bind(ctx)));
-  pi.on('session_compact',(_event,ctx)=>{controller.confirmCanonical(bind(ctx));});
+  pi.on('session_compact',async(_event,ctx)=>{await controller.confirmCanonicalAsync(bind(ctx));});
   pi.on('session_compact_failed',(event,ctx)=>{controller.compactFailed(bind(ctx),event.aborted?'整理已取消':event.errorMessage,event.aborted);});
   const off=pi.events.on('friend-pi:v1:event',raw=>{
     if(!raw || typeof raw!=='object') return; const event=object(raw);

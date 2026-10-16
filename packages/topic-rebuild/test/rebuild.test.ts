@@ -244,7 +244,7 @@ test('compact selects memory once and records exact revision/hash/source without
     assert.equal(await c.recall(f.ctx),undefined);assert.equal(selections,0);
     const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);
     assert.equal(selections,1);assert.equal(completions,1);
-    f.appendCompaction(result.compaction);const field=c.confirmCanonical(f.ctx)!;
+    f.appendCompaction(result.compaction);const field=(await c.confirmCanonicalAsync(f.ctx))!;
     assert.deepEqual(field.memoryRefs,[{id:'m1',revision:7,hash:record.hash,sources:[source],conditions:record.conditions,validFrom:null,validTo:null,scope:'project',semanticDigest:record.semanticDigest}]);
     assert.doesNotMatch(result.compaction.summary,/有效项目方法/);
   }finally{c.dispose();f.cleanup();}
@@ -601,4 +601,53 @@ test('legacy cached draft cannot bypass tool rereading after cold restart',async
       assert.doesNotMatch(result.compaction.summary,/Old summary omitted/);assert.equal(c.snapshot(f.ctx).field,undefined);
     }finally{c.dispose();f.cleanup();}
   }
+});
+
+test('canonical adoption rechecks frozen Memory identity after source-only change, including cold restart',async()=>{
+  for(const cold of [false,true])for(const mutation of ['revision-source','source','conditions']){
+    const f=fixture();let c=f.create();let reads=0;
+    const semantic={id:'adoption-memory',revision:1,content:'部署前请检查配置。',conditions:['部署前'],validFrom:null,validTo:null,scope:'project'};
+    f.add('source-a','user',semantic.content);f.add('source-b','user',semantic.content);
+    let record={...semantic,hash:digest(semantic.content),semanticDigest:digest(semantic),sources:sourceFactRefs(historyItems(f.originals).find(item=>item.id==='source-a')!,'session-a'),status:'active',enabled:true};
+    try {
+      f.ctx.request=async(plugin,action)=>{if(plugin!=='memory')throw new Error('unavailable');if(action==='invalidation.snapshot')return {epoch:0,ids:[],sources:[]};if(action==='select')return {records:[record],epoch:0};if(action==='read'){reads++;return structuredClone(record);}throw new Error('unexpected');};
+      const priorDraft=c.checkpointDraft(f.ctx)!;f.appendDraft(priorDraft);const prior=c.confirmCanonical(f.ctx)!;
+      const prepared=await c.beforeCompact(f.event(),f.ctx);assert.ok(prepared?.compaction);const readsBefore=reads;
+      const next={...semantic,revision:mutation==='revision-source'?2:1,conditions:mutation==='conditions'?['仅演练部署']:semantic.conditions};
+      record={...record,...next,semanticDigest:digest(next),sources:mutation==='conditions'?record.sources:sourceFactRefs(historyItems(f.originals).find(item=>item.id==='source-b')!,'session-a')};
+      f.appendCompaction(prepared.compaction);if(cold){c.dispose();c=f.create();}
+      assert.equal((c.snapshot(f.ctx).field as WorkingField).operationId,prior.operationId,'prepared canonical must remain hidden before validation');
+      assert.equal(c.confirmCanonical(f.ctx),undefined,'synchronous boundary cannot adopt before async Memory read');
+      assert.equal(await c.confirmCanonicalAsync(f.ctx),undefined);
+      assert.ok(reads>readsBefore,'canonical adoption must perform a fresh Memory read');
+      assert.equal((c.snapshot(f.ctx).field as WorkingField).operationId,prior.operationId);assert.equal((c.snapshot(f.ctx).status as {phase:string}).phase,'fallback');
+      c.dispose();c=f.create();assert.equal((c.snapshot(f.ctx).field as WorkingField).operationId,prior.operationId,'failed adoption remains fenced after another restart');
+    }finally{c.dispose();f.cleanup();}
+  }
+});
+
+test('async dispatch waits for canonical Memory validation without exposing a prepared field',async()=>{
+  const f=fixture();const c=f.create();let release!:()=>void;let started!:()=>void;let adoption=false;let adoptionReads=0;
+  const ready=new Promise<void>(resolve=>{started=resolve;});const gate=new Promise<void>(resolve=>{release=resolve;});
+  const semantic={id:'valid-memory',revision:1,content:'必须保留用户原始文件，',conditions:[],validFrom:null,validTo:null,scope:'project'};
+  const record={...semantic,hash:digest(semantic.content),semanticDigest:digest(semantic),sources:[sourceFactRefs(historyItems(f.originals)[0]!,'session-a')[1]!],status:'active',enabled:true};
+  try {
+    f.ctx.request=async(plugin,action)=>{if(plugin!=='memory')throw new Error('unavailable');if(action==='invalidation.snapshot')return {epoch:0,ids:[],sources:[]};if(action==='select')return {records:[record],epoch:0};if(action==='read'){if(adoption){adoptionReads++;started();await gate;}return record;}throw new Error('unexpected');};
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);adoption=true;
+    const dispatched=c.dispatch('snapshot',{},f.ctx);await ready;
+    assert.equal(c.snapshot(f.ctx).field,undefined);assert.equal(c.checkpointDraft(f.ctx),undefined);assert.equal(c.confirmCanonical(f.ctx),undefined);
+    release();const snapshot=await dispatched as {field:WorkingField;status:{phase:string}};
+    assert.equal(snapshot.status.phase,'applied');assert.equal(snapshot.field.memoryRefs[0]!.id,record.id);assert.equal(adoptionReads,1,'concurrent sync and async boundaries share one validation');
+  }finally{release();c.dispose();f.cleanup();}
+});
+
+test('final epoch fence rejects an invalidation arriving during canonical Memory reads',async()=>{
+  const f=fixture();const c=f.create();let adoption=false;
+  const semantic={id:'epoch-memory',revision:1,content:'部署前检查配置',conditions:[],validFrom:null,validTo:null,scope:'project'};
+  const record={...semantic,hash:digest(semantic.content),semanticDigest:digest(semantic),sources:[],status:'active',enabled:true};
+  try {
+    f.ctx.request=async(plugin,action)=>{if(plugin!=='memory')throw new Error('unavailable');if(action==='invalidation.snapshot')return {epoch:0,ids:[],sources:[]};if(action==='select')return {records:[record],epoch:0};if(action==='read'){if(adoption){const runtime=new RecordStore('runtime',f.dir);runtime.put('memory-source-epoch:project-a',{v:1,epoch:1});runtime.close();}return record;}throw new Error('unexpected');};
+    const result=await c.beforeCompact(f.event(),f.ctx);assert.ok(result?.compaction);f.appendCompaction(result.compaction);adoption=true;
+    assert.equal(await c.confirmCanonicalAsync(f.ctx),undefined);assert.equal(c.snapshot(f.ctx).field,undefined);assert.equal((c.snapshot(f.ctx).status as {phase:string}).phase,'fallback');
+  }finally{c.dispose();f.cleanup();}
 });

@@ -33,3 +33,11 @@ claim unread tool results. Canonical model-read tool spans use an additive
 source-only coverage ledger; legacy checkpoint coverage causes conservative
 rereading after restart. Offline regressions reproduce E902/path evidence loss,
 failed journal adoption, cold recovery and later checkpoint inheritance.
+
+Canonical Memory adoption correction (2026-10-17): asynchronous public Pi and
+controller boundaries revalidate frozen Memory revisions, semantics and sources
+before the effective field advances. The synchronous checkpoint API defers
+Memory-backed adoption; final source/epoch/receipt checks and the receipt write
+share a SQLite write transaction. Offline tests cover source-only changes with
+unchanged epochs, cold prepared recovery, pending visibility and an invalidation
+during the final Memory read. No private Pi API or execution loop was added.
