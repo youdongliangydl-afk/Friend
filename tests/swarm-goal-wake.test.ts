@@ -33,20 +33,10 @@ test('integrated Swarm wakes matching graph, native task, logical step and ledge
  }finally{await f.close();}}
 });
 
-test('Single acceptance pause and public resume delivers a wake and requires fresh objective verification',async()=>{
- const f=fixture('single');try{
-  await f.startJobs();f.setIdle(true);f.setBusy(false);f.controller.goals.noteWrite(f.ctx,'write');
-  const task=await f.controller.dispatch('task.create',{title:'Check delivery',mode:'write',checks:[{command:process.execPath,args:['-e','process.exit(0)']}]},f.ctx) as {id:string};
-  await f.controller.dispatch('task.verify',{id:task.id,result:'Actual objective check'},f.ctx);f.controller.goals.update({progress:'Saved output'},f.ctx);
-  const waiting=await f.controller.dispatch('goal.complete',{},f.ctx) as {id:string;revision:number;waitFor:string;acceptance:{binding:string};writeEpoch:number};assert.equal(waiting.waitFor,'user-acceptance');
-  await f.controller.dispatch('goal.pause',{},f.ctx);const resumed=await f.controller.dispatch('goal.resume',{},f.ctx) as {status:string;waitFor?:string;acceptance?:unknown;writeEpoch:number};
-  assert.equal(resumed.status,'active');assert.equal(resumed.waitFor,undefined);assert.equal(resumed.acceptance,undefined);assert.equal(resumed.writeEpoch,waiting.writeEpoch+1);
-  await f.controller.drain();await flush();assert.equal(f.sent.length,1,'resume is eligible and actually sends the native wake');
-  await assert.rejects(f.controller.dispatch('goal.accept',{goalId:waiting.id,expectedRevision:waiting.revision,candidateDigest:waiting.acceptance.binding},f.ctx),{code:'VERSION_CONFLICT'});
-  await assert.rejects(f.controller.dispatch('goal.complete',{},f.ctx),/实际通过的客观检查/);
-  await f.controller.dispatch('task.verify',{id:task.id,result:'Fresh check after resume'},f.ctx);
-  const fresh=await f.controller.dispatch('goal.complete',{},f.ctx) as typeof waiting;assert.equal(fresh.waitFor,'user-acceptance');assert.notEqual(fresh.acceptance.binding,waiting.acceptance.binding);
-  const accepted=await f.controller.dispatch('goal.accept',{goalId:fresh.id,expectedRevision:fresh.revision,candidateDigest:fresh.acceptance.binding},f.ctx) as {status:string};assert.equal(accepted.status,'completed');
+test('Single completion records main-agent evidence and clears focus without a separate acceptance gate',async()=>{
+ const f=fixture('single');try{f.setIdle(true);f.setBusy(false);f.controller.goals.noteWrite(f.ctx,'write');f.controller.tasks.create({title:'Optional follow-up'},f.ctx,f.goal.id);
+  const result=await f.controller.dispatch('goal.complete',{summary:'Main agent checked the requested deliverable'},f.ctx) as {status:string;audit:{independent:boolean}};
+  assert.equal(result.status,'complete');assert.equal(result.audit.independent,false);assert.equal(f.controller.currentGoal(),undefined);assert.equal(f.controller.snapshot().lastCompletedGoal?.id,f.goal.id);
  }finally{await f.close();}
 });
 test('foreign, interrupted, unrelated, cold and unconfirmed Swarm evidence cannot resume a Goal',async()=>{
@@ -71,42 +61,15 @@ test('a late wait after integration still receives the pending wake; stop fences
  }finally{await f.close();}}
 });
 
-test('queue suspension detaches the old Goal without stopping steps or accepting another run writes',async()=>{
- const f=fixture();try{f.setIdle(true);f.setBusy(false);const task=f.controller.tasks.create({title:'Old goal step'},f.ctx,f.goal.id);const held=f.controller.suspendForQueuedInput();assert.equal(held?.id,f.goal.id);assert.equal(f.controller.currentGoal(),undefined);assert.equal(f.controller.goals.read(f.goal.id,f.ctx).status,'paused');assert.equal(f.controller.tasks.read(task.id,f.ctx).status,'pending');const other={...f.ctx,origin:'agent' as const,runId:'queued-run'};await assert.rejects(f.controller.dispatch('task.start',{id:task.id},other),/当前执行/);await assert.rejects(f.controller.dispatch('goal.update',{goalId:f.goal.id,progress:'foreign write'},other),/当前执行/);f.controller.account(500,'foreign','queued-run');assert.equal(f.controller.goals.read(f.goal.id,f.ctx).tokens,0);}finally{await f.close();}
+test('queue suspension keeps the active Goal without stopping steps or accepting another run writes',async()=>{
+ const f=fixture();try{f.setIdle(true);f.setBusy(false);const task=f.controller.tasks.create({title:'Old goal step'},f.ctx,f.goal.id);const held=f.controller.suspendForQueuedInput();assert.equal(held?.id,f.goal.id);assert.equal(f.controller.currentGoal()?.id,f.goal.id);assert.equal(f.controller.goals.read(f.goal.id,f.ctx).status,'active');assert.equal(f.controller.tasks.read(task.id,f.ctx).status,'pending');const other={...f.ctx,origin:'agent' as const,runId:'queued-run'};await assert.rejects(f.controller.dispatch('task.start',{id:task.id},other),/当前执行/);await assert.rejects(f.controller.dispatch('goal.update',{goalId:f.goal.id,progress:'foreign write'},other),/当前执行/);f.controller.account(500,'foreign','queued-run');assert.equal(f.controller.goals.read(f.goal.id,f.ctx).tokens,0);}finally{await f.close();}
 });
 
-test('goal completion respects controller-owned optional review and keeps legacy/required audits',async()=>{
- for(const policy of ['none','required','legacy','unversioned','foreign','unfinished','unchecked']){const f=fixture();try{
-  f.setIdle(true);f.setBusy(false);
-  f.controller.goals.update({progress:'已检查实际成果和当前任务记录'},f.ctx);
-  const complete={...f.graph,status:policy==='unfinished'?'running':policy==='unchecked'?'completed':'integrated',tasks:f.graph.tasks.map(task=>({...task,status:'completed'})),...(policy==='legacy'?{}:{executionPolicy:{...(policy==='unversioned'?{}:{v:1}),review:policy==='required'?'required':'none'}}),...(policy==='foreign'?{goalId:'another-goal'}:{})};
-  if(!['unfinished','unchecked','foreign'].includes(policy))f.controller.observeSwarm({graphs:[complete]});
-  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'actual independent review',source:{sessionId:'reviewer'}};}throw new Error('Unexpected request '+action);}};
-  const result=await f.controller.dispatch('goal.complete',{review:'none'},ctx) as {status:string;audit:{independent?:boolean;reviewStatus?:string}};
-  assert.equal(result.status,['unfinished','unchecked'].includes(policy)?'blocked':'completed');assert.equal(audits,['none','unfinished','unchecked'].includes(policy)?0:1,policy);
-  if(policy==='none'){assert.equal(result.audit.independent,false);assert.equal(result.audit.reviewStatus,'not_requested');}
- }finally{await f.close();}}
-});
-
-test('historical completed read-only Team keeps its native audit without waiving new graph checks',async()=>{
- for(const scenario of ['legacy-read','legacy-write','new-policy','schema-three','pending-task']){const f=fixture();try{
-  f.setIdle(true);f.setBusy(false);f.controller.goals.update({progress:'实际读取已完成'},f.ctx);
-  const complete={...f.graph,status:'completed',executionStyle:'team',tasks:f.graph.tasks.map(task=>({...task,mode:scenario==='legacy-write'?'write':'read',status:scenario==='pending-task'?'running':'completed'})),...(scenario==='new-policy'?{executionPolicy:{v:1,review:'none'}}:scenario==='schema-three'?{schemaVersion:3}:{})};
-  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'历史 Team 独立审核',source:{sessionId:'native-reviewer'}};}throw new Error('Unexpected '+action);}};
-  const result=await f.controller.dispatch('goal.complete',{},ctx) as {status:string;audit:{independent?:boolean}};
-  assert.equal(result.status,scenario==='legacy-read'?'completed':'blocked',scenario);assert.equal(audits,scenario==='legacy-read'?1:0,scenario);
-  if(scenario==='legacy-read')assert.equal(result.audit.independent,true);
- }finally{await f.close();}}
-});
-
-test('canonical V0 read-only Team delivery reaches Goal review while check and artifact contracts stay fenced',async()=>{
- for(const scenario of ['required','none','V1','V2','artifact','contract-check','graph-check','deferred','missing-contract','pending','write']){const f=fixture();try{
-  f.setIdle(true);f.setBusy(false);f.controller.goals.update({progress:'Actual read-only member completed'},f.ctx);
-  const complete={...f.graph,status:'completed',schemaVersion:3,executionStyle:'team',deferPreparation:scenario==='deferred',checks:scenario==='graph-check'?[{id:'check'}]:[],contract:scenario==='missing-contract'?undefined:{version:1,verification:['V1','V2'].includes(scenario)?scenario:'V0',risk:'low',artifacts:scenario==='artifact'?[{id:'output'}]:[],checks:scenario==='contract-check'?[{id:'oracle'}]:[]},executionPolicy:{v:1,review:scenario==='none'?'none':'required'},tasks:f.graph.tasks.map(task=>({...task,mode:scenario==='write'?'write':'read',status:scenario==='pending'?'running':'completed'}))};
-  let audits=0;const ctx={...f.ctx,request:async(_plugin:string,action:string)=>{if(action==='snapshot')return {graphs:[complete]};if(action==='audit'){audits++;return {approved:true,independent:true,findings:'Independent read-only review',source:{sessionId:'native-reviewer'}};}throw new Error('Unexpected '+action);}};
-  const result=await f.controller.dispatch('goal.complete',{},ctx) as {status:string;audit:{independent?:boolean;reviewStatus?:string}};
-  const eligible=['required','none'].includes(scenario);assert.equal(result.status,eligible?'completed':'blocked',scenario);assert.equal(audits,scenario==='required'?1:0,scenario);
-  if(eligible)assert.equal(result.audit.independent,scenario==='required');
+test('goal completion never requests Swarm audit or requires all historical tasks to complete',async()=>{
+ for(const mode of ['single','swarm'] as const){const f=fixture(mode);try{f.setIdle(true);f.setBusy(false);f.controller.tasks.create({title:'Superseded step'},f.ctx,f.goal.id);
+  let requests=0;const ctx={...f.ctx,request:async()=>{requests++;throw new Error('Goal must not delegate completion audit');}};
+  const result=await f.controller.dispatch('goal.complete',{summary:'Original requirements verified against actual output'},ctx) as {status:string};
+  assert.equal(result.status,'complete');assert.equal(requests,0);
  }finally{await f.close();}}
 });
 
