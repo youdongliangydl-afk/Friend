@@ -119,6 +119,7 @@ export default function App() {
   // Keep the visible session intact until navigation has an authoritative response.
   const navigationState=useRef<AppState|null|undefined>(undefined);
   const [submissionRevision,setSubmissionRevision]=useState(0);
+  const [configurationBusy,setConfigurationBusy]=useState(false),composerConfiguration=useRef<Promise<void>|null>(null);
   const [goalDraft,setGoalDraft]=useState(false),goalDraftRef=useRef(false);goalDraftRef.current=goalDraft;
   const [goalReplacement,setGoalReplacement]=useState<{sessionId:string;epoch:number;text:string;goal:GoalSubmission;previous:string}|null>(null);
   const [goalResume,setGoalResume]=useState<{sessionId:string;epoch:number;goalId:string}|null>(null),goalResumeSeen=useRef('');
@@ -290,6 +291,7 @@ export default function App() {
     else if(action.type==='queueUi')setQueueUi(asObject(action.value));
     else if(action.type==='queue'){const requestOwner=sessionId,requestEpoch=navigationEpoch.current;const input=asObject(action.value);const result=await window.friendPi.request('session.queue',{sessionId,...input});if(requestOwner!==stateRef.current.current?.sessionId||requestEpoch!==navigationEpoch.current)return;if(input.action==='sidechat')setRequestedSession(String(asObject(result).sessionId));setQueueUi(old=>({editing:old.editing}));}
     else if(action.type==='send'){
+      if(composerConfiguration.current){setSubmissionRevision(old=>old+1);return;}
       const text=typeof action.text==='string'?action.text:draftRef.current,command=goalDraftInput(text);
       if(command){goalDraftRef.current=true;setGoalDraft(true);draftRef.current=command.text;setDraft(command.text);if(!command.text.trim()){setSubmissionRevision(old=>old+1);return;}}else{draftRef.current=text;setDraft(text);}
       const goalInput=goalDraftRef.current?{objective:draftRef.current.trim()}:undefined;
@@ -303,6 +305,8 @@ export default function App() {
     else if(action.type==='goal.draft'){if(navigating||sending||activeSession?.archived)return;goalDraftRef.current=action.value===true;setGoalDraft(goalDraftRef.current);composer.current?.focus();}
     else if(action.type==='goal.open'){if(navigating||sending||!sessionId)return;const epoch=navigationEpoch.current;if(viewRef.current.active!=='conversation')await writeView({...viewRef.current,active:'conversation'});if(stateRef.current.current?.sessionId===sessionId&&navigationEpoch.current===epoch)setGoalOpen({sessionId,epoch});}
     else if(action.type==='goal'){
+      if(composerConfiguration.current)await composerConfiguration.current;
+      if(action.sessionId!==stateRef.current.current?.sessionId||action.epoch!==navigationEpoch.current)throw new Error('会话已切换，目标操作已取消。');
       if(goalActionLock.current)throw new Error('目标操作正在进行。');
       if(navigating||sending||sendLock.current||activeSession?.archived)throw new Error('当前会话暂时不能修改目标。');
       const command=action.value as GoalCommand,operation=command.action;
@@ -318,16 +322,20 @@ export default function App() {
     else if(action.type==='reference'){const candidate=asObject(action.value);if(candidate.kind==='文件'&&typeof candidate.path==='string')appendAttachments([{path:candidate.path}],ownerKey);}
     else if(action.type==='attachmentChecked'){const item=asObject(action.value);setAttachments(old=>old.map(attachment=>attachment.path===item.path?{...attachment,hash:String(item.hash)}:attachment));}
     else if(action.type==='removeAttachment')setAttachments(old=>old.filter(a=>a.path!==action.value));
-    else if(action.type==='plan'&&!running&&!sending)setPlanMode(action.value===true);
-    else if((action.type==='mode'||action.type==='permission')&&!running&&!sending&&!navigating&&!activeSession?.archived){
-      const owner=ownerKey,epoch=navigationEpoch.current;
-      const input=action.type==='permission'?{permissionMode:action.value}:{executionMode:action.value};
-      if(sessionId&&action.type==='mode'&&action.value!=='single'&&!currentPlugins.includes('swarm'))await window.friendPi.request('session.configure',{sessionId,plugins:[...currentPlugins,'swarm']});
-      const result=sessionId?await window.friendPi.request<AppState>('session.configure',{sessionId,...input}):undefined;
-      if(ownerRef.current!==owner||navigationEpoch.current!==epoch)return;
-      if(result)applyState(result);
-      if(action.type==='permission'){setPermissionMode(result?.current?.permissionMode||action.value as PermissionMode);permissionExplicitRef.current=true;setPermissionExplicit(true);}
-      else setMode(result?.current?.executionMode||action.value as typeof mode);
+    else if(['plan','mode','permission'].includes(action.type)&&!running&&!sending&&!navigating&&!activeSession?.archived){
+      if(composerConfiguration.current||goalActionLock.current||stateRef.current.current?.isRunning)return;
+      const owner=ownerKey,epoch=navigationEpoch.current,id=sessionId;
+      const input=action.type==='plan'?{planMode:action.value===true}:action.type==='permission'?{permissionMode:action.value}:{executionMode:action.value};
+      const configure=async()=>{
+        const result=id?await window.friendPi.request<AppState>('session.configure',{sessionId:id,...input,...(action.type==='mode'&&action.value!=='single'&&!currentPlugins.includes('swarm')?{plugins:[...currentPlugins,'swarm']}:{})}):undefined;
+        if(ownerRef.current!==owner||navigationEpoch.current!==epoch||id&&stateRef.current.current?.sessionId!==id)return;
+        if(result)applyState(result);
+        if(action.type==='plan')setPlanMode(result?.current?.planMode??action.value===true);
+        else if(action.type==='permission'){setPermissionMode(result?.current?.permissionMode||action.value as PermissionMode);permissionExplicitRef.current=true;setPermissionExplicit(true);}
+        else setMode(result?.current?.executionMode||action.value as typeof mode);
+      };
+      setConfigurationBusy(true);const pending=configure();composerConfiguration.current=pending;
+      try{await pending;}catch(error){report(errorText(error),true);}finally{if(composerConfiguration.current===pending){composerConfiguration.current=null;setConfigurationBusy(false);}}
     }
     else if(action.type==='model'&&!running&&!sending&&!navigating&&!activeSession?.archived){const input=asObject(action.value),owner=ownerKey,epoch=navigationEpoch.current;if(sessionId){const result=await window.friendPi.request<AppState>('session.configure',{sessionId,...input});if(ownerRef.current===owner&&navigationEpoch.current===epoch)applyState(result);}else{if(input.modelId){setPendingModel(String(input.modelId));setPendingThinking(state.models.find(m=>m.id===input.modelId)?.thinkingLevels?.[0]||'off');}if(input.thinkingLevel)setPendingThinking(String(input.thinkingLevel));}}
     else if(action.type==='settings')openModelSettings();
@@ -340,7 +348,7 @@ export default function App() {
   const returnToRoot=()=>{navigationEpoch.current++;followScroll.current=rootScrollBeforeMember.current.following;setMemberRoute(null);requestAnimationFrame(()=>{if(scroll.current)scroll.current.scrollTop=rootScrollBeforeMember.current.following?scroll.current.scrollHeight:rootScrollBeforeMember.current.top;composer.current?.focus({preventScroll:true});});};
   const goal=asObject(state.current?.runtime).goal as ComposerGoal|undefined;
   useEffect(()=>{if(booting||navigating||!sessionId)return;const key=sessionId+':'+navigationEpoch.current;if(goalResumeSeen.current===key)return;goalResumeSeen.current=key;setGoalResume(goal&&['paused','blocked','usage_limited'].includes(goal.status)?{sessionId,epoch:navigationEpoch.current,goalId:goal.id}:null);},[booting,navigating,sessionId,goal?.id,goal?.status]);
-  const composerSnapshot:ComposerSnapshot={goal:goal||undefined,goalDraft,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
+  const composerSnapshot:ComposerSnapshot={goal:goal||undefined,goalDraft,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending:sending||configurationBusy,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
   useEffect(()=>window.friendPi.onEvent(event=>{if(event.sessionId!==stateRef.current.current?.sessionId)return;if(String(event.type)==='browser.shortcut'){const key=String(asObject(event.data).key);if(key==='t')void openNewView();else if(key==='w')void closeView(viewRef.current.active);else if(key==='n')void newSession();else if(key==='k'){setSidebar(true);searchInput.current?.focus();}else if(key==='l')document.querySelector<HTMLInputElement>('[aria-label="网页地址"]')?.focus();}}));
   const sidebarWidth=Math.max(180,Math.min(layout.sidebarWidth,400));
   const activeNotice=notice&&<div className={'notice '+(notice.error?'error':'')} style={{flexShrink:0,WebkitAppRegion:'no-drag'} as React.CSSProperties} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>;
