@@ -783,9 +783,9 @@ for(const usage of [undefined,{prompt_tokens:10000,completion_tokens:10000,total
 
 test('Plan retains an active Goal across mode changes while suppressing automatic wake; paused state and clear survive reopening',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  let f=await start();try{
-  await assert.rejects(f.request('configure',{planMode:'true'}),/计划模式设置无效/);await f.request('configure',{planMode:true});
+  await assert.rejects(f.request('configure',{planMode:'true'}),/计划模式设置无效/);await f.request('configure',{planMode:true,plugins:[]});
   const goal=await f.request('runtime',{action:'goal.set',input:{objective:'Preserve the active Plan goal'}}) as {id:string;status:string};assert.equal(goal.status,'active');
-  for(const executionMode of ['single','team','swarm']){await f.request('configure',{executionMode});const current=await f.request('runtime',{action:'goal.get'}) as {id:string;status:string};assert.equal(current.id,goal.id);assert.equal(current.status,'active');}
+  for(const executionMode of ['single','team','swarm']){const configured=await f.request('configure',{executionMode,plugins:executionMode==='single'?[]:['swarm']}) as {executionMode:string;plugins:string[]};assert.equal(configured.executionMode,executionMode);assert.equal(configured.plugins.includes('swarm'),executionMode!=='single');const current=await f.request('runtime',{action:'goal.get'}) as {id:string;status:string};assert.equal(current.id,goal.id);assert.equal(current.status,'active');}
   await new Promise(done=>setTimeout(done,100));assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
   await f.request('runtime',{action:'goal.pause'});const before=await f.request('state') as {sessionFile:string};const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:before.sessionFile,status:'paused'});
   const restored=await f.request('runtime',{action:'goal.read'}) as {id:string;status:string};assert.equal(restored.id,goal.id);assert.equal(restored.status,'paused');assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
