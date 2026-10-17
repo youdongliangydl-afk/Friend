@@ -128,3 +128,34 @@ test('unresolved plugin effects fence Goal restore, resume, complete and first-i
  await f.runtime.dispatch('goal.clear',{},f.ctx);assert.throws(()=>f.runtime.setGoalForInput({objective:'New target'},f.ctx),/未知现场/);
  f.setUnknown(false);const goal=f.runtime.setGoalForInput({objective:'Reviewed side effects'},f.ctx);assert.equal(goal.status,'active');
 }finally{await f.close();}});
+
+
+test('user pause fences every late status tool in the already prepared model response',async()=>{for(const status of ['blocked','paused','complete']){const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});f.prepareRequest();
+ await f.runtime.dispatch('goal.pause',{},f.ctx);const paused=f.runtime.currentGoal()!;
+ const tool=f.tools.get('update_goal');await assert.rejects(tool.execute('late-status',{status},undefined,undefined,f.native),{code:'VERSION_CONFLICT'});
+ assert.equal(f.runtime.currentGoal()?.status,'paused');assert.equal(f.runtime.currentGoal()?.revision,paused.revision);assert.equal(f.runtime.snapshot().lastCompletedGoal,undefined);
+}finally{await f.close();}}});
+
+test('Stop then resume of the same objective does not authorize the old tool batch, while a new request can complete it',async()=>{const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});f.prepareRequest();await f.runtime.stop();await f.runtime.dispatch('goal.resume',{goalId:f.goal.id},f.ctx);
+ const resumed=f.runtime.currentGoal()!,update=f.tools.get('update_goal'),get=f.tools.get('get_goal');assert.equal(resumed.id,f.goal.id);assert.equal(resumed.objective,f.goal.objective);
+ await get.execute('read-resumed',{},undefined,undefined,f.native);
+ for(const status of ['blocked','paused','complete'])await assert.rejects(update.execute('stale-'+status,{status},undefined,undefined,f.native),{code:'VERSION_CONFLICT'});
+ assert.equal(f.runtime.currentGoal()?.status,'active');assert.equal(f.runtime.currentGoal()?.revision,resumed.revision);
+ const prepared=f.prepareRequest();assert.match(prepared.messages.find((message:any)=>message.customType==='friend-pi.goal-context').content,/"status":"active"/);
+ await update.execute('fresh-complete',{status:'complete'},undefined,undefined,f.native);assert.equal(f.runtime.currentGoal(),undefined);assert.equal(f.runtime.snapshot().lastCompletedGoal?.id,f.goal.id);
+}finally{await f.close();}});
+
+test('even a fresh provider request cannot mutate a non-active goal',async()=>{for(const state of ['paused','blocked','usage_limited'] as const){const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});f.runtime.goals.setState(state,f.ctx);f.prepareRequest();const before=f.runtime.currentGoal()!;
+ for(const status of ['blocked','paused','complete'])await assert.rejects(f.tools.get('update_goal').execute('inactive-'+status,{status},undefined,undefined,f.native),{code:'VERSION_CONFLICT'});
+ assert.equal(f.runtime.currentGoal()?.status,state);assert.equal(f.runtime.currentGoal()?.revision,before.revision);
+}finally{await f.close();}}});
+
+test('get_goal and a new provider request cannot renew turn-wide create authority revoked by clear or Stop',async()=>{for(const action of ['clear','stop']){const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});f.prepareRequest();if(action==='clear')await f.runtime.dispatch('goal.clear',{},f.ctx);else await f.runtime.stop();
+ await f.tools.get('get_goal').execute('read-cancelled',{},undefined,undefined,f.native);f.prepareRequest();
+ await assert.rejects(f.tools.get('create_goal').execute('late-create',{objective:'Old response resurrection'},undefined,undefined,f.native),{code:'VERSION_CONFLICT'});
+ assert.equal(f.runtime.currentGoal()?.status,action==='clear'?undefined:'paused');
+}finally{await f.close();}}});

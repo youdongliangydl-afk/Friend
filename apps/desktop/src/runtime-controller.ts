@@ -18,7 +18,7 @@ export class RuntimeController {
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
  private disposed=false;private draining=false;private activeWake?:WakeFrame;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
  private readonly admittedGoalEpochs=new WeakMap<WakeFrame,number>();
- private goalEpoch=0;private turn?:{automatic:boolean;goalId?:string;objective?:string;goalEpoch:number;hadGoal:boolean;success:boolean;unavailable:boolean;response:boolean};
+ private goalEpoch=0;private turn?:{automatic:boolean;goalId?:string;objective?:string;goalEpoch:number;requestGoalEpoch:number;hadGoal:boolean;success:boolean;unavailable:boolean;response:boolean};
  private readonly waitHandles=new Map<string,{goalId:string;runId?:string;active:boolean}>();
  private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
@@ -34,7 +34,7 @@ export class RuntimeController {
  setGoalForInput(input:JsonObject,ctx:PluginContext){const prior=this.goals.current(ctx);if(this.unresolvedSideEffects(ctx,prior))throw new Error('请先检查并确认未知现场，再接续目标');const goal=this.goals.set(input,ctx,this.generation());this.cancelGoalWake(prior?.id);this.resetGoalStreak(goal.id,ctx);return goal;}
  private resetGoalStreak(goalId:string,ctx:PluginContext){this.store.remove(`turn-streak:${ctx.sessionId}:${goalId}`);}
  cancelGoalWake(goalId?:string){this.goalEpoch++;if(goalId)this.coordinator?.cancelGoal(goalId);}
- beginTurn({automatic}:{automatic:boolean}){this.goals.bindRun(this.context());const goal=this.currentGoal();this.turn={automatic,goalId:goal?.id,objective:goal?.objective,goalEpoch:this.goalEpoch,hadGoal:!!goal,success:false,unavailable:false,response:false};}
+ beginTurn({automatic}:{automatic:boolean}){this.goals.bindRun(this.context());const goal=this.currentGoal();this.turn={automatic,goalId:goal?.id,objective:goal?.objective,goalEpoch:this.goalEpoch,requestGoalEpoch:this.goalEpoch,hadGoal:!!goal,success:false,unavailable:false,response:false};}
  recordGoalToolOutcome({success,executionUnavailable=false}:{success:boolean;executionUnavailable?:boolean}){if(this.turn){this.turn.success ||= success;this.turn.unavailable ||= executionUnavailable;}}
  recordGoalResponse({text='',reasoning='',questions=[]}:{text?:string;reasoning?:string;questions?:unknown[]}){if(this.turn)this.turn.response ||= !!(text.trim()||reasoning.trim()||questions.length);}
 
@@ -55,8 +55,9 @@ export class RuntimeController {
   pi.on('context_with_system',(event,ctx)=>{
    this.nativeContext=ctx;const goal=this.goals.current(makeContext(pi,ctx));if(!goal&&!this.turn?.hadGoal)return;
    // Bind mutations to the objective actually prepared for this model request.
-   // A get_goal and complete in the same old response cannot acknowledge an edit.
-   if(this.turn){this.turn.goalId=goal?.id;this.turn.objective=goal?.objective;this.turn.hadGoal ||= !!goal;}
+   // Only a new provider request renews this binding; get_goal cannot renew an old batch.
+   // Keep the turn-wide create epoch unchanged so a fresh request cannot resurrect a cleared goal.
+   if(this.turn){this.turn.goalId=goal?.id;this.turn.objective=goal?.objective;this.turn.requestGoalEpoch=this.goalEpoch;this.turn.hadGoal ||= !!goal;}
    const current=goal?{id:goal.id,status:goal.status,objective:goal.objective,progress:goal.progress,nextAction:goal.nextAction}:null;
    const note=`[Friend 当前目标状态]\n当前会话目标（本请求最新状态，以此覆盖此前目标描述）：${JSON.stringify(current)}。没有当前目标时，不得从普通任务自行创建目标。`;
    // Pi projects a forced system prompt after extension hooks. Request-only
@@ -132,12 +133,13 @@ export class RuntimeController {
    if(ctx.origin==='agent'&&mutating&&operation!=='create'&&(!focused||focused.sourceRunId!==ctx.runId))throw new Error('目标不属于当前执行');
    if(ctx.origin==='agent'&&mutating&&this.turn){
     if(operation==='create'&&this.turn.goalEpoch!==this.goalEpoch)throw new CapabilityError('VERSION_CONFLICT','用户已改变目标控制，当前回合不能重新创建目标');
-    if(operation!=='create'&&(this.turn.goalId!==focused?.id||this.turn.objective!==focused?.objective))throw new CapabilityError('VERSION_CONFLICT','目标已更新，请先用 get_goal 读取当前目标再核对成果');
+    if(operation!=='create'&&(this.turn.requestGoalEpoch!==this.goalEpoch||this.turn.goalId!==focused?.id||this.turn.objective!==focused?.objective))throw new CapabilityError('VERSION_CONFLICT','目标控制已变化，当前模型响应已过期，请在下一次模型请求重新核对当前目标');
    }
+   if(ctx.origin==='agent'&&mutating&&operation!=='create'&&focused?.status!=='active')throw new CapabilityError('VERSION_CONFLICT','当前目标未处于 active 状态，模型不能更改其状态或进度');
    if(operation==='create'||operation==='set'){
     if((operation==='create'||input.objective!==undefined||input.status==='active')&&this.unresolvedSideEffects(ctx,focused))throw new Error('请先检查并确认未知现场，再接续目标');
     const goal=operation==='set'?this.goals.set(input,ctx,this.generation()):this.goals.create(input,ctx,this.generation());
-    this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(ctx.origin==='agent'&&this.turn){this.turn.goalId=goal.id;this.turn.objective=goal.objective;this.turn.goalEpoch=this.goalEpoch;this.turn.hadGoal=true;}if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
+    this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(ctx.origin==='agent'&&this.turn){this.turn.goalId=goal.id;this.turn.objective=goal.objective;this.turn.goalEpoch=this.goalEpoch;this.turn.requestGoalEpoch=this.goalEpoch;this.turn.hadGoal=true;}if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
    }
    if(operation==='list'||operation==='snapshot')return this.goals.list(ctx);
    if(['get','read','status'].includes(operation))return input.id?this.goals.read(text(input.id),ctx):focused||null;
