@@ -138,3 +138,17 @@ Graph `create` accepts `claims:[{id,claim,sources:SourceRef[]}]`. `citations.val
 `snapshot.summaries` reports observed elapsed milliseconds (including review attempts), summed completed member time, known native token usage, and completeness/unknown flags. Missing usage is unknown; `estimatedSavings:null` deliberately supplies no invented savings or comparative cost. These records are read views over persisted execution metadata, not duplicate transcripts.
 
 Local fake-provider and native Pi SDK verification is recorded by the focused package tests. Real configured-model validation, packaged client Computer Use, final integrated candidate/artifact binding and remote merge belong to the integration chat and are not established by these package tests.
+
+## Coordination v2（P0/P1，additive；`v2.*`）
+
+在既有 DAG/team 平面之外新增独立的协作 v2 平面，旧图合同与工具行为不变；模型工具暂不新增 `v2` 工具，统一走 controller `v2.*` action（UI/自动规划属于后续阶段）。权威是 append-only `swarm_v2_journal`，当前态表为同事务物化快照，`swarm_v2_projections` 可整体重建。
+
+- **任务板 v2**：8 态任务机 + cancelled/deleted 墓碑、连续 revision/CAS、DAG（存在/非删除/自引/无环）、acceptance 必填、读写模式与 write scopes 校验、独立写 scope 重叠拒绝、256 活跃任务上限；Attempt 独立于 Task（prepared/running/unknown/completed/failed，单任务至多一个 running），Result 以 resultRevision + artifact refs 追加。unknown 副作用暂停团队并阻塞任务，不自动重放。
+- **调度**：`v2.schedule.once` 按依赖深度→createdAt 的确定性 ready 前沿派发；写声明 preflight（目录包含语义）返回 `Held{Cause,By}` 并跳过被挡任务继续其他独立任务；默认并发 4、上限 16；预算预留失败阻塞为 `budget`，不在事务外留半派发。
+- **三层预算**：`v2.budget.*` 支持 team/task/member 的 token/cost/time/concurrency 上限；reserve 冻结上界、settle 按 native receipt（unknown 不冒充已知）、release 只释放 reserved；耗尽/暂停/未知立即阻止新派发（不宣称硬截断在途请求）。
+- **验证与合并**：`v2.verify.*` 提供检查注册表（file.exists/file.hash/json.schema/source.coverage/command.exit，命令检查只消费调用方结果，绝不自行执行）、V0–V3 强度、结构化封存裁决（approved/findings/taskIds/resultVersions/candidateDigest/reviewedTip，自由文本不算提交）、reviewer 独立性、exact-tip 绑定（stale 拒绝；clean-rebase waive 需先有 stale 拒绝记录）、返工配额与失败指纹。`v2.integrate` 必须通过 20 条门禁 G01–G20 与封存裁决；无裁决只能产生 rejected 回执，`v2.silentMerge.assert` 保持静默合并 = 0。
+- **消息与名册**：`v2.message.*` 提供 accepted/queued/delivered/incorporated 四态、queue/trigger、messageId+信封幂等、per-target FIFO、sequence 分页、只观察调用后变化的 wait（10s–1h）、过期；`v2.member.*` 提供 provisioning→active|failed、名字永久预留、generation fence、逐对象 stop receipt（全 terminated 才 complete，否则 unknown + 暂停）。
+- **兼容/迁移**：首次打开 v2 表前 `VACUUM INTO swarm-pre-v2-*.sqlite`；`swarm_v2_*` 表使用 writer 5 围栏（旧 writer 只读）；既有 documents 与图记录不改写。关闭开关：`FRIEND_PI_SWARM_V2=0`。
+- **边界**：P0/P1 交付不含 P2（自动规划/仲裁/自动合并、工作台 UI）、P3（worker 池/多团队/外部 provider/跨进程租约）与 P4（A2A/MCP、模板市场、L4 自治、配对真实模型评测）。真实 worktree 创建沿用既有 swarm 隔离平面，v2 以 workspace 记录与 baseline/门禁衔接；本包测试不能替代真实模型质量、商业模型成本或客户端 Computer Use 验收。
+
+Controller 动作：`v2.team.* / v2.member.* / v2.task.* / v2.schedule.once / v2.attempt.* / v2.budget.* / v2.verify.* / v2.integrate / v2.gates / v2.message.* / v2.journal.read / v2.audit.export / v2.projection.rebuild / v2.silentMerge.assert`。只读动作不写 operation receipt；写动作复用 swarm 既有 `operationId` 幂等回执。不可逆动作（pause/resume/integrate/budget.release/attempt.recover）要求 user/host origin，模型工具不能批准自己。

@@ -32,6 +32,7 @@ export type {WorkflowResumePreview} from './workflow.js';
 export type {HandoffRef,StructuredHandoff} from './handoff.js';
 export type * from './types.js';
 
+import {CoordinationService} from './v2/service.js';
 const now = () => new Date().toISOString();
 const alive = (pid:number) => {try {process.kill(pid,0);return true;} catch {return false;}};
 function errorText(error:unknown): string {return error instanceof Error ? error.message : String(error);}
@@ -145,6 +146,7 @@ export class SwarmController implements PluginController {
   private readonly finishing=new Set<string>();
   private readonly preparing=new Set<string>();
   private readonly executions=new Map<string,Execution>();
+  private readonly v2Services=new Map<string,CoordinationService>();
   private readonly confirmations=new Map<string,(accepted:boolean)=>void>();
   private readonly confirmationOwners=new Map<string,string>();
   private nativeConfirm?: (title:string,message:string)=>Promise<boolean>;
@@ -356,6 +358,18 @@ export class SwarmController implements PluginController {
     return this.store(ctx).transaction(()=>{const doc=this.get(id,ctx);change(doc.value);doc.value.updatedAt=now();this.store(ctx).put(doc.key,doc.value,doc.revision);return doc.value;});
   }
   private changed(ctx:PluginContext): void {try{const snapshot=this.snapshot(ctx) as {graphs:(Graph&{revision:number})[]};this.storage(ctx).projection(ctx,snapshot.graphs);ctx.emit('swarm.changed',snapshot);}catch{/* Durable records remain authoritative when a refresh subscriber fails. */}}
+  private v2TeamId(ctx:PluginContext): string {return `team:${ctx.projectId}:${ctx.sessionId}`;}
+  private coordination(ctx:PluginContext): CoordinationService {
+    let service=this.v2Services.get(ctx.dataDir);
+    if(!service){service=new CoordinationService(this.store(ctx));this.v2Services.set(ctx.dataDir,service);}
+    return service;
+  }
+  private async dispatchV2(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
+    if(process.env.FRIEND_PI_SWARM_V2==='0')throw new CapabilityError('CAPABILITY_UNAVAILABLE','Swarm v2 已被宿主关闭');
+    const service=this.coordination(ctx),read=new Set(['snapshot','team.status','task.get','task.list','member.list','budget.read','budget.exhausted','message.list','message.wait','message.assertFifo','journal.read','audit.export','gates','silentMerge.assert','verify.list','projection.rebuild']);
+    const invoke=()=>Promise.resolve(service.dispatch(action,input,{origin:ctx.origin,actorId:ctx.origin==='user'?'user':ctx.origin==='agent'?'agent':'host',projectId:ctx.projectId,sessionId:ctx.sessionId,projectDir:ctx.projectDir}));
+    return read.has(action)?invoke():this.storage(ctx).action(`v2.${action}`,input,ctx,invoke);
+  }
   snapshot(ctx:PluginContext): unknown {
     if(this.disposed)throw new Error('Swarm 已关闭');
     const store=this.store(ctx);const graphs=store.list<Graph>(`graph:${ctx.projectId}:`).filter(doc=>doc.value.sessionId===ctx.sessionId).map(doc=>({...doc.value,revision:doc.revision}));
@@ -366,6 +380,7 @@ export class SwarmController implements PluginController {
   }
   async dispatch(action:string,input:JsonObject,ctx:PluginContext): Promise<unknown> {
     if(this.disposed)throw new Error('Swarm 已关闭');
+    if(action.startsWith('v2.'))return this.dispatchV2(action.slice(3),input,ctx);
     if(action==='resume.preview'){const preview=this.resumePreview(text(input.graphId,'任务图标识',100),ctx);if(input.expectedRevision!==undefined&&input.expectedRevision!==preview.graphRevision)throw new CapabilityError('VERSION_CONFLICT','任务图版本已变化',{preview});return preview;}
     if(input.expectedRevision!==undefined&&!action.startsWith('shared.')&&input.revision===undefined)input={...input,revision:input.expectedRevision};
     for(const field of ['confirmUnknown','accepted','deferPreparation','workflowHeld','gateOnly','repair','automatic'])if(input[field]!==undefined&&typeof input[field]!=='boolean')throw new CapabilityError('VALIDATION_ERROR',`${field}必须为布尔值`);
