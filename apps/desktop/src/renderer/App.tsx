@@ -38,7 +38,7 @@ import {TerminalPanel} from './TerminalPanel.js';
 import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
 import {submissionSettled} from './submission-state.js';
 import {GoalEditor,type ComposerGoal,type GoalCommand} from './GoalDialog.js';
-import {goalDraftInput,unfinishedGoal,goalBinding,type GoalSubmission} from './goal-model.js';
+import {goalDraftInput,unfinishedGoal,type GoalSubmission} from './goal-model.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -122,7 +122,6 @@ export default function App() {
   const [configurationBusy,setConfigurationBusy]=useState(false),composerConfiguration=useRef<Promise<void>|null>(null);
   const [goalDraft,setGoalDraft]=useState(false),goalDraftRef=useRef(false);goalDraftRef.current=goalDraft;
   const [goalReplacement,setGoalReplacement]=useState<{sessionId:string;epoch:number;text:string;goal:GoalSubmission;previous:string}|null>(null);
-  const [goalResume,setGoalResume]=useState<{sessionId:string;epoch:number;goalId:string}|null>(null),goalResumeSeen=useRef('');
   const [goalOpen,setGoalOpen]=useState<{sessionId:string;epoch:number}|null>(null),goalActionLock=useRef(false),migratedComposerOwner=useRef('');
   const [draft,setDraft]=useState(''),draftRef=useRef('');draftRef.current=draft;
   const [attachments,setAttachments]=useState<{path:string}[]>([]),attachmentsRef=useRef(attachments),[planMode,setPlanMode]=useState(false),[mode,setMode]=useState<'single'|'team'|'swarm'>('single'),[pendingModel,setPendingModel]=useState(''),[pendingThinking,setPendingThinking]=useState('off');
@@ -346,9 +345,7 @@ export default function App() {
   useEffect(()=>{setMemberRoute(null);},[sessionId]);
   useEffect(()=>{const open=(event:Event)=>{const target=(event as CustomEvent<{rootSessionId:string;memberId:string}>).detail;if(target.rootSessionId!==sessionId)return;navigationEpoch.current++;if(!activeMemberRef.current)rootScrollBeforeMember.current={top:scroll.current?.scrollTop||0,following:followScroll.current};setMemberRoute(target);if(viewRef.current.active!=='conversation')void writeView({...viewRef.current,active:'conversation'});};window.addEventListener('friend-pi:teammate-open',open);return()=>window.removeEventListener('friend-pi:teammate-open',open);},[sessionId]);
   const returnToRoot=()=>{navigationEpoch.current++;followScroll.current=rootScrollBeforeMember.current.following;setMemberRoute(null);requestAnimationFrame(()=>{if(scroll.current)scroll.current.scrollTop=rootScrollBeforeMember.current.following?scroll.current.scrollHeight:rootScrollBeforeMember.current.top;composer.current?.focus({preventScroll:true});});};
-  const goalSnapshotReady=state.current?.runtime!=null;
   const goal=asObject(state.current?.runtime).goal as ComposerGoal|undefined;
-  useEffect(()=>{if(booting||navigating||!sessionId||!goalSnapshotReady)return;const key=sessionId+':'+navigationEpoch.current;if(goalResumeSeen.current===key)return;goalResumeSeen.current=key;setGoalResume(goal&&['paused','blocked','usage_limited'].includes(goal.status)?{sessionId,epoch:navigationEpoch.current,goalId:goal.id}:null);},[booting,navigating,sessionId,goalSnapshotReady,goal?.id,goal?.status]);
   const composerSnapshot:ComposerSnapshot={goal:goal||undefined,goalDraft,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending:sending||configurationBusy,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
   useEffect(()=>window.friendPi.onEvent(event=>{if(event.sessionId!==stateRef.current.current?.sessionId)return;if(String(event.type)==='browser.shortcut'){const key=String(asObject(event.data).key);if(key==='t')void openNewView();else if(key==='w')void closeView(viewRef.current.active);else if(key==='n')void newSession();else if(key==='k'){setSidebar(true);searchInput.current?.focus();}else if(key==='l')document.querySelector<HTMLInputElement>('[aria-label="网页地址"]')?.focus();}}));
   const sidebarWidth=Math.max(180,Math.min(layout.sidebarWidth,400));
@@ -380,7 +377,7 @@ export default function App() {
         {deferredRequests.length>0&&<div className="messages"><button className="question-resume" onClick={restoreDialogs}>{deferredRequests.every(dialog=>dialog.kind==='questionBatch')?'继续回答问题':'处理待确认请求'}（{deferredRequests.length}）</button></div>}
         </div></div>
       {!toolActive&&activeMember&&sessionId&&<TeammateConversation key={sessionId+activeMember} rootSessionId={sessionId} memberId={activeMember} onBack={returnToRoot} report={report} archived={!!activeSession?.archived}/>}
-      {!toolActive&&<div hidden={!!activeMember} className="composer-host">{goalResume&&goalResume.sessionId===sessionId&&goalResume.epoch===navigationEpoch.current&&goalResume.goalId===goal?.id&&goal.status!=='active'&&goal.status!=='complete'&&<div className="goal-resume-prompt" role="status"><span>这个会话有尚未完成的目标，是否继续？</span><button disabled={sending||navigating||!!activeSession?.archived||!selectedModel?.ready} onClick={()=>void composerAction({type:'goal',value:{action:'goal.set',input:{...goalBinding(goal),status:'active'}},sessionId,epoch:navigationEpoch.current}).then(()=>setGoalResume(null)).catch(error=>report(errorText(error),true))}>恢复目标</button><button onClick={()=>setGoalResume(null)}>稍后</button></div>}<SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>}
+      {!toolActive&&<div hidden={!!activeMember} className="composer-host"><SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>}
     </main>
     {sessionView.tabs.length>0&&<aside className="workspace fullscreen-workspace" aria-label="工作空间" hidden={!toolActive}>
       {toolActive&&activeViewTab?.page!=='terminal'&&activeNotice}

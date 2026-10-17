@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 import vm from 'node:vm';
+import {transformSync} from 'esbuild';
+import * as jsxRuntime from 'react/jsx-runtime';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
 import {asObject,errorText} from '../apps/desktop/src/renderer/types.js';
 import {goalDraftInput,unfinishedGoal} from '../apps/desktop/src/renderer/goal-model.js';
 const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
@@ -55,18 +59,14 @@ test('navigation while configuring cannot apply Plan or release Goal resume into
  const f=fixture();let release!:(value:any)=>void;f.ctx.window.friendPi.request=async(method:string,input:any)=>{f.requests.push({method,input});return new Promise(done=>release=done);};const toggle=f.act('plan',true);const resume=f.act('goal',{action:'goal.set',input:{goalId:'g',expectedRevision:3,status:'active'}});const rejected=assert.rejects(resume,/会话已切换/);f.ctx.navigationEpoch.current++;release({current:{...f.ctx.stateRef.current.current,planMode:true}});await toggle;await rejected;assert.equal(f.ctx.planMode,false);assert.equal(f.requests.length,1);
 });
 
-function resumePromptFixture(){
- const fragment=source.slice(source.indexOf('  const goalSnapshotReady='),source.indexOf('  const composerSnapshot:ComposerSnapshot='));const prompts:any[]=[];
- const ctx:any={asObject,state:{current:{sessionId:'s'}},booting:false,navigating:false,sessionId:'s',navigationEpoch:{current:3},goalResumeSeen:{current:''},setGoalResume(value:any){prompts.push(value);},useEffect(effect:()=>void){effect();}};
- vm.createContext(ctx);const run=()=>vm.runInContext(stripTypeScriptTypes('{'+fragment+'}'),ctx);return {ctx,prompts,run};
-}
-test('cold reopen waits for runtime before showing one paused Goal resume prompt',()=>{
- const f=resumePromptFixture();f.run();assert.equal(f.ctx.goalResumeSeen.current,'');assert.equal(f.prompts.length,0);
- f.ctx.state.current.runtime={goal:{id:'g',status:'paused'}};f.run();assert.equal(f.prompts.length,1);assert.equal(f.prompts[0].goalId,'g');assert.equal(f.ctx.goalResumeSeen.current,'s:3');f.run();assert.equal(f.prompts.length,1);
- f.ctx.state.current.runtime.goal.status='active';f.run();f.ctx.state.current.runtime.goal.status='paused';f.run();assert.equal(f.prompts.length,1);
-});
-test('authoritative empty runtime counts as seen and later in-session pauses do not reopen the prompt',()=>{
- const f=resumePromptFixture();f.run();f.ctx.state.current.runtime={goal:null};f.run();assert.equal(f.ctx.goalResumeSeen.current,'s:3');assert.equal(f.prompts.length,1);assert.equal(f.prompts[0],null);
- f.ctx.state.current.runtime.goal={id:'g',status:'paused'};f.run();assert.equal(f.prompts.length,1);f.ctx.navigationEpoch.current++;f.run();assert.equal(f.prompts.length,2);assert.equal(f.prompts[1].goalId,'g');
- assert.match(source,/\[booting,navigating,sessionId,goalSnapshotReady,goal\?\.id,goal\?\.status\]/);
+test('paused conversation composer renders one GoalBar resume/clear pair without a second recovery banner',()=>{
+ // Render the production App composer host, including anything placed above SessionComposer.
+ const host=source.split('\n').find(line=>line.includes('className="composer-host"'));assert.ok(host);
+ const compiled=transformSync('function host(){return <>'+host+'</>};module.exports=host;',{loader:'tsx',format:'cjs',jsx:'automatic'}).code;
+ for(const status of ['paused','blocked','usage_limited'] as const){
+  const composerSnapshot:ComposerSnapshot={goal:{id:'g',revision:4,objective:'完成当前目标',status,timeUsedSeconds:30},sessionId:'s',epoch:1,draft:'',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:''};
+  const ctx:any={module:{exports:{}},require:(name:string)=>{assert.equal(name,'react/jsx-runtime');return jsxRuntime;},toolActive:false,activeMember:null,SessionComposer,ownerKey:'s',composerSnapshot,composerAction:async()=>{},composer:{current:null},setContextStatsTarget(){}};
+  vm.runInNewContext(compiled,ctx);const html=renderToStaticMarkup(ctx.module.exports());
+  assert.equal((html.match(/aria-label="当前目标"/g)||[]).length,1);assert.equal((html.match(/aria-label="恢复目标"/g)||[]).length,1);assert.equal((html.match(/aria-label="清除目标"/g)||[]).length,1);assert.doesNotMatch(html,/是否继续|稍后|goal-resume-prompt/);
+ }
 });
