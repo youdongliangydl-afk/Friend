@@ -515,11 +515,12 @@ test('applyDreamPlan split: model children stay candidates, user-confirmed child
     const modelResult = applyDreamPlan(f.db, {plan: modelPlan, now: () => NOW});
     assert.equal(modelResult.applied.length, 1);
     assert.equal(modelResult.childIds.length, 2);
+    assert.deepEqual(modelResult.parentIds, [], 'model split only proposes candidates; the active parent stays usable');
+    assert.equal(recordRow(f.db, modelParent.id).status, 'active', 'model-proposed split must not remove effective memory');
     for (const childId of modelResult.childIds) {
       const row = recordRow(f.db, childId);
       assert.equal(row.status, 'candidate', 'model-proposed split children never become active');
       assert.equal(Number(row.enabled), 1);
-      assert.equal(recordRow(f.db, modelParent.id).status, 'inactive');
       const json = recordJson(f.db, childId);
       assert.deepEqual(json.parentIds, [modelParent.id]);
       assert.equal((json.sources as unknown[]).length, 1);

@@ -301,9 +301,13 @@ function ensureMemoryV4(db: DatabaseSync, hooks: MemoryMigrationHooks): {migrate
 
 /** Idempotently apply v5 only (pin/decay/consolidation columns, relations + consolidations tables). */
 function ensureMemoryV5(db: DatabaseSync, hooks: MemoryMigrationHooks): {migrated:boolean; backupPath?:string} {
-  db.exec(MEMORY_V5_TABLE_DDL);
-  addMissingV5Columns(db);
-  if (db.prepare('SELECT 1 FROM memory_migrations WHERE version=5').get()) return {migrated:false};
+  if (db.prepare('SELECT 1 FROM memory_migrations WHERE version=5').get()) {
+    // Fast-path repair only: already-v5 databases may be missing Idempotent DDL pieces.
+    db.exec(MEMORY_V5_TABLE_DDL);
+    addMissingV5Columns(db);
+    return {migrated:false};
+  }
+  // Backup must be taken before the v5 DDL/columns so the before-v5 file is a true v4 snapshot.
   const backupPath = backupBefore(db, hooks.dataDir, 'v5');
   const ownTransaction = !db.isTransaction;
   if (ownTransaction) db.exec('BEGIN IMMEDIATE');

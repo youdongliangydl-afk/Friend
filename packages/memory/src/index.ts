@@ -209,6 +209,18 @@ export function wakeLearningJobs(dataDir:string,projectId?:string):void {
 }
 
 const redactPayload=(value:unknown):unknown=>{try{return JSON.parse(redactMemorySecrets(JSON.stringify(value)));}catch{return [];}};
+/** Accept both the P1 JSON-array extraction contract and the legacy {memories:[...]} shape. */
+function parseExtractionMemories(raw:string):unknown[]{
+  const cleaned=raw.trim().replace(/^```(?:json)?\s*/iu,'').replace(/\s*```$/u,'').trim();
+  let value:unknown;
+  try{value=JSON.parse(cleaned);}catch{throw new CapabilityError('VALIDATION_ERROR','extract 输出必须是完整 JSON');}
+  if(Array.isArray(value))return value;
+  if(!value||typeof value!=='object')throw new CapabilityError('VALIDATION_ERROR','extract 输出必须是 JSON 数组或 {memories:[]}');
+  const memories=(value as {memories?:unknown}).memories;
+  if(!Array.isArray(memories))throw new CapabilityError('VALIDATION_ERROR','extract 未返回 memories 数组');
+  return memories;
+}
+
 function literalMatch(haystack:string,needle:string):boolean {
   const escaped=normalize(needle).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return new RegExp(`(?<![a-z0-9_./\\\\-])${escaped}(?![a-z0-9_./\\\\-])`,'u').test(normalize(haystack));
@@ -529,8 +541,21 @@ export class MemoryController implements PluginController {
     record={...record,sourceEpoch:fence.sourceEpoch,policyEpoch:fence.policyEpoch};
     return this.policy!.commit(fence,this.activeLease,() => {
       if(publishing&&this.runningJob?.sourceFence)this.policy!.assert(this.runningJob.sourceFence,this.activeLease);
-      const previous = store.db.prepare('SELECT revision,json FROM memory_records WHERE id=?').get(record.id);
+      const previous = store.db.prepare('SELECT revision,json,use_count,last_used_at,feedback_score,pinned,pinned_at FROM memory_records WHERE id=?').get(record.id) as {revision:number;json:string;use_count:number;last_used_at:string|null;feedback_score:number;pinned:number;pinned_at:string|null}|undefined;
       if (previousRevision === undefined ? !!previous : Number(previous?.revision) !== previousRevision) throw new ConflictError();
+      // Usage/feedback/pin metadata lives in queryable columns; an ordinary rewrite must carry it
+      // forward instead of resetting it from a JSON record read before the metadata update.
+      if(previous){
+        const prior=JSON.parse(previous.json) as MemoryRecord;
+        record={...record,
+          useCount:record.useCount??Number(previous.use_count),
+          lastUsedAt:record.lastUsedAt??previous.last_used_at??prior.lastUsedAt,
+          feedbackScore:record.feedbackScore??Number(previous.feedback_score),
+          pinned:record.pinned??prior.pinned,
+          pinnedAt:record.pinnedAt??prior.pinnedAt,
+          decayScore:record.decayScore??prior.decayScore,
+          consolidationId:record.consolidationId??prior.consolidationId};
+      }
       // P0-S: keep the queryable v4 columns in sync with the canonical json record. New fields
       // arrive through record camelCase metadata; legacy/unspecified paths keep defaults.
       const extended=record as MemoryRecord&{kindV2?:string;subjectKey?:string;subjectCardinality?:string;trust?:string;authority?:string;autoPublished?:boolean;policyId?:string;policyVersion?:number;score?:number;conflictState?:string;lineageRoot?:string;semanticDigest?:string;lastUsedAt?:string;useCount?:number;feedbackScore?:number;expiresAt?:string;deletedAt?:string;pinned?:boolean;pinnedAt?:string;decayScore?:number;consolidationId?:string;projectIds?:string[]};
@@ -1025,9 +1050,9 @@ export class MemoryController implements PluginController {
           JSON.stringify(redactPayload([...material,...artifactInput])),
         ].join('\n');
         const raw=await ctx.complete(extractionPrompt,{signal,maxTokens:4096,callId,budgetId:job.budgetId,stage:'extract',operationId});
-        ensure();const actual=job.budgetId?new LearningBudget(this.store!).readCall(job.budgetId,operationId):undefined;if(actual)job.callIds=[...new Set((job.callIds||[]).map(id=>id===callId?actual.callId:id))];const result=parseModelJson(redactMemorySecrets(raw));if(!Array.isArray(result.memories))throw new CapabilityError('VALIDATION_ERROR','extract 未返回 memories 数组');
-        job.proposals=result.memories.map(value=>value&&typeof value==='object'&&!Array.isArray(value)?object(value):{invalidProposal:value});job.proposalLedger=this.proposalLedger(job,operationId);job.diagnostics={v:1,...job.diagnostics,reflection:{outputHash:digest(redactMemorySecrets(raw)),proposed:result.memories.length,processed:0,explicitProjectFacts:0,normalized:0,discarded:0}};
-        job.pendingRanges=result.memories.length?job.sources:[];job.pendingArtifacts=result.memories.length?job.observedArtifacts:[];
+        ensure();const actual=job.budgetId?new LearningBudget(this.store!).readCall(job.budgetId,operationId):undefined;if(actual)job.callIds=[...new Set((job.callIds||[]).map(id=>id===callId?actual.callId:id))];const memories=parseExtractionMemories(redactMemorySecrets(raw));
+        job.proposals=memories.map(value=>value&&typeof value==='object'&&!Array.isArray(value)?object(value):{invalidProposal:value});job.proposalLedger=this.proposalLedger(job,operationId);job.diagnostics={v:1,...job.diagnostics,reflection:{outputHash:digest(redactMemorySecrets(raw)),proposed:memories.length,processed:0,explicitProjectFacts:0,normalized:0,discarded:0}};
+        job.pendingRanges=memories.length?job.sources:[];job.pendingArtifacts=memories.length?job.observedArtifacts:[];
         job.stage='validate';return;
       }
       job.proposalLedger||=this.proposalLedger(job,job.modelOperations?.find(operation=>operation.stage==='extract')?.operationId||job.operationId||job.id);
@@ -1190,7 +1215,7 @@ export class MemoryController implements PluginController {
     const preferenceIds=applicable.map(record=>record.id);
     const merged=[...applicable,...found.records.filter(record=>!preferenceIds.includes(record.id)),...personal.filter(record=>!preferenceIds.includes(record.id)&&!found.records.some(item=>item.id===record.id))];
     const ordered=[...new Map(merged.map(record=>[record.id,record])).values()];
-    const pinned=this.pinnedRecords(ctx),pinnedIds=new Set(pinned.map(record=>record.id));
+    const pinned=this.pinnedRecords(ctx).filter(record=>this.scopeMatches(record,input,ctx)),pinnedIds=new Set(pinned.map(record=>record.id));
     const directoryCap=this.bounded(typeof input.budget==='object'?object(input.budget).directory:undefined,DIRECTORY_BUDGET,24000);
     const budgeted=applyBudget(ordered.filter(record=>!pinnedIds.has(record.id)),{budget:{body:cap,directory:directoryCap,count:Math.min(limit,8)},preferenceIds,measure:{directory:record=>JSON.stringify(this.directoryRecord(record)).length}});
     const byId=new Map(ordered.map(record=>[record.id,record]));
@@ -1577,7 +1602,9 @@ export class MemoryController implements PluginController {
     this.store!.afterCommit(()=>ctx.emit('memory.changed',this.snapshot(ctx)));
   }
   private dreamRun(input:JsonObject,ctx:PluginContext):JsonObject {
-    const nowIso=now();const records=this.records(ctx).filter(record=>record.status==='active'&&record.enabled&&record.kind!=='method').map(record=>this.dreamRecord(record));
+    if(ctx.origin==='agent')throw new CapabilityError('PERMISSION_DENIED','智能体不能主动运行巩固或提供巩固提案');
+    const nowIso=now();const dreamCounters=new Map((this.database(ctx).db.prepare('SELECT id,use_count,last_used_at,feedback_score FROM memory_records WHERE project_id=? OR scope=?').all(ctx.projectId,'personal') as {id:string;use_count:number;last_used_at:string|null;feedback_score:number}[]).map(row=>[String(row.id),row]));
+    const records=this.records(ctx).filter(record=>record.status==='active'&&record.enabled&&record.kind!=='method').map(record=>{const counter=dreamCounters.get(record.id);return this.dreamRecord({...record,useCount:counter?Number(counter.use_count):record.useCount,lastUsedAt:counter?.last_used_at??record.lastUsedAt,feedbackScore:counter?Number(counter.feedback_score):record.feedbackScore});});
     const conflictIds=this.conflictStore(ctx).list(ctx.projectId,{status:'open'}).flatMap(conflict=>conflict.sides.map(side=>side.memoryId));
     let plan=planDream({projectId:ctx.projectId,records,conflictIds,now:nowIso,maxOps:Math.min(48,Math.max(1,Number(input.maxOps??24)))});
     if(Array.isArray(input.proposals))plan=validateDreamProposal({plan,proposals:input.proposals,records});
@@ -1616,6 +1643,7 @@ export class MemoryController implements PluginController {
     const consolidationId=digest(['user-split',parent.id,parts]);
     const result=applyDreamPlan(this.database(ctx).db,{plan:{consolidationId,projectId:ctx.projectId,operations:[operation],proposals:[]},now,actor:'user'});
     this.reindexDream(result,ctx);
+    if(result.childIds.length!==parts.length)throw new CapabilityError('VALIDATION_ERROR','拆分未生效：每个部分都需要可解析的独立来源');
     return result.childIds.map(id=>this.get(id,ctx));
   }
   private supersedeMemory(input:JsonObject,ctx:PluginContext):JsonObject {
@@ -1629,7 +1657,10 @@ export class MemoryController implements PluginController {
     if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','导入记忆必须由用户操作');
     if(!Array.isArray(input.records)||!input.records.length||input.records.length>200)throw new CapabilityError('VALIDATION_ERROR','导入 records 必须是 1 到 200 条的数组');
     const imported:string[]=[],skipped:{index:number;reason:string}[]=[];
-    for(const [index,raw] of (input.records as unknown[]).entries()){try{const value=object(raw);const record=this.save({kind:value.kind??value.type??'fact',title:value.title,content:value.content??value.text,subject:value.subject??value.subject_key,aliases:value.aliases,conditions:value.conditions,sources:value.sources,validFrom:value.validFrom??value.valid_from,validTo:value.validTo??value.valid_to,reviewAfter:value.reviewAfter},ctx,false);
+    for(const [index,raw] of (input.records as unknown[]).entries()){try{const value=object(raw);const importContent=redactMemorySecrets(String(value.content??value.text??''));
+        const existing=this.records(ctx).find(record=>record.status!=='candidate'&&record.enabled&&normalize(record.content)===normalize(importContent)&&(record.scope==='personal'||value.scope===undefined||record.scope===value.scope));
+        if(existing&&(existing.confirmedBy==='user'||existing.trust==='user_explicit'||existing.trust==='user_confirmed'||existing.status==='active')){skipped.push({index,reason:'已存在同内容记忆，导入不覆盖现有权威'});continue;}
+        const record=this.save({kind:value.kind??value.type??'fact',title:value.title,content:value.content??value.text,subject:value.subject??value.subject_key,aliases:value.aliases,conditions:value.conditions,sources:value.sources,validFrom:value.validFrom??value.valid_from,validTo:value.validTo??value.valid_to,reviewAfter:value.reviewAfter},ctx,false);
         if(!record)throw new Error('导入记录被跳过');const external=this.write({...record,revision:record.revision+1,trust:'external_import',authority:'external',status:'candidate',autoPublished:false,confidence:'ambiguous',invalidatedReason:'外部导入默认候选，需用户确认',updatedAt:now()},ctx,record.revision);imported.push(external.id);
       }catch(error){skipped.push({index,reason:redactMemorySecrets(errorMessage(error))});}}
     return {imported,skipped};

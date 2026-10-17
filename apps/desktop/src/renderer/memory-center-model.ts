@@ -2497,7 +2497,7 @@ export function memorySplitInput(id: string, parts: SplitPartDraft[]): JsonObjec
     const content = part.content?.trim();
     if (!title) throw new Error(`第 ${index + 1} 个部分缺少标题。`);
     if (!content) throw new Error(`第 ${index + 1} 个部分缺少正文。`);
-    return { title, content, conditions: part.conditions ?? [], sources: [] };
+    return { title, content, conditions: part.conditions ?? [] };
   });
   return { id, parts: normalized };
 }

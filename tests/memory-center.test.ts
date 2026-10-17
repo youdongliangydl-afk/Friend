@@ -1094,8 +1094,9 @@ test('merge/split/supersede/toggle builders validate identity and bulk-edit inpu
   assert.throws(() => memorySplitInput('id', [{ title: 'a', content: 'A' }]), /至少需要两个部分/);
   const split = memorySplitInput('id', [{ title: '第一部分', content: 'A' }, { title: '第二部分', content: 'B', conditions: ['条件'] }]);
   assert.deepEqual(split.parts, [
-    { title: '第一部分', content: 'A', conditions: [], sources: [] },
-    { title: '第二部分', content: 'B', conditions: ['条件'], sources: [] },
+    // Sources are intentionally omitted so the controller inherits the parent record's evidence.
+    { title: '第一部分', content: 'A', conditions: [] },
+    { title: '第二部分', content: 'B', conditions: ['条件'] },
   ]);
   assert.throws(() => memorySplitInput('id', [{ title: 'a', content: 'A' }, { title: '', content: 'B' }]), /缺少标题/);
   assert.throws(() => memorySupersedeInput('a', 'a'), /不能相同/);

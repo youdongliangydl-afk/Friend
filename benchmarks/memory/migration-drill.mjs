@@ -446,6 +446,8 @@ function makeContext(dir) {
 }
 
 async function attemptRevival(controller, ctx) {
+  const previousRole = process.env.FRIEND_PI_LEARNING_ROLE;
+  process.env.FRIEND_PI_LEARNING_ROLE = 'producer';
   ctx.pushEntry({id: 'revival', parentId: 'forgotten', type: 'message', role: 'user', timestamp: NOW, text: FORGOTTEN, userText: FORGOTTEN});
   ctx.sessionId = 'review-1';
   ctx.complete = async () => JSON.stringify({memories: [{
@@ -453,12 +455,18 @@ async function attemptRevival(controller, ctx) {
     sourceEntryIds: ['revival'], sourceQuotes: {revival: FORGOTTEN},
   }]});
   await controller.settled(ctx);
+  let processed = 0;
   for (let round = 0; round < 10; round++) {
-    const job = peekLearningJob(ctx.dataDir);
-    if (!job) return;
+    const job = peekLearningJob(ctx.dataDir, {projectId: ctx.projectId, sessionId: ctx.sessionId});
+    if (!job) break;
+    ctx.sessionId = job.sessionId;
     const result = await controller.executeLearningJob(job.id, ctx);
-    if (!result.executed || result.job?.state === 'failed' || result.job?.state === 'waiting_configuration') return;
+    if (!result.executed) break;
+    processed += 1;
+    if (result.job?.state === 'failed' || result.job?.state === 'waiting_configuration') break;
   }
+  if (previousRole === undefined) delete process.env.FRIEND_PI_LEARNING_ROLE; else process.env.FRIEND_PI_LEARNING_ROLE = previousRole;
+  return processed;
 }
 
 function writerFenceCheck(checks, path, expectedRecords) {
@@ -621,11 +629,12 @@ async function drillFixture(fixture) {
   const revivalController = new MemoryController();
   try {
     revivalController.snapshot(ctx);
-    await attemptRevival(revivalController, ctx);
+    const processed = await attemptRevival(revivalController, ctx);
     const snapshot = revivalController.snapshot(ctx);
     const all = [...(snapshot.memories ?? []), ...(snapshot.candidates ?? [])];
     const revived = all.filter(record => String(record.content ?? '').includes('BENCH_FORGET_9'));
-    if (!revived.length) pass(checks, 'suppression.no-revival', 'forgotten content cannot be re-learned into memory', `records=${all.length}`);
+    if (processed === 0) fail(checks, 'suppression.no-revival', 'forgotten content cannot be re-learned into memory', 'no migration learning job executed; absence of records is not evidence');
+    else if (!revived.length) pass(checks, 'suppression.no-revival', 'forgotten content cannot be re-learned into memory', `jobs=${processed}, records=${all.length}`);
     else fail(checks, 'suppression.no-revival', 'forgotten content cannot be re-learned into memory', `revived=${revived.map(record => record.id).join(',')}`);
   } finally {
     await revivalController.dispose();

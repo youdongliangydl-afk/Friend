@@ -147,7 +147,7 @@ const LOW_RETENTION_THRESHOLD = 0.25;
 const MAX_PARENTS = 12;
 const MAX_PARTS = 12;
 const MAX_CONDITIONS = 50;
-const MAX_CONTENT = 4000;
+const MAX_CONTENT = 50000;
 const MAX_TITLE = 200;
 const DEFAULT_MAX_OPS = 24;
 
@@ -1317,8 +1317,10 @@ function applySplit(context:ApplyContext, op:Extract<DreamOperation, {kind:'spli
     insertMemoryRecord(context.db, json, context.consolidationId, context.hash);
     context.created.add(json.id as string);
   }
-  retireRecord(context.db, parent, 'Dream 拆分：父记录已拆分为多条单主张记录', context.consolidationId, context.stamp());
-  return {ok:true, parentIds:[parent.id], childIds, relationIds:[]};
+  // A model-proposed split only creates candidates; the still-valid parent must remain
+  // active until the user confirms the split. User-confirmed splits retire it immediately.
+  if (origin === 'user') retireRecord(context.db, parent, 'Dream 拆分：父记录已拆分为多条单主张记录', context.consolidationId, context.stamp());
+  return {ok:true, parentIds:origin === 'user' ? [parent.id] : [], childIds, relationIds:[]};
 }
 
 function applyProfile(context:ApplyContext, op:Extract<DreamOperation, {kind:'profile'}>):OperationOutcome {
