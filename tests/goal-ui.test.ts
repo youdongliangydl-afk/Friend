@@ -32,8 +32,19 @@ function editor(){let cursor=0;const slots:any[]=[],calls:any[]=[];let response=
 test('Goal editor disables empty/unchanged saves, restores edits and saves trimmed objective with exact revision',async()=>{
  const f=editor();assert.equal(f.button('保存').props.disabled,true);f.edit('  ');assert.equal(f.button('保存').props.disabled,true);f.submit();assert.equal(f.calls.length,0);f.edit('新目标');f.button('还原').props.onClick();assert.equal(f.button('保存').props.disabled,true);f.edit('  新目标  ');f.submit();await Promise.resolve();assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])),{action:'goal.set',input:{goalId:'g',expectedRevision:2,objective:'新目标',status:'active'}});assert.doesNotMatch(text(f.render()),/预算|令牌/);
 });
-test('editor retains failed draft, prevents duplicate save and requires restoring concurrently changed revision',async()=>{
+test('editor retains failed draft, prevents duplicate save and requires restoring concurrently changed objective',async()=>{
  const f=editor();f.edit('保留草稿');f.respond(async()=>{throw new Error('连接失败');});f.submit();f.submit();for(let i=0;i<6;i++)await Promise.resolve();assert.equal(f.calls.length,1);assert.match(text(f.render()),/连接失败/);assert.equal(nodes(f.render()).find(n=>n.type==='textarea').props.value,'保留草稿');f.props.goal={...goal,revision:3,objective:'模型更新目标'};assert.equal(f.button('保存').props.disabled,true);f.button('还原').props.onClick();assert.equal(nodes(f.render()).find(n=>n.type==='textarea').props.value,'模型更新目标');f.props.archived=true;f.edit('改动');assert.equal(f.button('保存').props.disabled,true);
+});
+test('usage and progress revisions preserve the edited draft and save with the latest revision',async()=>{
+ const f=editor();f.edit('用户正在编辑的目标');f.props.goal={...goal,revision:9,timeUsedSeconds:125,progress:'执行进度更新'};
+ assert.equal(f.button('保存').props.disabled,false);assert.equal(nodes(f.render()).find(n=>n.type==='textarea').props.value,'用户正在编辑的目标');assert.doesNotMatch(text(f.render()),/可还原到最新内容/);
+ f.submit();await Promise.resolve();assert.equal(f.calls.length,1);assert.equal(f.calls[0].input.expectedRevision,9);assert.equal(f.calls[0].input.goalId,'g');assert.equal(f.calls[0].input.objective,'用户正在编辑的目标');
+});
+test('changed Goal identity or objective blocks submission and retains the user draft',()=>{
+ for(const replacement of [{...goal,id:'new-goal',revision:9},{...goal,objective:'服务端修改目标',revision:9}]){const f=editor();f.edit('保留本地改动');f.props.goal=replacement;assert.equal(f.button('保存').props.disabled,true);f.submit();assert.equal(f.calls.length,0);assert.equal(nodes(f.render()).find(n=>n.type==='textarea').props.value,'保留本地改动');assert.match(text(f.render()),/可还原到最新内容/);}
+});
+test('Goal editor enforces the backend 4000 character limit for both controls and submission',()=>{
+ const f=editor();assert.equal(nodes(f.render()).find(n=>n.type==='textarea').props.maxLength,4000);f.edit('目'.repeat(4001));assert.equal(f.button('保存').props.disabled,true);f.submit();assert.equal(f.calls.length,0);f.edit('目'.repeat(4000));assert.equal(f.button('保存').props.disabled,false);
 });
 test('composer keeps Goal visible beside queued user messages with all plugins disabled and Plan independent',()=>{
  const value:ComposerSnapshot={goal,goalDraft:true,sessionId:'s',epoch:1,draft:'新的目标',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'',thinkingLevel:'off',thinkingLevels:['off'],ready:false,floating:false,collapsed:false,status:'',queue:{paused:false,items:[]}} as ComposerSnapshot;
