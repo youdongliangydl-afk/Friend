@@ -16,7 +16,7 @@ export class RuntimeController {
  private nativeContext?:ExtensionContext;private pi?:ExtensionAPI;private coordinator?:ContinuationCoordinator;
  private disposed=false;private draining=false;private activeWake?:WakeFrame;private bindingEpoch=0;private checkpointSerial=0;private readonly wakeEvents=new Set<string>();
  private readonly admittedGoalEpochs=new WeakMap<WakeFrame,number>();
- private goalEpoch=0;private turn?:{automatic:boolean;goalId?:string;success:boolean;unavailable:boolean;response:boolean};
+ private goalEpoch=0;private turn?:{automatic:boolean;goalId?:string;objective?:string;goalEpoch:number;success:boolean;unavailable:boolean;response:boolean};
  private readonly waitHandles=new Map<string,{goalId:string;runId?:string;active:boolean}>();
  private readonly swarmStatuses=new Map<string,string>();
  constructor(readonly dataDir:string,readonly hooks:RuntimeHooks){
@@ -32,7 +32,7 @@ export class RuntimeController {
  setGoalForInput(input:JsonObject,ctx:PluginContext){const prior=this.goals.current(ctx);const goal=this.goals.set(input,ctx,this.generation());this.cancelGoalWake(prior?.id);this.resetGoalStreak(goal.id,ctx);return goal;}
  private resetGoalStreak(goalId:string,ctx:PluginContext){this.store.remove(`turn-streak:${ctx.sessionId}:${goalId}`);}
  cancelGoalWake(goalId?:string){this.goalEpoch++;if(goalId)this.coordinator?.cancelGoal(goalId);}
- beginTurn({automatic}:{automatic:boolean}){this.goals.bindRun(this.context());this.turn={automatic,goalId:this.currentGoal()?.id,success:false,unavailable:false,response:false};}
+ beginTurn({automatic}:{automatic:boolean}){this.goals.bindRun(this.context());const goal=this.currentGoal();this.turn={automatic,goalId:goal?.id,objective:goal?.objective,goalEpoch:this.goalEpoch,success:false,unavailable:false,response:false};}
  recordGoalToolOutcome({success,executionUnavailable=false}:{success:boolean;executionUnavailable?:boolean}){if(this.turn){this.turn.success ||= success;this.turn.unavailable ||= executionUnavailable;}}
  recordGoalResponse({text='',reasoning='',questions=[]}:{text?:string;reasoning?:string;questions?:unknown[]}){if(this.turn)this.turn.response ||= !!(text.trim()||reasoning.trim()||questions.length);}
 
@@ -65,6 +65,13 @@ export class RuntimeController {
    pi.registerTool({name,label:description.split('。')[0],description,parameters:Type.Object({action:Type.String(),input:Type.Optional(Type.Record(Type.String(),Type.Unknown()))}),execute:async(_id,params,_signal,_update,ctx)=>{this.nativeContext=ctx;const result=await this.dispatch(`${prefix}.${params.action}`,params.input||{},makeContext(pi,ctx,'agent',_id));return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
    pi.registerCommand(prefix,{description,handler:async(args,ctx)=>{this.nativeContext=ctx;const split=args.indexOf(' '),action=args?(split<0?args:args.slice(0,split)):'list';const raw=split<0?'':args.slice(split+1);const result=await this.dispatch(`${prefix}.${action}`,raw.trim()?object(JSON.parse(raw)): {},makeContext(pi,ctx,'user'));ctx.ui.notify(JSON.stringify(result),'info');}});
   }
+  pi.registerCommand('goal',{description:'设置或查看当前会话目标；pause / resume / clear 管理目标。',handler:async(args,ctx)=>{
+   this.nativeContext=ctx;const value=args.trim(),split=value.indexOf(' '),verb=split<0?value:value.slice(0,split),rest=split<0?'':value.slice(split+1).trim();
+   const aliases:Record<string,string>={get:'get',read:'get',status:'get',list:'list',pause:'pause',resume:'resume',clear:'clear',stop:'pause'};
+   const action=!value?'goal.get':aliases[verb]?`goal.${aliases[verb]}`:'goal.set';
+   const input=action==='goal.set'?{objective:value,status:'active'}:rest?object(JSON.parse(rest)):{};
+   const result=await this.dispatch(action,input,makeContext(pi,ctx,'user'));ctx.ui.notify(JSON.stringify(result??null),'info');
+  }});
   pi.on('session_shutdown',event=>{off();this.bindingEpoch++;this.nativeContext=undefined;this.pi=undefined;if(event.reason!=='reload'){this.disposed=true;}});
  };}
  async restore(){
@@ -106,12 +113,16 @@ export class RuntimeController {
    if(mutating&&input.goalId!==undefined&&input.goalId!==focused?.id)throw new CapabilityError('VERSION_CONFLICT','当前目标已变化，请重新读取后操作');
    if(mutating&&input.expectedRevision!==undefined&&input.expectedRevision!==focused?.revision)throw new CapabilityError('VERSION_CONFLICT','目标版本已变化，请重新读取后操作');
    if(ctx.origin==='agent'&&mutating&&operation!=='create'&&(!focused||focused.sourceRunId!==ctx.runId))throw new Error('目标不属于当前执行');
+   if(ctx.origin==='agent'&&mutating&&this.turn){
+    if(operation==='create'&&this.turn.goalEpoch!==this.goalEpoch)throw new CapabilityError('VERSION_CONFLICT','用户已改变目标控制，当前回合不能重新创建目标');
+    if(operation!=='create'&&(this.turn.goalId!==focused?.id||this.turn.objective!==focused?.objective))throw new CapabilityError('VERSION_CONFLICT','目标已更新，请先用 get_goal 读取当前目标再核对成果');
+   }
    if(operation==='create'||operation==='set'){
     const goal=operation==='set'?this.goals.set(input,ctx,this.generation()):this.goals.create(input,ctx,this.generation());
-    this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(this.turn&&!this.turn.goalId)this.turn.goalId=goal.id;if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
+    this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(ctx.origin==='agent'&&this.turn){this.turn.goalId=goal.id;this.turn.objective=goal.objective;this.turn.goalEpoch=this.goalEpoch;}if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
    }
    if(operation==='list'||operation==='snapshot')return this.goals.list(ctx);
-   if(['get','read','status'].includes(operation))return input.id?this.goals.read(text(input.id),ctx):focused||null;
+   if(['get','read','status'].includes(operation)){const result=input.id?this.goals.read(text(input.id),ctx):focused||null;if(ctx.origin==='agent'&&this.turn&&result?.id===focused?.id){this.turn.goalId=focused?.id;this.turn.objective=focused?.objective;}return result;}
    if(operation==='clear'){if(ctx.origin!=='user')throw new Error('仅用户可以清除目标');const result=this.goals.clear(ctx,input);this.cancelGoalWake(focused?.id);return result;}
    if(operation==='update'&&input.status===undefined){const continuation=input.continuation?object(input.continuation):undefined;if(continuation?.kind==='wait'&&(!focused||!this.knownWait(text(continuation.taskId,'等待对象'),focused,ctx)))throw new Error('等待对象必须是当前目标已知且未结束的实际执行对象');return this.goals.update(input,ctx);}
    const status=operation==='update'?String(input.status):operation;
@@ -119,7 +130,8 @@ export class RuntimeController {
     const goal=this.goals.setState(status==='blocked'?'blocked':'paused',ctx,typeof input.reason==='string'?input.reason:status==='blocked'?'主 Agent 报告持续阻塞':'用户要求暂停目标',input);this.cancelGoalWake(focused?.id);return goal;
    }
    if(operation==='resume'){if(this.unknownActivities().length||this.jobs.hasUnknown(ctx))throw new Error('请先检查并确认未知现场，再接续目标');const goal=this.goals.resume(input,ctx,this.generation());this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);this.enqueue(`resume:${goal.id}:${goal.revision}`,`继续目标：${goal.objective}。依据现有成果推进。`,{goalId:goal.id});return goal;}
-   if(status==='complete'||operation==='accept'){
+   if(operation==='accept')return this.goals.accept(input,ctx,this.tasks,this.safeObjects());
+   if(status==='complete'){
     const result=await this.goals.finish(ctx,this.tasks,async()=>({approved:true,findings:'主 Agent 完成核对'}),this.safeObjects(),input);this.cancelGoalWake(focused?.id);return result;
    }
    throw new Error('未知目标操作');

@@ -25,6 +25,21 @@ test('model goal tools expose only explicit objective and canonical status',asyn
  await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},{...f.ctx,origin:'agent',runId:'other-run'}),/当前执行/);
 }finally{await f.close();}});
 
+test('old model completion cannot complete an edited objective; reading the new goal renews its evidence binding',async()=>{const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});const agent={...f.ctx,origin:'agent' as const};
+ await f.runtime.dispatch('goal.set',{objective:'New requirement received while streaming'},f.ctx);
+ await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},agent),{code:'VERSION_CONFLICT'});assert.equal(f.runtime.currentGoal()?.status,'active');
+ await f.runtime.dispatch('goal.get',{},agent);f.runtime.account(500,'normal-accounting');
+ await f.runtime.dispatch('goal.update',{status:'complete'},agent);assert.equal(f.runtime.currentGoal(),undefined);
+}finally{await f.close();}});
+
+test('clear and execution stop revoke late create_goal authority from the current turn',async()=>{for(const action of ['clear','stop']){const f=fixture();try{
+ f.runtime.beginTurn({automatic:false});if(action==='clear')await f.runtime.dispatch('goal.clear',{},f.ctx);else await f.runtime.stop();
+ await f.runtime.dispatch('goal.get',{}, {...f.ctx,origin:'agent'});
+ await assert.rejects(f.runtime.dispatch('goal.create',{objective:'Late unauthorized resurrection',userRequested:true},{...f.ctx,origin:'agent'}),{code:'VERSION_CONFLICT'});
+ assert.equal(f.runtime.currentGoal()?.status,action==='stop'?'paused':undefined);
+}finally{await f.close();}}});
+
 test('pause and clear cancel only goal wakes and do not halt execution, jobs, tasks or generation',async()=>{for(const action of ['pause','clear']){const f=fixture();try{
  const task=f.runtime.tasks.create({title:'Still running'},f.ctx,f.goal.id);f.runtime.tasks.start(task.id,f.ctx);let jobStops=0;f.runtime.jobs.stopRun=async()=>{jobStops++;};
  const generation=f.runtime.generation();f.runtime.enqueue('goal-frame','goal continuation',{goalId:f.goal.id});f.runtime.enqueue('independent-result','job completion',{runId:'run'});
