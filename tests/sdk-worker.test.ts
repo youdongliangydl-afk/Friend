@@ -687,7 +687,7 @@ test('Goal draft sends the first user prompt once and idle continuation adds no 
   await f.request('send',{text:objective,goal:{objective},mode:'single'});
   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'&&!event.event.data.isRunning));
   assert.equal(h.requests.length,3,'one initial request, one idle continuation, one response after completing the Goal');
-  const firstUsers=h.requests[0].messages.filter((message:any)=>message.role==='user'&&!JSON.stringify(message.content).includes('[Friend 当前有效的用户设置指令：'));assert.equal(firstUsers.length,1);assert.match(JSON.stringify(firstUsers[0].content),/GOAL_EXACT_USER_PROMPT/);
+  const firstUsers=h.requests[0].messages.filter((message:any)=>message.role==='user'&&!['[Friend 当前有效的用户设置指令：','[Friend 当前目标状态]'].some(marker=>JSON.stringify(message.content).includes(marker)));assert.equal(firstUsers.length,1);assert.match(JSON.stringify(firstUsers[0].content),/GOAL_EXACT_USER_PROMPT/);
   assert.match(JSON.stringify(h.requests[0].messages.filter((message:any)=>message.role==='system')),/GOAL_EXACT_USER_PROMPT/);
   const state=await f.request('state') as {sessionFile:string;messages:{role:string;userText?:string}[];runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};
   assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
