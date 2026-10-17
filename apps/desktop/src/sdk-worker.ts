@@ -13,6 +13,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { SourcePolicy,isDerivedCapabilityInput,modelTokenUsage,type ArtifactRef,type EvidenceReceipt,shellEnvironment,dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest,type WakeFrame } from '@friend-pi/core';
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
+import {goalSideEffectIssues} from './goal-side-effects.js';
 import {PlanStore,type PlanExecution} from './plan-store.js';
 import {projectPlanContext} from './plan-context.js';
 import {approvedPlanPrompt,planInputReceipt,recoverPlanInputs} from './plan-input.js';
@@ -43,7 +44,8 @@ function recordForeground(force?:boolean){if(disposed||!session)return;foregroun
 const foregroundPulse=setInterval(()=>recordForeground(),5000);foregroundPulse.unref();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;let teammateRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
 const external=createExternalCapabilities({dataDir,cwd,confirm:request=>approvePermission(request),publish:()=>{if(session&&!disposed)publish('state',current());}});
-const services=new RuntimeController(dataDir,{admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed){recordForeground();publish('state',current());}},busy:()=>swarmBusy(),mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:sendRuntimeWake,prepareWake:prepareRuntimeWake});
+let swarmSafetySnapshot:Record<string,unknown>={};
+const services=new RuntimeController(dataDir,{unresolvedSideEffects:(ctx,goal)=>goalSideEffectIssues(swarmSafetySnapshot,ctx,goal).some(issue=>issue.kind!=='running'),unsettledExecution:(ctx,goal)=>goalSideEffectIssues(swarmSafetySnapshot,ctx,goal).length>0,admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed){recordForeground();publish('state',current());}},busy:()=>swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0||swarmCorrectionActive||teammateRunning,mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:sendRuntimeWake,prepareWake:prepareRuntimeWake});
 function runtimeState(){try{return services.snapshot();}catch{return undefined;}}
 function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runId);}catch{return false;}}
 async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
@@ -73,7 +75,7 @@ function runtimeWakeAllowed(frame:WakeFrame){
  if(initial?freshCorrection(frame):!correctedRun(owner)||authorisedCorrectionResume&&authorisedCorrectionResume.runId===owner&&authorisedCorrectionResume.generation===frame.generation)return true;
  // A read-only verification must not turn a member/goal/job result into renewed execution.
  skipRuntimeWake({...frame,runId:owner},initial?'stale-correction':'correction-verification-only');
- const goal=services.currentGoal();if(goal&&goal.sourceRunId===owner&&['active','waiting'].includes(goal.status)){services.goals.setState('paused',services.context(),correctionPauseReason);lifecycleStatus='paused';foregroundOpen=false;publish('state',current());}
+ const goal=services.currentGoal();if(goal&&goal.sourceRunId===owner&&['active'].includes(goal.status)){services.goals.setState('paused',services.context(),correctionPauseReason);lifecycleStatus='paused';foregroundOpen=false;publish('state',current());}
  return false;
 }
 async function prepareRuntimeWake(frame:WakeFrame){
@@ -83,7 +85,7 @@ async function prepareRuntimeWake(frame:WakeFrame){
  const owns=()=>!disposed&&!stopping&&(!correction||!cancelRequested)&&wakeEpoch===queueEpoch&&wakeGeneration===services.generation()&&(!wakeRunId||wakeRunId===runId);
  const assertOwned=()=>{if(!owns())throw new Error('接续已取消');};
  try{
-  assertOwned();if(memberBudgetWait())throw new Error(memberBudgetWait());
+  assertOwned();
   if(!runId){runId=wakeRunId||randomUUID();wakeRunId=runId;process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();captureRunPolicy(frame.id.startsWith('member-request:')?false:undefined);}
   const goal=services.currentGoal();if(frame.id.startsWith('resume:')&&goal)captureRunPolicy(goal.mode==='swarm'&&!planMode);
   await changeTracker?.ensure(runId);assertOwned();
@@ -97,8 +99,18 @@ async function sendRuntimeWake(frame:WakeFrame){
  const owns=()=>!disposed&&!stopping&&!cancelRequested&&wakeEpoch===queueEpoch&&frame.generation===services.generation()&&(!frame.runId||frame.runId===runId);
  let input:PendingInput|undefined,started=false;
  try{
-  await new Promise<void>(done=>setImmediate(done));if(!owns()||frame.goalId&&services.currentGoal()?.status!=='active'&&services.currentGoal()?.status!=='waiting')return;
+  await new Promise<void>(done=>setImmediate(done));if(!owns()||frame.goalId&&services.currentGoal()?.status!=='active')return;
   await ensureModelReady();if(!owns())return;
+  if(frame.goalId){
+   // Goal continuations are native custom messages, never synthetic user input.
+   // Admission remains with the controller; do not queue behind a newer user turn.
+   const goal=services.currentGoal();
+   if(!session.isIdle||planMode||inputQueue.snapshot().items.length||!goal||goal.id!==frame.goalId||goal.status!=='active'||!services.isWakeCurrent(frame))return;
+   automaticGoalTurn=true;started=true;
+   session.sessionManager.appendCustomEntry('friend-pi.runtime-wake',{v:1,eventId:frame.id,generation:frame.generation,goalId:frame.goalId});
+   await session.sendCustomMessage({customType:'friend-pi.goal-wake',content:frame.message,display:false,details:{v:1,eventId:frame.id,goalId:frame.goalId,generation:frame.generation}},{triggerTurn:true,deliverAs:'followUp'});
+   return;
+  }
   if(correction){swarmCorrectionPending=false;swarmCorrectionActive=true;}
   swarmResultActive=swarmResult;
   input={id:randomUUID(),text:frame.message,combinedLength:frame.message.length,combinedHash:digest(frame.message),imageHash:imageIdentity([]),expectsStart:true,automatic:true,background:correction||swarmResult,swarmResult,memberContinuation:frame.id.startsWith('member-request:'),runId};pendingInputs.push(input);
@@ -106,12 +118,14 @@ async function sendRuntimeWake(frame:WakeFrame){
   await session.prompt(frame.message,{expandPromptTemplates:false,preflightResult:result=>{if(!owns())throw new Error('接续已取消');if(result==='started')started=true;}});
  }catch(error){if(correction&&owns()){swarmCorrectionPending=false;swarmCorrectionActive=false;lifecycleStatus='failed';publish('state',current());}throw error;
  }finally{
+  automaticGoalTurn=false;
   swarmResultActive=false;
   if(input){const position=pendingInputs.indexOf(input);if(position>=0)pendingInputs.splice(position,1);}
   if(correction&&owns()){swarmCorrectionPending=false;swarmCorrectionActive=false;if(!started){lifecycleStatus=settledStatus();publishAuthorityNotice();publish('state',current());}}
  }
 }
 let inputQueue:MessageQueue;let queueDriving=false;let queueEpoch=0;let queueResumeAuthorised=false;let queueRestoring:Promise<boolean>|undefined;
+let automaticGoalTurn=false;
 interface GoalSuspension {id:string;revision:number;sourceRunId?:string;objective:string;mode:ExecutionMode;planMode:boolean;modelId:string;thinkingLevel:ThinkingLevel}
 const suspensionKey=()=>`suspension:${session.sessionId}`;
 function cancelQueueResume(){inputQueue?.store.remove(suspensionKey());}
@@ -120,79 +134,47 @@ function queueChanged(){publish('state',current());if(!disposed)setImmediate(()=
 async function admitQueuedInput():Promise<boolean>{
  if(!inputQueue||disposed||queueDriving||stopping)return queueDriving;
  if(swarmCorrectionPending)return false;
- const snapshot=inputQueue.snapshot(),suspended=inputQueue.store.get<GoalSuspension>(suspensionKey())?.value;
- if(snapshot.paused)return !!suspended;
+ const snapshot=inputQueue.snapshot();
+ // A queued message has priority without detaching or pausing the session goal.
+ // Legacy suspension receipts are retained only until their next admission.
+ if(snapshot.paused)return snapshot.items.length>0;
  if(!session.isIdle||swarmBusy()||finiteJobs()||!services.safeObjects()||lifecycleStatus==='rebuilding')return snapshot.items.length>0;
+ const head=snapshot.items[0];
+ if(!head){cancelQueueResume();return false;}
  queueDriving=true;
  try{
-  const admissionEpoch=queueEpoch;const head=snapshot.items[0];
-  if(head){
-   if(head.state!=='queued')return true;
-   if(!queueResumeAuthorised&&['failed','interrupted','stopped','paused'].includes(lifecycleStatus)){inputQueue.pause(true);queueChanged();return true;}
-   const focused=services.currentGoal();if(focused&&['completed','stopped'].includes(focused.status))services.goals.store.remove(`focus:${session.sessionId}`);
-   if(suspended&&focused&&['active','waiting','verifying'].includes(focused.status)){cancelQueueResume();inputQueue.pause(true);publish('notice',{level:'warning',message:'新目标已取代原目标的自动恢复，请处理当前目标后恢复队列'});queueChanged();return true;}
-   const held=services.suspendForQueuedInput();if(held)inputQueue.store.put(suspensionKey(),{...held,mode:executionMode,planMode,modelId:`${session.model!.provider}/${session.model!.id}`,thinkingLevel:session.thinkingLevel} satisfies GoalSuspension);
-   await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();
-   const latest=inputQueue.snapshot();if(admissionEpoch!==queueEpoch||latest.paused||stopping||latest.items[0]?.id!==head.id||latest.items[0]?.revision!==head.revision)return true;
-   const item=inputQueue.claim(head.id,head.revision,randomUUID());queueResumeAuthorised=false;queueChanged();
-   queueRestoring=handle('send',{payload:item,queueId:item.id,admissionEpoch,runId:item.runId,mode:item.mode,planMode:item.planMode}).then(()=>true);try{await queueRestoring;}catch(error){inputQueue.failed(item.id);queueChanged();throw error;}finally{queueRestoring=undefined;}return true;
-  }
-  if(suspended){
-   const goal=services.goals.read(suspended.id,services.context());
-   if(goal.status!=='paused'||goal.revision!==suspended.revision||!suspended.sourceRunId){cancelQueueResume();return false;}
-   const focused=services.currentGoal();
-   const incompleteGoal=focused&&focused.id!==goal.id&&!['completed','stopped'].includes(focused.status);
-   const independentRun=runId!==suspended.sourceRunId;
-   const incompleteTask=independentRun&&services.tasks.list(services.context()).some(task=>task.runId===runId&&task.status!=='completed');
-   const incompleteGraph=independentRun&&[...swarmGraphs.values()].some(graph=>graph.runId===runId&&graph.audit!==true&&!['integrated','completed'].includes(String(graph.status)));
-   if(incompleteGoal||incompleteTask||incompleteGraph||independentRun&&!queueResumeAuthorised&&lifecycleStatus!=='completed'){inputQueue.pause(true);queueChanged();return true;}
-   if(goal.tokenBudget!==undefined&&(!goal.usageAvailable||goal.tokens>=goal.tokenBudget))throw new Error('原目标预算需要处理，未自动恢复');
-   if(goal.sessionId!==session.sessionId)throw new Error('原目标不属于当前会话');
-   const valid=()=>{const marker=inputQueue.store.get<GoalSuspension>(suspensionKey())?.value,currentGoal=services.goals.read(goal.id,services.context());return admissionEpoch===queueEpoch&&!stopping&&!disposed&&!inputQueue.snapshot().paused&&!inputQueue.snapshot().items.length&&marker?.id===goal.id&&marker.revision===goal.revision&&currentGoal.status==='paused'&&currentGoal.revision===goal.revision;};
-   queueRestoring=(async()=>{
-   await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();
-   const snapshot=enabled.includes('swarm')?object(await requestPlugin(bus,'swarm','snapshot',{},1000)):{};
-   await changeTracker?.ensure(suspended.sourceRunId!);
-   if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,suspended.modelId);
-   if(!valid())return true;
-   const previousModel=session.model,previousThinking=session.thinkingLevel;
-   await session.setModel(selectedModel(suspended.modelId));
-   // Manual mutations wait for this restoration to retire. If cancelled during
-   // the SDK's async model change, restore B before applying the user's change.
-   if(!valid()){if(previousModel)await session.setModel(previousModel);session.setThinkingLevel(previousThinking);return true;}
-   session.setThinkingLevel(suspended.thinkingLevel);executionMode=suspended.mode;planMode=suspended.planMode;
-   runId=suspended.sourceRunId;process.env.FRIEND_PI_RUN_ID=runId;settledRunId=runId;cancelRequested=false;authorityNotice='';activeGraphIds.clear();runGraphIds.clear();modelSwarmGraphIds.clear();baselineGraphIds.clear();
-   const nativePolicy=ownedEntries(session.sessionManager.getBranch()).findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).runId===runId);
-   runRequiresSwarm=nativePolicy?.type==='custom'?object(nativePolicy.data).requiresSwarm===true:goal.mode==='swarm';
-   for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId===session.sessionId&&graph.runId===runId&&graph.audit!==true){swarmGraphs.set(String(graph.id),graph);runGraphIds.add(String(graph.id));}}
-   services.goals.store.put(`focus:${session.sessionId}`,goal.id);
-   if(correctedRun(runId)){skipRuntimeWake({id:`queue-resume:${goal.id}:${goal.revision}`,generation:services.generation(),runId},'correction-verification-only');services.goals.setState('paused',services.context(),correctionPauseReason);cancelQueueResume();queueResumeAuthorised=false;lifecycleStatus='paused';foregroundOpen=false;queueChanged();return false;}
-   await services.dispatch('goal.resume',{goalId:goal.id},services.context('user'));cancelQueueResume();queueResumeAuthorised=false;lifecycleStatus='running';queueChanged();return false;
-   })();try{return await queueRestoring;}finally{queueRestoring=undefined;}
-  }
-  return false;
+  if(head.state!=='queued')return true;
+  if(!queueResumeAuthorised&&['failed','interrupted','stopped','paused'].includes(lifecycleStatus)){inputQueue.pause(true);queueChanged();return true;}
+  const admissionEpoch=queueEpoch;
+  services.suspendForQueuedInput();cancelQueueResume();
+  await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();
+  const latest=inputQueue.snapshot();if(admissionEpoch!==queueEpoch||latest.paused||stopping||latest.items[0]?.id!==head.id||latest.items[0]?.revision!==head.revision)return true;
+  const item=inputQueue.claim(head.id,head.revision,randomUUID());queueResumeAuthorised=false;queueChanged();
+  queueRestoring=handle('send',{payload:item,queueId:item.id,admissionEpoch,runId:item.runId,mode:item.mode,planMode:item.planMode}).then(()=>true);
+  try{await queueRestoring;}catch(error){inputQueue.failed(item.id);queueChanged();throw error;}finally{queueRestoring=undefined;}
+  return true;
  }catch(error){inputQueue.pause(true);publish('notice',{level:'error',message:publicError(error)});publish('state',current());return true;}finally{queueDriving=false;}
 }
 function imageIdentity(images:readonly unknown[]){return digest(JSON.stringify(images.map(raw=>{const image=object(raw);return [image.mimeType,image.data];})));}
 function output(message:unknown,flushed?:()=>void){if(process.connected){if(flushed)process.send?.(message,flushed);else process.send?.(message);}else flushed?.();}
 function startupPhase(phase:'provider-runtime'|'model-selection'|'resources'|'native-session'|'agent-session'|'extensions'|'restore'|'metadata'){output({type:'startup.phase',phase});}
-function publish(type:string,data:unknown){if(type==='state'&&!object(data).isRunning&&!disposed&&!['active','waiting','verifying'].includes(services.currentGoal()?.status||''))void changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
+function publish(type:string,data:unknown){if(type==='state'&&!object(data).isRunning&&!disposed&&!['active'].includes(services.currentGoal()?.status||''))void changeTracker?.settle(runId,lifecycleStatus,session?.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id).catch(error=>publish('notice',{level:'warning',message:publicError(error)}));output({type:'event',event:{type,sessionId:session?.sessionId,runId,data}});}
 function dialog(kind:string,title:string,input:Record<string,unknown>={},timeout=60000,terminalRequestId?:string):Promise<unknown>{
   const id=randomUUID();return new Promise(resolveResult=>{const timer=setTimeout(()=>{dialogs.delete(id);resolveResult(undefined);publish('dialog.closed',{id});},timeout);dialogs.set(id,{resolve:resolveResult,timer,terminalRequestId});publish('dialog',{id,kind,title,...input,expiresAt:Date.now()+timeout});});
 }
 const busyGraphStatuses=new Set(['running','awaiting_review','ready','stopping']);
 const swarmExecutionActions=new Set(['start','resume','prepare','review','integrate','rework']);
-function memberBudgetWait(){const goal=services.currentGoal();return goal?.tokenBudget!==undefined&&(!goal.usageAvailable||goal.tokens>=goal.tokenBudget)?'目标预算耗尽或使用量不可核实，补充已保存，请先处理预算':undefined;}
+
 function rootExecutionBusy(){return swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0||swarmCorrectionPending||swarmCorrectionActive;}
 function swarmBusy(){return rootExecutionBusy()||teammateRunning;}
-function runtimeWakeBusy(){return !disposed&&!cancelRequested&&!stopping&&services.hasCurrentWake();}
+function runtimeWakeBusy(){return !disposed&&!cancelRequested&&!stopping&&!planMode&&services.hasCurrentWake();}
 function captureRunPolicy(requiresSwarm=executionMode==='swarm'&&!planMode){runRequiresSwarm=requiresSwarm;session.sessionManager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId,mode:executionMode,planMode,requiresSwarm});}
 let missingModelId:string|undefined;
 let correctionEligibleRun:string|undefined,correctionEligibleGeneration:number|undefined,swarmCorrectionPending=false,swarmCorrectionActive=false;
 function correctMissingSwarm(){
  const last=[...session.messages].reverse().find(message=>message.role==='assistant');
  const goal=services.currentGoal();
- if(!runId||correctionEligibleRun!==runId||correctionEligibleGeneration!==services.generation()||runRequiresSwarm!==true||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed||rootExecutionBusy()||runGraphIds.size||activeGraphIds.size||finiteJobs()||!services.safeObjects()||memberBudgetWait()||roleDeliveryErrors.has(runId)||unresolvedSwarmContract()||last?.stopReason!=='stop'||goal&&(!['active','waiting'].includes(goal.status)||goal.waitFor==='user-acceptance'))return false;
+ if(!runId||correctionEligibleRun!==runId||correctionEligibleGeneration!==services.generation()||runRequiresSwarm!==true||executionMode!=='swarm'||planMode||cancelRequested||stopping||disposed||rootExecutionBusy()||runGraphIds.size||activeGraphIds.size||finiteJobs()||!services.safeObjects()||roleDeliveryErrors.has(runId)||unresolvedSwarmContract()||last?.stopReason!=='stop'||goal&&goal.status!=='active')return false;
  if(session.sessionManager.getBranch().some(entry=>entry.type==='custom'&&entry.customType==='friend-pi.swarm.correction.v1'&&object(entry.data).runId===runId))return false;
  const id='swarm-correction:'+runId,generation=services.generation();
  session.sessionManager.appendCustomEntry('friend-pi.swarm.correction.v1',{v:1,runId,generation,id});
@@ -333,7 +315,7 @@ function guard():ExtensionFactory{return pi=>{
  pi.registerTool({name:'friend_questions',label:'向用户提问',description:'需要用户澄清或选择时，主助手把相关问题合为一组。支持single/multiple/text；逐题填写、复核后一次提交。required必须明确，选项用稳定id/label。不要用默认选项代替用户回答；取消时没有部分答案。',parameters:Type.Object({v:Type.Literal(1),title:Type.String(),questions:Type.Array(Type.Object({id:Type.String(),type:Type.Union(['single','multiple','text'].map(value=>Type.Literal(value))),title:Type.String(),description:Type.Optional(Type.String()),required:Type.Boolean(),options:Type.Optional(Type.Array(Type.Object({id:Type.String(),label:Type.String()}))),allowOther:Type.Optional(Type.Boolean())}),{minItems:1,maxItems:12})}),async execute(id,input,signal){const result=await requestQuestions(input,id,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
 
   pi.registerTool({name:'friend_terminal',label:'服务终端',description:'启动需要保持运行的服务终端，列出或读取输出。input/read/stop 必须提供当前 authorityEpoch；用户接管后不可控制。',parameters:Type.Object({action:Type.Union(['create','list','read','input','stop'].map(value=>Type.Literal(value))),id:Type.Optional(Type.String()),name:Type.Optional(Type.String()),command:Type.Optional(Type.String()),data:Type.Optional(Type.String()),authorityEpoch:Type.Optional(Type.Number())}),async execute(_id,input,signal){if(planMode&&!['list','read'].includes(input.action))throw new Error('计划模式只允许读取已有服务终端');const result=await terminalRequest(input.action,input,signal);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-  const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&!runtimeWakeBusy()&&!teammateRunning&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(teammateRunning?1:0)+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,permissionMode,temporaryWriteRoot,executionStopped:stopping||cancelRequested||!!memberBudgetWait(),executionWaitReason:memberBudgetWait(),modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active','waiting','verifying'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};foregroundStore.put(`expert-parent:${String(request.sessionId)}`,{v:1,projectId:projectIdentity(cwd),sessionId:request.sessionId,expertEnabled:enabled.includes('expert'),policy});(request.reply as (value:HostPolicy)=>void)(policy);});
+  const offPolicy=pi.events.on('friend-pi:v1:policy',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||session&&request.sessionId!==session.sessionId)return;const active=[...services.activeTools(),...services.unknownActivities(),...services.unsettledJobs()];const admissions=services.jobs.pendingCount(String(request.sessionId));const members=[...swarmGraphs.values()].flatMap(graph=>[...(Array.isArray(graph.attempts)?graph.attempts:[]),...(Array.isArray(graph.reviewAttempts)?graph.reviewAttempts:[])].map(object)).filter(attempt=>attempt.status==='running').length;const policy:HostPolicy={v:1,revision:policyRevision,runId,stage:'main',canSwitchRole:!modelInFlight&&!runtimeWakeBusy()&&!teammateRunning&&active.length===0&&members===0&&admissions===0,unsettledTools:active.length+members+admissions+(teammateRunning?1:0)+(modelInFlight?1:0),tools:pi.getAllTools().map(tool=>tool.name),writeScopes:planMode?[]:['.'],executionMode,planMode,permissionMode,temporaryWriteRoot,executionStopped:stopping||cancelRequested,modelId:session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session?.thinkingLevel,goalId:services.currentGoal()&&['active'].includes(services.currentGoal()!.status)?services.currentGoal()!.id:undefined};foregroundStore.put(`expert-parent:${String(request.sessionId)}`,{v:1,projectId:projectIdentity(cwd),sessionId:request.sessionId,expertEnabled:enabled.includes('expert'),policy});(request.reply as (value:HostPolicy)=>void)(policy);});
   const offEvaluation=pi.events.on('friend-pi:v1:expert-evaluation',raw=>{const request=object(raw);if(request.v!==1||typeof request.reply!=='function'||!session||request.sessionId!==session.sessionId)return;(request.reply as (host:unknown)=>void)(createExpertEvaluationHost({context:()=>services.context('plugin'),runtime,canAdmit:()=>!disposed&&!stopping&&session.isIdle&&!swarmBusy()}));});
   pi.on('session_shutdown',()=>{offPolicy();offEvaluation();});
   pi.registerTool({name:'friend_todo',label:'任务待办',description:'维护本轮可见 Todo 清单。read 读取，update 提交完整 items=[{content,status:pending|in_progress|completed}]。多步骤任务开始时规划，执行变化后更新；勾选不代表验收通过。',parameters:Type.Object({action:Type.Union([Type.Literal('read'),Type.Literal('update')]),items:Type.Optional(Type.Array(Type.Object({content:Type.String(),status:Type.Union(['pending','in_progress','completed'].map(value=>Type.Literal(value)))})))}),async execute(_id,input){if(!runId)throw new Error('尚未开始本轮任务');if(input.action==='update')session.sessionManager.appendCustomEntry(TODO_TYPE,{v:1,runId,items:todoItems(input.items)});publish('state',current());const result=projectTodo(session.sessionManager.getBranch(),runId)||null;return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
@@ -369,7 +351,7 @@ function guard():ExtensionFactory{return pi=>{
 
     const currentTodo=projectTodo(session.sessionManager.getBranch(),runId);
     const todoInstruction='需要用户确认需求或选择时，必须使用 friend_questions 弹窗将相关问题合为一组；不要只在普通回复中反问。等待正式回答，不推断未提交的选项。多步骤工作请用 friend_todo update 保存完整待办清单并及时更新状态；简单任务无需维护 Todo 清单。'+(currentTodo?'当前清单：'+JSON.stringify(currentTodo.items):'');
-    const instructions=swarmResult?'当前是本轮只读 Swarm 的成果交付。先用 friend_swarm snapshot 读取已整合的实际成果及必要的完整交接，按原用户问题直接交付结论和必要来源。核对成员陈述的依据；发现影响结论的具体矛盾时再回源验证，不能从片段推断全文。省略未要求的统计、阅读过程与图状态。原目标和授权已经确定，不重建或重跑成员，不重新规划或追问是否继续。':memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。此桌面宿主在后台执行成员，delegate 返回不代表成员完成。委派后可继续独立工作；需要等待成果时结束本轮答复，待宿主自动回传后再用 result 读取成果。不要用 result、list、sleep 或循环查询等待成员；本轮用户明确询问当前进度时可按需读取一次状态。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行，返回仅表示已创建或启动，不表示成员完成。可以继续独立工作；需要等待成果时结束本轮答复，宿主整合后会自动回传，再读取实际成果并交付。不要轮询 snapshot/list、反复读历史或用 sleep 等待；本轮用户明确询问进度时可按需读取一次状态。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，长期目标与后台命令按需使用 friend_goal、friend_jobs 原生工具管理。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
+    const instructions=swarmResult?'当前是本轮只读 Swarm 的成果交付。先用 friend_swarm snapshot 读取已整合的实际成果及必要的完整交接，按原用户问题直接交付结论和必要来源。核对成员陈述的依据；发现影响结论的具体矛盾时再回源验证，不能从片段推断全文。省略未要求的统计、阅读过程与图状态。原目标和授权已经确定，不重建或重跑成员，不重新规划或追问是否继续。':memberContinuation?'当前是队友补充讨论的后续处理。先读取该成员的原生历史，解释结果；只有需要改变成果时才建立新的受控任务和完整检查、复核。不要重跑已完成任务。':planMode?'当前是计划模式。使用 read、ls、find、grep 只读探索，给出目标、步骤、依赖、成果和客观验证；用 friend_plan submit 提交完整计划给用户批准。不要修改项目、运行 shell 或启动协作成员。':executionMode==='team'?'当前是 Team 模式。需要委派时用 friend_team delegate。此桌面宿主在后台执行成员，delegate 返回不代表成员完成。委派后可继续独立工作；需要等待成果时结束本轮答复，待宿主自动回传后再用 result 读取成果。不要用 result、list、sleep 或循环查询等待成员；本轮用户明确询问当前进度时可按需读取一次状态。子成员只与你通信；读取成果直接返回，写入须隔离、检查和独立复核，之后由你决定 integrate。可以沿用当前模型与思考等级。':executionMode==='swarm'?roleDirectInstructions||'用户已明确选择 Swarm，保持当前模式。先用 friend_swarm plan.validate 确定性核对草案并说明选择依据：简单任务可 strategy:"direct",tasks:[]，由主 Agent 完成必要客观检查/高风险独立复核；需要并行分工则 strategy:"collaboration"，明确任务、依赖、权限与预算，校验通过后 create/start 自动执行，返回仅表示已创建或启动，不表示成员完成。可以继续独立工作；需要等待成果时结束本轮答复，宿主整合后会自动回传，再读取实际成果并交付。不要轮询 snapshot/list、反复读历史或用 sleep 等待；本轮用户明确询问进度时可按需读取一次状态。不要推荐或自动切换模式；未知时间/费用如实标记未知。不要只给方案或要求用户填写任务页表单、JSON、命令或令牌预算。需要动态阶段时自行用 friend_workflow create/start，用户明确启用的长期目标使用 get_goal、update_goal 管理；后台命令按需使用 friend_jobs。只有目标本身缺少必要业务信息时才用 friend_questions 澄清。继续遵守计划模式、权限审批、隔离写入与用户停止；不要重复启动已有执行。':'';
     const recallInstructions=enabled.includes('memory')?'自动记忆目录并非完整证据。需要回忆约束或排查问题时，先提取任务中的区分性关键词、实体、错误码与代码路径，使用 friend_memory search 做短查询；读取命中记忆的完整正文和全部适用条件，必要时用已登记 source.read/read.range 回查原文。检索命中、进入上下文、实际请求可见与回答正确是不同结论。不搜索未登记原始历史，不把附件或单次要求泛化为长期指令。':'';
     const sourceScopeInstructions=`当前项目绝对路径：${cwd}。先按该路径定位，只读取当前目标或任务指明的来源；明确提供的来源可按精确路径读取。不要为了定位项目枚举父目录或无关位置。来源或授权范围不明确时如实说明缺口，不自行扩大资料范围。资料未给出的完成状态，只有实际核实后才可写为事实。`;
     const workspaceInstructions=temporaryWriteRoot?`你正在临时会话中工作。所有任务产物默认写入当前会话目录 ${temporaryWriteRoot}。修改此目录外的文件必须先获得用户逐次批准；权限策略不能免除该要求。无法确认写入范围的命令会申请批准。`:'';
@@ -418,7 +400,7 @@ function guard():ExtensionFactory{return pi=>{
     }
     if(planMode){
       const readActions=new Set(['list','snapshot','search','read','get','versions','history.search','history.read','history.around']);
-      if(event.toolName!=='friend_questions'&&event.toolName!=='friend_todo'&&![...nativeMcpResourceTools,'read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
+      if(event.toolName!=='friend_questions'&&event.toolName!=='friend_todo'&&!['create_goal','get_goal','update_goal',...nativeMcpResourceTools,'read','ls','find','grep','read_document','web_search','web_fetch'].includes(event.toolName)&&!(event.toolName==='friend_plan'&&['submit','read'].includes(String(input.action)))&&!(event.toolName.startsWith('friend_')&&readActions.has(String(input.action))))return {block:true,reason:'计划模式只允许读取、搜索和提交计划，批准后再执行。'};
     }
     const request=(event.toolName==='friend_questions'||event.toolName.startsWith('mcp__')||[...nativeMcpResourceTools,'web_fetch','web_search','read_document'].includes(event.toolName)?undefined:toolPermissionRequest(event.toolName,input,Boolean(temporaryWriteRoot)))||(temporaryWriteRoot&&event.toolName==='bash'?{operation:'执行命令',message:String(input.command||''),autoEligible:false}:undefined);
     if(request&&!await approvePermission(request))return {block:true,reason:'用户未批准该操作'};
@@ -494,14 +476,14 @@ async function initialize(){
     if(event.type==='message_end'&&event.message.role==='assistant')metricMessage=event.message;
     const metric=metricRecorder.observe(event),measuredMessage=metricMessage;
     if(metric&&measuredMessage)queueMicrotask(()=>{if(disposed)return;const entry=session.sessionManager.getEntries().find(e=>e.type==='message'&&e.message===measuredMessage);if(entry){session.sessionManager.appendCustomEntry(SESSION_METRIC_TYPE,{...metric,entryId:entry.id});publish('state',current());}});
-    if(event.type==='agent_start'){recordForeground(true);changeTracker?.reopen(runId);}
+    if(event.type==='agent_start'){services.beginTurn({automatic:automaticGoalTurn});recordForeground(true);changeTracker?.reopen(runId);}
     if(event.type==='message_start'&&event.message.role==='assistant')liveStreamId="stream-"+session.sessionId+"-"+(++liveSequence);
     if(['message_start','message_update','message_end'].includes(event.type))publish('stream',{streamId:liveStreamId,event});
     if(event.type==='message_start'&&event.message.role==='assistant')modelInFlight=true;if(event.type==='message_end'&&event.message.role==='assistant'||event.type==='agent_settled')modelInFlight=false;
     publish('pi',event);
     if(event.type==='tool_execution_start'){if(event.toolName==='friend_todo'||event.toolName==='friend_expert'&&/^role\.(snapshot|read|versions|assign|switch)$/.test(String(object(event.args).action)))neutralToolIds.add(event.toolCallId);else policyRevision++;services.beginTool(event.toolCallId,event.toolName,event.args);}
-    if(event.type==='tool_execution_end'){if(event.toolName==='read_document'&&!event.isError)queueMicrotask(()=>{void observeDocumentTool(event.toolCallId,event.result).catch(error=>publish('notice',{level:'warning',message:'文档观察收据未登记：'+publicError(error)}));});if(!neutralToolIds.delete(event.toolCallId))policyRevision++;services.endTool(event.toolCallId);}
-    if(event.type==='message_end'&&event.message.role==='assistant'){const usage=event.message.usage;services.account(modelTokenUsage(usage),`main:${event.message.timestamp}:${digest(event.message.content)}`);if(services.currentGoal()?.status==='paused'&&services.currentGoal()?.error?.includes('令牌'))void session.abort();}
+    if(event.type==='tool_execution_end'){if(event.toolName==='read_document'&&!event.isError)queueMicrotask(()=>{void observeDocumentTool(event.toolCallId,event.result).catch(error=>publish('notice',{level:'warning',message:'文档观察收据未登记：'+publicError(error)}));});if(!neutralToolIds.delete(event.toolCallId))policyRevision++;services.recordGoalToolOutcome({success:!event.isError,executionUnavailable:event.isError&&/ENOENT|EACCES|spawn.*failed|execution unavailable/i.test(visibleText(object(event.result).content))});services.endTool(event.toolCallId);}
+    if(event.type==='message_end'&&event.message.role==='assistant'){const usage=event.message.usage;services.account(modelTokenUsage(usage),`main:${event.message.timestamp}:${digest(event.message.content)}`);services.recordGoalResponse({text:visibleText(event.message.content),reasoning:event.message.content.filter(part=>part.type==='thinking').map(part=>part.thinking).join('\n')});}
     if(event.type==='message_start'&&event.message.role==='user'){
       const nativeMessage=event.message;const nativeText=visibleText(nativeMessage.content);
       const started=pendingInputs.find(input=>input.id===startedInputId);startedInputId=undefined;
@@ -516,7 +498,7 @@ async function initialize(){
       settledRunId=runId;lifecycleStatus=correcting?'running':settledStatus();recordForeground(rootExecutionBusy()||runtimeWakeBusy());
       foregroundOpen=rootExecutionBusy();
       const execution=plans.executionForRun(runId);if(execution)plans.updateExecution(execution,lifecycleStatus==='failed'?'failed':'settled');
-      services.settled(lifecycleStatus);setImmediate(()=>{if(disposed)return;if(!correcting)void enqueueExpertTrace();void services.drain();});
+      const ended=session.messages.findLast(message=>message.role==='assistant');services.settled(lifecycleStatus==='failed'&&ended?.role==='assistant'&&/usage.limit|quota|insufficient.*credit|billing.*limit/i.test(ended.errorMessage||'')?'usage_limited':lifecycleStatus);setImmediate(()=>{if(disposed)return;if(!correcting)void enqueueExpertTrace();void services.drain();});
       if(swarmAuthority()?.message)publishAuthorityNotice();
       else if(lifecycleStatus==='failed'){
         const last=[...session.messages].reverse().find(message=>message.role==='assistant');
@@ -565,7 +547,7 @@ async function initialize(){
     }
     if(event.pluginEvent==='swarm.process'&&object(event.data).action==='closed'){void services.drain();return;}
     if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
-    const snapshot=object(event.data);teammateRunning=Array.isArray(snapshot.teammates)&&snapshot.teammates.map(object).some(member=>['running','stopping'].includes(String(member.state)));services.observeSwarm(snapshot,correctedRun(runId)?undefined:modelSwarmGraphIds);
+    const snapshot=object(event.data);swarmSafetySnapshot=snapshot;teammateRunning=Array.isArray(snapshot.teammates)&&snapshot.teammates.map(object).some(member=>['running','stopping'].includes(String(member.state)));services.observeSwarm(snapshot,correctedRun(runId)?undefined:modelSwarmGraphIds);
     const graphs=Array.isArray(snapshot.graphs)?snapshot.graphs.map(object):[];
     for(const graph of graphs){
       const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit===true)continue;
@@ -589,10 +571,10 @@ async function initialize(){
   const policy=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).v===1&&object(entry.data).runId===runId&&typeof object(entry.data).requiresSwarm==='boolean');
   if(policy?.type==='custom')runRequiresSwarm=object(policy.data).requiresSwarm as boolean;
   else if(runId&&restoredGoal&&restoredGoal.sourceRunId===runId)runRequiresSwarm=restoredGoal.mode==='swarm'&&!planMode;
-  if(runId&&enabled.includes('swarm')&&(runRequiresSwarm===true||restoredGoal?.sourceRunId===runId)){
+  if(enabled.includes('swarm')){
     // A cold controller need not emit swarm.changed. Restore only this run's
     // authority evidence, retaining a matching Goal's stricter ownership; reading a snapshot must not start or replay work.
-    const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
+    const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));swarmSafetySnapshot=snapshot;
     for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId!==session.sessionId||graph.runId!==runId||restoredGoal&&restoredGoal.sourceRunId===runId&&graph.goalId!==restoredGoal.id)continue;const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit!==true)runGraphIds.add(id);}
   }
   await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');startupPhase('metadata');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
@@ -676,7 +658,7 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
     const intentId='draft:'+String(payload.submissionId||digest(payload)),identity=digest(payload);
     inputQueue.store.transaction(()=>{if(!inputQueue.accepted(intentId,identity))inputQueue.add(payload,intentId,identity);inputQueue.store.remove(key);inputQueue.store.put(`draft-consumed:${session.sessionId}`,{intentId});});queueChanged();return current();
   }
-  if(method==='state'){if(session.isIdle&&!swarmBusy()&&!finiteJobs()&&!stopping&&!['active','waiting','verifying'].includes(services.currentGoal()?.status||'')){await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();}return {...current(),...await modelState()};}
+  if(method==='state'){if(session.isIdle&&!swarmBusy()&&!finiteJobs()&&!stopping&&!['active'].includes(services.currentGoal()?.status||'')){await changeTracker?.settle(runId,lifecycleStatus,session.sessionManager.getBranch().findLast(entry=>entry.type==='message')?.id);await changeTracker?.flush();}return {...current(),...await modelState()};}
   if(method==='plan.read')return plans.current();
   if(method==='plan.revise'){if(!session.isIdle||swarmBusy()||stopping)throw new Error('请等待当前任务停止');if(input.body===undefined){plans.matches(input);plans.supersede();planMode=true;policyRevision++;publish('state',current());return current();}return plans.submit(text(input.body,'计划'),{modelId:session.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:session.thinkingLevel,mode:executionMode,permissionMode},{v:1,via:'user',runId});}
   if(method==='plan.approve'){
@@ -703,6 +685,7 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
     session.sessionManager.appendCustomEntry('friend-pi.plan.decision',{plan,origin:'user'});planMode=false;publish('state',current());return current();
   }
   if(method==='send'){
+    if(input.goal!==undefined&&services.unresolvedSideEffects())throw new Error('请先检查并确认未知现场，再接续目标');
     const sendEpoch=queueEpoch;
     const assertSendOwned=()=>{if(sendEpoch!==queueEpoch||stopping||disposed||approvedExecution&&plans.execution(approvedExecution.plan)?.status!=='starting')throw new Error('消息交付已取消');};
     if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
@@ -716,7 +699,7 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
     const combined=prompt+attachments.map(item=>item.text||'').join('');if(Buffer.byteLength(combined)>128*1024)throw new Error('消息与文本附件过大，请分批发送');
     if(!session.model||!runtime.hasConfiguredAuth(session.model.provider))throw new Error('请先在模型设置配置供应商');
     const mode:ExecutionMode=['team','swarm'].includes(String(input.mode))?input.mode as ExecutionMode:'single';if(mode!=='single'&&!enabled.includes('swarm'))throw new Error('Swarm 插件已关闭');
-    const goal=services.currentGoal();if(goal&&['active','waiting','verifying'].includes(goal.status)&&mode!==goal.mode)throw new Error('先暂停目标，再切换执行模式');
+
     const nextPlan=input.planMode===true;
     if((!session.isIdle||swarmBusy())&&(nextPlan!==planMode||mode!==executionMode))throw new Error('请先停止当前执行，再切换计划或协作方式');
     if(session.isIdle&&!swarmBusy()){await applyAssignedRole(true);assertSendOwned();await ensureModelReady();assertSendOwned();
@@ -731,24 +714,50 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
     await applyAssignedRole();assertSendOwned();await ensureModelReady();assertSendOwned();lifecycleStatus='running';
     const images=attachments.flatMap(item=>item.image?[item.image]:[]);
     if(queued&&(input.admissionEpoch!==queueEpoch||stopping))throw new Error('消息交付已取消');
+    if(input.goal!==undefined){
+      if(!session.isIdle||swarmBusy()||queued)throw new Error('请等待当前回合结束后发送新的目标');
+      const draft=object(input.goal),objective=text(draft.objective,'目标',4000);
+      if(objective!==prompt.trim())throw new Error('目标必须与本次发送的目标文本一致');
+      services.setGoalForInput({objective,status:'active',replace:draft.replace===true,...(draft.expectedGoalId?{goalId:draft.expectedGoalId}:{}),...(draft.expectedRevision!==undefined?{expectedRevision:draft.expectedRevision}:{})},services.context('user'));
+    }
+    const submittedGoal=input.goal!==undefined?services.currentGoal():undefined;
     const inputRecord:PendingInput={...(approvedExecution?{automatic:true,planExecution:approvedExecution}:{}),attachmentMetadata:attachments.map(({text,image,...metadata})=>({...metadata,image:!!image})),id:randomUUID(),queueId:queued?.id,text:prompt,combinedLength:combined.length,combinedHash:digest(combined),imageHash:imageIdentity(images),expectsStart:session.isIdle,runId};pendingInputs.push(inputRecord);
+    const pauseUnstartedGoal=(reason:string)=>{const goal=services.currentGoal();if(submittedGoal&&!inputRecord.preflightStarted&&sendEpoch===queueEpoch&&goal?.id===submittedGoal.id&&goal.objective===submittedGoal.objective&&goal.status==='active'){services.goals.setState('paused',services.context('user'),reason);services.cancelGoalWake(goal.id);publish('notice',{level:'info',message:reason});}};
     if(queued)inputQueue.handoff(queued.id);
     // Native commands can request approval before emitting any agent event.
     publish('state',current());
-    void session.prompt(combined,{images,streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
+    void session.prompt(combined,{images,...(submittedGoal?{expandPromptTemplates:false}:{}),streamingBehavior:input.inputMode==='steer'?'steer':'followUp',preflightResult:result=>{
       assertSendOwned();
       if(result==='started'){inputRecord.preflightStarted=true;startedInputId=inputRecord.id;if(approvedExecution)plans.updateExecution(approvedExecution,'started');}
       if(result==='handled'){
+        pauseUnstartedGoal('目标首轮输入已被扩展处理，目标已暂停；可检查结果后恢复');
         if(queued){session.sessionManager.appendCustomEntry('friend-pi.input.v1',{v:1,queueId:queued.id,runId:inputRecord.runId,handled:true,hash:digest(combined)});inputQueue.delivered(queued.id,inputRecord.runId);}
         const position=pendingInputs.indexOf(inputRecord);if(position>=0)pendingInputs.splice(position,1);if(session.isIdle&&!swarmBusy()&&!finiteJobs()){foregroundOpen=false;lifecycleStatus='completed';}queueChanged();
       }
-    }}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);if(inputRecord.queueId)inputQueue.failed(inputRecord.queueId);if(approvedExecution)plans.updateExecution(approvedExecution,sendEpoch===queueEpoch?'failed':'cancelled',{error:publicError(error)});if(sendEpoch===queueEpoch&&!disposed){foregroundOpen=rootExecutionBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});}publish('state',current());});
+    }}).then(()=>{if(inputRecord.expectsStart){const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);}publish('state',current());}).catch(error=>{pauseUnstartedGoal('目标首轮未能启动，目标已暂停；请检查错误后恢复');const position=pendingInputs.findIndex(input=>input.id===inputRecord.id);if(position>=0)pendingInputs.splice(position,1);if(inputRecord.queueId)inputQueue.failed(inputRecord.queueId);if(approvedExecution)plans.updateExecution(approvedExecution,sendEpoch===queueEpoch?'failed':'cancelled',{error:publicError(error)});if(sendEpoch===queueEpoch&&!disposed){foregroundOpen=rootExecutionBusy();lifecycleStatus='failed';publish('notice',{level:'error',message:publicError(error)});}publish('state',current());});
     return {accepted:true,sessionId:session.sessionId,runId,...(approvedExecution?{executionId:approvedExecution.id}: {})};
   }
-  if(method==='runtime'){const action=text(input.action);if(['goal.pause','goal.stop','goal.create','goal.resume'].includes(action)){queueEpoch++;cancelQueueResume();}if(['goal.create','goal.resume','goal.complete'].includes(action)){await applyAssignedRole(action==='goal.create');await ensureModelReady();}if(action==='goal.create'&&session.isIdle&&!swarmBusy()){const prior=services.currentGoal();if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前已有运行目标');runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();foregroundOpen=true;captureRunPolicy();await changeTracker?.begin(runId);baselineGraphIds.clear();for(const id of swarmGraphs.keys())baselineGraphIds.add(id);activeGraphIds.clear();runGraphIds.clear();modelSwarmGraphIds.clear();cancelRequested=false;policyRevision++;}const previousAuthorisation=authorisedCorrectionResume;
-    if(action==='goal.resume'){const goalId=object(input.input||{}).goalId,goal=typeof goalId==='string'?services.goals.read(goalId,services.context()):services.currentGoal();if(goal&&goal.sourceRunId===runId&&correctedRun(runId))authorisedCorrectionResume={runId:runId!,generation:services.generation()+1,verificationGraphs:new Map([...runGraphIds].filter(id=>{const graph=swarmGraphs.get(id);return graph?.sessionId===session.sessionId&&graph.runId===runId&&graph.goalId===goal.id&&graph.status==='integrated'&&Array.isArray(graph.tasks)&&graph.tasks.every(task=>object(task).mode==='read'&&object(task).status==='completed')&&Array.isArray(graph.attempts)&&graph.attempts.every(attempt=>object(attempt).status==='completed');}).map(id=>[id,digest(swarmGraphs.get(id))]))};}
-    let result:unknown;try{result=await services.dispatch(action,object(input.input||{}),services.context('user'));}catch(error){authorisedCorrectionResume=previousAuthorisation;throw error;}
-    if(!['snapshot','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());return result;}
+  if(method==='runtime'){
+    const action=text(input.action),args=object(input.input||{});
+    const previousAuthorisation=authorisedCorrectionResume;
+    const activating=action==='goal.create'||action==='goal.resume'||action==='goal.set'&&(args.objective!==undefined||args.status==='active');
+    if(activating){
+      if(services.unresolvedSideEffects())throw new Error('请先检查并确认未知现场，再接续目标');
+      if(session.isIdle){await applyAssignedRole(action==='goal.create');await ensureModelReady();}
+      if(session.isIdle&&!swarmBusy()){
+        if(!runId){runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();}
+        cancelRequested=false;captureRunPolicy();await changeTracker?.ensure(runId);policyRevision++;
+      }
+      if(runId&&correctedRun(runId)){const goal=services.currentGoal();authorisedCorrectionResume={runId,generation:services.generation(),verificationGraphs:new Map([...runGraphIds].filter(id=>{const graph=swarmGraphs.get(id);return graph?.sessionId===session.sessionId&&graph.runId===runId&&graph.goalId===goal?.id&&graph.status==='integrated'&&Array.isArray(graph.tasks)&&graph.tasks.every(task=>object(task).mode==='read'&&object(task).status==='completed')&&Array.isArray(graph.attempts)&&graph.attempts.every(attempt=>object(attempt).status==='completed');}).map(id=>[id,digest(swarmGraphs.get(id))]))};}
+    }
+    let result:unknown;try{result=await services.dispatch(action,args,services.context('user'));}catch(error){authorisedCorrectionResume=previousAuthorisation;throw error;}
+    if(action==='goal.set'&&args.objective!==undefined&&session.isStreaming){
+      const goal=services.currentGoal();
+      if(goal)await session.sendCustomMessage({customType:'friend-pi.goal-change',content:'用户已更新当前会话目标。请使用 get_goal 读取最新目标，按最新完成条件继续；目标不会扩大工具权限。',display:false,details:{v:1,goalId:goal.id,revision:goal.revision}},{triggerTurn:true,deliverAs:'steer'});
+    }
+    if(!['snapshot','get','read','list','status','logs'].includes(action.split('.').at(-1)!))publish('state',current());
+    return result;
+  }
   if(method==='workflow.generate'){if(executionMode!=='swarm'||planMode||!session.isIdle)throw new Error('请在闲置 Swarm 执行模式生成工作流');await ensureModelReady();const result=await services.context('user').complete('只返回JSON，结构为 {v:1,title,goal,maxWorkers:4,nodes:[{id,title,prompt,dependencies:[],mode:"read"或"write",writeScopes:[最窄实际目录]}]}; 写入节点writeScopes非空，读取节点可省略。至多64节点，无脚本，条件用结构化谓词。目标：'+text(input.prompt),{maxTokens:6000});const body=result.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');return requestPlugin(bus,'workflow','create',{definition:object(JSON.parse(body))},1000,'user');}
   if(method==='stop'){
     const execution=plans.executionForRun(runId);if(execution)plans.updateExecution(execution,'cancelled');
@@ -766,24 +775,25 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
   if(method==='configure'){
     if(!session.isIdle||swarmBusy()||runtimeWakeBusy()||stopping)throw new Error('请等待当前执行停止，再修改配置');
     if(input.planMode!==undefined&&typeof input.planMode!=='boolean')throw new Error('计划模式设置无效');
+    if(input.plugins!==undefined&&(!Array.isArray(input.plugins)||input.plugins.some(name=>!plugins.includes(String(name)))))throw new Error('插件无效');const nextPlugins=Array.isArray(input.plugins)?input.plugins.map(String):enabled;
     queueEpoch++;cancelQueueResume();
     const nextPermission=input.permissionMode===undefined?permissionMode:parsePermissionMode(input.permissionMode);
     if(nextPermission!==permissionMode&&(services.jobs.pendingCount(session.sessionId)>0||dialogs.size>0))throw new Error('请先结束待批准的命令，再切换权限策略');
-    if(input.executionMode!==undefined){const goal=services.currentGoal();if(goal&&['active','waiting','verifying'].includes(goal.status)&&input.executionMode!==goal.mode)throw new Error('先暂停目标，再切换执行模式');if(!['single','team','swarm'].includes(String(input.executionMode)))throw new Error('协作方式无效');if(input.executionMode!=='single'&&!enabled.includes('swarm'))throw new Error('协作需要启用Swarm插件');executionMode=input.executionMode as ExecutionMode;policyRevision++;}
-    const nextModel=typeof input.modelId==='string'&&input.modelId?selectedModel(input.modelId):session.model;const supported=providerMetadata(runtime).models.find(model=>model.id===(nextModel?`${nextModel.provider}/${nextModel.id}`:''))?.thinkingLevels||['off'];if(input.thinkingLevel&&!supported.includes(String(input.thinkingLevel)))throw new Error('当前模型不支持此思考等级');if(input.plugins!==undefined&&(!Array.isArray(input.plugins)||input.plugins.some(name=>!plugins.includes(String(name)))))throw new Error('插件无效');const nextPlugins=Array.isArray(input.plugins)?input.plugins.map(String):enabled;if(input.contextMode&&!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(input.contextMode==='infinite'&&!nextPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
+    if(input.executionMode!==undefined){if(!['single','team','swarm'].includes(String(input.executionMode)))throw new Error('协作方式无效');if(input.executionMode!=='single'&&!nextPlugins.includes('swarm'))throw new Error('协作需要启用Swarm插件');executionMode=input.executionMode as ExecutionMode;policyRevision++;}
+    const nextModel=typeof input.modelId==='string'&&input.modelId?selectedModel(input.modelId):session.model;const supported=providerMetadata(runtime).models.find(model=>model.id===(nextModel?`${nextModel.provider}/${nextModel.id}`:''))?.thinkingLevels||['off'];if(input.thinkingLevel&&!supported.includes(String(input.thinkingLevel)))throw new Error('当前模型不支持此思考等级');if(input.contextMode&&!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(input.contextMode==='infinite'&&!nextPlugins.includes('topic-rebuild'))throw new Error('无限上下文需要启用 Topic & ReBuild');
     if(nextPermission!==permissionMode){permissionMode=nextPermission;permissionEpoch++;policyRevision++;session.sessionManager.appendCustomEntry('friend-pi.permission.configured',{v:1,mode:permissionMode,origin:'user'});}
     if(input.modelId){await session.setModel(selectedModel(text(input.modelId)));missingModelId=undefined;delete process.env.FRIEND_PI_DESKTOP_MODEL_UNAVAILABLE;}
     if(input.thinkingLevel){const level=text(input.thinkingLevel);if(!session.getAvailableThinkingLevels().includes(level as ThinkingLevel))throw new Error('当前模型不支持此思考等级');session.setThinkingLevel(level as ThinkingLevel);}
     if(typeof input.planMode==='boolean'&&input.planMode!==planMode){planMode=input.planMode;policyRevision++;session.sessionManager.appendCustomEntry('friend-pi.plan.configured',{v:1,planMode,origin:'user'});}
     if(Array.isArray(input.plugins)){
-      const next=input.plugins.map(String);if(next.some(name=>!plugins.includes(name)))throw new Error('插件无效');
+      const next=nextPlugins;
       if(JSON.stringify(enabled)!==JSON.stringify(next)){enabled=next;session.settingsManager.setExtensionPaths(next.map(name=>join(root,'packages',name,'dist','index.js')));await session.reload();await bind();}
     }
     if(input.contextMode){if(!['native','infinite'].includes(String(input.contextMode)))throw new Error('上下文模式无效');if(!enabled.includes('topic-rebuild')&&input.contextMode==='infinite')throw new Error('无限上下文需要启用 Topic & ReBuild');if(enabled.includes('topic-rebuild'))await requestPlugin(bus,'topic-rebuild','settings',{mode:input.contextMode},1000,'user');process.env.FRIEND_PI_CONTEXT_MODE=String(input.contextMode);}
     return current();
   }
   if(method==='plugin'){
-    const plugin=text(input.plugin);if(!enabled.includes(plugin)&&!(['team','workflow'].includes(plugin)&&enabled.includes('swarm')))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','delegate','review','integrate','rework','validate','validation.run','generate','reflect','learn','member.resume'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});if(plugin==='swarm'&&action==='member.resume'&&!stopping){const goal=services.currentGoal();if(goal?.tokenBudget!==undefined&&(!goal.usageAvailable||goal.tokens>=goal.tokenBudget))throw new Error('目标预算耗尽或使用量不可核实，请先处理预算');const admission=object(await requestPlugin(bus,'swarm','member.history',{memberId:args.memberId},1000,'user'));const member=object(admission.member);if(!['idle','paused'].includes(String(member.state))||member.state==='paused'&&object(member.stopReceipt).status!=='terminated')throw new Error('成员尚无明确退出收据');cancelRequested=false;}
+    const plugin=text(input.plugin);if(!enabled.includes(plugin)&&!(['team','workflow'].includes(plugin)&&enabled.includes('swarm')))throw new Error('插件不可用，当前会话已关闭它');const action=text(input.action);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'&&['prepare','start','resume','delegate','review','integrate','rework','validate','validation.run','generate','reflect','learn','member.resume'].includes(action))await requireReadyModel(runtime,dataDir,missingModelId||(session.model?`${session.model.provider}/${session.model.id}`:''));const args=object(input.input||{});if(plugin==='swarm'&&action==='member.resume'&&!stopping){const admission=object(await requestPlugin(bus,'swarm','member.history',{memberId:args.memberId},1000,'user'));const member=object(admission.member);if(!['idle','paused'].includes(String(member.state))||member.state==='paused'&&object(member.stopReceipt).status!=='terminated')throw new Error('成员尚无明确退出收据');cancelRequested=false;}
     if(['team','workflow','swarm'].includes(plugin)&&['delegate','start','resume'].includes(action)&&(!runId||plugin==='workflow'&&action==='start'&&session.isIdle&&!swarmBusy()&&!finiteJobs()&&!stopping)){
       await applyAssignedRole(true);await ensureModelReady();const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
       baselineGraphIds.clear();for(const graph of Array.isArray(snapshot.graphs)?snapshot.graphs:[])baselineGraphIds.add(String(object(graph).id));

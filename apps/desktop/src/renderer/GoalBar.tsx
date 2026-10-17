@@ -1,0 +1,12 @@
+import {useEffect,useRef,useState} from 'react';
+import {Icon} from './Icons.js';
+import {goalBinding,goalElapsed,formatGoalElapsed,goalStatusLabels,type ComposerGoal} from './goal-model.js';
+import type {GoalCommand} from './GoalDialog.js';
+import {errorText} from './types.js';
+export function GoalBar({goal,planMode,disabled,ready,onEdit,onAction}:{goal:ComposerGoal;planMode:boolean;disabled:boolean;ready:boolean;onEdit():void;onAction(command:GoalCommand):Promise<unknown>}){
+ const [now,setNow]=useState(Date.now),[busy,setBusy]=useState(false),[error,setError]=useState('');const lock=useRef(false);
+ useEffect(()=>{setNow(Date.now());if(goal.status!=='active')return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[goal.id,goal.status,goal.activeSince,goal.timeUsedSeconds]);
+ if(goal.status==='complete')return null;
+ const act=async(action:'goal.set'|'goal.clear',status?:'active'|'paused')=>{if(lock.current||disabled)return;lock.current=true;setBusy(true);setError('');try{await onAction({action,input:{...goalBinding(goal),...(status?{status}:{} )}});}catch(e){setError(errorText(e));}finally{lock.current=false;setBusy(false);}};
+ return <section className="goal-bar-wrap" aria-label="当前目标"><div className="goal-bar"><Icon name="goal" size={15}/><span className="goal-bar-status" role="status">{goalStatusLabels[goal.status]}</span><span className="goal-bar-objective" title={goal.objective}>{goal.objective}</span><time aria-label="目标累计用时">{formatGoalElapsed(goalElapsed(goal,now))}</time><button type="button" aria-label={goal.status==='active'?'暂停目标':'恢复目标'} title={goal.status==='active'?'暂停目标':'恢复目标'} disabled={disabled||busy||goal.status!=='active'&&!ready} onClick={()=>void act('goal.set',goal.status==='active'?'paused':'active')}>{goal.status==='active'?<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10M11 3v10"/></svg>:<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 8 5-8 5Z"/></svg>}</button><button type="button" aria-label="编辑目标" title="编辑目标" disabled={disabled||busy} onClick={onEdit}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 7-7 3 3-7 7-4 1Z"/></svg></button><button type="button" aria-label="清除目标" title="清除目标" disabled={disabled||busy} onClick={()=>void act('goal.clear')}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>{planMode&&<p className="goal-bar-note">计划模式，自动推进暂缓</p>}{error&&<p role="alert" className="goal-error">{error}</p>}</section>;
+}

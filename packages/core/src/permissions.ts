@@ -60,6 +60,8 @@ export function readOnlyCommand(command:string):boolean {
   return command.split(/[;&|]+/).every(part=>/^(?:pwd|ls|cat|head|tail|wc|rg|grep|which|echo|printf)(?:\s|$)|^git\s+(?:status|diff|log|show|rev-parse)(?:\s|$)|^(?:node|npm|pnpm|yarn|python3?)\s+--version\s*$/.test(part.trim()));
 }
 export function toolPermissionRequest(tool:string,input:Record<string,unknown>,temporary=false):PermissionRequest|undefined {
+  // Goal tools only change host-owned metadata; execution retains its own permission checks.
+  if(['create_goal','get_goal','update_goal'].includes(tool))return;
   if(['read','ls','find','grep','swarm_review_result','swarm_message','team_message'].includes(tool))return;
   if(tool==='bash'){
     const command=String(input.command||'');if(readOnlyCommand(command))return;

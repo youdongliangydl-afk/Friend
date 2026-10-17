@@ -35,3 +35,28 @@ test('temporary scope canonicalizes Pi path spelling, missing parents, siblings 
  assert.equal(permissionDecision('allPermissions',{operation:'x',message:'x',autoEligible:true,requireExplicit:true}),'ask');
  }finally{rmSync(base,{recursive:true,force:true});}
 });
+
+
+for(const mode of ['ask','auto','allPermissions'] as const){
+ test(`Goal metadata requires no filesystem approval in ${mode}, including temporary sessions`,()=>{
+  const base=mkdtempSync(join(tmpdir(),'friend-goal-permission-')),root=join(realpathSync(base),'session');mkdirSync(root);
+  try{
+   for(const temporary of [false,true])for(const tool of ['create_goal','get_goal','update_goal']){
+    const request=toolPermissionRequest(tool,{objective:'user-requested goal',status:'complete'},temporary);
+    assert.equal(request,undefined,`${tool} temporary=${temporary}`);
+    const approval=request?permissionDecision(mode,temporary?temporaryPermission(request,root):request):undefined;
+    assert.equal(approval,undefined);
+   }
+   for(const tool of ['write','edit']){
+    const inside=toolPermissionRequest(tool,{path:'result.txt'},true);assert.ok(inside);
+    assert.equal(permissionDecision(mode,temporaryPermission(inside,root)),mode==='ask'?'ask':'allow');
+    const outside=toolPermissionRequest(tool,{path:'../outside.txt'},true);assert.ok(outside);
+    assert.equal(permissionDecision(mode,temporaryPermission(outside,root)),'ask');
+   }
+   for(const tool of ['custom_extension','create_goal_extension','get_goal_shadow','update_goal_extra','bash']){
+    const request=toolPermissionRequest(tool,{command:'node script.js'},true);assert.ok(request,tool);
+    assert.equal(permissionDecision(mode,temporaryPermission(request,root)),'ask',tool);
+   }
+  }finally{rmSync(base,{recursive:true,force:true});}
+ });
+}

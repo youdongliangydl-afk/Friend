@@ -415,7 +415,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.configure'){
     if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');if(input.modelId)await requireReadyModel(await getProviderRuntime(),dataDir,text(input.modelId));worker.state=object(await request(worker,'configure',input));worker.record.modelId=typeof worker.state.modelId==='string'?worker.state.modelId:undefined;worker.record.thinkingLevel=typeof worker.state.thinkingLevel==='string'?worker.state.thinkingLevel:undefined;worker.record.plugins=Array.isArray(worker.state.plugins)?worker.state.plugins.map(String):undefined;persistWorker(worker);publishState();return state();
   }
-  if(method==='runtime.call'||method==='workflow.generate'){if(worker.record.archived&&!(method==='runtime.call'&&['snapshot','goal.read','goal.list','task.read','task.list','jobs.list','jobs.logs','jobs.status'].includes(String(input.action))))throw new Error('归档会话只读');return request(worker,method==='runtime.call'?'runtime':method,input);}
+  if(method==='runtime.call'||method==='workflow.generate'){if(worker.record.archived&&!(method==='runtime.call'&&['snapshot','goal.get','goal.read','goal.list','task.read','task.list','jobs.list','jobs.logs','jobs.status'].includes(String(input.action))))throw new Error('归档会话只读');return request(worker,method==='runtime.call'?'runtime':method,input);}
   if(method==='plugin.call'){if(worker.record.archived&&!['snapshot','read','search','versions','usage','plan','member.list','member.history','shared.readVersion','shared.conflicts','invalidation.snapshot'].includes(String(input.action)))throw new Error('归档会话为只读，请先恢复');return await request(worker,'plugin',input);}
   throw new Error('未知客户端操作');
 }

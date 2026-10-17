@@ -4,10 +4,10 @@ export interface QueueUi {menuId?:string;editing?:Record<string,string>}
 export function QueueMessages({queue,ui,act,setUi}:{queue?:QueueSnapshot&{suspendedGoal?:{objective:string}};ui?:QueueUi;act(input:Record<string,unknown>):Promise<unknown>;setUi(input:QueueUi):void}){
  const editing=ui?.editing||{};const [pending,setPending]=useState(''),[error,setError]=useState('');
 
- if(!queue||!queue.items.length&&!queue.suspendedGoal)return null;
+ if(!queue||!queue.items.length)return null;
  const operate=async(action:string,item?:QueuedInput,extra:Record<string,unknown>={})=>{setError('');setPending(item?.id||action);try{await act({action,id:item?.id,revision:item?.revision,...extra});const texts={...ui?.editing};if(item&&action==='edit')texts[item.id]=item.text;if(item&&['save','cancelEdit','remove','sidechat'].includes(action))delete texts[item.id];setUi({editing:texts});}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setPending('');}};
  return <section className="queued-messages" aria-label="排队消息">
-  <div className="queue-heading"><span>{queue.items.length?`${queue.items.length} 条排队消息`:'消息队列'}{queue.paused?' · 已暂停':''}</span>{queue.paused&&<button onClick={()=>void operate('resume')} disabled={!!pending}>恢复排队</button>}{queue.suspendedGoal&&<span className="queue-return" title={queue.suspendedGoal.objective}>队列完成后恢复原目标</span>}</div>
+  <div className="queue-heading"><span>{queue.items.length?`${queue.items.length} 条排队消息`:'消息队列'}{queue.paused?' · 已暂停':''}</span>{queue.paused&&<button onClick={()=>void operate('resume')} disabled={!!pending}>恢复排队</button>}</div>
   <div className="queue-list">{queue.items.map(item=>{const disabled=!!pending||!['queued','editing'].includes(item.state);return <div className={'queue-item state-'+item.state} key={item.id}>
    <div className="queue-row"><span className="queue-glyph" aria-hidden="true">↳</span>{item.attachments.slice(0,2).map(a=>a.image?<img key={a.hash+a.name} src={`data:${a.image.mimeType};base64,${a.image.data}`} alt={a.name}/>:<span key={a.hash+a.name} className="queue-attachment" title={a.name}>▤</span>)}<span className="queue-text" title={item.text}>{item.text||item.attachments.map(a=>a.name).join('、')}</span>
     {item.state==='unknown'?<span className="queue-state">发送状态待确认</span>:item.state==='dispatching'?<span className="queue-state">正在交付</span>:item.state==='moving'?<span className="queue-state">正在移入独立会话</span>:<button disabled={disabled} onClick={()=>void operate('steer',item)} title="在下一安全边界补充当前执行">↪ 引导</button>}

@@ -97,8 +97,8 @@ test('first real ProcessJobs check can create its .pi host parent during TaskLed
    const result=await jobs.check(check,ctx,1);assert.equal(result.exitCode,0);assert.match(result.output,/SINGLE_OUTPUT_OK/);return result;
   },1);
   assert.equal(checked.status,'completed');assert.equal(projectCodeVersion(f.project,f.data),before);
-  goals.update({progress:'actual process check passed'},ctx);const waiting=await goals.finish(ctx,tasks,async()=>{throw new Error('Single must not start a reviewer');},true);
-  assert.equal(goals.accept({goalId:goal.id,expectedRevision:waiting.revision,candidateDigest:waiting.acceptance!.binding},ctx,tasks,true).status,'completed');
+  goals.update({progress:'actual process check passed'},ctx);const completed=await goals.finish(ctx,tasks,async()=>{throw new Error('Single must not start a reviewer');},true);
+  assert.equal(completed.status,'complete');assert.equal(goals.current(ctx),undefined);assert.equal(goals.getLastCompleted(ctx)?.id,goal.id);
  }finally{
   try{for(const handler of hooks.get('session_shutdown')||[])await handler({reason:'shutdown'},native);}finally{
    jobs.dispose();goals.dispose();tasks.dispose();
@@ -152,19 +152,19 @@ async function singleAcceptance(f:ReturnType<typeof fixture>,changeAfterCheck:bo
   },writeEpoch);
   await verify(1);goals.update({progress:'result is ready'},ctx);
   const noAudit=async()=>{throw new Error('Single must not start a reviewer');};
-  let waiting=await goals.finish(ctx,tasks,noAudit,true);assert.equal(waiting.waitFor,'user-acceptance');assert.notEqual(waiting.acceptance!.codeVersion,emptyHash);
-  const oldInput={goalId:goal.id,expectedRevision:waiting.revision,candidateDigest:waiting.acceptance!.binding};
-  f.store.put('background-learning',{state:'complete'});assert.equal(projectCodeVersion(f.project,f.data),waiting.acceptance!.codeVersion);
+  const checked=tasks.read(task.id,ctx).verificationCodeVersion;assert.ok(checked);assert.notEqual(checked,emptyHash);
+  f.store.put('background-learning',{state:'complete'});assert.equal(projectCodeVersion(f.project,f.data),checked);
   if(changeAfterCheck){
    appendFileSync(join(f.project,'result.txt'),'GUI_POSTCHECK_EDIT\n');
-   assert.throws(()=>goals.accept(oldInput,ctx,tasks,true),(error:unknown)=>error instanceof CapabilityError&&error.code==='VERSION_CONFLICT');
-   assert.equal(goals.read(goal.id,ctx).status,'waiting');
-   const resumed=goals.resume({goalId:goal.id},ctx,2);assert.equal(resumed.acceptance,undefined);
-   await verify(resumed.writeEpoch!);goals.update({progress:'changed result rechecked'},ctx);
-   waiting=await goals.finish(ctx,tasks,noAudit,true);assert.notEqual(waiting.acceptance!.binding,oldInput.candidateDigest);
-   assert.throws(()=>goals.accept(oldInput,ctx,tasks,true));
-   assert.equal(readFileSync(join(f.project,'result.txt'),'utf8'),'SINGLE_OK\nGUI_POSTCHECK_EDIT\n');
+   assert.notEqual(projectCodeVersion(f.project,f.data),checked);
+   assert.equal(tasks.read(task.id,ctx).verificationCodeVersion,checked,'old evidence remains attached to its actual candidate');
+   goals.noteWrite(ctx,'second-write');await verify(goals.current(ctx)!.writeEpoch!);
+   assert.notEqual(tasks.read(task.id,ctx).verificationCodeVersion,checked);
+   assert.equal(tasks.read(task.id,ctx).verificationCodeVersion,projectCodeVersion(f.project,f.data));
+   goals.update({progress:'changed result rechecked'},ctx);
   }
-  assert.equal(goals.accept({goalId:goal.id,expectedRevision:waiting.revision,candidateDigest:waiting.acceptance!.binding},ctx,tasks,true).status,'completed');
+  const completed=await goals.finish(ctx,tasks,noAudit,true);assert.equal(completed.status,'complete');
+  assert.equal(goals.current(ctx),undefined);assert.equal(goals.getLastCompleted(ctx)?.id,goal.id);
+  assert.throws(()=>goals.accept({goalId:goal.id},ctx,tasks,true),{code:'VERSION_CONFLICT'});
  }finally{goals.dispose();tasks.dispose();}
 }

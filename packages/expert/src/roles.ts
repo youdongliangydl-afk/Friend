@@ -20,7 +20,9 @@ export interface FrozenRole extends RoleDefinition {
   independent:false;
 }
 
-const readTools=['read','grep','find','ls','friend_expert','friend_goal','friend_task','friend_workflow','friend_jobs','friend_plan','friend_todo','get_goal'];
+// Goal lifecycle tools only change goal metadata; the root controller enforces
+// explicit create authorization and the update_goal status schema.
+const readTools=['read','grep','find','ls','friend_expert','friend_goal','friend_task','friend_workflow','friend_jobs','friend_plan','friend_todo','create_goal','get_goal','update_goal'];
 const workTools=[...readTools,'write','edit','bash','friend_swarm','friend_team','friend_workflow','friend_goal','friend_task','friend_jobs','friend_memory','friend_topic_rebuild','friend_plan','create_goal','get_goal','update_goal','set_goal_tasks','report_goal_progress'];
 export const builtinRoles:readonly Omit<RoleDefinition,'version'|'scope'|'enabled'|'hash'|'createdAt'>[]=[
   {id:'planner',title:'规划',responsibility:'形成有依据的计划、约束与待决策项；不批准或执行自己的计划。',tools:readTools,writeScopes:[],delivery:{v:1,fields:{summary:'string',evidence:'string[]',risks:'string[]'},required:['summary','evidence','risks']}},

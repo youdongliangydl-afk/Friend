@@ -34,11 +34,11 @@ test('unknown deliveries remain visible for reconciliation without an automatic 
  assert.match(html,/删除排队消息 继续分析原问题/);assert.match(html,/在独立会话中打开/);
 });
 
-test('a suspended goal remains visible while its queue is empty',()=>{
- for(const paused of [false,true]){
-  const html=render({paused,items:[],suspendedGoal:{objective:'完成原目标'}});
-  assert.match(html,/aria-label="排队消息"/);assert.match(html,/title="完成原目标"/);assert.match(html,/队列完成后恢复原目标/);
-  if(paused){assert.match(html,/已暂停/);assert.match(html,/>恢复排队<\/button>/);}
-  else assert.doesNotMatch(html,/已暂停|恢复排队/);
- }
+test('ordinary queued input never claims that it detached and will restore the Goal',()=>{
+ const html=render({paused:false,items:[item()]});
+ assert.match(html,/继续分析原问题/);assert.doesNotMatch(html,/队列完成后恢复原目标|queue-return/);
+});
+
+test('legacy suspended goal metadata does not invent a paused queue or duplicate the GoalBar',()=>{
+ for(const paused of [false,true])assert.equal(render({paused,items:[],suspendedGoal:{objective:'完成原目标'}}),'');
 });
