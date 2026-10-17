@@ -19,7 +19,7 @@ test('current unknown writes block even after process termination, but failed cl
 });
 
 test('unknown or missing managed exit receipts block even when graph is paused or failed',()=>{
- for(const attempt of [{id:'a',status:'failed',exitReceipt:{status:'unknown'}},{id:'a',status:'unknown'},{id:'a',status:'failed',childCreationStarted:true},{id:'a',status:'running'}])assert.ok(inspect(graph({status:'failed',attempts:[attempt]})).some(issue=>issue.kind==='exit'));
+ for(const attempt of [{id:'a',status:'failed',exitReceipt:{status:'unknown'}},{id:'a',status:'unknown'},{id:'a',status:'failed',childCreationStarted:true}])assert.ok(inspect(graph({status:'failed',attempts:[attempt]})).some(issue=>issue.kind==='exit'));
  assert.deepEqual(inspect(graph({attempts:[{id:'a',status:'failed',childCreationStarted:false,exitReceipt:{status:'terminated'}}]})),[]);
 });
 
@@ -55,4 +55,21 @@ test('paused teammates without a receipt remain unresolved; unrelated members ar
 test('without a focused goal all session effects remain gated after clearing or changing runs',()=>{
  const snapshot={graphs:[graph({runId:'new-run'})],operations:[{id:'op',graphId:'g',status:'unknown'}]};
  assert.equal(goalSideEffectIssues(snapshot,ctx).length,1);assert.equal(goalSideEffectIssues(snapshot,{projectId:'p',sessionId:'s'}).length,1);assert.equal(goalSideEffectIssues(snapshot,{...ctx,runId:'different'}).length,1);assert.deepEqual(goalSideEffectIssues(snapshot,{...ctx,sessionId:'other'}),[]);
+});
+
+
+test('known running attempts, active members and dispatched operations only block completion',()=>{
+ const issues=inspect(graph({status:'running',tasks:[{id:'t',mode:'write',status:'running',currentAttempt:'a'}],attempts:[{id:'a',taskId:'t',mode:'write',status:'running',childCreationStarted:true}]}),{
+  operations:[{id:'op',graphId:'g',connector:'external',status:'dispatched'}],
+  teammates:['running','stopping','provisioning'].map(state=>({id:state,graphId:'g',rootSessionId:'s',state})),
+ });
+ assert.equal(issues.length,5);assert.ok(issues.every(issue=>issue.kind==='running'));assert.equal(issues.some(issue=>issue.kind!=='running'),false);
+});
+
+test('explicit unknown receipts override running labels and still block metadata admission',()=>{
+ const issues=inspect(graph({attempts:[{id:'a',status:'running',exitReceipt:{status:'unknown'}}]}),{
+  operations:[{id:'unknown',graphId:'g',status:'unknown'},{id:'file',graphId:'g',connector:'file',status:'prepared'}],
+  teammates:[{id:'m',graphId:'g',rootSessionId:'s',state:'running',stopReceipt:{status:'unknown'}}],
+ });
+ assert.equal(issues.length,4);assert.ok(issues.every(issue=>issue.kind!=='running'));assert.deepEqual(issues.map(issue=>issue.kind).sort(),['exit','exit','operation','operation']);
 });
