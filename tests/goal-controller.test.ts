@@ -15,7 +15,7 @@ function fixture(){
  const native={cwd:join(root,'project'),sessionManager:{getSessionId:()=> 'session',getSessionFile:()=>undefined,getEntries:()=>[],getBranch:()=>[]},isIdle:()=>idle,model:undefined,ui:{notify:()=>{}}};
  const pi={events:bus,on:(name:string,handler:Function)=>handlers.set(name,handler),registerTool:(tool:any)=>tools.set(tool.name,tool),registerCommand:()=>{},getThinkingLevel:()=> 'off',appendEntry:()=>{},sendMessage:(message:unknown,options:unknown)=>{sent.push({message,options});}} as unknown as ExtensionAPI;
  runtime.extension()(pi);handlers.get('session_start')!({},native);const ctx=runtime.context('user');const goal=runtime.goals.create({objective:'Finish the explicitly requested deliverable'},ctx,runtime.generation());
- return {runtime,ctx,goal,tools,sent,native,get halt(){return halt;},setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setUnknown(value:boolean){unknown=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},setAdmit(value:()=>boolean|Promise<boolean>){admit=value;},async close(){runtime.dispose();bus.clear();if(old.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=old.data;if(old.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=old.run;await flush();rmSync(root,{recursive:true,force:true});}};
+ return {runtime,ctx,goal,tools,sent,native,prepareRequest(){return handlers.get('context_with_system')!({messages:[{role:'system',content:'Base prompt',toolsAdded:[]}]},native);},get halt(){return halt;},setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setUnknown(value:boolean){unknown=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},setAdmit(value:()=>boolean|Promise<boolean>){admit=value;},async close(){runtime.dispose();bus.clear();if(old.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=old.data;if(old.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=old.run;await flush();rmSync(root,{recursive:true,force:true});}};
 }
 
 test('model goal tools expose only explicit objective and canonical status',async()=>{const f=fixture();try{
@@ -25,11 +25,12 @@ test('model goal tools expose only explicit objective and canonical status',asyn
  await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},{...f.ctx,origin:'agent',runId:'other-run'}),/当前执行/);
 }finally{await f.close();}});
 
-test('old model completion cannot complete an edited objective; reading the new goal renews its evidence binding',async()=>{const f=fixture();try{
+test('old model completion cannot complete an edited objective; the next prepared request renews its evidence binding',async()=>{const f=fixture();try{
  f.runtime.beginTurn({automatic:false});const agent={...f.ctx,origin:'agent' as const};
  await f.runtime.dispatch('goal.set',{objective:'New requirement received while streaming'},f.ctx);
  await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},agent),{code:'VERSION_CONFLICT'});assert.equal(f.runtime.currentGoal()?.status,'active');
- await f.runtime.dispatch('goal.get',{},agent);f.runtime.account(500,'normal-accounting');
+ await f.runtime.dispatch('goal.get',{},agent);await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},agent),{code:'VERSION_CONFLICT'});
+ const prepared=f.prepareRequest();assert.match(prepared.messages[0].sections['friend-goal-current'],/New requirement received while streaming/);f.runtime.account(500,'normal-accounting');
  await f.runtime.dispatch('goal.update',{status:'complete'},agent);assert.equal(f.runtime.currentGoal(),undefined);
 }finally{await f.close();}});
 

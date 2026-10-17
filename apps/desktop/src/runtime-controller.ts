@@ -51,6 +51,14 @@ export class RuntimeController {
    if(goal.status==='active'&&!this.hooks.planMode())this.goals.admit(context);
    return {systemPrompt:`${_event.systemPrompt}\n当前目标 ${goal.id}（${goal.status}）：${goal.objective}\n进度：${goal.progress}\n下一步：${goal.nextAction}\n仅当用户明确要求创建长期目标时调用 create_goal；普通任务不得自动创建目标。get_goal 查询当前目标。只有主 Agent 可以更新当前目标。update_goal({status:"complete"}) 前由主 Agent 核对原始要求、实际成果和证据，不需另派审核者；还有必要工作时不得完成。只有用户明确要求暂停时才设置 paused。相同阻塞至少连续三轮且无法继续有效推进时才设置 blocked；一般测试失败、任务难度或未完成不算执行不可用。暂停、额度耗尽或阻塞状态不得自动续跑。Plan 模式只规划，禁止执行。用户排队消息优先。`};
   });
+  pi.on('context_with_system',(event,ctx)=>{
+   this.nativeContext=ctx;const goal=this.goals.current(makeContext(pi,ctx)),first=event.messages[0];if(first?.role!=='system')return;
+   // Bind mutations to the objective actually prepared for this model request.
+   // A get_goal and complete in the same old response cannot acknowledge an edit.
+   if(this.turn){this.turn.goalId=goal?.id;this.turn.objective=goal?.objective;}
+   const current=goal?{id:goal.id,status:goal.status,objective:goal.objective,progress:goal.progress,nextAction:goal.nextAction}:null;
+   return {messages:[{...first,sections:{...first.sections,'friend-goal-current':`当前会话目标（本请求最新状态，以此覆盖此前目标描述）：${JSON.stringify(current)}。没有当前目标时，不得从普通任务自行创建目标。`}},...event.messages.slice(1)]};
+  });
   for(const [name,description,parameters] of [
    ['create_goal','仅在用户明确要求创建长期目标时使用；不得从普通任务自行推断目标。仅设置 objective，不设令牌、时长或轮数预算。',Type.Object({objective:Type.String()})],
    ['get_goal','读取当前长期目标状态、进度与使用量。',Type.Object({})],
@@ -125,7 +133,7 @@ export class RuntimeController {
     this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(ctx.origin==='agent'&&this.turn){this.turn.goalId=goal.id;this.turn.objective=goal.objective;this.turn.goalEpoch=this.goalEpoch;}if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
    }
    if(operation==='list'||operation==='snapshot')return this.goals.list(ctx);
-   if(['get','read','status'].includes(operation)){const result=input.id?this.goals.read(text(input.id),ctx):focused||null;if(ctx.origin==='agent'&&this.turn&&result?.id===focused?.id){this.turn.goalId=focused?.id;this.turn.objective=focused?.objective;}return result;}
+   if(['get','read','status'].includes(operation))return input.id?this.goals.read(text(input.id),ctx):focused||null;
    if(operation==='clear'){if(ctx.origin!=='user')throw new Error('仅用户可以清除目标');const result=this.goals.clear(ctx,input);this.cancelGoalWake(focused?.id);return result;}
    if(operation==='update'&&input.status===undefined){const continuation=input.continuation?object(input.continuation):undefined;if(continuation?.kind==='wait'&&(!focused||!this.knownWait(text(continuation.taskId,'等待对象'),focused,ctx)))throw new Error('等待对象必须是当前目标已知且未结束的实际执行对象');return this.goals.update(input,ctx);}
    const status=operation==='update'?String(input.status):operation;
