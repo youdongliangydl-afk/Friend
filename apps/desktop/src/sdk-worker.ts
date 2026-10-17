@@ -13,6 +13,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { SourcePolicy,isDerivedCapabilityInput,modelTokenUsage,type ArtifactRef,type EvidenceReceipt,shellEnvironment,dataDirectory,object,text,visibleText,historyItems,requestPlugin,atomicWrite,installFixtureProvider,RecordStore,projectIdentity,digest,isSessionDeleted,makeContext,type ExecutionMode,type HostPolicy,parsePermissionMode,permissionDecision,toolPermissionRequest,temporaryPermission,temporaryPermissionMatches,type PermissionMode,type PermissionRequest,type WakeFrame } from '@friend-pi/core';
 import {Type} from 'typebox';
 import {RuntimeController} from './runtime-controller.js';
+import {goalSideEffectIssues} from './goal-side-effects.js';
 import {PlanStore,type PlanExecution} from './plan-store.js';
 import {projectPlanContext} from './plan-context.js';
 import {approvedPlanPrompt,planInputReceipt,recoverPlanInputs} from './plan-input.js';
@@ -43,7 +44,8 @@ function recordForeground(force?:boolean){if(disposed||!session)return;foregroun
 const foregroundPulse=setInterval(()=>recordForeground(),5000);foregroundPulse.unref();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;let teammateRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
 const external=createExternalCapabilities({dataDir,cwd,confirm:request=>approvePermission(request),publish:()=>{if(session&&!disposed)publish('state',current());}});
-const services=new RuntimeController(dataDir,{admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed){recordForeground();publish('state',current());}},busy:()=>swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0||swarmCorrectionActive||teammateRunning,mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:sendRuntimeWake,prepareWake:prepareRuntimeWake});
+let swarmSafetySnapshot:Record<string,unknown>={};
+const services=new RuntimeController(dataDir,{unresolvedSideEffects:(ctx,goal)=>goalSideEffectIssues(swarmSafetySnapshot,ctx,goal).length>0,admitUserInput:admitQueuedInput,publish:(event,data)=>{publish(event==='runtime.process'?'plugin':event,event==='runtime.process'?{v:1,pluginEvent:event,data}:data);if(session&&!disposed){recordForeground();publish('state',current());}},busy:()=>swarmRunning||auditRunning||workflowRunning||pendingSwarmGraphIds.size>0||swarmCorrectionActive||teammateRunning,mode:()=>executionMode,planMode:()=>planMode,runId:()=>runId,modelId:()=>session?.model?`${session.model.provider}/${session.model.id}`:undefined,thinkingLevel:()=>session?.thinkingLevel||'off',haltExecution:async origin=>{const stop=()=>handle('stop',{keepGoalState:true}).then(()=>{}).catch(error=>publish('notice',{level:'error',message:publicError(error)}));if(origin==='user')await stop();else setImmediate(()=>void stop());},sendWake:sendRuntimeWake,prepareWake:prepareRuntimeWake});
 function runtimeState(){try{return services.snapshot();}catch{return undefined;}}
 function finiteJobs(){try{return services.jobs.hasFinite(services.context(),runId);}catch{return false;}}
 async function applyAssignedRole(forNewRun=false){if(!enabled.includes('expert'))return;const snap=object(await requestPlugin(bus,'expert','role.snapshot',{},1000));const selection=snap.selection&&typeof snap.selection==='object'?object(snap.selection):{};const current=snap.current&&typeof snap.current==='object'?object(snap.current):undefined,phase=snap.phase&&typeof snap.phase==='object'?object(snap.phase):{};const sameRun=!forNewRun&&phase.runId===runId;const role=sameRun?current:(Array.isArray(snap.roles)?snap.roles.map(object):[]).find(item=>item.id===selection.id);if(role?.modelId&&(!sameRun||role.modelSource!=='inherited')){const id=String(role.modelId);if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1')await requireReadyModel(runtime,dataDir,id);else if(!runtime.hasConfiguredAuth(selectedModel(id).provider))throw new Error('角色指定模型未配置认证');if(`${session.model?.provider}/${session.model?.id}`!==id)await session.setModel(selectedModel(id));}if(role?.thinkingLevel&&(!sameRun||role.thinkingSource!=='inherited')){if(!session.getAvailableThinkingLevels().includes(String(role.thinkingLevel) as ThinkingLevel))throw new Error('角色指定思考等级不可用');session.setThinkingLevel(String(role.thinkingLevel) as ThinkingLevel);}}
@@ -545,7 +547,7 @@ async function initialize(){
     }
     if(event.pluginEvent==='swarm.process'&&object(event.data).action==='closed'){void services.drain();return;}
     if(event.pluginEvent!=='swarm.changed'||!event.data||typeof event.data!=='object')return;
-    const snapshot=object(event.data);teammateRunning=Array.isArray(snapshot.teammates)&&snapshot.teammates.map(object).some(member=>['running','stopping'].includes(String(member.state)));services.observeSwarm(snapshot,correctedRun(runId)?undefined:modelSwarmGraphIds);
+    const snapshot=object(event.data);swarmSafetySnapshot=snapshot;teammateRunning=Array.isArray(snapshot.teammates)&&snapshot.teammates.map(object).some(member=>['running','stopping'].includes(String(member.state)));services.observeSwarm(snapshot,correctedRun(runId)?undefined:modelSwarmGraphIds);
     const graphs=Array.isArray(snapshot.graphs)?snapshot.graphs.map(object):[];
     for(const graph of graphs){
       const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit===true)continue;
@@ -569,10 +571,10 @@ async function initialize(){
   const policy=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.run.policy.v1'&&object(entry.data).v===1&&object(entry.data).runId===runId&&typeof object(entry.data).requiresSwarm==='boolean');
   if(policy?.type==='custom')runRequiresSwarm=object(policy.data).requiresSwarm as boolean;
   else if(runId&&restoredGoal&&restoredGoal.sourceRunId===runId)runRequiresSwarm=restoredGoal.mode==='swarm'&&!planMode;
-  if(runId&&enabled.includes('swarm')&&(runRequiresSwarm===true||restoredGoal?.sourceRunId===runId)){
+  if(enabled.includes('swarm')){
     // A cold controller need not emit swarm.changed. Restore only this run's
     // authority evidence, retaining a matching Goal's stricter ownership; reading a snapshot must not start or replay work.
-    const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));
+    const snapshot=object(await requestPlugin(bus,'swarm','snapshot',{},1000));swarmSafetySnapshot=snapshot;
     for(const raw of Array.isArray(snapshot.graphs)?snapshot.graphs:[]){const graph=object(raw);if(graph.sessionId!==session.sessionId||graph.runId!==runId||restoredGoal&&restoredGoal.sourceRunId===runId&&graph.goalId!==restoredGoal.id)continue;const id=String(graph.id);swarmGraphs.set(id,graph);if(graph.audit!==true)runGraphIds.add(id);}
   }
   await services.restore();if(enabled.includes('topic-rebuild')&&process.env.FRIEND_PI_CONTEXT_MODE)await requestPlugin(bus,'topic-rebuild','settings',{mode:process.env.FRIEND_PI_CONTEXT_MODE},1000,'user');startupPhase('metadata');output({type:'ready',state:current(),...await modelState(),piSource:JSON.parse(readFileSync(join(root,'pi-source.lock.json'),'utf8')).commit});
@@ -683,6 +685,7 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
     session.sessionManager.appendCustomEntry('friend-pi.plan.decision',{plan,origin:'user'});planMode=false;publish('state',current());return current();
   }
   if(method==='send'){
+    if(input.goal!==undefined&&services.unresolvedSideEffects())throw new Error('请先检查并确认未知现场，再接续目标');
     const sendEpoch=queueEpoch;
     const assertSendOwned=()=>{if(sendEpoch!==queueEpoch||stopping||disposed||approvedExecution&&plans.execution(approvedExecution.plan)?.status!=='starting')throw new Error('消息交付已取消');};
     if(missingModelId)throw new Error('历史型号不可用，请重新配置并通过连接测试');
@@ -736,17 +739,18 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
   }
   if(method==='runtime'){
     const action=text(input.action),args=object(input.input||{});
+    const previousAuthorisation=authorisedCorrectionResume;
     const activating=action==='goal.create'||action==='goal.resume'||action==='goal.set'&&(args.objective!==undefined||args.status==='active');
     if(activating){
-      if(services.unknownActivities().length||services.jobs.hasUnknown(services.context()))throw new Error('请先检查并确认未知现场，再接续目标');
+      if(services.unresolvedSideEffects())throw new Error('请先检查并确认未知现场，再接续目标');
       if(session.isIdle){await applyAssignedRole(action==='goal.create');await ensureModelReady();}
       if(session.isIdle&&!swarmBusy()){
         if(!runId){runId=randomUUID();process.env.FRIEND_PI_RUN_ID=runId;runStartedAt=Date.now();}
         cancelRequested=false;captureRunPolicy();await changeTracker?.ensure(runId);policyRevision++;
       }
-      if(runId&&correctedRun(runId))authorisedCorrectionResume={runId,generation:services.generation(),verificationGraphs:new Map()};
+      if(runId&&correctedRun(runId)){const goal=services.currentGoal();authorisedCorrectionResume={runId,generation:services.generation(),verificationGraphs:new Map([...runGraphIds].filter(id=>{const graph=swarmGraphs.get(id);return graph?.sessionId===session.sessionId&&graph.runId===runId&&graph.goalId===goal?.id&&graph.status==='integrated'&&Array.isArray(graph.tasks)&&graph.tasks.every(task=>object(task).mode==='read'&&object(task).status==='completed')&&Array.isArray(graph.attempts)&&graph.attempts.every(attempt=>object(attempt).status==='completed');}).map(id=>[id,digest(swarmGraphs.get(id))]))};}
     }
-    const result=await services.dispatch(action,args,services.context('user'));
+    let result:unknown;try{result=await services.dispatch(action,args,services.context('user'));}catch(error){authorisedCorrectionResume=previousAuthorisation;throw error;}
     if(action==='goal.set'&&args.objective!==undefined&&session.isStreaming){
       const goal=services.currentGoal();
       if(goal)await session.sendCustomMessage({customType:'friend-pi.goal-change',content:'用户已更新当前会话目标。请使用 get_goal 读取最新目标，按最新完成条件继续；目标不会扩大工具权限。',display:false,details:{v:1,goalId:goal.id,revision:goal.revision}},{triggerTurn:true,deliverAs:'steer'});

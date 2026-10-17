@@ -6,6 +6,7 @@ import {ProcessJobs,type ProcessJob} from './process-jobs.js';
 export interface RuntimeHooks {
  publish(event:string,data:unknown):void;busy():boolean;mode():ExecutionMode;planMode():boolean;
  admitUserInput?():Promise<boolean>|boolean;
+ unresolvedSideEffects?(ctx:PluginContext,goal?:GoalRecord):boolean;
  sendWake?(frame:WakeFrame):Promise<void>|void;prepareWake(frame:WakeFrame):Promise<void>|void;haltExecution?(origin:PluginContext['origin']):Promise<void>|void;runId():string|undefined;modelId():string|undefined;thinkingLevel():string;
 }
 interface Activity {sessionId:string;id:string;tool:string;sideEffect:boolean;status:'running'|'settled'|'unknown';runId?:string}
@@ -29,7 +30,7 @@ export class RuntimeController {
  generation(){return this.coordinator?.generation()||0;}
  currentGoal(){const session=this.nativeContext?.sessionManager.getSessionId();if(!session)return undefined;const id=this.goals.store.get<string>(`focus:${session}`)?.value;return id?this.goals.store.list<GoalRecord>('goal:').find(row=>row.value.id===id)?.value:undefined;}
  suspendForQueuedInput(){const goal=this.currentGoal();if(!goal||goal.status!=='active')return undefined;this.cancelGoalWake(goal.id);return {id:goal.id,revision:goal.revision,sourceRunId:goal.sourceRunId,objective:goal.objective};}
- setGoalForInput(input:JsonObject,ctx:PluginContext){const prior=this.goals.current(ctx);const goal=this.goals.set(input,ctx,this.generation());this.cancelGoalWake(prior?.id);this.resetGoalStreak(goal.id,ctx);return goal;}
+ setGoalForInput(input:JsonObject,ctx:PluginContext){const prior=this.goals.current(ctx);if(this.unresolvedSideEffects(ctx,prior))throw new Error('请先检查并确认未知现场，再接续目标');const goal=this.goals.set(input,ctx,this.generation());this.cancelGoalWake(prior?.id);this.resetGoalStreak(goal.id,ctx);return goal;}
  private resetGoalStreak(goalId:string,ctx:PluginContext){this.store.remove(`turn-streak:${ctx.sessionId}:${goalId}`);}
  cancelGoalWake(goalId?:string){this.goalEpoch++;if(goalId)this.coordinator?.cancelGoal(goalId);}
  beginTurn({automatic}:{automatic:boolean}){this.goals.bindRun(this.context());const goal=this.currentGoal();this.turn={automatic,goalId:goal?.id,objective:goal?.objective,goalEpoch:this.goalEpoch,success:false,unavailable:false,response:false};}
@@ -37,7 +38,8 @@ export class RuntimeController {
  recordGoalResponse({text='',reasoning='',questions=[]}:{text?:string;reasoning?:string;questions?:unknown[]}){if(this.turn)this.turn.response ||= !!(text.trim()||reasoning.trim()||questions.length);}
 
  activeTools(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.store.list<Activity>(`activity:${session}:`).map(row=>row.value).filter(row=>row.status==='running'):[];}
- safeObjects(){return !this.hooks.busy()&&!this.activeTools().length&&!this.jobs.hasFinite(this.context())&&!this.jobs.hasUnknown(this.context())&&!this.store.list<Activity>(`activity:${this.context().sessionId}:`).some(row=>row.value.status==='unknown'&&row.value.sideEffect);}
+ unresolvedSideEffects(ctx=this.context(),goal=this.goals.current(ctx)){return this.unknownActivities().length>0||this.jobs.hasUnknown(ctx)||this.hooks.unresolvedSideEffects?.(ctx,goal)===true;}
+ safeObjects(){return !this.hooks.busy()&&!this.activeTools().length&&!this.jobs.hasFinite(this.context())&&!this.unresolvedSideEffects();}
  unsettledJobs(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.jobs.store.list<ProcessJob>('job:').map(row=>row.value).filter(job=>job.sessionId===session&&(job.status==='unknown'||job.kind==='task'&&job.status==='running')):[];}
  unknownActivities(){const session=this.nativeContext?.sessionManager.getSessionId();return session?this.store.list<Activity>(`activity:${session}:`).map(row=>row.value).filter(row=>row.status==='unknown'&&row.sideEffect):[];}
  snapshot(ctx=this.context()){return {goal:this.goals.current(ctx),lastCompletedGoal:this.goals.getLastCompleted(ctx),goalStatuses:['active','paused','blocked','usage_limited','complete'],goals:this.goals.list(ctx),tasks:this.tasks.list(ctx),jobs:this.jobs.list(ctx),pendingWakes:this.coordinator?.pending()||[],activeTools:this.activeTools(),unknownActivities:this.unknownActivities()};}
@@ -118,6 +120,7 @@ export class RuntimeController {
     if(operation!=='create'&&(this.turn.goalId!==focused?.id||this.turn.objective!==focused?.objective))throw new CapabilityError('VERSION_CONFLICT','目标已更新，请先用 get_goal 读取当前目标再核对成果');
    }
    if(operation==='create'||operation==='set'){
+    if((operation==='create'||input.objective!==undefined||input.status==='active')&&this.unresolvedSideEffects(ctx,focused))throw new Error('请先检查并确认未知现场，再接续目标');
     const goal=operation==='set'?this.goals.set(input,ctx,this.generation()):this.goals.create(input,ctx,this.generation());
     this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);if(ctx.origin==='agent'&&this.turn){this.turn.goalId=goal.id;this.turn.objective=goal.objective;this.turn.goalEpoch=this.goalEpoch;}if(ctx.origin==='user'&&goal.status==='active')this.enqueue(`set:${goal.id}:${goal.revision}`,`推进用户设定的目标：${goal.objective}`,{goalId:goal.id});return goal;
    }
@@ -129,7 +132,7 @@ export class RuntimeController {
    if(status==='pause'||status==='paused'||status==='stop'||status==='blocked'){
     const goal=this.goals.setState(status==='blocked'?'blocked':'paused',ctx,typeof input.reason==='string'?input.reason:status==='blocked'?'主 Agent 报告持续阻塞':'用户要求暂停目标',input);this.cancelGoalWake(focused?.id);return goal;
    }
-   if(operation==='resume'){if(this.unknownActivities().length||this.jobs.hasUnknown(ctx))throw new Error('请先检查并确认未知现场，再接续目标');const goal=this.goals.resume(input,ctx,this.generation());this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);this.enqueue(`resume:${goal.id}:${goal.revision}`,`继续目标：${goal.objective}。依据现有成果推进。`,{goalId:goal.id});return goal;}
+   if(operation==='resume'){if(this.unresolvedSideEffects(ctx,focused))throw new Error('请先检查并确认未知现场，再接续目标');const goal=this.goals.resume(input,ctx,this.generation());this.cancelGoalWake(focused?.id);this.resetGoalStreak(goal.id,ctx);this.enqueue(`resume:${goal.id}:${goal.revision}`,`继续目标：${goal.objective}。依据现有成果推进。`,{goalId:goal.id});return goal;}
    if(operation==='accept')return this.goals.accept(input,ctx,this.tasks,this.safeObjects());
    if(status==='complete'){
     const result=await this.goals.finish(ctx,this.tasks,async()=>({approved:true,findings:'主 Agent 完成核对'}),this.safeObjects(),input);this.cancelGoalWake(focused?.id);return result;

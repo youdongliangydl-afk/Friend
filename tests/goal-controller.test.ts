@@ -10,12 +10,12 @@ const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 function fixture(){
  const root=mkdtempSync(join(tmpdir(),'friend-goal-controller-'));mkdirSync(join(root,'project'));
  const old={data:process.env.FRIEND_PI_DATA_DIR,run:process.env.FRIEND_PI_RUN_ID};process.env.FRIEND_PI_DATA_DIR=join(root,'data');process.env.FRIEND_PI_RUN_ID='run';
- const handlers=new Map<string,Function>(),tools=new Map<string,any>(),sent:any[]=[],bus=createEventBus();let idle=false,busy=false,plan=false,halt=0,prepare:()=>Promise<void>=async()=>{},admit:()=>boolean|Promise<boolean>=()=>false;
- const runtime=new RuntimeController(join(root,'data'),{publish:()=>{},busy:()=>busy,mode:()=> 'single',planMode:()=>plan,runId:()=>process.env.FRIEND_PI_RUN_ID,modelId:()=>undefined,thinkingLevel:()=> 'off',haltExecution:()=>{halt++;},prepareWake:()=>prepare(),admitUserInput:()=>admit()});
+ const handlers=new Map<string,Function>(),tools=new Map<string,any>(),sent:any[]=[],bus=createEventBus();let idle=false,busy=false,plan=false,unknown=false,halt=0,prepare:()=>Promise<void>=async()=>{},admit:()=>boolean|Promise<boolean>=()=>false;
+ const runtime=new RuntimeController(join(root,'data'),{publish:()=>{},unresolvedSideEffects:()=>unknown,busy:()=>busy,mode:()=> 'single',planMode:()=>plan,runId:()=>process.env.FRIEND_PI_RUN_ID,modelId:()=>undefined,thinkingLevel:()=> 'off',haltExecution:()=>{halt++;},prepareWake:()=>prepare(),admitUserInput:()=>admit()});
  const native={cwd:join(root,'project'),sessionManager:{getSessionId:()=> 'session',getSessionFile:()=>undefined,getEntries:()=>[],getBranch:()=>[]},isIdle:()=>idle,model:undefined,ui:{notify:()=>{}}};
  const pi={events:bus,on:(name:string,handler:Function)=>handlers.set(name,handler),registerTool:(tool:any)=>tools.set(tool.name,tool),registerCommand:()=>{},getThinkingLevel:()=> 'off',appendEntry:()=>{},sendMessage:(message:unknown,options:unknown)=>{sent.push({message,options});}} as unknown as ExtensionAPI;
  runtime.extension()(pi);handlers.get('session_start')!({},native);const ctx=runtime.context('user');const goal=runtime.goals.create({objective:'Finish the explicitly requested deliverable'},ctx,runtime.generation());
- return {runtime,ctx,goal,tools,sent,native,get halt(){return halt;},setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},setAdmit(value:()=>boolean|Promise<boolean>){admit=value;},async close(){runtime.dispose();bus.clear();if(old.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=old.data;if(old.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=old.run;await flush();rmSync(root,{recursive:true,force:true});}};
+ return {runtime,ctx,goal,tools,sent,native,get halt(){return halt;},setIdle(value:boolean){idle=value;},setBusy(value:boolean){busy=value;},setUnknown(value:boolean){unknown=value;},setPlan(value:boolean){plan=value;},setPrepare(value:()=>Promise<void>){prepare=value;},setAdmit(value:()=>boolean|Promise<boolean>){admit=value;},async close(){runtime.dispose();bus.clear();if(old.data===undefined)delete process.env.FRIEND_PI_DATA_DIR;else process.env.FRIEND_PI_DATA_DIR=old.data;if(old.run===undefined)delete process.env.FRIEND_PI_RUN_ID;else process.env.FRIEND_PI_RUN_ID=old.run;await flush();rmSync(root,{recursive:true,force:true});}};
 }
 
 test('model goal tools expose only explicit objective and canonical status',async()=>{const f=fixture();try{
@@ -116,4 +116,14 @@ test('unknown and completed wait objects cannot permanently suspend continuation
  await f.runtime.dispatch('goal.update',{continuation:{kind:'wait',taskId:task.id}},f.ctx);f.runtime.settled();assert.equal(f.runtime.currentGoal()?.waitFor,task.id);assert.equal(f.runtime.snapshot().pendingWakes.length,0);
  f.runtime.tasks.fail(task.id,'No longer running',f.ctx,true);await assert.rejects(f.runtime.dispatch('goal.update',{continuation:{kind:'wait',taskId:task.id}},f.ctx),/实际执行对象/);
  f.runtime.settled();assert.equal(f.runtime.currentGoal()?.waitFor,undefined);assert.equal(f.runtime.currentGoal()?.status,'active');assert.equal(f.runtime.snapshot().pendingWakes.length,1);
+}finally{await f.close();}});
+
+
+test('unresolved plugin effects fence Goal restore, resume, complete and first-input creation',async()=>{const f=fixture();try{
+ f.setUnknown(true);assert.equal(f.runtime.safeObjects(),false);
+ await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},{...f.ctx,origin:'agent'}),/收敛/);
+ await f.runtime.dispatch('goal.pause',{},f.ctx);await assert.rejects(f.runtime.dispatch('goal.resume',{},f.ctx),/未知现场/);
+ await assert.rejects(f.runtime.dispatch('goal.set',{status:'active'},f.ctx),/未知现场/);
+ await f.runtime.dispatch('goal.clear',{},f.ctx);assert.throws(()=>f.runtime.setGoalForInput({objective:'New target'},f.ctx),/未知现场/);
+ f.setUnknown(false);const goal=f.runtime.setGoalForInput({objective:'Reviewed side effects'},f.ctx);assert.equal(goal.status,'active');
 }finally{await f.close();}});
