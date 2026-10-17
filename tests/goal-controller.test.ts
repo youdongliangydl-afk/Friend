@@ -30,7 +30,7 @@ test('old model completion cannot complete an edited objective; the next prepare
  await f.runtime.dispatch('goal.set',{objective:'New requirement received while streaming'},f.ctx);
  await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},agent),{code:'VERSION_CONFLICT'});assert.equal(f.runtime.currentGoal()?.status,'active');
  await f.runtime.dispatch('goal.get',{},agent);await assert.rejects(f.runtime.dispatch('goal.update',{status:'complete'},agent),{code:'VERSION_CONFLICT'});
- const prepared=f.prepareRequest();assert.match(prepared.messages[0].content,/New requirement received while streaming/);f.runtime.account(500,'normal-accounting');
+ const prepared=f.prepareRequest();assert.match(prepared.messages.find((message:any)=>message.customType==='friend-pi.goal-context').content,/New requirement received while streaming/);f.runtime.account(500,'normal-accounting');
  await f.runtime.dispatch('goal.update',{status:'complete'},agent);assert.equal(f.runtime.currentGoal(),undefined);
 }finally{await f.close();}});
 
