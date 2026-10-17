@@ -9,7 +9,7 @@ import { roleDefinition } from '../src/roles.js';
 
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'friend-roles-')),controller=new ExpertController(dir),entries:{type:string;value:unknown}[]=[];
-  const policy:HostPolicy={v:1,revision:1,runId:'run-one',stage:'task-1:checked',canSwitchRole:true,unsettledTools:0,tools:['read','grep','find','ls','write','edit','bash','friend_expert','friend_swarm','friend_plan','friend_goal','friend_task','friend_workflow','friend_jobs','friend_todo'],writeScopes:['.'],executionMode:'single',planMode:false};
+  const policy:HostPolicy={v:1,revision:1,runId:'run-one',stage:'task-1:checked',canSwitchRole:true,unsettledTools:0,tools:['read','grep','find','ls','write','edit','bash','friend_expert','friend_swarm','friend_plan','friend_goal','friend_task','friend_workflow','friend_jobs','friend_todo','create_goal','get_goal','update_goal'],writeScopes:['.'],executionMode:'single',planMode:false};
   const ctx:PluginContext&{policy:RoleCapability;availableModels:{id:string;thinkingLevels:string[]}[]}={origin:'user',dataDir:dir,projectDir:dir,projectId:'p',sessionId:'s',runId:'run-one',modelId:'fixture/main',thinkingLevel:'off',policy,availableModels:[{id:'fixture/main',thinkingLevels:['off','medium']},{id:'fixture/review',thinkingLevels:['off','high']}],isIdle:()=>true,history:()=>[],readSource:()=>{throw Error('unused');},complete:async()=>'',request:async()=>undefined,emit:()=>{},notify:()=>{},appendEntry:(type,value)=>{entries.push({type,value});return String(entries.length);}};
   const input=(id:string)=>({id,runId:'run-one',stage:policy.stage,policyRevision:policy.revision});
   return {dir,controller,ctx,entries,input,dispose:()=>{controller.dispose();rmSync(dir,{recursive:true,force:true});}};
@@ -33,6 +33,20 @@ test('planner can submit plan metadata while readonly roles cannot approve, exec
     for(const tool of ['friend_goal','friend_task','friend_workflow','friend_jobs']){
       assert.equal(blockedByFrozenRole(reviewer,tool,{action:'snapshot'}),false);
       for(const action of ['start','integrate','complete','create','verify'])assert.equal(blockedByFrozenRole(reviewer,tool,{action}),true);
+    }
+  }finally{f.dispose();}
+});
+test('planner, researcher and reviewer can use Goal lifecycle metadata within the parent host cap',()=>{
+  const f=fixture();try{
+    for(const id of ['planner','researcher','reviewer']){
+      const definition=f.controller.roleDefinitions(f.ctx).find(role=>role.id===id)!,role=freezeRole(definition,f.ctx.policy);
+      assert.equal(blockedByFrozenRole(role,'create_goal',{title:'Approved research goal'}),false,`${id} can request explicitly authorized Goal creation`);
+      assert.equal(blockedByFrozenRole(role,'get_goal',{}),false,`${id} can read Goal metadata`);
+      for(const status of ['complete','paused'])assert.equal(blockedByFrozenRole(role,'update_goal',{status}),false,`${id} can set Goal status to ${status}`);
+      for(const tool of ['write','edit','bash'])assert.equal(blockedByFrozenRole(role,tool,{path:'new.ts',command:'touch new.ts'},f.dir),true,`${id} cannot use ${tool}`);
+
+      const parentWithoutGoalTools=freezeRole(definition,{tools:['read','write','edit','bash'],writeScopes:['.']});
+      for(const tool of ['create_goal','get_goal','update_goal'])assert.equal(blockedByFrozenRole(parentWithoutGoalTools,tool,{status:'complete'}),true,`parent host cap blocks ${tool}`);
     }
   }finally{f.dispose();}
 });
