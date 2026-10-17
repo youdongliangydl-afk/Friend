@@ -2,30 +2,49 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import ts from 'typescript';
 import {transformSync} from 'esbuild';
 const source=readFileSync('apps/desktop/src/sdk-worker.ts','utf8');
-const correctionHelpers=source.slice(source.indexOf('const correctionPauseReason'),source.indexOf('function freshCorrection'))+source.slice(source.indexOf('function skipRuntimeWake'),source.indexOf('function runtimeWakeAllowed'));
-const compiled=transformSync(correctionHelpers+source.slice(source.indexOf('async function admitQueuedInput'),source.indexOf('function imageIdentity')),{loader:'ts',target:'node24'}).code;
-/** Production admission with deterministic asynchronous host boundaries. */
-async function restore(options:{status?:string;focused?:any;tasks?:any[];graphs?:any[];originalRun?:boolean;cancelAtModel?:boolean;correctedGoal?:boolean}={}){
- const held={id:'A',revision:4,sourceRunId:'run-A',objective:'original',modelId:'provider/A',thinkingLevel:'off',mode:'single',planMode:false};
- let marker:any=held,focus=options.focused;const resumed:string[]=[],q={paused:false,items:[]},errors:string[]=[],branch:any[]=options.correctedGoal?[{type:'custom',customType:'friend-pi.swarm.correction.v1',data:{v:1,runId:'run-A'}}]:[];let modelChanges=0;
- const ctx:any={inputQueue:{snapshot:()=>q,store:{get:()=>marker?{value:marker}:undefined,put:()=>{},remove:()=>{marker=undefined;}},pause:(value:boolean)=>{q.paused=value;}},disposed:false,queueDriving:false,queueRestoring:undefined,stopping:false,swarmCorrectionPending:false,queueEpoch:0,queueResumeAuthorised:false,lifecycleStatus:options.status||'completed',runId:options.originalRun?'run-A':'run-B',executionMode:'swarm',planMode:false,runRequiresSwarm:true,settledRunId:'run-B',cancelRequested:false,authorityNotice:'',activeGraphIds:new Set(),runGraphIds:new Set(),modelSwarmGraphIds:new Set(),baselineGraphIds:new Set(),swarmGraphs:new Map((options.graphs||[]).map((g:any)=>[g.id,g])),enabled:[],process:{env:{}},session:{isIdle:true,sessionId:'session',model:{provider:'provider',id:'B'},thinkingLevel:'off',sessionManager:{getBranch:()=>[]},setModel:async(model:any)=>{modelChanges++;await Promise.resolve();ctx.session.model=model;if(options.cancelAtModel&&modelChanges===1){ctx.queueEpoch++;marker=undefined;ctx.runId='manual-run';ctx.executionMode='team';}},setThinkingLevel:()=>{}},services:{safeObjects:()=>true,currentGoal:()=>focus,context:()=>({}),tasks:{list:()=>options.tasks||[]},goals:{read:()=>({id:'A',revision:4,status:'paused',sourceRunId:'run-A',sessionId:'session',mode:'single'}),store:{put:(_key:string,id:string)=>{focus={id,status:'paused'};}}},dispatch:async(_action:string,input:any)=>{resumed.push(input.goalId);}},swarmBusy:()=>false,finiteJobs:()=>false,suspensionKey:()=>'',changeTracker:{settle:async()=>{},flush:async()=>{},ensure:async()=>{}},selectedModel:(id:string)=>({provider:id.split('/')[0],id:id.split('/')[1]}),ownedEntries:(rows:any)=>rows,object:(x:any)=>x||{},requestPlugin:async()=>({graphs:[]}),queueChanged:()=>{},publish:()=>{},cancelQueueResume:()=>{marker=undefined;}};
- ctx.foregroundOpen=true;ctx.session.sessionManager={getBranch:()=>branch,appendCustomEntry:(customType:string,data:unknown)=>branch.push({type:'custom',customType,data})};
- ctx.services.generation=()=>0;ctx.services.goals.setState=(status:string,_context:unknown,error:string)=>{focus={...focus,status,error};};
- ctx.publicError=(error:unknown)=>String(error);ctx.publish=(type:string,value:any)=>{if(type==='notice'&&value.level==='error')errors.push(value.message);};
- vm.createContext(ctx);vm.runInContext(compiled,ctx);await ctx.admitQueuedInput();assert.deepEqual(errors,[],`Admission published an unexpected error: ${errors.join('\n')}`);return {ctx,q,resumed,goal:focus,branch,marker};
+const parsed=ts.createSourceFile('sdk-worker.ts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+const admission=parsed.statements.find(statement=>ts.isFunctionDeclaration(statement)&&statement.name?.text==='admitQueuedInput');
+assert.ok(admission,'production queue admission must remain available to exercise');
+const compiled=transformSync(admission.getText(parsed),{loader:'ts',target:'node24'}).code;
+
+/** Exercise the real asynchronous admission boundary with a controlled queue. */
+async function admit(options:{goalStatus?:string;paused?:boolean;empty?:boolean;busy?:boolean;status?:string;authorised?:boolean;state?:string;race?:'revision'|'head'|'pause'|'stop'|'epoch';sendError?:boolean}={}){
+ const goal={id:'original-goal',status:options.goalStatus||'active',revision:7,objective:'Keep the original objective'};
+ const head={id:'user-A',revision:3,state:options.state||'queued',text:'Fresh user input',runId:'user-run',mode:'single',planMode:false};
+ const queue={paused:options.paused||false,items:options.empty?[]:[head]};
+ const claims:unknown[][]=[],sends:any[]=[],failures:string[]=[],errors:string[]=[];let invalidations=0,legacyClears=0;
+ const context:any={disposed:false,queueDriving:false,stopping:false,swarmCorrectionPending:false,queueEpoch:0,queueResumeAuthorised:options.authorised||false,lifecycleStatus:options.status||'completed',runId:'original-run',queueRestoring:undefined,
+  inputQueue:{snapshot:()=>queue,pause:(paused:boolean)=>{queue.paused=paused;},claim:(...args:unknown[])=>{claims.push(args);return {...queue.items[0],state:'dispatching'};},failed:(id:string)=>failures.push(id)},
+  session:{isIdle:!options.busy,sessionManager:{getBranch:()=>[]}},swarmBusy:()=>false,finiteJobs:()=>false,
+  services:{safeObjects:()=>true,currentGoal:()=>goal,suspendForQueuedInput:()=>{invalidations++;}},
+  changeTracker:{settle:async()=>{await Promise.resolve();switch(options.race){case 'revision':queue.items[0]={...head,revision:4};break;case 'head':queue.items[0]={...head,id:'user-B'};break;case 'pause':queue.paused=true;break;case 'stop':context.stopping=true;break;case 'epoch':context.queueEpoch++;break;}},flush:async()=>{}},
+  cancelQueueResume:()=>{legacyClears++;},randomUUID:()=> 'claim-token',queueChanged:()=>{},publicError:(error:Error)=>error.message,
+  publish:(type:string,value:any)=>{if(type==='notice')errors.push(value.message);},current:()=>({}),
+  handle:async(method:string,input:any)=>{sends.push({method,input});if(options.sendError)throw Error('controlled native send failure');},
+ };
+ vm.createContext(context);vm.runInContext(compiled,context);const admitted=await context.admitQueuedInput();
+ return {admitted,goal,queue,claims,sends,failures,errors,invalidations,legacyClears,context};
 }
-test('queued Goal restoration requires successful independent work, including task and graph state',async()=>{
- for(const options of [{status:'paused'},{status:'failed'},{focused:{id:'B',status:'blocked'}},{tasks:[{runId:'run-B',status:'blocked'}]},{graphs:[{id:'g',runId:'run-B',status:'paused'}]}]){const x=await restore(options);assert.deepEqual(x.resumed,[]);assert.equal(x.q.paused,true);assert.equal(x.ctx.runId,'run-B');}
- const success=await restore();assert.deepEqual(success.resumed,['A']);assert.equal(success.ctx.runId,'run-A');
+
+test('queued user input is admitted before automatic continuation without changing Goal focus or status',async()=>{
+ for(const goalStatus of ['active','paused','blocked','usage_limited']){
+  const result=await admit({goalStatus});assert.equal(result.admitted,true);assert.equal(result.claims.length,1);assert.equal(result.sends.length,1);
+  assert.equal(result.sends[0].method,'send');assert.equal(result.sends[0].input.payload.text,'Fresh user input');assert.equal(result.sends[0].input.queueId,'user-A');
+  assert.deepEqual(result.goal,{id:'original-goal',status:goalStatus,revision:7,objective:'Keep the original objective'});
+  assert.equal(result.invalidations,1,'invalidate pending automatic continuation before giving the user the turn');assert.deepEqual(result.errors,[]);
+ }
 });
-test('deleting B before claim permits A unfinished steps to resume; cancelled model changes cannot install A identity',async()=>{
- const removed=await restore({originalRun:true,tasks:[{runId:'run-A',status:'pending'}],graphs:[{id:'original',runId:'run-A',status:'pending'}]});assert.deepEqual(removed.resumed,['A']);
- const cancelled=await restore({cancelAtModel:true});assert.deepEqual(cancelled.resumed,[]);assert.equal(cancelled.ctx.runId,'manual-run');assert.equal(cancelled.ctx.executionMode,'team');assert.equal(cancelled.ctx.session.model.id,'B');
+test('queue admission does not claim edited, replaced or cancelled input after an asynchronous boundary',async()=>{
+ for(const race of ['revision','head','pause','stop','epoch'] as const){const result=await admit({race});assert.equal(result.admitted,true,race);assert.deepEqual(result.claims,[],race);assert.deepEqual(result.sends,[],race);assert.equal(result.goal.id,'original-goal');assert.equal(result.goal.status,'active');assert.equal(result.context.queueDriving,false);}
 });
-test('a corrected original Goal restores paused with its reason and a NOT_RUN receipt instead of silently running',async()=>{
- const restored=await restore({correctedGoal:true});assert.deepEqual(restored.resumed,[]);assert.equal(restored.ctx.runId,'run-A');assert.equal(restored.ctx.lifecycleStatus,'paused');assert.equal(restored.ctx.foregroundOpen,false);
- assert.equal(restored.goal.id,'A');assert.equal(restored.goal.status,'paused');assert.match(restored.goal.error,/用户明确接续/);assert.equal(restored.marker,undefined);assert.equal(restored.q.paused,false);assert.deepEqual(restored.q.items,[]);
- const receipts=restored.branch.filter(entry=>entry.customType==='friend-pi.runtime-wake.skipped');assert.equal(receipts.length,1);assert.equal(receipts[0].data.eventId,'queue-resume:A:4');assert.equal(receipts[0].data.runId,'run-A');assert.equal(receipts[0].data.status,'not-run');assert.equal(receipts[0].data.reason,'correction-verification-only');
+test('busy, paused and uncertain user messages retain priority without being handed off',async()=>{
+ for(const options of [{busy:true},{paused:true},{state:'unknown'},{state:'editing'}]){const result=await admit(options);assert.equal(result.admitted,true);assert.deepEqual(result.claims,[]);assert.deepEqual(result.sends,[]);}
+ const empty=await admit({empty:true});assert.equal(empty.admitted,false);assert.equal(empty.legacyClears,1);assert.equal(empty.goal.id,'original-goal');assert.equal(empty.invalidations,0);
+});
+test('failed execution requires explicit queue resume; native send failure retains a paused recoverable queue',async()=>{
+ for(const status of ['failed','interrupted','stopped','paused']){const held=await admit({status});assert.equal(held.queue.paused,true);assert.deepEqual(held.sends,[]);const resumed=await admit({status,authorised:true});assert.equal(resumed.sends.length,1);}
+ const failed=await admit({sendError:true});assert.equal(failed.queue.paused,true);assert.deepEqual(failed.failures,['user-A']);assert.deepEqual(failed.errors,['controlled native send failure']);assert.equal(failed.goal.status,'active');assert.equal(failed.context.queueDriving,false);
 });

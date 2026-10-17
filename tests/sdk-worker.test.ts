@@ -169,7 +169,7 @@ test('cold Goal resume restores only its owned integrated Swarm authority withou
   const sessionId=manager.getSessionId(),projectId=projectIdentity(directory),goalId=randomUUID(),sourceRunId='original-run',at=new Date(Date.now()-10000).toISOString(),text='QA_COLD_AUTHORITY';
   manager.appendMessage({role:'user',content:text,timestamp:Date.now()-10000});
   const entryId=manager.getLeafId();manager.appendCustomEntry('friend-pi.input.v1',{entryId,textEnd:text.length,hash:digest(text),runId:scenario==='later-run'?'later-run':scenario==='policy-run'?'earlier-single-run':sourceRunId});if(scenario==='policy-run')manager.appendCustomEntry('friend-pi.run.policy.v1',{v:1,runId:sourceRunId,mode:'swarm',planMode:false,requiresSwarm:true});manager.appendThinkingLevelChange('off');
-  const goals=new RecordStore('goal-journal',dataDir);goals.put(`focus:${sessionId}`,goalId,null);goals.put(`goal:${projectId}:${goalId}`,{id:goalId,projectId,sessionId,origin:'user',sourceRunId,objective:text,mode:'swarm',status:'stopped',revision:1,progress:'Retained integrated evidence',nextAction:'Read retained evidence',tokens:0,usageAvailable:true,safeCheckpoint:false,generation:0,createdAt:at,updatedAt:at},null);goals.close();
+  const goals=new RecordStore('goal-journal',dataDir);goals.put(`focus:${sessionId}`,goalId,null);goals.put(`goal:${projectId}:${goalId}`,{id:goalId,projectId,sessionId,origin:'user',sourceRunId,objective:text,mode:'swarm',status:'paused',revision:1,progress:'Retained integrated evidence',nextAction:'Read retained evidence',tokens:0,usageAvailable:true,safeCheckpoint:false,generation:0,createdAt:at,updatedAt:at},null);goals.close();
   const store=new RecordStore('swarm',dataDir),graph=(owned:boolean)=>({id:randomUUID(),projectId,sessionId,projectDir:directory,goal:'retained fixture evidence',goalId:owned?goalId:'foreign-goal',runId:owned?sourceRunId:'foreign-run',status:owned?'integrated':'paused',createdAt:at,updatedAt:at,tasks:[],attempts:[],checks:[],maxWorkers:1,reworkRound:0});
   for(const item of [graph(false),...(scenario==='foreign-only'?[]:[graph(true)])])store.put(`graph:${projectId}:${item.id}`,item,null);store.close();
   let modelStarted=false,release!:()=>void;const responseGate=new Promise<void>(done=>{release=done;});
@@ -179,8 +179,8 @@ test('cold Goal resume restores only its owned integrated Swarm authority withou
    assert.equal(readFileSync(manager.getSessionFile()!,'utf8'),history);assert.equal(f.initial.state?.lifecycleStatus,'stopped');assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
    const before=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]};
    await f.request('provider.save',{provider:'cold-goal-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('configure',{executionMode:'swarm'});await f.request('runtime',{action:'goal.resume'});await f.wait(()=>modelStarted);
-   await f.request('runtime',{action:'goal.update',input:{continuation:{kind:'wait',taskId:'future-task'}}});release();await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
-   const after=await f.request('state') as {lifecycleStatus:string;runtime:{goal:{status:string}}};assert.equal(after.lifecycleStatus,['owned','policy-run'].includes(scenario)?'completed':'failed');assert.equal(after.runtime.goal.status,['owned','policy-run'].includes(scenario)?'waiting':'paused');
+   await f.request('runtime',{action:'goal.pause'});release();await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));
+   const after=await f.request('state') as {lifecycleStatus:string;runtime:{goal:{status:string}}};assert.equal(after.lifecycleStatus,['owned','policy-run'].includes(scenario)?'completed':'failed');assert.equal(after.runtime.goal.status,'paused');
    assert.deepEqual((await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:unknown[]}).graphs,before.graphs,'cold authority restoration cannot create, start or change retained graphs');
   }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
  }
@@ -473,43 +473,38 @@ test('read-only correction results cannot wake writable member, goal or job cont
  }finally{wakes?.close();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
 
-test('corrected Goals pause after verification and queued restoration; explicit user resume authorises fresh execution',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
- for(const queued of [false,true]){
-  let memberHeld=false,verificationGraphId='',release!:()=>void;const held=new Promise<void>(done=>{release=done;});let rootRequests=0;
+test('corrected Goals pause after verification; explicit user resume authorises fresh execution',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let rootRequests=0;
   const server=createServer(async(req,res)=>{
    let raw='';for await(const bytes of req)raw+=String(bytes);const payload=JSON.parse(raw),messages=payload.messages as {role:string;content:any}[],names=(payload.tools||[]).map((tool:any)=>tool.function.name),index=providerTaskIndex(messages),body=JSON.stringify(messages[index]?.content),recent=messages.slice(index).filter(message=>message.role==='tool').map(message=>{try{return JSON.parse(message.content);}catch{return {};}});
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
     if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'friend_goal',input:{action:'create',input:{objective:'Retain the original delivery and verify with Swarm'}}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
-    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running')){verificationGraphId=graph.id;call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}}
+    else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}
     else if(body.includes('继续目标：')){
      if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};
-     else if(recent.length===1)call={name:'friend_swarm',input:{action:queued?'append':'create',input:{...(queued?{graphId:verificationGraphId}:{}),goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
-     else if(!queued&&recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
-     else if(recent.length===(queued?2:3))call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
-     else if(recent.length===(queued?3:4))call={name:'friend_goal',input:{action:'update',input:{progress:'User-authorised continuation delivered',continuation:{kind:'wait',taskId:'user-response'}}}};
+     else if(recent.length===1)call={name:'friend_swarm',input:{action:'create',input:{goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
+     else if(recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
+     else if(recent.length===3)call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
+     else if(recent.length===4)call={name:'friend_goal',input:{action:'pause',input:{reason:'User-authorised continuation delivered'}}};
     }
-    else if(body.includes('QUEUE_B'))reply='Independent queued user request completed';
     else throw Error('Unexpected automatic Goal continuation: '+body);
-   }else{if(queued){memberHeld=true;await held;}if(!recent.length)call={name:'read',input:{path:'delivery.txt'}};}
+   }else{if(!recent.length)call={name:'read',input:{path:'delivery.txt'}};}
    if(res.destroyed)return;res.writeHead(200,{'Content-Type':'text/event-stream'});const delta=call?{role:'assistant',tool_calls:[{index:0,id:'call-'+randomUUID(),type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:reply};for(const choice of [{delta,finish_reason:null},{delta:{},finish_reason:call?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'correction-goal',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
   });
   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start({permissionMode:'allPermissions'});
   try{
    await f.request('configure',{plugins:['swarm']});await f.request('provider.save',{provider:'correction-goal',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
    const sent=await f.request('send',{text:'GOAL_SOURCE: retain delivery and verify in Swarm',mode:'swarm'}) as {runId:string};
-   if(queued){await f.wait(()=>memberHeld);await f.request('queue',{action:'add',text:'QUEUE_B: an independent user request',mode:'single',planMode:false});release();}
    await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&event.event.data.lifecycleStatus==='paused'&&(event.event.data.runtime as any)?.goal?.status==='paused'));
    const paused=await f.request('state') as {lifecycleStatus:string;isRunning:boolean;runId:string;sessionFile:string;queue:{items:unknown[]};runtime:{goal:{id:string;status:string;error:string};pendingWakes:unknown[]}};
    assert.equal(paused.runId,sent.runId);assert.equal(paused.isRunning,false);assert.equal(paused.lifecycleStatus,'paused');assert.match(paused.runtime.goal.error,/用户明确接续/);assert.deepEqual(paused.queue.items,[]);assert.deepEqual(paused.runtime.pendingWakes,[]);assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original goal delivery');
    const requestsBefore=rootRequests;await f.request('state');await f.request('queue',{action:'resume'});await f.request('state');assert.equal(rootRequests,requestsBefore,'paused Goal cannot keep draining automatic turns');
-   if(queued){const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(entries.some(entry=>entry.customType==='friend-pi.runtime-wake.skipped'&&entry.data.eventId.startsWith('queue-resume:')&&entry.data.status==='not-run'));}
    await f.request('runtime',{action:'goal.pause',input:{goalId:paused.runtime.goal.id}});await f.request('runtime',{action:'goal.resume',input:{goalId:paused.runtime.goal.id}});
-   await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='waiting'));
+   await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='paused'));
    const final=await f.request('state') as {isRunning:boolean;runtime:{pendingWakes:unknown[]}};assert.equal(final.isRunning,false);assert.deepEqual(final.runtime.pendingWakes,[]);const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.message?.toolName==='write'&&!entry.message.isError).length,2);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(existsSync(join(f.directory,'forbidden-after-resume.txt')),false);assert.ok(entries.some(entry=>entry.message?.toolName==='write'&&entry.message.isError&&JSON.stringify(entry.message).includes('本轮是只读协作')));
-  }finally{release();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
- }
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
 
 test('automatic Rebuild at the settled boundary cannot restore a stale running lifecycle',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
@@ -656,20 +651,90 @@ test('completed Team goal followed by Swarm workflow releases navigation and adm
     assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
   }finally{await f.close();}
 });
-test('composer plan-mode configuration saves a paused Goal without executing until explicit resume',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+/** A loopback model with explicit response gates makes pause/clear races observable. */
+async function goalHttp(handler:(payload:any,ordinal:number,res:import('node:http').ServerResponse)=>Promise<void>){
+ const requests:any[]=[];const errors:unknown[]=[];
+ const server=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);requests.push(payload);await handler(payload,requests.length,res);}catch(error){errors.push(error);res.destroy(error as Error);}});
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
+ try{await f.request('provider.save',{provider:'goal-loopback',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});}catch(error){await f.close();server.closeAllConnections();server.close();throw error;}
+ return {f,requests,close:async()=>{try{await f.close();}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}assert.deepEqual(errors,[]);}};
+}
+function goalChunk(res:import('node:http').ServerResponse,delta:unknown,finishReason:string|null=null,usage?:unknown){
+ if(res.destroyed)return;if(!res.headersSent)res.writeHead(200,{'Content-Type':'text/event-stream'});
+ res.write(`data: ${JSON.stringify({id:'goal-loopback',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,delta,finish_reason:finishReason}],...(usage?{usage}:{})})}\n\n`);
+}
+function goalReply(res:import('node:http').ServerResponse,text='Controlled answer',usage?:unknown){goalChunk(res,{role:'assistant',content:text});goalChunk(res,{},'stop',usage);res.end('data: [DONE]\n\n');}
+function goalComplete(res:import('node:http').ServerResponse){goalChunk(res,{role:'assistant',tool_calls:[{index:0,id:'complete-'+randomUUID(),type:'function',function:{name:'update_goal',arguments:JSON.stringify({status:'complete'})}}]});goalChunk(res,{},'tool_calls');res.end('data: [DONE]\n\n');}
+const goalSettled=(events:Message[])=>events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled');
+
+for(const mode of ['single','team'] as const)test(`Goal completion in ${mode} retains evidence without mandatory user acceptance or another reviewer`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  const f=await start();try{
-  await assert.rejects(f.request('configure',{planMode:'true'}),/计划模式设置无效/);
-  const configured=await f.request('configure',{planMode:true,executionMode:'single',thinkingLevel:'off'}) as {planMode:boolean};assert.equal(configured.planMode,true);
-  const goal=await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}}) as {id:string;status:string};assert.equal(goal.status,'paused');
-  await new Promise(done=>setTimeout(done,100));assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);
-  await assert.rejects(f.request('runtime',{action:'goal.resume',input:{goalId:goal.id}}),/计划模式/);
-  await f.request('configure',{planMode:false});await f.request('runtime',{action:'goal.resume',input:{goalId:goal.id}});
-  await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);
-  const state=await f.request('state') as {sessionFile:string;planMode:boolean};assert.equal(state.planMode,false);assert.match(readFileSync(state.sessionFile,'utf8'),/friend-pi.plan.configured/);
+  await f.request('configure',{executionMode:mode});const goal=await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}}) as {id:string};
+  await f.wait(()=>f.events.some(event=>event.event?.type==='plugin'&&event.event.data.pluginEvent==='goal.changed'&&(event.event.data.data as any)?.status==='complete'));
+  await f.wait(()=>goalSettled(f.events));
+  const snapshot=await f.request('runtime',{action:'snapshot'}) as {goal?:unknown;lastCompletedGoal:{id:string;status:string}};
+  assert.equal(snapshot.goal,undefined);assert.equal(snapshot.lastCompletedGoal.id,goal.id);assert.equal(snapshot.lastCompletedGoal.status,'complete');assert.equal(await f.request('runtime',{action:'goal.get'}),null);
+  const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean}[]};assert.deepEqual(graphs.graphs,[]);
+  assert.equal(f.events.some(event=>event.event?.type==='dialog'),false);assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');
  }finally{await f.close();}
 });
-test('goal completion uses Single self checks and Team independent native reviewer',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{for(const mode of ['single','team']){const f=await start();try{await f.request('configure',{executionMode:mode});await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL 只读说明当前项目'}});await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const snap=await f.request('runtime',{action:'snapshot'}) as {goal:{status:string;audit:{independent?:boolean}}};assert.equal(snap.goal.status,'completed');const graphs=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;attempts:unknown[];reviewAttempts?:unknown[]}[]};if(mode==='single')assert.equal(graphs.graphs.length,0);else{assert.ok(graphs.graphs.some(graph=>graph.audit===true&&graph.reviewAttempts?.length===1));assert.equal(snap.goal.audit.independent,true);}assert.equal((await f.request('state') as {lifecycleStatus:string}).lifecycleStatus,'completed');}finally{await f.close();}}});
-test('native Swarm completion automatically continues a waiting Goal without polling or replaying members',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+
+test('Goal draft sends the first user prompt once and idle continuation adds no hidden user bubble',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const objective='GOAL_EXACT_USER_PROMPT';
+ const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===2)goalComplete(res);else goalReply(res,ordinal===1?'First requested step finished':'Objective complete');});const {f}=h;
+ try{
+  await f.request('send',{text:objective,goal:{objective},mode:'single'});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'&&!event.event.data.isRunning));
+  assert.equal(h.requests.length,3,'one initial request, one idle continuation, one response after completing the Goal');
+  const firstUsers=h.requests[0].messages.filter((message:any)=>message.role==='user');assert.equal(firstUsers.length,1);assert.match(JSON.stringify(firstUsers[0].content),/GOAL_EXACT_USER_PROMPT/);
+  assert.match(JSON.stringify(h.requests[0].messages.filter((message:any)=>message.role==='system')),/GOAL_EXACT_USER_PROMPT/);
+  const state=await f.request('state') as {sessionFile:string;messages:{role:string;userText?:string}[];runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};
+  assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
+  const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1);
+  const wakes=entries.filter(entry=>entry.type==='message'&&entry.message.role==='custom'&&entry.message.customType==='friend-pi.goal-wake');assert.equal(wakes.length,1);assert.equal((wakes[0] as any).message.display,false);
+  assert.equal(entries.filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi.input.v1').length,1);
+ }finally{await h.close();}
+});
+
+for(const action of ['goal.pause','goal.clear'] as const)test(`${action} during streaming lets the current turn finish and prevents Goal auto-continuation`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});
+ const h=await goalHttp(async(_payload,_ordinal,res)=>{goalChunk(res,{role:'assistant',content:'STREAM_STARTED '});await gate;goalReply(res,'STREAM_FINISHED');});const {f}=h;
+ try{
+  const objective='Control a slow Goal stream';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  await assert.rejects(f.request('send',{text:'Replacement while running',goal:{objective:'Replacement while running',replace:true}}));
+  await f.request('runtime',{action});const during=await f.request('state') as {isRunning:boolean;runtime:{goal?:{status:string}}};assert.equal(during.isRunning,true,'Goal metadata changes cannot abort an active model stream');assert.equal(during.runtime.goal?.status,action==='goal.pause'?'paused':undefined);
+  release();await f.wait(()=>goalSettled(f.events));await new Promise(done=>setTimeout(done,150));
+  const after=await f.request('state') as {isRunning:boolean;sessionFile:string;messages:{role:string;text:string}[];runtime:{goal?:{status:string};pendingWakes:unknown[]}};
+  assert.equal(after.isRunning,false);assert.equal(after.runtime.goal?.status,action==='goal.pause'?'paused':undefined);assert.equal(h.requests.length,1);assert.deepEqual(after.runtime.pendingWakes,[]);
+  assert.ok(after.messages.some(message=>message.role==='assistant'&&message.text.includes('STREAM_FINISHED')));
+  assert.equal(SessionManager.open(after.sessionFile).getBranch().some(entry=>entry.type==='message'&&entry.message.role==='assistant'&&entry.message.stopReason==='aborted'),false);
+  assert.equal(after.messages.filter(message=>message.role==='user').length,1,'rejected replacement cannot enter native history');
+ }finally{release();await h.close();}
+});
+
+test('stopping current execution aborts the stream and leaves its Goal paused',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});const h=await goalHttp(async(_payload,_ordinal,res)=>{goalChunk(res,{role:'assistant',content:'STOP_TARGET'});await gate;goalReply(res);});const {f}=h;
+ try{const objective='Stop current execution';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));const stopped=await f.request('stop') as {isRunning:boolean;runtime:{goal:{status:string}}};assert.equal(stopped.isRunning,false);assert.equal(stopped.runtime.goal.status,'paused');assert.equal(h.requests.length,1);}finally{release();await h.close();}
+});
+
+for(const usage of [undefined,{prompt_tokens:1000000,completion_tokens:1000000,total_tokens:2000000}])test(`Goal continues with ${usage?'large':'unknown'} token usage and ignores legacy token and wall-clock budgets`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===2)goalComplete(res);else goalReply(res,'Continue the objective',usage);});const {f}=h;
+ try{await f.request('runtime',{action:'goal.create',input:{objective:'Continue until complete regardless of usage',tokenBudget:1,wallClockBudgetSeconds:0.001}});await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'&&!event.event.data.isRunning));const snapshot=await f.request('runtime',{action:'snapshot'}) as {goal?:unknown;lastCompletedGoal:{status:string}};assert.equal(snapshot.goal,undefined);assert.equal(snapshot.lastCompletedGoal.status,'complete');assert.equal(h.requests.length,3);}finally{await h.close();}
+});
+
+test('Plan retains an active Goal across mode changes while suppressing automatic wake; paused state and clear survive reopening',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let f=await start();try{
+  await assert.rejects(f.request('configure',{planMode:'true'}),/计划模式设置无效/);await f.request('configure',{planMode:true});
+  const goal=await f.request('runtime',{action:'goal.set',input:{objective:'Preserve the active Plan goal'}}) as {id:string;status:string};assert.equal(goal.status,'active');
+  for(const executionMode of ['single','team','swarm']){await f.request('configure',{executionMode});const current=await f.request('runtime',{action:'goal.get'}) as {id:string;status:string};assert.equal(current.id,goal.id);assert.equal(current.status,'active');}
+  await new Promise(done=>setTimeout(done,100));assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
+  await f.request('runtime',{action:'goal.pause'});const before=await f.request('state') as {sessionFile:string};const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:before.sessionFile,status:'paused'});
+  const restored=await f.request('runtime',{action:'goal.read'}) as {id:string;status:string};assert.equal(restored.id,goal.id);assert.equal(restored.status,'paused');assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
+  await f.request('runtime',{action:'goal.clear'});await f.close(true);f=await start({directory,sessionFile:before.sessionFile,status:'completed'});assert.equal(await f.request('runtime',{action:'goal.get'}),null);assert.equal((await f.request('runtime',{action:'snapshot'}) as {goal?:unknown}).goal,undefined);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
+ }finally{await f.close();}
+});
+
+test('native Swarm completion automatically continues an active Goal waiting on real work without polling or replaying members',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  let waited=false,releaseMembers!:()=>void;const membersReady=new Promise<void>(done=>{releaseMembers=done;});let creates=0;const trace:unknown[]=[];
  const server=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=String(chunk);const input=JSON.parse(raw),messages=input.messages as {role:string;content:string;name?:string}[],names=(input.tools||[]).map((tool:any)=>tool.function.name);
@@ -680,12 +745,12 @@ test('native Swarm completion automatically continues a waiting Goal without pol
    if(latest.includes('Swarm 任务图')&&latest.includes('已整合')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
     if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
-    else if(goal.status!=='completed')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
+    else if(goal.status!=='complete')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
    }else{
     const graph=tools.find(tool=>tool.status==='created');
     if(!graph){creates++;call={name:'friend_swarm',input:{action:'create',input:{goal:'Read two independent sources',tasks:[{id:'left',title:'Left reader',prompt:'Inspect left source',mode:'read',dependencies:[]},{id:'right',title:'Right reader',prompt:'Inspect right source',mode:'read',dependencies:[]}],maxWorkers:2}}};}
     else if(!tools.some(tool=>tool.id===graph.id&&tool.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
-    else if(!tools.some(tool=>tool.status==='waiting'))call={name:'friend_goal',input:{action:'update',input:{progress:'Both members started; waiting for left',continuation:{kind:'wait',taskId:'left'}}}};
+    else if(!tools.some(tool=>tool.progress==='Both members started; waiting for left'))call={name:'friend_goal',input:{action:'update',input:{progress:'Both members started; waiting for left',continuation:{kind:'wait',taskId:'left'}}}};
     else{waited=true;setTimeout(releaseMembers,100);text='Waiting for the native completion event';}
    }
   }else await membersReady;
@@ -696,29 +761,13 @@ test('native Swarm completion automatically continues a waiting Goal without pol
  try{
   await f.request('provider.save',{provider:'swarm-wake-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});await f.request('configure',{executionMode:'swarm'});
   await f.request('runtime',{action:'goal.create',input:{objective:'Coordinate two controlled read-only members and finish after independent review'}});
-  await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='completed'),20000);
-  const state=await f.request('state') as {sessionFile:string;runtime:{goal:{status:string}}};assert.equal(state.runtime.goal.status,'completed');assert.equal(waited,true);assert.equal(creates,1);
+  await f.wait(()=>f.events.some(e=>e.event?.type==='plugin'&&e.event.data.pluginEvent==='goal.changed'&&(e.event.data.data as {status?:string})?.status==='complete'),20000);
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.equal(waited,true);assert.equal(creates,1);
   const snap=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as {graphs:{audit?:boolean;status:string;attempts:unknown[]}[]};const graph=snap.graphs.find(graph=>!graph.audit)!;assert.equal(graph.status,'integrated');assert.equal(graph.attempts.length,2);
   const wakes=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(entry=>entry.customType==='friend-pi.runtime-wake'&&String(entry.data.eventId).startsWith('swarm:'));assert.equal(wakes.length,1);
  }catch(error){const state=await f.request('state') as any,snapshot=await f.request('plugin',{plugin:'swarm',action:'snapshot'}) as any;console.error(JSON.stringify({waited,creates,trace,goal:state.runtime?.goal,unknown:state.runtime?.unknownActivities,wakes:state.runtime?.pendingWakes,graphs:snapshot.graphs.map((graph:any)=>({id:graph.id,status:graph.status,error:graph.error,tasks:graph.tasks.map((task:any)=>({id:task.id,status:task.status})),reviews:graph.reviews})),notices:f.events.filter(event=>event.event?.type==='notice').slice(-3)}));throw error;
  }finally{releaseMembers();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
-test('goal pause and stop terminate foreground work while preserving their distinct durable states',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
-  const f=await start();try{
-    await f.request('runtime',{action:'goal.create',input:{objective:'QA_SLOW 只读流式目标'}});
-    await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'));
-    await f.request('runtime',{action:'goal.pause'});
-    assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
-    assert.equal((await f.request('runtime',{action:'snapshot'}) as {goal:{status:string}}).goal.status,'paused');
-    const previous=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length;
-    await f.request('runtime',{action:'goal.resume'});
-    await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length>previous);
-    await f.request('runtime',{action:'goal.stop'});
-    assert.equal((await f.request('state') as {isRunning:boolean}).isRunning,false);
-    assert.equal((await f.request('runtime',{action:'snapshot'}) as {goal:{status:string}}).goal.status,'stopped');
-  }finally{await f.close();}
-});
-
 test('role phase receipt remains valid for native controller switch and the frozen contract changes',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start();try{await f.request('send',{text:'ordinary read reply'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const snapshot=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {phase:{runId:string;stage:string;policyRevision:number}};const result=await f.request('plugin',{plugin:'expert',action:'role.switch',input:{id:'researcher',...snapshot.phase}}) as {role:{id:string;effectiveWriteScopes:string[]}};assert.equal(result.role.id,'researcher');assert.deepEqual(result.role.effectiveWriteScopes,[]);}finally{await f.close();}});
 
 test('next-run role assignment defers its model; safe role switch applies the mapped model before returning',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start();try{const snap=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {roles:Record<string,unknown>[]};const role=snap.roles.find(role=>role.id==='implementer')!;await f.request('plugin',{plugin:'expert',action:'role.update',input:{...role,modelId:'friend-fixture/alternate',thinkingLevel:'off'}});await f.request('plugin',{plugin:'expert',action:'role.assign',input:{id:'implementer'}});assert.equal((await f.request('state') as {modelId:string}).modelId,'friend-fixture/offline');await f.request('send',{text:'ordinary read reply'});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));assert.equal((await f.request('state') as {modelId:string}).modelId,'friend-fixture/alternate');const second=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {roles:Record<string,unknown>[];phase:Record<string,unknown>};const reviewer=second.roles.find(role=>role.id==='reviewer')!;await f.request('plugin',{plugin:'expert',action:'role.update',input:{...reviewer,modelId:'friend-fixture/offline',thinkingLevel:'off'}});const before=f.events.length;await f.request('send',{text:'another ordinary read reply'});await f.wait(()=>f.events.slice(before).some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const phase=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {phase:Record<string,unknown>};await f.request('plugin',{plugin:'expert',action:'role.switch',input:{id:'reviewer',...phase.phase}});assert.equal((await f.request('state') as {modelId:string}).modelId,'friend-fixture/offline');}finally{await f.close();}});
@@ -728,7 +777,7 @@ test('a primary role delivery is checked against its frozen schema and malformed
 
 test('managed runtime and collaboration reject unverified inference before side effects',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start({managed:true});try{const state=await f.request('state') as {sessionFile:string};const reject=async(method:string,input:Record<string,unknown>)=>{const before=readFileSync(state.sessionFile,'utf8');await assert.rejects(f.request(method,input),/连接测试/);assert.equal(readFileSync(state.sessionFile,'utf8'),before);};await reject('runtime',{action:'goal.create',input:{objective:'QA_GOAL must remain unstarted'}});assert.equal(Boolean((await f.request('runtime',{action:'snapshot'}) as {goal?:unknown}).goal),false);await f.request('configure',{executionMode:'swarm'});await reject('workflow.generate',{prompt:'只读检查'});assert.equal((await f.request('plugin',{plugin:'workflow',action:'snapshot'}) as {workflows:unknown[]}).workflows.length,0);await f.request('configure',{executionMode:'team'});await reject('plugin',{plugin:'team',action:'delegate',input:{tasks:[{id:'inspect',title:'inspect',prompt:'只读检查',mode:'read',dependencies:[]}]}});assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);}finally{await f.close();}});
 test('unverified role target cannot send, approve, or replace the frozen role',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start({managed:true});try{const runtime=await createProviderRuntime(f.dataDir);await installFixtureProvider(runtime);registerSavedModel(f.dataDir,'friend-fixture/offline');registerSavedModel(f.dataDir,'friend-fixture/alternate');await testConfiguredModel(runtime,f.dataDir,'friend-fixture/offline');const catalogue=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {roles:Record<string,unknown>[]};const implementer=catalogue.roles.find(r=>r.id==='implementer')!;await f.request('plugin',{plugin:'expert',action:'role.update',input:{...implementer,modelId:'friend-fixture/alternate',thinkingLevel:'off'}});await f.request('send',{text:'QA_PLAN_SUBMIT',planMode:true});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_settled'));const plan=await f.request('plan.read') as Record<string,unknown>;assert.ok(plan.id);await f.request('plugin',{plugin:'expert',action:'role.assign',input:{id:'implementer'}});const before=await f.request('state') as {sessionFile:string;modelId:string};const roleBefore=await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {current?:unknown;phase:Record<string,unknown>};const history=readFileSync(before.sessionFile,'utf8');await assert.rejects(f.request('send',{text:'must not enter history',planMode:false}),/连接测试/);await assert.rejects(f.request('plan.approve',plan),/连接测试/);await assert.rejects(f.request('plugin',{plugin:'expert',action:'role.switch',input:{id:'implementer',...roleBefore.phase}}),/连接测试/);assert.equal(readFileSync(before.sessionFile,'utf8'),history);assert.deepEqual(await f.request('plan.read'),plan);assert.equal((await f.request('state') as {modelId:string}).modelId,'friend-fixture/offline');assert.deepEqual((await f.request('plugin',{plugin:'expert',action:'role.snapshot'}) as {current?:unknown}).current,roleBefore.current);}finally{await f.close();}});
-test('unknown activity fences goal resume until explicit recovery confirmation',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start();try{await f.request('runtime',{action:'goal.create',input:{objective:'QA_SLOW 只读目标'}});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='message_update'));await f.request('runtime',{action:'goal.pause'});const state=await f.request('state') as {sessionId:string;sessionFile:string;runId:string};const store=new RecordStore('runtime-activity',f.dataDir);try{store.put(`activity:${state.sessionId}:unknown-write`,{sessionId:state.sessionId,id:'unknown-write',tool:'bash',sideEffect:true,status:'unknown',runId:state.runId},null);}finally{store.close();}const history=readFileSync(state.sessionFile,'utf8'),count=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length;await assert.rejects(f.request('runtime',{action:'goal.resume'}),/未知现场/);assert.equal(readFileSync(state.sessionFile,'utf8'),history);assert.equal((await f.request('runtime',{action:'snapshot'}) as {goal:{status:string}}).goal.status,'paused');await f.request('runtime',{action:'recovery.confirm',input:{confirmUnknown:true,activityIds:['unknown-write'],evidence:'检查旧现场，无需重放'}});await f.request('runtime',{action:'goal.resume'});await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length>count);await f.request('runtime',{action:'goal.stop'});}finally{await f.close();}});
+test('unknown activity fences goal resume until explicit recovery confirmation',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{const f=await start();try{await f.request('runtime',{action:'goal.create',input:{objective:'QA_SLOW 只读目标'}});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='message_update'));await f.request('runtime',{action:'goal.pause'});await f.wait(()=>goalSettled(f.events));const state=await f.request('state') as {sessionId:string;sessionFile:string;runId:string};const store=new RecordStore('runtime-activity',f.dataDir);try{store.put(`activity:${state.sessionId}:unknown-write`,{sessionId:state.sessionId,id:'unknown-write',tool:'bash',sideEffect:true,status:'unknown',runId:state.runId},null);}finally{store.close();}const history=readFileSync(state.sessionFile,'utf8'),count=f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length;await assert.rejects(f.request('runtime',{action:'goal.resume'}),/未知现场/);assert.equal(readFileSync(state.sessionFile,'utf8'),history);assert.equal((await f.request('runtime',{action:'snapshot'}) as {goal:{status:string}}).goal.status,'paused');await f.request('runtime',{action:'recovery.confirm',input:{confirmUnknown:true,activityIds:['unknown-write'],evidence:'检查旧现场，无需重放'}});await f.request('runtime',{action:'goal.resume'});await f.wait(()=>f.events.filter(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start').length>count);await f.request('stop');}finally{await f.close();}});
 
 test('quitting a foreground model turn cannot create an automatic cold goal checkpoint',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{let f=await start();try{await f.request('runtime',{action:'goal.create',input:{objective:'QA_SLOW still in foreground'}});await f.wait(()=>f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='message_update'));const before=await f.request('state') as {sessionFile:string};const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:before.sessionFile,status:'interrupted'});const snap=await f.request('runtime',{action:'snapshot'}) as {goal:{status:string;safeCheckpoint:boolean}};assert.equal(snap.goal.status,'paused');assert.equal(snap.goal.safeCheckpoint,false);assert.equal(f.events.some(e=>e.event?.type==='pi'&&e.event.data.type==='agent_start'),false);}finally{await f.close();}});
 
@@ -961,8 +1010,18 @@ test('editable FIFO queue keeps original attachment bytes and receives every mes
 test('Plan FIFO proceeds and side chat forks idle context without parent run or Todo',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  const f=await start();let child:Awaited<ReturnType<typeof start>>|undefined;try{await f.request('send',{text:'QA_SLOW',planMode:true});await f.wait(()=>f.events.some(e=>e.event?.data.type==='message_update'));await f.request('queue',{action:'add',text:'QA_TODO',planMode:true});await f.wait(()=>f.events.filter(e=>e.event?.data.type==='agent_settled').length>=2);const before:any=await f.request('state');assert.equal(before.queue.items.length,0);assert.equal(before.todo.items.length,3);const forked:any=await f.request('sidechat.fork',{cwd:f.directory,sessionDir:join(f.directory,'data','sessions')});child=await start({directory:f.directory,sessionFile:forked.path});const side:any=await child.request('state');assert.equal(side.runId,undefined);assert.equal(side.todo,undefined);assert.deepEqual(side.changes,[]);assert.ok(side.messages.length>0);assert.equal((await f.request('state') as any).runId,before.runId);await child.request('draft.install',{payload:{text:'side request',attachments:[],mode:'single',planMode:false}});assert.equal((await child.request('state') as any).sideDraft.text,'side request');}finally{if(child)await child.close(true);await f.close();}
 });
-test('queued work suspends and automatically resumes the original Goal identity',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
- const f=await start();try{const goal:any=await f.request('runtime',{action:'goal.create',input:{objective:'QA_GOAL QA_QUEUE_PAUSE'}});await f.wait(()=>f.events.some(e=>e.event?.data.type==='message_update'));await f.request('queue',{action:'add',text:'independent queued analysis'});await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).queue?.suspendedGoal));await f.wait(()=>f.events.some(e=>e.event?.type==='state'&&(e.event.data as any).runtime?.goal?.id===goal.id&&(e.event.data as any).runtime?.goal?.status==='completed'),30000);const state:any=await f.request('state');assert.equal(state.runId,goal.sourceRunId);assert.equal(state.runtime.goal.status,'completed');assert.equal(state.queue.items.length,0);assert.equal(state.queue.suspendedGoal,undefined);const request=state.messages.find((m:any)=>m.role==='user'&&m.userText==='independent queued analysis');assert.ok(request);assert.notEqual(request.runId,goal.sourceRunId);}finally{await f.close();}
+for(const action of [undefined,'goal.pause','goal.clear'] as const)test(`queued user work retains Goal focus and is not cancelled by ${action||'ordinary admission'}`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===1){goalChunk(res,{role:'assistant',content:'CURRENT_GOAL_TURN'});await gate;goalReply(res,'First turn finished');}else if(ordinal===2&&!action)goalComplete(res);else goalReply(res,'Queued user message delivered');});const {f}=h;
+ try{
+  const objective='Retain this Goal while accepting a user message';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  const goal=await f.request('runtime',{action:'goal.get'}) as {id:string};const begin=f.events.length;await f.request('queue',{action:'add',text:'USER_QUEUE_PRIORITY',mode:'single',planMode:false});
+  if(action)await f.request('runtime',{action});release();await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.messages as any[])?.some(message=>message.userText==='USER_QUEUE_PRIORITY')));
+  const state=await f.request('state') as {messages:{role:string;userText?:string}[];queue:{items:unknown[];suspendedGoal?:unknown};runtime:{goal?:{id:string;status:string};lastCompletedGoal?:{id:string}}};
+  assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective,'USER_QUEUE_PRIORITY']);assert.deepEqual(state.queue.items,[]);assert.equal(state.queue.suspendedGoal,undefined);
+  assert.match(JSON.stringify(h.requests[1].messages),/USER_QUEUE_PRIORITY/,'the queued user receives the next model turn');
+  if(action==='goal.pause'){assert.equal(state.runtime.goal?.id,goal.id);assert.equal(state.runtime.goal?.status,'paused');}else if(action==='goal.clear')assert.equal(state.runtime.goal,undefined);else assert.equal(state.runtime.lastCompletedGoal?.id,goal.id);
+  for(const event of f.events.slice(begin).filter(event=>event.event?.type==='state')){const snapshot=event.event!.data as any;assert.equal(snapshot.queue?.suspendedGoal,undefined);if(!action&&!snapshot.runtime?.lastCompletedGoal)assert.equal(snapshot.runtime?.goal?.id,goal.id,'Goal focus survives the ordinary message handoff');}
+ }finally{release();await h.close();}
 });
 
 test('queued input wakes after Swarm, Team and workflow settle without a Goal or polling',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
