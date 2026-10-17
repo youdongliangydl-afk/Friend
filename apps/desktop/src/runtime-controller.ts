@@ -57,7 +57,8 @@ export class RuntimeController {
    // A get_goal and complete in the same old response cannot acknowledge an edit.
    if(this.turn){this.turn.goalId=goal?.id;this.turn.objective=goal?.objective;}
    const current=goal?{id:goal.id,status:goal.status,objective:goal.objective,progress:goal.progress,nextAction:goal.nextAction}:null;
-   return {messages:[{...first,sections:{...first.sections,'friend-goal-current':`当前会话目标（本请求最新状态，以此覆盖此前目标描述）：${JSON.stringify(current)}。没有当前目标时，不得从普通任务自行创建目标。`}},...event.messages.slice(1)]};
+   const note=`当前会话目标（本请求最新状态，以此覆盖此前目标描述）：${JSON.stringify(current)}。没有当前目标时，不得从普通任务自行创建目标。`;
+   return {messages:[{...first,content:typeof first.content==='string'?`${first.content}\n\n${note}`:[...first.content,{type:'text' as const,text:note}]},...event.messages.slice(1)]};
   });
   for(const [name,description,parameters] of [
    ['create_goal','仅在用户明确要求创建长期目标时使用；不得从普通任务自行推断目标。仅设置 objective，不设令牌、时长或轮数预算。',Type.Object({objective:Type.String()})],
