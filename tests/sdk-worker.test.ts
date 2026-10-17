@@ -680,6 +680,15 @@ for(const mode of ['single','team'] as const)test(`Goal completion in ${mode} re
  }finally{await f.close();}
 });
 
+for(const permissionMode of ['ask','auto','allPermissions'])test(`temporary Goal metadata completes without an extra approval in ${permissionMode}`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const f=await start({temporary:true,permissionMode});try{
+  await f.request('configure',{plugins:[]});const objective='QA_GOAL Confirm Goal metadata without modifying files';await f.request('send',{text:objective,goal:{objective}});
+  await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'));
+  assert.equal(f.events.some(event=>event.event?.type==='dialog'),false);const state=await f.request('state') as {sessionFile:string;runtime:{lastCompletedGoal:{objective:string}}};assert.equal(state.runtime.lastCompletedGoal.objective,objective);
+  assert.equal(SessionManager.open(state.sessionFile).getBranch().filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1);
+ }finally{await f.close();}
+});
+
 test('Goal draft sends the first user prompt once and idle continuation adds no hidden user bubble',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  const objective='GOAL_EXACT_USER_PROMPT';
  const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===2)goalComplete(res);else goalReply(res,ordinal===1?'First requested step finished':'Objective complete');});const {f}=h;
