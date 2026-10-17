@@ -480,14 +480,14 @@ test('corrected Goals pause after verification; explicit user resume authorises 
    let call:{name:string;input:unknown}|undefined,reply='Verification result retained';
    if(names.includes('friend_swarm')){
     rootRequests++;
-    if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'friend_goal',input:{action:'create',input:{objective:'Retain the original delivery and verify with Swarm'}}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
+    if(body.includes('GOAL_SOURCE')){if(!recent.length)call={name:'create_goal',input:{objective:'Retain the original delivery and verify with Swarm'}};else if(recent.length===1)call={name:'write',input:{path:'delivery.txt',content:'original goal delivery'}};}
     else if(body.includes('用户已选择 Swarm')){const graph=recent.find(value=>value.status==='created');if(!graph)call={name:'friend_swarm',input:{action:'create',input:{goal:'Read-only goal verification',checks:[],tasks:[{id:'check',title:'Read existing delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};else if(!recent.some(value=>value.id===graph.id&&value.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};}
     else if(body.includes('继续目标：')){
      if(!recent.length)call={name:'write',input:{path:'delivery.txt',content:'explicitly resumed delivery'}};
      else if(recent.length===1)call={name:'friend_swarm',input:{action:'create',input:{goal:'New read-only boundary after explicit resume',checks:[],tasks:[{id:'fresh-check',title:'Read resumed delivery',prompt:'Read delivery.txt',mode:'read',dependencies:[]}]}}};
      else if(recent.length===2)call={name:'friend_swarm',input:{action:'start',input:{graphId:recent[1].id}}};
      else if(recent.length===3)call={name:'write',input:{path:'forbidden-after-resume.txt',content:'must remain blocked by the new read-only graph'}};
-     else if(recent.length===4)call={name:'friend_goal',input:{action:'pause',input:{reason:'User-authorised continuation delivered'}}};
+     else if(recent.length===4)call={name:'update_goal',input:{status:'paused'}};
     }
     else throw Error('Unexpected automatic Goal continuation: '+body);
    }else{if(!recent.length)call={name:'read',input:{path:'delivery.txt'}};}
@@ -501,8 +501,8 @@ test('corrected Goals pause after verification; explicit user resume authorises 
    const paused=await f.request('state') as {lifecycleStatus:string;isRunning:boolean;runId:string;sessionFile:string;queue:{items:unknown[]};runtime:{goal:{id:string;status:string;error:string};pendingWakes:unknown[]}};
    assert.equal(paused.runId,sent.runId);assert.equal(paused.isRunning,false);assert.equal(paused.lifecycleStatus,'paused');assert.match(paused.runtime.goal.error,/用户明确接续/);assert.deepEqual(paused.queue.items,[]);assert.deepEqual(paused.runtime.pendingWakes,[]);assert.equal(readFileSync(join(f.directory,'delivery.txt'),'utf8'),'original goal delivery');
    const requestsBefore=rootRequests;await f.request('state');await f.request('queue',{action:'resume'});await f.request('state');assert.equal(rootRequests,requestsBefore,'paused Goal cannot keep draining automatic turns');
-   await f.request('runtime',{action:'goal.pause',input:{goalId:paused.runtime.goal.id}});await f.request('runtime',{action:'goal.resume',input:{goalId:paused.runtime.goal.id}});
-   await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='paused'));
+   await f.request('runtime',{action:'goal.pause',input:{goalId:paused.runtime.goal.id}});const resumeStart=f.events.length;await f.request('runtime',{action:'goal.resume',input:{goalId:paused.runtime.goal.id}});
+   await f.wait(()=>readFileSync(join(f.directory,'delivery.txt'),'utf8')==='explicitly resumed delivery');await f.wait(()=>f.events.slice(resumeStart).some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.goal?.status==='paused'));
    const final=await f.request('state') as {isRunning:boolean;runtime:{pendingWakes:unknown[]}};assert.equal(final.isRunning,false);assert.deepEqual(final.runtime.pendingWakes,[]);const entries=readFileSync(paused.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(entries.filter(entry=>entry.message?.toolName==='write'&&!entry.message.isError).length,2);assert.equal(entries.filter(entry=>entry.customType==='friend-pi.swarm.correction.v1').length,1);assert.equal(existsSync(join(f.directory,'forbidden-after-resume.txt')),false);assert.ok(entries.some(entry=>entry.message?.toolName==='write'&&entry.message.isError&&JSON.stringify(entry.message).includes('本轮是只读协作')));
  }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
@@ -686,7 +686,7 @@ test('Goal draft sends the first user prompt once and idle continuation adds no 
   await f.request('send',{text:objective,goal:{objective},mode:'single'});
   await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'&&!event.event.data.isRunning));
   assert.equal(h.requests.length,3,'one initial request, one idle continuation, one response after completing the Goal');
-  const firstUsers=h.requests[0].messages.filter((message:any)=>message.role==='user');assert.equal(firstUsers.length,1);assert.match(JSON.stringify(firstUsers[0].content),/GOAL_EXACT_USER_PROMPT/);
+  const firstUsers=h.requests[0].messages.filter((message:any)=>message.role==='user'&&!JSON.stringify(message.content).includes('[Friend 当前有效的用户设置指令：'));assert.equal(firstUsers.length,1);assert.match(JSON.stringify(firstUsers[0].content),/GOAL_EXACT_USER_PROMPT/);
   assert.match(JSON.stringify(h.requests[0].messages.filter((message:any)=>message.role==='system')),/GOAL_EXACT_USER_PROMPT/);
   const state=await f.request('state') as {sessionFile:string;messages:{role:string;userText?:string}[];runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};
   assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
@@ -700,9 +700,11 @@ for(const action of ['goal.pause','goal.clear'] as const)test(`${action} during 
  let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});
  const h=await goalHttp(async(_payload,_ordinal,res)=>{goalChunk(res,{role:'assistant',content:'STREAM_STARTED '});await gate;goalReply(res,'STREAM_FINISHED');});const {f}=h;
  try{
-  const objective='Control a slow Goal stream';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  await f.request('configure',{permissionMode:'allPermissions'});const objective='Control a slow Goal stream';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  const job=await f.request('runtime',{action:'jobs.run',input:{command:`'${process.execPath}' -e "setInterval(()=>{},1000)"`,kind:'task',autoContinue:false}}) as {id:string};
   await assert.rejects(f.request('send',{text:'Replacement while running',goal:{objective:'Replacement while running',replace:true}}));
   await f.request('runtime',{action});const during=await f.request('state') as {isRunning:boolean;runtime:{goal?:{status:string}}};assert.equal(during.isRunning,true,'Goal metadata changes cannot abort an active model stream');assert.equal(during.runtime.goal?.status,action==='goal.pause'?'paused':undefined);
+  assert.equal((await f.request('runtime',{action:'jobs.status',input:{id:job.id}}) as {status:string}).status,'running','Goal pause/clear cannot kill an already running finite job');await f.request('runtime',{action:'jobs.kill',input:{id:job.id}});
   release();await f.wait(()=>goalSettled(f.events));await new Promise(done=>setTimeout(done,150));
   const after=await f.request('state') as {isRunning:boolean;sessionFile:string;messages:{role:string;text:string}[];runtime:{goal?:{status:string};pendingWakes:unknown[]}};
   assert.equal(after.isRunning,false);assert.equal(after.runtime.goal?.status,action==='goal.pause'?'paused':undefined);assert.equal(h.requests.length,1);assert.deepEqual(after.runtime.pendingWakes,[]);
@@ -744,13 +746,11 @@ test('native Swarm completion automatically continues an active Goal waiting on 
    const user=providerTaskIndex(messages),content=messages[user]?.content as unknown,latest=typeof content==='string'?content:Array.isArray(content)?content.filter(part=>part.type==='text').map(part=>part.text).join(''):'';if(trace.length<12)trace.push({latest:latest.slice(0,180),tools:tools.map(tool=>({id:tool.id,status:tool.status}))});
    if(latest.includes('Swarm 任务图')&&latest.includes('已整合')){
     const recent=messages.slice(user).filter(message=>message.role==='tool').map(message=>JSON.parse(message.content));const goal=recent.at(-1);
-    if(!goal)call={name:'friend_goal',input:{action:'update',input:{progress:'Both read members and independent review completed; graph integrated'}}};
-    else if(goal.status!=='complete')call={name:'friend_goal',input:{action:'complete',input:{}}};else text='Verified complete';
+    if(!goal)call={name:'update_goal',input:{status:'complete'}};else text='Verified complete';
    }else{
     const graph=tools.find(tool=>tool.status==='created');
     if(!graph){creates++;call={name:'friend_swarm',input:{action:'create',input:{goal:'Read two independent sources',tasks:[{id:'left',title:'Left reader',prompt:'Inspect left source',mode:'read',dependencies:[]},{id:'right',title:'Right reader',prompt:'Inspect right source',mode:'read',dependencies:[]}],maxWorkers:2}}};}
     else if(!tools.some(tool=>tool.id===graph.id&&tool.status==='running'))call={name:'friend_swarm',input:{action:'start',input:{graphId:graph.id}}};
-    else if(!tools.some(tool=>tool.progress==='Both members started; waiting for left'))call={name:'friend_goal',input:{action:'update',input:{progress:'Both members started; waiting for left',continuation:{kind:'wait',taskId:'left'}}}};
     else{waited=true;setTimeout(releaseMembers,100);text='Waiting for the native completion event';}
    }
   }else await membersReady;
