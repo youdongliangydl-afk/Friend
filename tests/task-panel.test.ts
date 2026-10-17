@@ -73,7 +73,7 @@ test('existing task states, graph, recovery checks, results and execution contro
  const graphs=[{id:'graph',sessionId:'native-session',runId:'run',goal:'已有协作任务',status:'paused',tasks:[{id:'a',title:'依赖图任务',dependencies:[],mode:'read',status:'completed',currentAttempt:'attempt'}],attempts:[{id:'attempt',taskId:'a',status:'completed',summary:'图中成果'}]}];
  const f=fixture({runtime:{goal:{...goal('waiting'),waitFor:'user-acceptance',revision:3,acceptance:{binding:'frozen-candidate'}},tasks:[{id:'step',title:'待核对步骤',status:'unknown',evidence:[]}],unknownActivities:[{id:'activity'}],jobs:[{id:'job',name:'已有后台任务',kind:'task',origin:'agent',status:'running'},{id:'unknown-job',name:'中断的后台任务',status:'unknown'}]},graphs,flows:[flow('created','created'),flow('running','running'),flow('paused','paused')]});
  await f.flush();const markup=f.markup();
- for(const label of ['只读任务画布','只读阶段成果','已有协作任务','当前会话队友','现场检查说明','步骤现场检查说明','已检查成果，确认验收','停止目标','验证完成','暂停成员','停止成员','接续成员','已有后台任务','查看日志','停止命令'])assert.match(markup,new RegExp(label));
+ for(const label of ['只读任务画布','只读阶段成果','已有协作任务','当前会话队友','现场检查说明','步骤现场检查说明','暂停成员','停止成员','接续成员','已有后台任务','查看日志','停止命令'])assert.match(markup,new RegExp(label));
  assert.doesNotMatch(markup,forbidden);
  const canvas=nodes(f.render()).find(node=>node.type===TaskGraphCanvas);assert.ok(canvas);assert.equal(canvas.props.graphs.find((graph:JsonObject)=>graph.key==='swarm:graph').nodes[0].summary,'图中成果');
  const created=f.section('阶段 created'),running=f.section('阶段 running'),paused=f.section('阶段 paused');
@@ -84,17 +84,12 @@ test('existing task states, graph, recovery checks, results and execution contro
  assert.ok(!f.requests.some(request=>['goal.create','workflow.generate','create','revise','append','template.save','jobs.run'].includes(String(request.input.action))));
 });
 
-test('stopped goals remain visible and resume preserves budget restrictions and error reporting',async()=>{
- const f=fixture({runtime:{goal:{...goal('stopped'),tokens:1000}},failure:'goal.resume'});await f.flush();
- assert.match(f.markup(),/已记录目标/);assert.match(f.markup(),/已停止/);assert.match(f.markup(),/令牌：1000 \/ 1000/);assert.doesNotMatch(f.markup(),forbidden);
- assert.equal(f.button('接续').props.disabled,false);assert.equal(f.button('停止目标').props.disabled,true);
- f.button('接续').props.onClick();await f.flush();
- const request=f.requests.find(request=>request.input.action==='goal.resume');assert.ok(request);
- assert.deepEqual(JSON.parse(JSON.stringify(request.input.input)),{goalId:'goal'});assert.deepEqual(f.reports,['预算耗尽，请明确增加预算']);
+test('Goal diagnostics retain objective and progress without duplicate lifecycle or budget controls',async()=>{
+ const f=fixture({runtime:{goal:{...goal('paused'),tokens:1000}}});await f.flush();assert.match(f.markup(),/已记录目标/);assert.match(f.markup(),/已完成范围核查/);assert.doesNotMatch(f.markup(),/令牌：|验证完成|已检查成果，确认验收|停止目标|>接续</);
 });
 
 test('completed goals retain their evidence without active goal controls or a new goal form',async()=>{
- const f=fixture({runtime:{goal:goal('completed')}});await f.flush();
+ const f=fixture({runtime:{goal:null,lastCompletedGoal:goal('complete')}});await f.flush();
  assert.match(f.markup(),/已记录目标/);assert.match(f.markup(),/已完成范围核查/);assert.match(f.markup(),/已完成/);
  assert.doesNotMatch(f.markup(),forbidden);assert.doesNotMatch(f.markup(),/停止目标|验证完成|>暂停<|>接续<|已检查成果，确认验收/);
 });

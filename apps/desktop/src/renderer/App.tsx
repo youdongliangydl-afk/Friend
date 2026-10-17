@@ -37,7 +37,8 @@ import {PlanPreview} from './plan-preview.js';
 import {TerminalPanel} from './TerminalPanel.js';
 import {CustomInstructionsPanel} from './CustomInstructionsPanel.js';
 import {submissionSettled} from './submission-state.js';
-import {GoalDialog,type ComposerGoal,type GoalCommand} from './GoalDialog.js';
+import {GoalEditor,type ComposerGoal,type GoalCommand} from './GoalDialog.js';
+import {goalDraftInput,unfinishedGoal,goalBinding,type GoalSubmission} from './goal-model.js';
 
 const EMPTY: AppState = { projects: [], sessions: [], current: null, models: [], providers: [] };
 const plugins: PluginName[] = ['swarm', 'expert', 'memory', 'topic-rebuild'];
@@ -118,6 +119,9 @@ export default function App() {
   // Keep the visible session intact until navigation has an authoritative response.
   const navigationState=useRef<AppState|null|undefined>(undefined);
   const [submissionRevision,setSubmissionRevision]=useState(0);
+  const [goalDraft,setGoalDraft]=useState(false),goalDraftRef=useRef(false);goalDraftRef.current=goalDraft;
+  const [goalReplacement,setGoalReplacement]=useState<{sessionId:string;epoch:number;text:string;goal:GoalSubmission;previous:string}|null>(null);
+  const [goalResume,setGoalResume]=useState<{sessionId:string;epoch:number;goalId:string}|null>(null),goalResumeSeen=useRef('');
   const [goalOpen,setGoalOpen]=useState<{sessionId:string;epoch:number}|null>(null),goalActionLock=useRef(false),migratedComposerOwner=useRef('');
   const [draft,setDraft]=useState(''),draftRef=useRef('');draftRef.current=draft;
   const [attachments,setAttachments]=useState<{path:string}[]>([]),attachmentsRef=useRef(attachments),[planMode,setPlanMode]=useState(false),[mode,setMode]=useState<'single'|'team'|'swarm'>('single'),[pendingModel,setPendingModel]=useState(''),[pendingThinking,setPendingThinking]=useState('off');
@@ -146,7 +150,7 @@ export default function App() {
   useLayoutEffect(()=>{setQueueUi({});},[state.current?.sessionId]);
   const running=Boolean(state.current?.isRunning||localRunning||swarmRunning),messages=state.current?.messages||[],currentPlugins=state.current?.plugins||plugins;
   useEffect(()=>{setSelectedProject(state.selectedProjectId??state.current?.projectId??'');},[state.selectedProjectId,state.current?.projectId]);
-  const managementModal=deleting?'delete':rename?'rename':settingsOpen?'settings':goalOpen&&goalOpen.sessionId===sessionId&&goalOpen.epoch===navigationEpoch.current?'goal':undefined;
+  const managementModal=deleting?'delete':rename?'rename':settingsOpen?'settings':goalReplacement&&goalReplacement.sessionId===(sessionId||'')&&goalReplacement.epoch===navigationEpoch.current?'goal-replace':undefined;
   const selectedDialog=navigating?undefined:nextDialog(dialogs,!!managementModal);
   const batchDialog=selectedDialog?.kind==='questionBatch'?selectedDialog:undefined,modalDialog=selectedDialog&&selectedDialog.kind!=='questionBatch'?selectedDialog:undefined;
   const deferredRequests=(state.current?.dialogs||[]).filter(dialog=>deferredDialogs.current.has(dialog.id));
@@ -170,7 +174,8 @@ export default function App() {
     if(String(event.type)==='browser'){if(event.sessionId===stateRef.current.current?.sessionId)setBrowserSnapshot(event.data as BrowserSnapshot);return;}
     if(event.sessionId&&event.sessionId!==stateRef.current.current?.sessionId)return;
     const data=asObject(event.data);
-    if(event.type==='runtime'||event.type==='plugin'&&data.pluginEvent==='goal.changed'){const current=stateRef.current.current;if(current){const runtime=event.type==='runtime'?data:{...current.runtime,goal:data.data};applyState({...stateRef.current,current:{...current,runtime}});}return;}
+    if(event.type==='plugin'&&data.pluginEvent==='goal.changed'){void refresh().catch(()=>{});return;}
+    if(event.type==='runtime'){const current=stateRef.current.current;if(current)applyState({...stateRef.current,current:{...current,runtime:data}});return;}
     if(event.type==='notice'){const message=typeof event.data==='string'?event.data:String(data.message||'');if(message)report(message,data.level==='error');}
     if(event.type==='dialog')setDialogs(old=>old.some(d=>d.id===data.id)?old:[...old,data as unknown as DialogRequest]);
     if(String(event.type)==='dialog.closed')setDialogs(old=>old.filter(d=>d.id!==data.id));
@@ -189,6 +194,7 @@ export default function App() {
   useLayoutEffect(()=>{
     if(booting||migratingDraft.current||sendLock.current&&lastSubmitted.current&&!lastSubmitted.current.accepted)return;
     let saved:JsonObject={};try{saved=asObject(JSON.parse(localStorage.getItem('friend-pi.draft.v1:'+ownerKey)||'{}'));}catch{}
+    setGoalDraft(saved.goalDraft===true);setGoalReplacement(null);setGoalOpen(null);
     setDraft(typeof saved.text==='string'?saved.text:state.current?.sideDraft?.text||'');setAttachments(Array.isArray(saved.attachments)?asList<{path:string}>(saved.attachments):(state.current?.sideDraft?.attachments||[]).map(item=>({path:item.path})));setDraftOwner(ownerKey);
     setPlanMode(typeof saved.planMode==='boolean'?saved.planMode:state.current?.sideDraft?.planMode??state.current?.planMode??state.preferences?.defaultPlanMode??false);
     permissionExplicitRef.current=!sessionId&&(saved.permissionExplicit===true||saved.permissionExplicit===undefined&&saved.permissionMode!==undefined);setPermissionExplicit(permissionExplicitRef.current);
@@ -196,7 +202,7 @@ export default function App() {
     setMode((!sessionId||!!state.current?.sideDraft||migratedComposerOwner.current===ownerKey)&&(saved.mode==='swarm'||saved.mode==='team'||saved.mode==='single')?saved.mode:state.current?.sideDraft?.mode||state.current?.executionMode||state.preferences?.defaultMode||'single');
     migratedComposerOwner.current='';setChangeReview(undefined);setLive(null);setTools([]);setDialogs([]);setLocalRunning(false);setSwarmRunning(false);followScroll.current=true;
   },[ownerKey,booting]);
-  useEffect(()=>{if(booting||draftOwner!==ownerKey)return;try{localStorage.setItem('friend-pi.draft.v1:'+ownerKey,JSON.stringify({text:draft,attachments,planMode,mode,permissionMode,permissionExplicit}));}catch{}},[draft,attachments,planMode,mode,permissionMode,permissionExplicit,draftOwner,ownerKey,booting]);
+  useEffect(()=>{if(booting||draftOwner!==ownerKey)return;try{localStorage.setItem('friend-pi.draft.v1:'+ownerKey,JSON.stringify({text:draft,attachments,planMode,mode,permissionMode,permissionExplicit,goalDraft}));}catch{}},[draft,attachments,planMode,mode,permissionMode,permissionExplicit,goalDraft,draftOwner,ownerKey,booting]);
   useEffect(()=>{if(!booting&&draftOwner===ownerKey&&!sessionId&&!permissionExplicitRef.current)setPermissionMode(state.preferences?.defaultPermissionMode||'auto');},[sessionId,permissionExplicit,state.preferences?.defaultPermissionMode,ownerKey,draftOwner,booting]);
   useLayoutEffect(()=>{setDialogs((state.current?.dialogs||[]).filter(dialog=>!deferredDialogs.current.has(dialog.id)));},[state.current?.sessionId,state.current?.dialogs]);
   useEffect(()=>{if(mode!=='swarm')setMemberRoute(null);},[mode]);
@@ -212,7 +218,8 @@ export default function App() {
   const selectedModel=state.models.find(model=>model.id===selectedModelId);
   useEffect(()=>{if(!sessionId&&selectedModel&&!selectedModel.thinkingLevels?.includes(pendingThinking))setPendingThinking(selectedModel.thinkingLevels?.[0]||'off');},[sessionId,selectedModelId,selectedModel?.thinkingLevels?.join('|'),pendingThinking]);
   const openModelSettings=()=>{setSettingsPage('models');setSettingsOpen(true);};
-  const send=async()=>{
+  const send=async(goalInput?:GoalSubmission)=>{
+    if(goalInput&&(!goalInput.objective.trim()||running||state.current?.queue?.items.length)){report('请等待当前执行与排队消息结束后发送新目标。',true);setSubmissionRevision(old=>old+1);return;}
     if(sendLock.current||allocationLock.current||navigating||migratingDraft.current||!draftRef.current.trim()&&!attachmentsRef.current.length||activeSession?.archived||!selectedModel?.ready){if(!sendLock.current)setSubmissionRevision(old=>old+1);return;}
     sendLock.current=true;setSending(true);setNotice(null);
     const submitted:{sessionId?:string;previousRunId?:string;runId?:string;owner:string;text:string;attachments:{path:string}[];accepted:boolean}={sessionId,previousRunId:state.current?.runId,owner:ownerKey,text:draftRef.current,attachments:[...attachments],accepted:false};lastSubmitted.current=submitted;
@@ -222,10 +229,11 @@ export default function App() {
       if(!target){const next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:selectedModelId,forSend:true,permissionMode});target=next.createdSessionId||next.current?.sessionId;if(!target)throw new Error('会话尚未就绪');submitted.sessionId=target;if(epoch!==navigationEpoch.current)throw new Error('工作区已切换，原草稿已保留');applyState(next);setDraftOwner(target);if(mode!=='single'&&!next.current?.plugins.includes('swarm'))await window.friendPi.request('session.configure',{sessionId:target,plugins:[...new Set([...(next.current?.plugins||plugins),'swarm'])]});if(pendingThinking!=='off')await window.friendPi.request('session.configure',{sessionId:target,thinkingLevel:pendingThinking});}
       if(epoch!==navigationEpoch.current)throw new Error('工作区已切换，原草稿已保留');
       const queued=running||!!state.current?.queue?.items.length||!!state.current?.sideDraft||hasQueueIntent(target,{text:submitted.text,attachments:submitted.attachments,mode,planMode});
+      if(goalInput&&queued)throw new Error('请先处理现有排队消息，再发送新目标。');
       if(!queued){setLocalRunning(true);setTools([]);setLive(null);followScroll.current=true;}
       if(queued){const payload={text:submitted.text,attachments:submitted.attachments,mode,planMode},intent=queueIntent(target,payload);await window.friendPi.request('session.queue',{sessionId:target,action:'add',...payload,intentId:intent.id,fromSideDraft:!!state.current?.sideDraft});acknowledgeQueueIntent(intent);}
-      else {const response=await window.friendPi.request<{runId?:string}>('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode});if(typeof response?.runId==='string')submitted.runId=response.runId;}submitted.accepted=true;
-      try{const remaining={text:draftRef.current===submitted.text?'':draftRef.current,attachments:JSON.stringify(attachmentsRef.current.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};localStorage.setItem('friend-pi.draft.v1:'+target,JSON.stringify(remaining));if(submitted.owner!==target)localStorage.removeItem('friend-pi.draft.v1:'+submitted.owner);}catch{}
+      else {const response=await window.friendPi.request<{runId?:string}>('session.send',{sessionId:target,text:submitted.text,mode,attachments:submitted.attachments,planMode,...(goalInput?{goal:goalInput}:{})});if(typeof response?.runId==='string')submitted.runId=response.runId;}submitted.accepted=true;if(goalInput){goalDraftRef.current=false;setGoalDraft(false);setGoalReplacement(null);}
+      try{const remaining={goalDraft:goalInput?false:goalDraftRef.current,text:draftRef.current===submitted.text?'':draftRef.current,attachments:JSON.stringify(attachmentsRef.current.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit};localStorage.setItem('friend-pi.draft.v1:'+target,JSON.stringify(remaining));if(submitted.owner!==target)localStorage.removeItem('friend-pi.draft.v1:'+submitted.owner);}catch{}
       if(ownerRef.current===submitted.owner||ownerRef.current===target){if(draftRef.current===submitted.text)setDraft('');setAttachments(old=>JSON.stringify(old.map(item=>item.path))===JSON.stringify(submitted.attachments.map(item=>item.path))?[]:old);setDraftOwner(target);}
     }catch(error){setLocalRunning(false);if(ownerRef.current===submitted.owner||ownerRef.current===submitted.sessionId){if(!draftRef.current)setDraft(submitted.text);setDraftOwner(ownerRef.current);}report(errorText(error),true);}
     finally{sendLock.current=false;setSending(false);if(submissionSettled(submitted,stateRef.current.current))setLocalRunning(false);setSubmissionRevision(old=>old+1);}
@@ -239,7 +247,7 @@ export default function App() {
   const ensureUiSession=async()=>{
     if(sessionId)return sessionId;if(running||sendLock.current||allocationLock.current||navigating||migratingDraft.current)return;
     allocationLock.current=true;beginNavigation();migratingDraft.current=true;
-    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit},thinkingLevel=pendingThinking;let next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));migratedComposerOwner.current=id;setDraftOwner(id);if(next.current?.thinkingLevel!==thinkingLevel)next=await window.friendPi.request<AppState>('session.configure',{sessionId:id,thinkingLevel});applyState(next);viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{allocationLock.current=false;migratingDraft.current=false;finishNavigation();}
+    try{const captured={text:draftRef.current,attachments:attachmentsRef.current,planMode,mode,permissionMode,permissionExplicit,goalDraft:goalDraftRef.current},thinkingLevel=pendingThinking;let next=await window.friendPi.request<AppState>('session.new',{projectId,modelId:pendingModel||undefined,permissionMode});const id=next.current?.sessionId;if(!id)return;localStorage.setItem('friend-pi.draft.v1:'+id,JSON.stringify(captured));migratedComposerOwner.current=id;setDraftOwner(id);if(next.current?.thinkingLevel!==thinkingLevel)next=await window.friendPi.request<AppState>('session.configure',{sessionId:id,thinkingLevel});applyState(next);viewOwner.current=id;viewRef.current=next.current?.ui||initialView();setView(viewRef.current);return id;}catch(error){report(String(error),true);}finally{allocationLock.current=false;migratingDraft.current=false;finishNavigation();}
   };
   const writeView=async(next:SessionViewState,confirmReload=false)=>{
     const hadSession=!!sessionId;let base=viewRef.current;const id=await ensureUiSession();if(!id)return;if(!hadSession){base=viewRef.current;next={...next,browserScope:base.browserScope};}const version=++uiVersion.current;viewOwner.current=id;viewRef.current=next;setView(next);setSidebar(next.sidebar);if(!uiPending.current)pendingView.current=null;uiPending.current++;
@@ -278,27 +286,33 @@ export default function App() {
     if(activeMemberRef.current)return;
     if(action.sessionId!==(sessionId||'')||action.epoch!==navigationEpoch.current){if(action.type==='goal')throw new Error('会话已切换，请在当前会话重新打开目标。');return;}
     if(sendLock.current&&['draft','send','attach','removeAttachment','files','reference'].includes(action.type))return;
-    if(action.type==='draft'){draftRef.current=String(action.value||'');setDraft(draftRef.current);}
+    if(action.type==='draft'){const value=String(action.value||''),command=/^\s*\/goal\s/.test(value)?goalDraftInput(value):undefined;draftRef.current=command?command.text:value;if(command){goalDraftRef.current=true;setGoalDraft(true);}setDraft(draftRef.current);}
     else if(action.type==='queueUi')setQueueUi(asObject(action.value));
     else if(action.type==='queue'){const requestOwner=sessionId,requestEpoch=navigationEpoch.current;const input=asObject(action.value);const result=await window.friendPi.request('session.queue',{sessionId,...input});if(requestOwner!==stateRef.current.current?.sessionId||requestEpoch!==navigationEpoch.current)return;if(input.action==='sidechat')setRequestedSession(String(asObject(result).sessionId));setQueueUi(old=>({editing:old.editing}));}
-    else if(action.type==='send'){if(typeof action.text==='string'){draftRef.current=action.text;setDraft(action.text);}await send();}
+    else if(action.type==='send'){
+      const text=typeof action.text==='string'?action.text:draftRef.current,command=goalDraftInput(text);
+      if(command){goalDraftRef.current=true;setGoalDraft(true);draftRef.current=command.text;setDraft(command.text);if(!command.text.trim()){setSubmissionRevision(old=>old+1);return;}}else{draftRef.current=text;setDraft(text);}
+      const goalInput=goalDraftRef.current?{objective:draftRef.current.trim()}:undefined;
+      if(goalInput&&running){setSubmissionRevision(old=>old+1);return;}
+      if(goalInput&&!goalInput.objective){setSubmissionRevision(old=>old+1);return;}
+      const currentGoal=asObject(stateRef.current.current?.runtime).goal as ComposerGoal|undefined;
+      if(goalInput&&unfinishedGoal(currentGoal)){setGoalReplacement({sessionId:sessionId||'',epoch:navigationEpoch.current,text:draftRef.current,previous:currentGoal.objective,goal:{...goalInput,replace:true,expectedGoalId:currentGoal.id,expectedRevision:currentGoal.revision}});setSubmissionRevision(old=>old+1);return;}
+      await send(goalInput);
+    }
     else if(action.type==='attach')addAttachments();
-    else if(action.type==='goal.open'){if(navigating||sending)return;const epoch=navigationEpoch.current,id=sessionId||await ensureUiSession();if(!id||navigationEpoch.current!==epoch)return;if(viewRef.current.active!=='conversation')await writeView({...viewRef.current,active:'conversation'});if(stateRef.current.current?.sessionId===id&&navigationEpoch.current===epoch)setGoalOpen({sessionId:id,epoch});}
+    else if(action.type==='goal.draft'){if(navigating||sending||activeSession?.archived)return;goalDraftRef.current=action.value===true;setGoalDraft(goalDraftRef.current);composer.current?.focus();}
+    else if(action.type==='goal.open'){if(navigating||sending||!sessionId)return;const epoch=navigationEpoch.current;if(viewRef.current.active!=='conversation')await writeView({...viewRef.current,active:'conversation'});if(stateRef.current.current?.sessionId===sessionId&&navigationEpoch.current===epoch)setGoalOpen({sessionId,epoch});}
     else if(action.type==='goal'){
       if(goalActionLock.current)throw new Error('目标操作正在进行。');
       if(navigating||sending||sendLock.current||activeSession?.archived)throw new Error('当前会话暂时不能修改目标。');
       const command=action.value as GoalCommand,operation=command.action;
-      if(!['goal.create','goal.update','goal.pause','goal.resume','goal.stop','goal.complete','goal.accept'].includes(operation))throw new Error('未知目标操作。');
-      if(['goal.create','goal.update','goal.resume','goal.complete','goal.accept'].includes(operation)&&running)throw new Error('请先暂停并等待当前执行结束。');
-      if(['goal.create','goal.resume','goal.complete'].includes(operation)&&!selectedModel?.ready)throw new Error('请先配置模型并通过连接测试。');
-      const epoch=navigationEpoch.current;goalActionLock.current=true;
-      const assertOwner=(id:string)=>{if(navigationEpoch.current!==epoch||stateRef.current.current?.sessionId!==id)throw new Error('会话已切换，目标操作已取消。');if(operation!=='goal.create'&&asObject(asObject(stateRef.current.current?.runtime).goal).id!==command.input.goalId)throw new Error('当前目标已变化，请重新打开目标。');};
-      try{const id=sessionId||operation==='goal.create'&&await ensureUiSession();if(!id)throw new Error('会话尚未就绪。');assertOwner(id);
-        if(operation==='goal.create'||operation==='goal.resume'){const current=stateRef.current.current!;if(mode!=='single'&&!current.plugins.includes('swarm')){const configured=await window.friendPi.request<AppState>('session.configure',{sessionId:id,plugins:[...current.plugins,'swarm']});assertOwner(id);applyState(configured);}
-          const configured=await window.friendPi.request<AppState>('session.configure',{sessionId:id,modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,executionMode:mode,planMode,permissionMode});assertOwner(id);applyState(configured);setMode(configured.current?.executionMode||mode);setPlanMode(configured.current?.planMode??planMode);setPermissionMode(configured.current?.permissionMode||permissionMode);}
-        assertOwner(id);await window.friendPi.request('runtime.call',{sessionId:id,action:operation,input:command.input});
-        if(navigationEpoch.current===epoch&&stateRef.current.current?.sessionId===id)await refresh();
-      }finally{goalActionLock.current=false;}
+      if(!['goal.set','goal.clear'].includes(operation))throw new Error('未知目标操作。');
+      if(operation==='goal.set'&&command.input.status==='active'&&!selectedModel?.ready)throw new Error('请先配置模型并通过连接测试。');
+      const epoch=navigationEpoch.current,id=sessionId,currentGoal=asObject(asObject(stateRef.current.current?.runtime).goal);
+      if(!id)throw new Error('会话尚未就绪。');
+      if(currentGoal.id!==command.input.goalId||currentGoal.revision!==command.input.expectedRevision)throw new Error('当前目标已变化，请重新打开目标。');
+      goalActionLock.current=true;
+      try{await window.friendPi.request('runtime.call',{sessionId:id,action:operation,input:command.input});if(navigationEpoch.current===epoch&&stateRef.current.current?.sessionId===id)await refresh();}finally{goalActionLock.current=false;}
     }
     else if(action.type==='files'){const owner=ownerKey;const files=await window.friendPi.request<{path:string;name:string}[]>('attachment.import',{sessionId,files:action.value});appendAttachments(files,owner);}
     else if(action.type==='reference'){const candidate=asObject(action.value);if(candidate.kind==='文件'&&typeof candidate.path==='string')appendAttachments([{path:candidate.path}],ownerKey);}
@@ -325,7 +339,8 @@ export default function App() {
   useEffect(()=>{const open=(event:Event)=>{const target=(event as CustomEvent<{rootSessionId:string;memberId:string}>).detail;if(target.rootSessionId!==sessionId)return;navigationEpoch.current++;if(!activeMemberRef.current)rootScrollBeforeMember.current={top:scroll.current?.scrollTop||0,following:followScroll.current};setMemberRoute(target);if(viewRef.current.active!=='conversation')void writeView({...viewRef.current,active:'conversation'});};window.addEventListener('friend-pi:teammate-open',open);return()=>window.removeEventListener('friend-pi:teammate-open',open);},[sessionId]);
   const returnToRoot=()=>{navigationEpoch.current++;followScroll.current=rootScrollBeforeMember.current.following;setMemberRoute(null);requestAnimationFrame(()=>{if(scroll.current)scroll.current.scrollTop=rootScrollBeforeMember.current.following?scroll.current.scrollHeight:rootScrollBeforeMember.current.top;composer.current?.focus({preventScroll:true});});};
   const goal=asObject(state.current?.runtime).goal as ComposerGoal|undefined;
-  const composerSnapshot:ComposerSnapshot={goal,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
+  useEffect(()=>{if(booting||navigating||!sessionId)return;const key=sessionId+':'+navigationEpoch.current;if(goalResumeSeen.current===key)return;goalResumeSeen.current=key;setGoalResume(goal&&['paused','blocked','usage_limited'].includes(goal.status)?{sessionId,epoch:navigationEpoch.current,goalId:goal.id}:null);},[booting,navigating,sessionId,goal?.id,goal?.status]);
+  const composerSnapshot:ComposerSnapshot={goal:goal||undefined,goalDraft,queue:state.current?.queue,queueUi,monitor:activeMember?undefined:state.current?.monitor,sessionId:sessionId||'',epoch:navigationEpoch.current,draft,attachments,running,sending,submissionRevision,navigating,archived:!!activeSession?.archived,planMode,permissionMode,permissionExplicit,mode,plugins:currentPlugins,models:state.models,providerNames:Object.fromEntries(state.providers.map(provider=>[provider.id,provider.name])),modelId:selectedModelId,thinkingLevel:state.current?.thinkingLevel||pendingThinking,thinkingLevels:selectedModel?.thinkingLevels||['off'],ready:!!selectedModel?.ready,floating:false,collapsed:false,status:state.current?.plan&&asObject(state.current.plan).status==='proposed'?'计划等待审批':running?'正在执行':messages.length?'查看会话与新回复':'继续当前会话',notice:notice?.message};
   useEffect(()=>window.friendPi.onEvent(event=>{if(event.sessionId!==stateRef.current.current?.sessionId)return;if(String(event.type)==='browser.shortcut'){const key=String(asObject(event.data).key);if(key==='t')void openNewView();else if(key==='w')void closeView(viewRef.current.active);else if(key==='n')void newSession();else if(key==='k'){setSidebar(true);searchInput.current?.focus();}else if(key==='l')document.querySelector<HTMLInputElement>('[aria-label="网页地址"]')?.focus();}}));
   const sidebarWidth=Math.max(180,Math.min(layout.sidebarWidth,400));
   const activeNotice=notice&&<div className={'notice '+(notice.error?'error':'')} style={{flexShrink:0,WebkitAppRegion:'no-drag'} as React.CSSProperties} role={notice.error?'alert':'status'}><span>{notice.message}</span><button aria-label="关闭提示" onClick={()=>setNotice(null)}>×</button></div>;
@@ -339,7 +354,9 @@ export default function App() {
       <ProjectSidebar projects={state.projects} sessionOrder={state.sessionOrder} sessions={sidebarSessions(state.sessions,state.activities||[])} selectedProject={projectId||''} selectedSession={sessionId} query={sessionSearch} archived={historyOpen} disabled={navigating||sending} onProject={id=>void selectProject(id)} onSession={id=>void openSession(id)} onNewSession={id=>void newSession(id)} onToggleArchive={()=>setHistoryOpen(v=>!v)} onMenu={(item,position,moves)=>setMenu({...item,...position,moves})} onReorder={ids=>invoke('project.reorder',{ids})} onReorderSessions={(projectId,ids)=>invoke('session.reorder',{projectId,ids})}/>
       <button className="sidebar-settings" aria-label="设置" onClick={()=>setSettingsOpen(true)}><Icon name="settings"/>设置</button>
     </aside>
-    {managementModal==='goal'&&<GoalDialog key={ownerKey+':'+(goal?.id||'new')} goal={goal} running={running} ready={!!selectedModel?.ready} archived={!!activeSession?.archived} planMode={planMode} onClose={()=>setGoalOpen(null)} onAction={command=>composerAction({type:'goal',value:command,sessionId:sessionId||'',epoch:navigationEpoch.current})}/>}
+    {goalOpen&&goalOpen.sessionId===sessionId&&goalOpen.epoch===navigationEpoch.current&&unfinishedGoal(goal)&&<GoalEditor key={ownerKey+':'+goal.id} goal={goal} archived={!!activeSession?.archived} onClose={()=>setGoalOpen(previous=>previous===goalOpen?null:previous)} onAction={command=>composerAction({type:'goal',value:command,sessionId:sessionId||'',epoch:navigationEpoch.current})}/>}
+    {managementModal==='goal-replace'&&goalReplacement&&<Modal title="替换当前目标" onClose={()=>setGoalReplacement(null)} closeDisabled={sending}><p>当前目标尚未完成。确认后将保留聊天记录，并开始下面的新目标。</p><h3>当前目标</h3><p className="goal-replacement-text">{goalReplacement.previous}</p><h3>新目标</h3><p className="goal-replacement-text">{goalReplacement.goal.objective}</p><div className="button-row"><button disabled={sending} onClick={()=>setGoalReplacement(null)}>取消</button><button className="primary" disabled={sending||running||!!activeSession?.archived||!selectedModel?.ready} onClick={()=>{if(goalReplacement.sessionId!==(sessionId||'')||goalReplacement.epoch!==navigationEpoch.current)return;draftRef.current=goalReplacement.text;setDraft(goalReplacement.text);void send(goalReplacement.goal);}}>替换并发送</button></div></Modal>}
+
     {sidebar&&<ResizeHandle className="sidebar-resize" name="调整会话侧栏宽度" value={sidebarWidth} min={180} max={400} onChange={value=>setLayout(old=>({...old,sidebarWidth:value}))}/>}
     <main className="main"><header className="conversation-heading"><div className="conversation-title"><h2>{activeSession?.name||project?.name||'临时会话'}</h2><p><Icon name="folder"/><span>{workspaceKey||'无需选择项目即可开始'}</span></p></div><div className="heading-actions">{sessionId&&mode==='swarm'&&currentPlugins.includes('swarm')&&<TeammateRoster key={'teammates:'+sessionId} rootSessionId={sessionId} compact selectedMemberId={activeMember||undefined} onBack={returnToRoot}/>}<SessionStats key={'stats:'+sessionId} stats={toolActive?undefined:composerSnapshot.monitor} contextTarget={contextStatsTarget}/></div></header>
       {!toolActive&&activeNotice}
@@ -354,7 +371,7 @@ export default function App() {
         {deferredRequests.length>0&&<div className="messages"><button className="question-resume" onClick={restoreDialogs}>{deferredRequests.every(dialog=>dialog.kind==='questionBatch')?'继续回答问题':'处理待确认请求'}（{deferredRequests.length}）</button></div>}
         </div></div>
       {!toolActive&&activeMember&&sessionId&&<TeammateConversation key={sessionId+activeMember} rootSessionId={sessionId} memberId={activeMember} onBack={returnToRoot} report={report} archived={!!activeSession?.archived}/>}
-      {!toolActive&&<div hidden={!!activeMember} className="composer-host"><SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>}
+      {!toolActive&&<div hidden={!!activeMember} className="composer-host">{goalResume&&goalResume.sessionId===sessionId&&goalResume.epoch===navigationEpoch.current&&goalResume.goalId===goal?.id&&goal.status!=='active'&&goal.status!=='complete'&&<div className="goal-resume-prompt" role="status"><span>这个会话有尚未完成的目标，是否继续？</span><button disabled={sending||navigating||!!activeSession?.archived||!selectedModel?.ready} onClick={()=>void composerAction({type:'goal',value:{action:'goal.set',input:{...goalBinding(goal),status:'active'}},sessionId,epoch:navigationEpoch.current}).then(()=>setGoalResume(null)).catch(error=>report(errorText(error),true))}>恢复目标</button><button onClick={()=>setGoalResume(null)}>稍后</button></div>}<SessionComposer key={ownerKey} value={composerSnapshot} action={composerAction} inputRef={composer} contextRef={setContextStatsTarget}/></div>}
     </main>
     {sessionView.tabs.length>0&&<aside className="workspace fullscreen-workspace" aria-label="工作空间" hidden={!toolActive}>
       {toolActive&&activeViewTab?.page!=='terminal'&&activeNotice}

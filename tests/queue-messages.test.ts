@@ -38,3 +38,7 @@ test('ordinary queued input never claims that it detached and will restore the G
  const html=render({paused:false,items:[item()]});
  assert.match(html,/继续分析原问题/);assert.doesNotMatch(html,/队列完成后恢复原目标|queue-return/);
 });
+
+test('legacy suspended goal metadata does not invent a paused queue or duplicate the GoalBar',()=>{
+ for(const paused of [false,true])assert.equal(render({paused,items:[],suspendedGoal:{objective:'完成原目标'}}),'');
+});

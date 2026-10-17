@@ -54,14 +54,14 @@ test('a captured old composer callback cannot write into the new session after i
 
 function appFixture() {
   const source = readFileSync('apps/desktop/src/renderer/App.tsx', 'utf8');
-  const send = between(source, '  const send=async()=>{', '  const selectProject=');
+  const send = between(source, '  const send=async(goalInput?:GoalSubmission)=>{', '  const selectProject=');
   const action = between(source, '  const composerAction=async(action:ComposerAction)=>{', '  useEffect(()=>{setMemberRoute');
   const storage = new Map<string, string>(), requests: any[] = [], errors: string[] = [];
   let release!: () => void; const acknowledgement = new Promise<void>(done => {release = done;});
   const attachments = [{path: '/project/original.csv'}];
   const ctx: any = {errorText: String, submissionSettled, asObject: (value: any) => value && typeof value === 'object' ? value : {}, hasQueueIntent: () => false,
     localStorage: {getItem: (key: string) => storage.get(key) || null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key)},
-    sendLock: {current: false}, allocationLock: {current: false}, migratingDraft: {current: false}, navigating: false, draftRef: {current: 'analyze attached data'}, attachmentsRef: {current: attachments},
+    goalDraftRef:{current:false},setGoalDraft(){},setGoalReplacement(){},sendLock: {current: false}, allocationLock: {current: false}, migratingDraft: {current: false}, navigating: false, draftRef: {current: 'analyze attached data'}, attachmentsRef: {current: attachments},
     activeSession: {archived: false}, activeMemberRef: {current: null}, selectedModel: {ready: true}, setSending() {}, setSubmissionRevision() {}, setNotice() {}, sessionId: 'native', ownerKey: 'native', attachments,
     lastSubmitted: {current: null}, navigationEpoch: {current: 4}, running: false, state: {current: {sessionId: 'native', runId: 'prior-run', isRunning: false, lifecycleStatus: 'completed', queue: {items: []}}}, setLocalRunning() {}, setTools() {}, setLive() {}, followScroll: {},
     mode: 'single', planMode: false, permissionMode: 'auto', permissionExplicit: true, ownerRef: {current: 'native'}, setDraft(value: string) {ctx.draftRef.current = value;},
@@ -89,6 +89,14 @@ test('attachment inspection adds only a hash during an App submission and its AC
   assert.equal(f.requests[0].input.attachments[0].path, '/project/original.csv');
 });
 
+test('Goal send delivers one native prompt with attachments and the atomic Goal intent, then clears only its draft',async()=>{
+ const f=appFixture();f.ctx.goalDraftRef.current=true;const sending=f.ctx.send({objective:'analyze attached data',replace:true,expectedGoalId:'g',expectedRevision:7});assert.equal(f.requests.length,1);assert.equal(f.requests[0].method,'session.send');assert.equal(f.requests[0].input.text,'analyze attached data');assert.equal(f.requests[0].input.goal.objective,'analyze attached data');assert.equal(f.requests[0].input.goal.expectedRevision,7);assert.equal(f.requests[0].input.attachments[0].path,'/project/original.csv');f.release();await sending;assert.equal(f.ctx.goalDraftRef.current,false);assert.equal(f.requests.length,1);assert.equal(JSON.parse(f.storage.get('friend-pi.draft.v1:native')!).goalDraft,false);
+});
+
+test('running and queued Goal creation stays a draft instead of sending a separate Goal wake or silently losing its intent',async()=>{
+ for(const queued of [false,true]){const f=appFixture();f.ctx.goalDraftRef.current=true;if(queued)f.ctx.state.current.queue.items=[{id:'queued'}];else f.ctx.running=true;await f.ctx.send({objective:'new goal'});assert.equal(f.requests.length,0);assert.equal(f.ctx.draftRef.current,'analyze attached data');assert.equal(f.ctx.goalDraftRef.current,true);}
+});
+
 test('an obsolete App attachment inspection cannot hash a new session or a newer navigation epoch', async () => {
   const f = appFixture();
   for (const identity of [{sessionId: 'old', epoch: 4}, {sessionId: 'native', epoch: 3}]) await f.ctx.action({type: 'attachmentChecked', ...identity, value: {path: '/project/original.csv', hash: 'obsolete'}});
@@ -99,7 +107,7 @@ test('opening a branch draft retains its frozen mode and plan instead of the roo
   const source=readFileSync('apps/desktop/src/renderer/App.tsx','utf8');
   const body=between(source,'    let saved:JsonObject={};',"    migratedComposerOwner.current='';");
   const values:any={},ctx:any={ownerKey:'branch',sessionId:'branch',state:{current:{sideDraft:{text:'frozen',attachments:[{path:'/frozen.csv'}],mode:'team',planMode:true},executionMode:'single',planMode:false},preferences:{}},asObject:(value:any)=>value||{},asList:(value:any)=>value||[],localStorage:{getItem:()=>null},permissionExplicitRef:{current:false},migratedComposerOwner:{current:''}};
-  for(const name of ['Draft','Attachments','DraftOwner','PlanMode','PermissionExplicit','PermissionMode','Mode'])ctx['set'+name]=(value:any)=>{values[name]=value;};
+  for(const name of ['GoalDraft','GoalReplacement','GoalOpen','Draft','Attachments','DraftOwner','PlanMode','PermissionExplicit','PermissionMode','Mode'])ctx['set'+name]=(value:any)=>{values[name]=value;};
   vm.createContext(ctx);vm.runInContext(stripTypeScriptTypes(body),ctx);
   assert.equal(values.Draft,'frozen');assert.equal(values.Mode,'team');assert.equal(values.PlanMode,true);assert.equal(values.Attachments[0].path,'/frozen.csv');
 });
