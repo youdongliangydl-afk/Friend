@@ -1,17 +1,17 @@
 import {visibleText,object,digest} from '@friend-pi/core';
-export interface DisplayMessage {background?:boolean;senderLabel?:string;id:string;role:string;text:string;userText?:string;timestamp?:number;parts:Record<string,unknown>[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;provider?:string;model?:string;durationMs?:number;usage?:Record<string,unknown>;stopReason?:string;errorMessage?:string}
+export interface DisplayMessage {displayText?:string;background?:boolean;senderLabel?:string;id:string;role:string;text:string;userText?:string;timestamp?:number;parts:Record<string,unknown>[];toolCallId?:string;toolName?:string;isError?:boolean;runId?:string;provider?:string;model?:string;durationMs?:number;usage?:Record<string,unknown>;stopReason?:string;errorMessage?:string}
 /** A rebuildable projection. Native Pi entries, including the original parts, remain authoritative. */
 export function projectMessages(entries:readonly unknown[]):DisplayMessage[]{
- const automatic=new Map<string,string>(),inputs=new Map<string,{textEnd:number;hash:string;runId?:string;background?:boolean}>();
+ const automatic=new Map<string,string>(),inputs=new Map<string,{textEnd:number;hash:string;runId?:string;background?:boolean;planExecutionId?:string;recovered?:boolean}>();
  for(const raw of entries){const e=object(raw),data=object(e.data||{});if(e.type!=='custom')continue;
   if(e.customType==='friend-pi.runtime-wake.input')automatic.set(String(data.entryId),String(data.hash));
-  if(['friend-pi.input.v1','friend-pi.runtime-wake.input'].includes(String(e.customType))&&typeof data.entryId==='string')inputs.set(data.entryId,data as unknown as {textEnd:number;hash:string;runId?:string;background?:boolean});}
+  if(['friend-pi.input.v1','friend-pi.runtime-wake.input'].includes(String(e.customType))&&typeof data.entryId==='string')inputs.set(data.entryId,data as unknown as {textEnd:number;hash:string;runId?:string;background?:boolean;planExecutionId?:string;recovered?:boolean});}
  let runId:string|undefined;
  return entries.flatMap(raw=>{const e=object(raw);if(e.type!=='message'||!e.message)return [];const m=object(e.message);if(m.role==='system')return [];
   const parts=typeof m.content==='string'?[{type:'text',text:m.content}]:Array.isArray(m.content)?m.content.map(object):[];
   const text=visibleText(m.content),input=inputs.get(String(e.id));const original=input&&digest(text.slice(0,input.textEnd))===input.hash?text.slice(0,input.textEnd):undefined;
   if(m.role==='user')runId=original!==undefined?input?.runId:undefined;
-  return [{id:String(e.id),role:automatic.get(String(e.id))===digest(text)?'automatic':String(m.role),background:automatic.get(String(e.id))===digest(text)&&input?.background===true,text,parts,timestamp:typeof m.timestamp==='number'?m.timestamp:undefined,userText:original,runId,
+  return [{id:String(e.id),role:automatic.get(String(e.id))===digest(text)?'automatic':String(m.role),background:automatic.get(String(e.id))===digest(text)&&input?.background===true,...(automatic.get(String(e.id))===digest(text)&&input?.planExecutionId?{displayText:input.recovered?'计划执行已中断，未自动重放':'计划已批准，开始执行',senderLabel:'系统'}:{}),text,parts,timestamp:typeof m.timestamp==='number'?m.timestamp:undefined,userText:original,runId,
    toolCallId:typeof m.toolCallId==='string'?m.toolCallId:undefined,toolName:typeof m.toolName==='string'?m.toolName:undefined,isError:m.isError===true,
    provider:typeof m.provider==='string'?m.provider:undefined,model:typeof m.model==='string'?m.model:undefined,durationMs:typeof m.durationMs==='number'?m.durationMs:undefined,
    usage:m.usage?object(m.usage):undefined,stopReason:typeof m.stopReason==='string'?m.stopReason:undefined,errorMessage:typeof m.errorMessage==='string'?m.errorMessage:undefined}];});

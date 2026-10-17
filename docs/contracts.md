@@ -28,7 +28,9 @@ Electron Preload 只暴露 request/onEvent。Main 校验顶级 webContents/frame
 ## 本批新增公共边界
 
 - `session.archive{id,archived}` 保留原身份、原史、草稿和成果；归档写入与执行由 Main 守卫拒绝，恢复后继续。`session.delete.preview{id}` 生成一次确认令牌；`session.delete{id,token}` 先持久 tombstone，取消学习和运行时，再清理主/成员/复核原史与独占记录。保留项目代码、原附件和 worktrees；崩溃后从 preparing 标记接续清理，重复确认返回同一删除结果。
-- `plan.read/revise/approve/reject` 绑定原生会话、版本、正文 hash、模型、思考和执行方式。模型 `friend_plan` 仅 submit/read，无批准权限。修改生成新版本，旧批准无效。
+- `plan.read/revise/approve/reject` 绑定原生会话、版本、正文 hash、模型、思考、权限和执行方式。模型 `friend_plan` 仅 submit/read，无批准权限；仅明确提交生成审批卡。计划含 `submission {v:1,via:tool|user,runId?,toolCallId?}`，历史无来源记录仅可阅读或重新提交。`plan.revise` 不传 body 时撤销旧审批、恢复计划模式并等待用户修订反馈；传 body 则明确保存新版。
+- `plan.approve` 冻结正文快照并以宿主来源调用 Pi 原生 prompt 自动执行；返回稳定 `runId/executionId`，重复请求只返回已有收据。每次请求经公开 `context_with_system` 投影当前计划或获批快照，不复制原史。执行收据状态为 starting/started/settled/failed/cancelled/interrupted；settled 仅表示原生轮次已结算。停止和新输入使未启动批准失效，重启只核对输入归属、不自动重放。
+- `friend_questions {v:1,title,questions}` 在所有模式使用同一问题弹窗和原生工具等待/结果协议。关闭仅暂存 UI，显式取消不提交部分答案；问题无自动作答或默认选项。权限请求优先，管理表单打开期间暂缓请求弹窗。
 - `file.tree/read/open` 在项目 realpath 边界内只读；read 支持 offset/line、大文件分段和图片；`git.diff{scope,runId}` 返回文件、行号、增删统计与特殊状态。本轮范围绑定启动基线，基线失效明确拒绝替代。
 - `learning.pause/resume/state` 管理单一 Node 串行学习宿主。后台模型冻结于触发快照或指定后台模型；前台开始不会取消后台。缺认证等待配置，不算失败；来源失效与删除独立取消任务。
 - Memory 使用收据区分 prepared/context/request-prepared/response-observed/tool-read；原生 custom entries 是可回查采用证据，不推断模型内部因果作用。冷恢复只恢复最后有证据的轮次，不补造旧历史。

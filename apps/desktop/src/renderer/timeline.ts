@@ -36,6 +36,8 @@ export function projectTimeline(messages: Message[], live: Message | null, tools
       if (hasCall) continue;
       claimed.add(message.toolCallId);
       parts.push({ kind: 'tool', tool: toolFor(message.toolCallId, message.toolName || '', {}) });
+    } else if (message.role === 'automatic' && message.displayText) {
+      parts.push({kind:'text',text:message.displayText});
     } else if (message.role === 'user') {
       parts.push({ kind: 'text', text: message.userText ?? message.text });
       for (const part of message.parts || []) if (part.type === 'image') parts.push({ kind: 'image', data: String(part.data), mimeType: String(part.mimeType) });

@@ -58,7 +58,16 @@
             "apps/desktop/src/renderer/client-workspace.css"
           ]
         }
-      ]
+      ],
+      "planModeReference": {
+        "commit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+        "mode": "reference-only",
+        "files": [
+          "packages/plan/plan-mode/src/index.ts",
+          "packages/interaction/user-questions/src/types.ts"
+        ],
+        "use": "Plan state reminders, structured clarification and approval continuation semantics. Original Pi host implementation; no additional upstream source copied."
+      }
     },
     {
       "name": "MiniMax Code",
@@ -68,7 +77,16 @@
       "licensePath": "LICENSE",
       "mode": "reference",
       "modified": false,
-      "use": "Agent runtime and scheduling research; no implementation files incorporated."
+      "use": "Agent runtime and scheduling research; no implementation files incorporated.",
+      "planModeReference": {
+        "commit": "56221c121c6e63d0e50b68f57d4abf083afed119",
+        "mode": "reference-only",
+        "files": [
+          "packages/agent-extension/src/plan-mode.ts",
+          "packages/local-runtime-v2/src/service/plan/application.ts"
+        ],
+        "use": "Plan state reminders, structured clarification and approval continuation semantics. Original Pi host implementation; no additional upstream source copied."
+      }
     },
     {
       "name": "ZCode",
@@ -78,7 +96,16 @@
       "licensePath": "LICENSE",
       "mode": "reference",
       "modified": false,
-      "use": "Client/runtime separation and cancellation/recovery research; no implementation files incorporated."
+      "use": "Client/runtime separation and cancellation/recovery research; no implementation files incorporated.",
+      "planModeReference": {
+        "commit": "29628c9acdb81b703bbd4080c207a0e7ce5e276e",
+        "mode": "reference-only",
+        "files": [
+          "packages/services/src/zcode-agent/zcodeTaskServiceAdapter.ts",
+          "packages/ui/src/ElicitationDialog.tsx"
+        ],
+        "use": "Plan state reminders, structured clarification and approval continuation semantics. Original Pi host implementation; no additional upstream source copied."
+      }
     },
     {
       "name": "Codex",
@@ -329,6 +356,21 @@
       "mode": "reference",
       "modified": false,
       "use": "Specialist capability routing, independent-task parallelism and unified delivery from orchestrator/instructions.md and swarm.py; ideas only, no runtime or source copied."
+    },
+    {
+      "name": "Reasonix plan coordination",
+      "repository": "https://github.com/esengine/DeepSeek-Reasonix",
+      "commit": "63195e95a5b95c4b2c69481dea272fc4d5ce0bcd",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "mode": "reference",
+      "modified": false,
+      "use": "Planner contract, structured host question barrier and host-triggered execution after approval; no source copied.",
+      "files": [
+        "internal/runtime/coordinator/coordinator.go",
+        "internal/session/control/turn_orchestrator.go",
+        "internal/runtime/agent/ask.go"
+      ]
     }
   ],
   "providerConfigurationSources": {

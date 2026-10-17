@@ -1334,3 +1334,58 @@ for(const parentDelivers of [false,true])test(`ordinary read-only Swarm delivers
   const next=payloads.findLast(payload=>textOf(payload.messages[providerTaskIndex(payload.messages)]?.content)==='NEXT_USER_REQUEST');assert.ok(next,'the new business request must reach the provider');assert.ok(next.messages.filter(m=>m.role==='system').some(m=>textOf(m.content).includes(beta)));
  }finally{releaseMember();releaseParent();await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
 });
+
+test('plan clarification, revision and approval use native continuations with one automatic execution',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const requests:any[]=[],planA='APPROVED_WRITE_A: Write plan-result.txt with A and verify it.',planB='APPROVED_WRITE_B: Write plan-result.txt with B and verify it.';
+ const text=(value:any)=>typeof value==='string'?value:Array.isArray(value)?value.filter(part=>part.type==='text').map(part=>part.text).join('\n'):'';
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const bytes of req)raw+=String(bytes);const body=JSON.parse(raw);requests.push(body);
+  const index=providerTaskIndex(body.messages),input=text(body.messages[index]?.content),tail=body.messages.slice(index+1),outputs=tail.filter((message:any)=>message.role==='tool');
+  const call=(name:string,args:unknown)=>({tool_calls:[{index:0,id:'plan-chain-'+requests.length,type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+  let delta:any={content:'本轮完成。'};
+  if(input==='PLAN_PLAIN_QUESTION')delta={content:'这本书是什么类别？'};
+  else if(input==='PLAN_BOOK'){
+   if(outputs.length===0)delta=call('friend_questions',{v:1,title:'确认书的类别',questions:[{id:'category',type:'single',title:'书的类别',required:true,options:[{id:'history',label:'历史'},{id:'literature',label:'文学'}]}]});
+   else if(outputs.length===1)delta=call('friend_plan',{action:'submit',body:planA});
+   else delta={content:'计划已正式提交。'};
+  }else if(input==='PLAN_REVISION')delta=outputs.length===0?call('friend_plan',{action:'submit',body:planB}):{content:'修订版已提交。'};
+  else if(input.startsWith('开始执行用户已批准的计划'))delta=outputs.length===0?call('write',{path:'plan-result.txt',content:'B'}):outputs.length===1?call('read',{path:'plan-result.txt'}):{content:'已执行并读取验证。'};
+  res.writeHead(200,{'Content-Type':'text/event-stream'});for(const choice of [{delta:{role:'assistant',...delta},finish_reason:null},{delta:{},finish_reason:delta.tool_calls?'tool_calls':'stop'}])res.write(`data: ${JSON.stringify({id:'fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,...choice}]})}\n\n`);res.end('data: [DONE]\n\n');
+ });
+ await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');
+ let f=await start({permissionMode:'ask'});
+ const settle=async(offset:number)=>{await f.wait(()=>f.events.slice(offset).some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled'));};
+ try{
+  await f.request('configure',{plugins:[]});await f.request('provider.save',{provider:'plan-chain-http',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});
+  let offset=f.events.length;await f.request('send',{text:'PLAN_PLAIN_QUESTION',planMode:true});await settle(offset);assert.equal(await f.request('plan.read'),undefined,'a prose question cannot become a ready plan');
+  offset=f.events.length;await f.request('send',{text:'PLAN_BOOK',planMode:true});await f.wait(()=>f.events.slice(offset).some(event=>event.event?.type==='dialog'));
+  const question=f.events.slice(offset).find(event=>event.event?.type==='dialog')!.event!.data;
+  await f.request('dialog.respond',{id:question.id,v:1,generation:question.generation,runId:question.runId,answers:[{questionId:'category',optionIds:['history']}]});await settle(offset);
+  const original=await f.request('plan.read') as any;assert.equal(original.body,planA);assert.equal(original.submission.via,'tool');assert.equal(existsSync(join(f.directory,'plan-result.txt')),false);
+  await f.request('plan.revise',{id:original.id,revision:original.revision,hash:original.hash});assert.equal((await f.request('state') as any).planMode,true);await assert.rejects(f.request('plan.approve',original),/版本已变化/);
+  offset=f.events.length;await f.request('send',{text:'PLAN_REVISION',planMode:true});await settle(offset);
+  const revised=await f.request('plan.read') as any;assert.equal(revised.revision,original.revision+1);assert.equal(revised.body,planB);await assert.rejects(f.request('plan.approve',original),/版本已变化/);
+  const revisionRequest=requests.find(request=>text(request.messages[providerTaskIndex(request.messages)]?.content)==='PLAN_REVISION');assert.ok(revisionRequest.messages.some((message:any)=>text(message.content).includes(planA)&&text(message.content).includes('待修订的上一版')));
+  offset=f.events.length;const approvals=await Promise.all([f.request('plan.approve',revised),f.request('plan.approve',revised)]) as any[];assert.equal(approvals[0].runId,approvals[1].runId);assert.equal(approvals[0].executionId,approvals[1].executionId);
+  await f.wait(()=>f.events.slice(offset).some(event=>event.event?.type==='dialog'&&event.event.data.kind==='confirm'));
+  const permission=f.events.slice(offset).find(event=>event.event?.type==='dialog'&&event.event.data.kind==='confirm')!.event!.data;assert.equal(existsSync(join(f.directory,'plan-result.txt')),false,'plan approval does not bypass tool permission');
+  await f.request('dialog.respond',{id:permission.id,confirmed:true});await settle(offset);assert.equal(readFileSync(join(f.directory,'plan-result.txt'),'utf8'),'B');
+  const executionRequests=requests.filter(request=>text(request.messages[providerTaskIndex(request.messages)]?.content).startsWith('开始执行用户已批准的计划'));assert.equal(executionRequests.length,3);
+  for(const request of executionRequests){const contexts=request.messages.filter((message:any)=>text(message.content).startsWith('[Friend 当前计划状态]'));assert.equal(contexts.length,1);assert.match(text(contexts[0].content),/APPROVED_WRITE_B/);assert.match(text(contexts[0].content),new RegExp(revised.hash));assert.match(text(contexts[0].content),/执行阶段/);assert.doesNotMatch(text(contexts[0].content),/APPROVED_WRITE_A/);}
+  const state=await f.request('state') as any,entries=readFileSync(state.sessionFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,4,'three business inputs plus one native host continuation; clarification adds no user input');
+  assert.equal(entries.filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi.plan.decision').length,1);
+  assert.equal(state.messages.filter((message:any)=>message.role==='user').length,3);assert.equal(state.messages.filter((message:any)=>message.role==='automatic'&&message.displayText==='计划已批准，开始执行').length,1);
+  const count=requests.length;await f.request('plan.approve',revised);assert.equal(requests.length,count);
+  const directory=f.directory;await f.close(true);f=await start({directory,sessionFile:state.sessionFile,modelId:'plan-chain-http/fixture',status:'completed',permissionMode:'ask'});await f.request('plan.approve',revised);assert.equal(requests.length,count,'reopening and retrying a finished approval cannot replay tools');
+ }finally{await f.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}
+});
+
+test('failed plan admission is recorded and retries cannot replay its authorization',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const f=await start();try{
+  await f.request('configure',{executionMode:'swarm'});const plan=await f.request('plan.revise',{body:'Delegate one read-only check.'}) as any;
+  await f.request('configure',{plugins:[]});await assert.rejects(f.request('plan.approve',plan),/插件已关闭/);
+  const store=new RecordStore('plans',f.dataDir);try{const receipt=store.get<any>(`execution:${(await f.request('state') as any).sessionId}:${plan.id}:${plan.revision}:${plan.hash}`)?.value;assert.equal(receipt?.status,'failed');}finally{store.close();}
+  await assert.rejects(f.request('plan.approve',plan),/中断或失败/);assert.equal(f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_start'),false);
+ }finally{await f.close();}
+});

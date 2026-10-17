@@ -401,7 +401,16 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method==='session.send'){
     if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));const nextRun=worker.state.isRunning?String(worker.state.runId):randomUUID();let body=typeof input.text==='string'?input.text:'';for(const match of body.matchAll(/@\[[^\]]*\]\(friend-session:([A-Za-z0-9-]+)\)/g)){const referenced=store.get<SessionRecord>('session:'+match[1])?.value;if(!referenced?.path||referenced.projectId!==worker.record.projectId)throw new Error('引用会话不可用或不属于当前项目');body+='\n'+sessionReference(referenced.path,referenced.name);}const response=await request(worker,'send',{...input,text:body,runId:nextRun});if(worker.record.name==='新会话'){worker.record.name=(typeof input.text==='string'&&input.text.trim()?input.text:String(object(Array.isArray(input.attachments)?input.attachments[0]:{}).name||'附件任务')).slice(0,48);persist(worker.record);}worker.state=object(await request(worker,'state'));publishState();return response;
   }
-  if(method.startsWith('plan.')){if(method!=='plan.read'&&worker.record.archived)throw new Error('请先恢复归档会话');const nextRun=randomUUID();if(method==='plan.approve'){await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));}const result=await request(worker,method,{...input,runId:nextRun});worker.state=object(await request(worker,'state'));persistWorker(worker);publishState();return result;}
+  if(method.startsWith('plan.')){
+    if(method!=='plan.read'&&worker.record.archived)throw new Error('请先恢复归档会话');
+    const nextRun=randomUUID(),approvalPermissionEpoch=worker.state.permissionEpoch,approvalSourceRunId=worker.state.runId,approvalTerminalEpoch=worker.terminalEpoch||0;
+    if(method==='plan.approve'){
+      await requireReadyModel(await getProviderRuntime(),dataDir,String(worker.state.modelId||''));
+      if(workers.get(worker.record.id)!==worker||worker.state.permissionEpoch!==approvalPermissionEpoch||(worker.terminalEpoch||0)!==approvalTerminalEpoch)throw new Error('计划启动已取消或所属运行已变化');
+    }
+    const result=await request(worker,method,{...input,runId:nextRun,...(method==='plan.approve'?{approvalPermissionEpoch,approvalSourceRunId}:{})});
+    worker.state=object(await request(worker,'state'));persistWorker(worker);publishState();return result;
+  }
   if(method==='session.stop'){worker.terminalEpoch=(worker.terminalEpoch||0)+1;try{worker.state=object(await request(worker,'stop',input));}finally{await terminalBroker.stopAgentServices(terminalContext(worker.record,'user'));}publishState();return state();}
   if(method==='session.configure'){
     if(worker.record.archived)throw new Error('归档会话为只读，请先恢复');if(input.modelId)await requireReadyModel(await getProviderRuntime(),dataDir,text(input.modelId));worker.state=object(await request(worker,'configure',input));worker.record.modelId=typeof worker.state.modelId==='string'?worker.state.modelId:undefined;worker.record.thinkingLevel=typeof worker.state.thinkingLevel==='string'?worker.state.thinkingLevel:undefined;worker.record.plugins=Array.isArray(worker.state.plugins)?worker.state.plugins.map(String):undefined;persistWorker(worker);publishState();return state();
