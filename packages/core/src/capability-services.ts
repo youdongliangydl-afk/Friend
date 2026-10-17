@@ -164,7 +164,7 @@ export function restrictedSourceItem(item:HistoryItem,source:SourceRef):HistoryI
 
 /** Older packaged cores lack this connection function and therefore cannot mutate upgraded state. */
 export function requireSchemaWriter(store:RecordStore,namespace:'memory'|'expert'|'swarm',version=3,tables:string[]=[]):void {
- if(!Number.isSafeInteger(version)||version<1||version>5||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
+ if(!Number.isSafeInteger(version)||version<1||version>6||tables.some(table=>!/^[a-z][a-z0-9_]*$/.test(table)))throw new CapabilityError('VALIDATION_ERROR','数据写入版本围栏无效');
  store.transaction(()=>{
   version=Math.max(version,get<{minWriter:number}>(store,'schema-policy',namespace)?.minWriter||0);
   const prefixes=[`friend_${namespace}_writer_`,...tables.map(table=>`friend_${table}_writer_`)];

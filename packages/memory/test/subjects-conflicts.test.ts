@@ -579,7 +579,7 @@ test('controller publish opens a first-class conflict: the old value stays activ
     assert.equal(candidate.status, 'candidate');
     assert.ok(candidate.conflictId);
     assert.equal(candidate.conflictState, 'open');
-    assert.equal(snapshot.schemaVersion, 4);
+    assert.equal(snapshot.schemaVersion, 5);
     assert.equal(snapshot.conflicts.length, 1);
     const conflict = snapshot.conflicts[0]!;
     assert.equal(conflict.status, 'open');

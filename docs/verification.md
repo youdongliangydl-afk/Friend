@@ -48,3 +48,9 @@ Managed hosts additionally guard Pi public stream/complete request boundaries (i
 - 三种权限策略均验证目录外写入必须显式批准；覆盖 `..`、Pi `@` 前缀、家目录、同前缀兄弟目录、缺失父目录和符号链接（含悬空链接）。
 - 临时会话的 shell、后台命令和 Agent 服务输入申请明确批准；等待批准时停止后不启动、不重放。协作宿主检查同样覆盖取消栅栏。权限批准不扩大计划只读或成员角色范围。
 - JSONL、数据库和受管执行状态仍使用应用数据目录；记忆导出、共享文件和协作工作树使用会话子目录。审批是工具执行前的用户授权，不是操作系统文件沙箱。
+
+## 2026-10-17 Memory P1–P4 complete build
+
+Branch `codex/memory-p0-20261017` (P0 `4d63158` plus P1–P4 commits). Scope: seven-kind memory, lifecycle/review, Dream v2 with audit/rollback, schema v5/writer 6 migration, intent-aware lexical retrieval with pinned/budget/explain, Memory Center nine-tab Desktop UI, memorybench paired counterfactuals and a v3/v4→v5 migration drill.
+
+Deterministic evidence: memory package 362 tests, topic-rebuild 50, Memory Center UI 44, memorybench 12, migration drill 40 checks, full repository suite and `tsc --noEmit`/build results recorded in `docs/implementation/2026-10-17-memory-p1-p4.md`; artefacts under `.artifacts/qa/memory-bench.json`, `.artifacts/qa/memory-migration-drill.json`, `.artifacts/qa/memory-center-*`. Codex is used for independent cross-acceptance; packaged Computer Use journeys and real-model smoke (with explicitly configured provider only) are recorded separately, and unconfigured real-model runs remain `PENDING_USER_AUTH` rather than passed.

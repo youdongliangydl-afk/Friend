@@ -23,12 +23,14 @@ import { chmodSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-/** Version written into `memory_migrations` once v4 has been applied. */
-export const MEMORY_SCHEMA_VERSION = 4;
+/** Version written into `memory_migrations` once the latest schema has been applied. */
+export const MEMORY_SCHEMA_VERSION = 5;
 /** Old writers fail closed through `friend_pi_writer_version()` triggers. */
-export const MEMORY_WRITER_VERSION = 5;
+export const MEMORY_WRITER_VERSION = 6;
 /** Digest input of the `memory_migrations.checksum` value for v4. */
 export const MEMORY_V4_MIGRATION_CHECKSUM_INPUT = 'memory-v4';
+/** Digest input of the `memory_migrations.checksum` value for v5. */
+export const MEMORY_V5_MIGRATION_CHECKSUM_INPUT = 'memory-v5';
 /** documents(namespace='memory') key that carries the install profile. */
 export const MEMORY_INSTALL_PROFILE_KEY = 'install-profile';
 export const MEMORY_INSTALL_PROFILE_NAMESPACE = 'memory';
@@ -51,12 +53,19 @@ export interface MemoryMigrationHooks {
   recordClaim(record: {id:string;content:string;conditions:string[]}): string;
 }
 
-export interface MemoryV4Result {
-  version: 4;
+export interface MemorySchemaResult {
+  version: 5;
+  /** True when at least one schema version was applied on this call. */
   migrated: boolean;
   installProfile: MemoryInstallProfile;
+  /** Backwards-compatible: the v4 backup path when v4 was applied. */
   backupPath?: string;
+  v4BackupPath?: string;
+  v5BackupPath?: string;
+  migrations: {v4: boolean; v5: boolean};
 }
+/** @deprecated kept for older imports; use MemorySchemaResult. */
+export type MemoryV4Result = MemorySchemaResult;
 
 /** Every table guarded by requireSchemaWriter(..., MEMORY_WRITER_VERSION, ...). */
 export const MEMORY_SCHEMA_TABLES: string[] = [
@@ -78,6 +87,8 @@ export const MEMORY_SCHEMA_TABLES: string[] = [
   'memory_policies',
   'memory_autopublish_audit',
   'memory_reviews',
+  'memory_relations',
+  'memory_consolidations',
 ];
 
 /** Tables introduced by v4 (blueprint §13.2 / spec §2.4). */
@@ -88,6 +99,8 @@ export const MEMORY_V4_TABLES: string[] = [
   'memory_policies',
   'memory_autopublish_audit',
   'memory_reviews',
+  'memory_relations',
+  'memory_consolidations',
 ];
 
 /** Columns added to memory_records by v4 (spec §2.3). */
@@ -118,6 +131,39 @@ export const MEMORY_RECORD_INDEX_DDL: string[] = [
   'CREATE INDEX IF NOT EXISTS memory_records_kind_status ON memory_records(project_id,status,kind_v2)',
   'CREATE INDEX IF NOT EXISTS memory_records_last_used ON memory_records(last_used_at)',
 ];
+
+/** Tables introduced by v5 (Dream v2 lineage/consolidation audit, relations graph). */
+export const MEMORY_V5_TABLES: string[] = ['memory_relations', 'memory_consolidations'];
+
+/** Columns added to memory_records by v5 (pin/decay/consolidation/cross-project knowledge). */
+export const MEMORY_V5_RECORD_COLUMNS: ReadonlyArray<{name: string; declaration: string}> = [
+  {name:'pinned', declaration:'INTEGER NOT NULL DEFAULT 0'},
+  {name:'pinned_at', declaration:'TEXT'},
+  {name:'decay_score', declaration:'REAL'},
+  {name:'consolidation_id', declaration:'TEXT'},
+  {name:'project_ids_json', declaration:'TEXT'},
+];
+
+/** Indexes on memory_records introduced by v5. */
+export const MEMORY_V5_RECORD_INDEX_DDL: string[] = [
+  'CREATE INDEX IF NOT EXISTS memory_records_pinned ON memory_records(project_id,pinned,status)',
+  'CREATE INDEX IF NOT EXISTS memory_records_consolidation ON memory_records(consolidation_id)',
+];
+
+/** v5 tables and their secondary indexes (idempotent). */
+export const MEMORY_V5_TABLE_DDL = `
+CREATE TABLE IF NOT EXISTS memory_relations(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL,
+  kind TEXT NOT NULL, weight REAL NOT NULL DEFAULT 1, created_at TEXT NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations(project_id,from_id,kind);
+CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations(project_id,to_id,kind);
+CREATE TABLE IF NOT EXISTS memory_consolidations(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+  actor TEXT NOT NULL, created_at TEXT NOT NULL, applied_at TEXT, rolled_back_at TEXT,
+  diff_json TEXT NOT NULL, parent_ids_json TEXT NOT NULL, child_ids_json TEXT NOT NULL,
+  rollback_token TEXT, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS memory_consolidations_project ON memory_consolidations(project_id,status,created_at);
+`;
 
 /** New tables, their secondary indexes and the documents/migrations bootstrap. */
 export const MEMORY_V4_TABLE_DDL = `
@@ -157,7 +203,7 @@ CREATE TABLE IF NOT EXISTS memory_reviews(
 CREATE INDEX IF NOT EXISTS memory_reviews_due ON memory_reviews(project_id,status,due_at);
 `;
 
-const MIGRATION_BACKUP_FILE = 'before-v4-';
+const MIGRATION_BACKUP_PREFIX = 'before-';
 
 interface LegacyEvidence { kind?: unknown; sourceRole?: unknown; source?: unknown; relation?: unknown }
 interface LegacyRecord {
@@ -198,16 +244,114 @@ export function readMemoryInstallProfile(db: DatabaseSync): MemoryInstallProfile
   } catch { return undefined; }
 }
 
-/** Backup-first: `VACUUM INTO <dataDir>/memory-migration-backups/before-v4-<uuid>.sqlite`. */
-function backupBeforeV4(db: DatabaseSync, dataDir: string): string {
+/** Backup-first: `VACUUM INTO <dataDir>/memory-migration-backups/before-<version>-<uuid>.sqlite`. */
+function backupBefore(db: DatabaseSync, dataDir: string, version: 'v4' | 'v5'): string {
   const root = join(dataDir, MEMORY_MIGRATION_BACKUP_DIR);
   mkdirSync(root, {recursive:true, mode:0o700});
   try { chmodSync(root, 0o700); } catch { /* Best effort on filesystems that ignore modes. */ }
-  const path = join(root, `${MIGRATION_BACKUP_FILE}${randomUUID()}.sqlite`);
+  const path = join(root, `${MIGRATION_BACKUP_PREFIX}${version}-${randomUUID()}.sqlite`);
   // VACUUM INTO must run outside the migration transaction; a failure aborts everything.
   db.prepare('VACUUM INTO ?').run(path);
   return path;
 }
+
+function addMissingV5Columns(db: DatabaseSync): void {
+  if (!tableExists(db, 'memory_records')) return;
+  const existing = columnNames(db, 'memory_records');
+  for (const column of MEMORY_V5_RECORD_COLUMNS) {
+    if (existing.has(column.name)) continue;
+    db.exec(`ALTER TABLE memory_records ADD COLUMN ${column.name} ${column.declaration}`);
+  }
+}
+
+/** Idempotently apply v4 only; used by ensureMemorySchema and by migration tests. */
+function ensureMemoryV4(db: DatabaseSync, hooks: MemoryMigrationHooks): {migrated:boolean; installProfile: MemoryInstallProfile; backupPath?:string} {
+  db.exec(MEMORY_V4_TABLE_DDL);
+  if (db.prepare('SELECT 1 FROM memory_migrations WHERE version=4').get()) {
+    return {migrated:false, installProfile: readMemoryInstallProfile(db) ?? detectMemoryInstallProfile(db)};
+  }
+  const installProfile = detectMemoryInstallProfile(db);
+  const backupPath = backupBefore(db, hooks.dataDir, 'v4');
+  const ownTransaction = !db.isTransaction;
+  if (ownTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    if (ownTransaction && db.prepare('SELECT 1 FROM memory_migrations WHERE version=4').get()) {
+      db.exec('ROLLBACK');
+      try { rmSync(backupPath, {force:true}); } catch { /* Another reader may hold the file; harmless. */ }
+      return {migrated:false, installProfile: readMemoryInstallProfile(db) ?? installProfile};
+    }
+    db.exec(MEMORY_V4_TABLE_DDL);
+    if (tableExists(db, 'memory_records')) {
+      addMissingColumns(db);
+      backfillRecords(db, hooks);
+      registerLegacySubjects(db, hooks);
+      isolateDuplicateActiveSubjects(db, hooks);
+      db.exec(MEMORY_RECORD_INDEX_DDL.join(';\n'));
+    }
+    writeInstallProfile(db, hooks, installProfile);
+    db.prepare('INSERT INTO memory_migrations(version,checksum,applied_at) VALUES(?,?,?)')
+      .run(4, hooks.digest(MEMORY_V4_MIGRATION_CHECKSUM_INPUT), hooks.now());
+    if (ownTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownTransaction && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the original failure. */ } }
+    throw error;
+  }
+  return {migrated:true, installProfile, backupPath};
+}
+
+/** Idempotently apply v5 only (pin/decay/consolidation columns, relations + consolidations tables). */
+function ensureMemoryV5(db: DatabaseSync, hooks: MemoryMigrationHooks): {migrated:boolean; backupPath?:string} {
+  db.exec(MEMORY_V5_TABLE_DDL);
+  addMissingV5Columns(db);
+  if (db.prepare('SELECT 1 FROM memory_migrations WHERE version=5').get()) return {migrated:false};
+  const backupPath = backupBefore(db, hooks.dataDir, 'v5');
+  const ownTransaction = !db.isTransaction;
+  if (ownTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    if (ownTransaction && db.prepare('SELECT 1 FROM memory_migrations WHERE version=5').get()) {
+      db.exec('ROLLBACK');
+      try { rmSync(backupPath, {force:true}); } catch { /* Another reader may hold the file; harmless. */ }
+      return {migrated:false};
+    }
+    db.exec(MEMORY_V5_TABLE_DDL);
+    addMissingV5Columns(db);
+    if (tableExists(db, 'memory_records')) db.exec(MEMORY_V5_RECORD_INDEX_DDL.join(';\n'));
+    db.prepare('INSERT INTO memory_migrations(version,checksum,applied_at) VALUES(?,?,?)')
+      .run(5, hooks.digest(MEMORY_V5_MIGRATION_CHECKSUM_INPUT), hooks.now());
+    if (ownTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownTransaction && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the original failure. */ } }
+    throw error;
+  }
+  return {migrated:true, backupPath};
+}
+
+/**
+ * Idempotently bring the database to the latest memory schema (currently v5).
+ *
+ * The caller must have created the v2/v3 base tables (index.ts does this before
+ * calling); on a completely empty database only the new tables and the install
+ * profile are created. Never runs v2/v3. v4 and v5 are separately backed up and
+ * applied transactionally, so a failure leaves the last committed version intact.
+ */
+export function ensureMemorySchema(db: DatabaseSync, hooks: MemoryMigrationHooks): MemorySchemaResult {
+  if (!hooks || typeof hooks.dataDir !== 'string' || !hooks.dataDir) throw new Error('内存迁移缺少数据目录');
+  if (typeof hooks.now !== 'function' || typeof hooks.digest !== 'function' || typeof hooks.semanticDigest !== 'function'
+    || typeof hooks.normalizeSubjectKey !== 'function' || typeof hooks.normalizeSubjectValue !== 'function' || typeof hooks.recordClaim !== 'function') {
+    throw new Error('内存迁移回调不完整');
+  }
+  const v4 = ensureMemoryV4(db, hooks);
+  const v5 = ensureMemoryV5(db, hooks);
+  return {
+    version: MEMORY_SCHEMA_VERSION,
+    migrated: v4.migrated || v5.migrated,
+    installProfile: v4.installProfile,
+    ...(v4.backupPath ? {backupPath: v4.backupPath, v4BackupPath: v4.backupPath} : {}),
+    ...(v5.backupPath ? {v5BackupPath: v5.backupPath} : {}),
+    migrations: {v4: v4.migrated, v5: v5.migrated},
+  };
+}
+
 
 function addMissingColumns(db: DatabaseSync): void {
   const existing = columnNames(db, 'memory_records');
@@ -395,45 +539,3 @@ function writeInstallProfile(db: DatabaseSync, hooks: MemoryMigrationHooks, prof
  * calling); on a completely empty database only the v4 tables and the install
  * profile are created. Never runs v2/v3.
  */
-export function ensureMemorySchema(db: DatabaseSync, hooks: MemoryMigrationHooks): MemoryV4Result {
-  if (!hooks || typeof hooks.dataDir !== 'string' || !hooks.dataDir) throw new Error('v4 迁移缺少数据目录');
-  if (typeof hooks.now !== 'function' || typeof hooks.digest !== 'function' || typeof hooks.semanticDigest !== 'function'
-    || typeof hooks.normalizeSubjectKey !== 'function' || typeof hooks.normalizeSubjectValue !== 'function' || typeof hooks.recordClaim !== 'function') {
-    throw new Error('v4 迁移回调不完整');
-  }
-  db.exec(MEMORY_V4_TABLE_DDL);
-  const alreadyMigrated = !!db.prepare('SELECT 1 FROM memory_migrations WHERE version=?').get(MEMORY_SCHEMA_VERSION);
-  if (alreadyMigrated) {
-    return {version: MEMORY_SCHEMA_VERSION, migrated: false, installProfile: readMemoryInstallProfile(db) ?? detectMemoryInstallProfile(db)};
-  }
-
-  const installProfile = detectMemoryInstallProfile(db);
-  const backupPath = backupBeforeV4(db, hooks.dataDir);
-  const ownTransaction = !db.isTransaction;
-  if (ownTransaction) db.exec('BEGIN IMMEDIATE');
-  try {
-    // A second process may have committed v4 between our first check and this write lock.
-    // In that case the backup we just took is redundant; drop it and report a no-op.
-    if (ownTransaction && db.prepare('SELECT 1 FROM memory_migrations WHERE version=?').get(MEMORY_SCHEMA_VERSION)) {
-      db.exec('ROLLBACK');
-      try { rmSync(backupPath, {force:true}); } catch { /* Another reader may hold the file; harmless. */ }
-      return {version: MEMORY_SCHEMA_VERSION, migrated: false, installProfile: readMemoryInstallProfile(db) ?? installProfile};
-    }
-    db.exec(MEMORY_V4_TABLE_DDL);
-    if (tableExists(db, 'memory_records')) {
-      addMissingColumns(db);
-      backfillRecords(db, hooks);
-      registerLegacySubjects(db, hooks);
-      isolateDuplicateActiveSubjects(db, hooks);
-      db.exec(MEMORY_RECORD_INDEX_DDL.join(';\n'));
-    }
-    writeInstallProfile(db, hooks, installProfile);
-    db.prepare('INSERT INTO memory_migrations(version,checksum,applied_at) VALUES(?,?,?)')
-      .run(MEMORY_SCHEMA_VERSION, hooks.digest(MEMORY_V4_MIGRATION_CHECKSUM_INPUT), hooks.now());
-    if (ownTransaction) db.exec('COMMIT');
-  } catch (error) {
-    if (ownTransaction && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the original failure. */ } }
-    throw error;
-  }
-  return {version: MEMORY_SCHEMA_VERSION, migrated: true, installProfile, backupPath};
-}

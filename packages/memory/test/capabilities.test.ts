@@ -27,7 +27,7 @@ test('weighted title/alias FTS, exact literals and explanations keep projects is
   assert.equal(f.c.search({query:'src/Expense.ts'},f.ctx)[0].id,target.id);
   assert.deepEqual(f.c.search({query:'报账新词'},f.ctx),[]);
   const explained=await f.c.dispatch('search.explain',{query:'费用报销'},f.ctx) as any;
-  assert.ok(explained.matches[0].fields.aliases.length);assert.equal(explained.ruleVersion,2);
+  assert.ok(explained.matches[0].fields.aliases.length);assert.equal(explained.ruleVersion,3);
   assert.deepEqual(f.c.search({query:'费用报销'},{...f.ctx,projectId:'another'}),[]);
   await assert.rejects(f.c.dispatch('search.explain',{queryId:explained.queryId},{...f.ctx,projectId:'another'}),{code:'PERMISSION_DENIED'});
   assert.equal((await f.c.dispatch('read',{id:target.id},f.ctx) as MemoryRecord).hash,digest(target.content));

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { MemoryController, memorySemanticDigest, type LearningJob, type MemoryRecord } from '../src/index.js';
 import {
   ensureMemorySchema, MEMORY_RECORD_COLUMNS, MEMORY_SCHEMA_TABLES, MEMORY_SCHEMA_VERSION, MEMORY_V4_MIGRATION_CHECKSUM_INPUT,
+  MEMORY_V5_MIGRATION_CHECKSUM_INPUT, MEMORY_V5_RECORD_COLUMNS, MEMORY_V5_TABLES,
   type MemoryMigrationHooks, type MemoryV4Result,
 } from '../src/schema.js';
 import {
@@ -115,6 +116,7 @@ function controllerFixture(dir: string) {
 function tempDir(prefix: string): string { return mkdtempSync(join(tmpdir(), `friend-pi-${prefix}-`)); }
 
 function v4(db: DatabaseSync): unknown { return db.prepare('SELECT 1 FROM memory_migrations WHERE version=4').get(); }
+function v5(db: DatabaseSync): unknown { return db.prepare('SELECT 1 FROM memory_migrations WHERE version=5').get(); }
 function columns(db: DatabaseSync, table = 'memory_records'): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[]).map(row => row.name);
 }
@@ -134,7 +136,7 @@ function openController(dir: string) {
 }
 
 // ---------------------------------------------------------------- §2.5 case 1
-test('v4 fresh install creates every table, column, index, migration row and a fresh install profile', () => {
+test('latest fresh install creates every v4+v5 table, column, index, migration row and a fresh install profile', () => {
   const dir = tempDir('migration-fresh');
   const db = new DatabaseSync(join(dir, 'plugins.sqlite'));
   try {
@@ -145,13 +147,19 @@ test('v4 fresh install creates every table, column, index, migration row and a f
     assert.equal(result.installProfile, 'fresh');
     assert.ok(result.backupPath && result.backupPath.startsWith(join(dir, 'memory-migration-backups', 'before-v4-')));
     assert.ok(v4(db));
+    assert.ok(v5(db));
+    assert.ok(result.v5BackupPath && result.v5BackupPath.startsWith(join(dir, 'memory-migration-backups', 'before-v5-')));
     const checksum = (db.prepare('SELECT checksum FROM memory_migrations WHERE version=4').get() as {checksum:string}).checksum;
     assert.equal(checksum, digest(MEMORY_V4_MIGRATION_CHECKSUM_INPUT));
+    const checksum5 = (db.prepare('SELECT checksum FROM memory_migrations WHERE version=5').get() as {checksum:string}).checksum;
+    assert.equal(checksum5, digest(MEMORY_V5_MIGRATION_CHECKSUM_INPUT));
 
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[]).map(row => row.name));
-    for (const table of ['memory_subjects','memory_conflicts','memory_conflict_sides','memory_policies','memory_autopublish_audit','memory_reviews']) assert.ok(tables.has(table), table);
+    for (const table of ['memory_subjects','memory_conflicts','memory_conflict_sides','memory_policies','memory_autopublish_audit','memory_reviews',...MEMORY_V5_TABLES]) assert.ok(tables.has(table), table);
     const present = new Set(columns(db));
     for (const column of MEMORY_RECORD_COLUMNS) assert.ok(present.has(column.name), column.name);
+    for (const column of MEMORY_V5_RECORD_COLUMNS) assert.ok(present.has(column.name), column.name);
+    for (const name of ['memory_records_pinned','memory_records_consolidation','memory_relations_from','memory_relations_to','memory_consolidations_project']) assert.notEqual(indexSql(db, name), '', name);
     for (const name of ['memory_records_subject_active','memory_records_single_subject','memory_records_kind_status','memory_records_last_used']) assert.notEqual(indexSql(db, name), '', name);
     assert.match(indexSql(db, 'memory_records_single_subject'), /UNIQUE/iu);
     assert.match(indexSql(db, 'memory_records_single_subject'), /status='active'/u);
@@ -165,9 +173,11 @@ test('v4 fresh install creates every table, column, index, migration row and a f
     const backupsBefore = backupFiles(dir).length;
     const second = ensureMemorySchema(db, hooks(dir));
     assert.equal(second.migrated, false);
+    assert.deepEqual(second.migrations, {v4:false, v5:false});
     assert.equal(second.installProfile, 'fresh');
     assert.equal(backupFiles(dir).length, backupsBefore);
     assert.equal(Number((db.prepare('SELECT COUNT(*) AS count FROM memory_migrations WHERE version=4').get() as {count:number}).count), 1);
+    assert.equal(Number((db.prepare('SELECT COUNT(*) AS count FROM memory_migrations WHERE version=5').get() as {count:number}).count), 1);
   } finally { db.close(); rmSync(dir, {recursive:true, force:true}); }
 });
 
@@ -198,8 +208,9 @@ test('opening a v3 database runs a backup-first transactional v4 migration and b
     assert.equal(result.installProfile, 'upgraded');
 
     const backups = backupFiles(dir);
-    assert.equal(backups.length, 1, 'only before-v4 backup: v2/v3 rows were already recorded');
-    assert.match(backups[0], /^before-v4-/u);
+    assert.equal(backups.length, 2, 'one before-v4 and one before-v5 backup for a v3 database');
+    assert.ok(backups.some(name => /^before-v4-/u.test(name)));
+    assert.ok(backups.some(name => /^before-v5-/u.test(name)));
     const backup = new DatabaseSync(join(dir, 'memory-migration-backups', backups[0]));
     try {
       assert.equal(Number((backup.prepare('SELECT COUNT(*) AS count FROM memory_records').get() as {count:number}).count), 7);
@@ -209,6 +220,7 @@ test('opening a v3 database runs a backup-first transactional v4 migration and b
     const db = new DatabaseSync(join(dir, 'plugins.sqlite'), {readOnly:true});
     try {
       assert.ok(v4(db));
+      assert.ok(v5(db));
       const profile = JSON.parse((db.prepare("SELECT json FROM documents WHERE namespace='memory' AND key='install-profile'").get() as {json:string}).json);
       assert.equal(profile.profile, 'upgraded');
       const rows = new Map((db.prepare('SELECT id,kind_v2,subject_key,subject_cardinality,trust,authority,lineage_root,semantic_digest FROM memory_records').all() as Record<string, unknown>[]).map(row => [String(row.id), row]));
@@ -240,7 +252,7 @@ test('reopening a migrated database is a no-op: no migration row, no new backup,
   const first = openController(dir);
   try { first.open(); } finally { await first.controller.dispose(); }
   const backupsAfterFirst = backupFiles(dir);
-  assert.equal(backupsAfterFirst.length, 1);
+  assert.equal(backupsAfterFirst.length, 2);
 
   const second = openController(dir);
   try {
@@ -248,8 +260,10 @@ test('reopening a migrated database is a no-op: no migration row, no new backup,
     const result = (second.controller as unknown as {schemaV4?:MemoryV4Result}).schemaV4;
     assert.ok(result);
     assert.equal(result.migrated, false);
+    assert.deepEqual(result.migrations, {v4:false, v5:false});
     assert.equal(result.installProfile, 'upgraded');
     assert.equal(result.backupPath, undefined);
+    assert.equal(result.v5BackupPath, undefined);
     assert.deepEqual(backupFiles(dir), backupsAfterFirst);
     const db = new DatabaseSync(join(dir, 'plugins.sqlite'), {readOnly:true});
     try {
@@ -333,7 +347,7 @@ test('several active rows for one single subject are deduped before the unique i
       } finally { db.close(); }
       const raw = new DatabaseSync(join(dir, 'plugins.sqlite'));
       try {
-        raw.function('friend_pi_writer_version', {deterministic:true}, () => 5);
+        raw.function('friend_pi_writer_version', {deterministic:true}, () => 6);
         const insert = raw.prepare("INSERT INTO memory_records(id,project_id,scope,status,enabled,revision,json,subject_key,subject_cardinality,auto_published) VALUES(?,?,?,?,?,?,?,?,?,?)");
         // Explicit user writes are user-authoritative and may coexist for one subject.
         assert.doesNotThrow(() => insert.run('explicit-dup', 'p', 'project', 'active', 1, 1, '{}', 'orders.database.engine', 'single', 0));
@@ -479,7 +493,7 @@ test('the migration backup directory is 0700, the backup opens, and the migrated
     assert.equal(mode & 0o077, 0, 'backup directory must not be group/other accessible');
     assert.equal(mode & 0o700, 0o700);
     const backups = backupFiles(dir);
-    assert.equal(backups.length, 1);
+    assert.equal(backups.length, 2);
     const backup = new DatabaseSync(join(dir, 'memory-migration-backups', backups[0]), {readOnly:true});
     try {
       assert.equal(Number((backup.prepare('SELECT COUNT(*) AS count FROM memory_records').get() as {count:number}).count), 1);
@@ -502,7 +516,7 @@ test('the migration backup directory is 0700, the backup opens, and the migrated
 });
 
 // ---------------------------------------------------------------- §2.5 case 7
-test('after migration an old writer can read but its writes fail, while a version-5 writer still writes', async () => {
+test('after migration an old writer can read but its writes fail, while a version-6 writer still writes', async () => {
   const dir = createV3(tempDir('migration-fence'), {records:[v3Record({id:'fact', content:'围栏事实', status:'active'})]});
   const {controller, ctx, cleanup} = openController(dir);
   try { controller.snapshot(ctx); } finally { await controller.dispose(); }
@@ -516,7 +530,7 @@ test('after migration an old writer can read but its writes fail, while a versio
   } finally { old.close(); }
   const next = new DatabaseSync(join(dir, 'plugins.sqlite'));
   try {
-    next.function('friend_pi_writer_version', {deterministic:true}, () => 5);
+    next.function('friend_pi_writer_version', {deterministic:true}, () => 6);
     assert.doesNotThrow(() => next.prepare('UPDATE memory_records SET json=json WHERE id=?').run('fact'));
     assert.doesNotThrow(() => next.prepare("INSERT INTO memory_records(id,project_id,scope,status,enabled,revision,json) VALUES('new-writer','p','project','candidate',1,1,'{}')").run());
   } finally { next.close(); }
@@ -554,10 +568,12 @@ test('the migration does not rewrite user-visible record json unless it isolates
 });
 
 // ---------------------------------------------------------------- coverage guard
-test('MEMORY_SCHEMA_TABLES covers every v4 table plus the legacy memory tables guarded by the writer fence', () => {
-  const expected = ['memory_records','memory_versions','memory_jobs','memory_suppression','memory_usage','memory_evidence','memory_dependencies','memory_operations','memory_projection_outbox','memory_migrations','memory_events','memory_queries','memory_subjects','memory_conflicts','memory_conflict_sides','memory_policies','memory_autopublish_audit','memory_reviews'];
+test('MEMORY_SCHEMA_TABLES covers every v4+v5 table plus the legacy memory tables guarded by the writer fence', () => {
+  const expected = ['memory_records','memory_versions','memory_jobs','memory_suppression','memory_usage','memory_evidence','memory_dependencies','memory_operations','memory_projection_outbox','memory_migrations','memory_events','memory_queries','memory_subjects','memory_conflicts','memory_conflict_sides','memory_policies','memory_autopublish_audit','memory_reviews',...MEMORY_V5_TABLES];
   assert.deepEqual([...MEMORY_SCHEMA_TABLES].sort(), [...expected].sort());
-  assert.equal(MEMORY_SCHEMA_VERSION, 4);
+  assert.equal(MEMORY_SCHEMA_VERSION, 5);
   assert.equal(MEMORY_RECORD_COLUMNS.length, 17);
   assert.equal(new Set(MEMORY_RECORD_COLUMNS.map(column => column.name)).size, 17);
+  assert.equal(MEMORY_V5_RECORD_COLUMNS.length, 5);
+  assert.equal(new Set(MEMORY_V5_RECORD_COLUMNS.map(column => column.name)).size, 5);
 });
