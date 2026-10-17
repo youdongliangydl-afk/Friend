@@ -1,7 +1,6 @@
-import {existsSync,readFileSync} from 'node:fs';
 import {projectCodeVersion} from './code-version.js';
 import {randomUUID} from 'node:crypto';
-import {CapabilityError,SourcePolicy,type CheckRef,RecordStore,digest,object,text,isSessionDeleted,type JsonObject,type PluginContext,type ExecutionMode} from './index.js';
+import {CapabilityError,SourcePolicy,type CheckRef,RecordStore,digest,object,text,type JsonObject,type PluginContext,type ExecutionMode} from './index.js';
 
 const now=()=>new Date().toISOString();
 export interface AcceptanceCheck {command:string;args:string[]}
@@ -14,12 +13,13 @@ export interface TaskRecord {
 }
 export interface GoalRecord {
  id:string;projectId:string;sessionId:string;origin:'user'|'agent';sourceRunId?:string;objective:string;
- mode:ExecutionMode;status:'active'|'waiting'|'verifying'|'completed'|'paused'|'blocked'|'stopped';
- revision:number;progress:string;nextAction:string;waitFor?:string;tokenBudget?:number;tokens:number;
+ mode:ExecutionMode;status:'active'|'paused'|'blocked'|'usage_limited'|'complete';
+ schemaVersion?:number;revision:number;progress:string;nextAction:string;waitFor?:string;tokens:number;
+ timeUsedSeconds?:number;activeSince?:string;legacyStatus?:string;completionHistory?:unknown[];
  usageAvailable:boolean;safeCheckpoint:boolean;checkpointRevision?:number;generation:number;
  modelId?:string;thinkingLevel?:string;createdAt:string;updatedAt:string;error?:string;audit?:unknown;writeObserved?:boolean;writeEpoch?:number;acceptance?:{binding:string;taskVersion:string;codeVersion:string;goalVersion:string;requestedAt:string};cachedAudit?:{binding:string;result:{approved:boolean;findings:string;[key:string]:unknown};sourceHash:string};
 }
-export interface WakeFrame {id:string;generation:number;runId?:string;goalId?:string;message:string;createdAt:string}
+export interface WakeFrame {id:string;generation:number;runId?:string;goalId?:string;goalRevision?:number;message:string;createdAt:string}
 
 /** Durable delivery admission; a stop invalidates all previously captured wake frames. */
 export class ContinuationCoordinator {
@@ -27,10 +27,10 @@ export class ContinuationCoordinator {
  constructor(readonly sessionId:string,dataDir?:string){this.store=new RecordStore('runtime-wake',dataDir);}
  generation(){return this.store.get<number>(`generation:${this.sessionId}`)?.value||0;}
  invalidate(){const next=this.generation()+1;this.store.put(`generation:${this.sessionId}`,next);for(const row of this.store.list<WakeFrame>(`queue:${this.sessionId}:`))this.store.remove(row.key);return next;}
- enqueue(id:string,message:string,options:{generation?:number;runId?:string;goalId?:string}={}){
+ enqueue(id:string,message:string,options:{generation?:number;runId?:string;goalId?:string;goalRevision?:number}={}){
   const generation=options.generation??this.generation();if(generation!==this.generation())return false;
   const seen=`seen:${this.sessionId}:${id}`;if(this.store.get(seen))return false;
-  this.store.transaction(()=>{this.store.put(seen,{generation,at:now()},null);this.store.put(`queue:${this.sessionId}:${id}`,{id,generation,runId:options.runId,goalId:options.goalId,message,createdAt:now()} satisfies WakeFrame,null);});return true;
+  this.store.transaction(()=>{this.store.put(seen,{generation,at:now()},null);this.store.put(`queue:${this.sessionId}:${id}`,{id,generation,runId:options.runId,goalId:options.goalId,goalRevision:options.goalRevision,message,createdAt:now()} satisfies WakeFrame,null);});return true;
  }
  take(eligible:(frame:WakeFrame)=>boolean){
   const pending=this.store.list<WakeFrame>(`queue:${this.sessionId}:`).sort((a,b)=>a.value.createdAt.localeCompare(b.value.createdAt));
@@ -43,6 +43,7 @@ export class ContinuationCoordinator {
   if(frame.generation!==this.generation()||!this.store.get(`seen:${this.sessionId}:${frame.id}`)||this.store.get(key))return false;
   this.store.put(key,frame,null);return true;
  }
+ cancelGoal(goalId:string){for(const row of this.store.list<WakeFrame>(`queue:${this.sessionId}:`))if(row.value.goalId===goalId)this.store.remove(row.key);}
  pending(){return this.store.list<WakeFrame>(`queue:${this.sessionId}:`).map(row=>row.value);}
  dispose(){this.store.close();}
 }
@@ -125,58 +126,112 @@ export class TaskLedger {
 /** Goals store business progress; all execution is performed by the host's Pi session. */
 export class GoalLedger {
  readonly store:RecordStore;
+ // Only time observed by this live ledger is chargeable. Persisted wall clocks
+ // never count time while the host was offline.
+ private readonly loaded=new Set<string>();
  constructor(dataDir?:string){this.store=new RecordStore('goal-journal',dataDir);}
  private key(ctx:PluginContext,id:string){return `goal:${ctx.projectId}:${id}`;}
- list(ctx:PluginContext){return this.store.list<GoalRecord>(`goal:${ctx.projectId}:`).map(row=>row.value);}
- current(ctx:PluginContext){const id=this.store.get<string>(`focus:${ctx.sessionId}`)?.value;const goal=id?this.read(id,ctx):undefined;return goal?.sessionId===ctx.sessionId?goal:undefined;}
- read(id:string,ctx:PluginContext){const row=this.store.get<GoalRecord>(this.key(ctx,id));if(!row)throw new Error('目标不属于当前项目');return row.value;}
- private put(goal:GoalRecord,ctx:PluginContext){goal={...goal,revision:goal.revision+1,updatedAt:now()};this.store.put(this.key(ctx,goal.id),goal);this.store.afterCommit(()=>{ctx.emit('goal.changed',goal);ctx.appendEntry('friend-pi.goal.receipt',{goalId:goal.id,revision:goal.revision,status:goal.status,generation:goal.generation});});return goal;}
- create(input:JsonObject,ctx:PluginContext,generation:number){
-  if(ctx.origin!=='user'&&(!ctx.runId||ctx.policy?.planMode))throw new Error('Agent 只能在已授权执行任务内设定目标');
-  const prior=this.current(ctx);if(prior&&['active','waiting','verifying'].includes(prior.status))throw new Error('当前会话已有运行目标，请先处理或暂停');
-  const tokenBudget=input.tokenBudget===undefined?undefined:Number(input.tokenBudget);if(tokenBudget!==undefined&&(!Number.isSafeInteger(tokenBudget)||tokenBudget<1))throw new Error('令牌预算必须是正整数');
-  const goal:GoalRecord={id:randomUUID(),projectId:ctx.projectId,sessionId:ctx.sessionId,origin:ctx.origin==='user'?'user':'agent',sourceRunId:ctx.runId,objective:text(input.objective,'目标',32000),mode:ctx.executionMode||'single',status:ctx.policy?.planMode?'paused':'active',revision:0,progress:'',nextAction:typeof input.nextAction==='string'?text(input.nextAction):text(input.objective),tokenBudget,tokens:0,usageAvailable:true,safeCheckpoint:false,generation,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,createdAt:now(),updatedAt:now()};
-  this.store.put(`focus:${ctx.sessionId}`,goal.id);return this.put(goal,ctx);
+ private focusKey(ctx:PluginContext){return `focus:${ctx.sessionId}`;}
+ private completedKey(ctx:PluginContext){return `last-completed:${ctx.projectId}:${ctx.sessionId}`;}
+ list(ctx:PluginContext){return this.store.list<GoalRecord>(`goal:${ctx.projectId}:`).filter(row=>row.value.sessionId===ctx.sessionId).map(row=>this.read(row.value.id,ctx));}
+ current(ctx:PluginContext){
+  const id=this.store.get<string>(this.focusKey(ctx))?.value;if(!id)return;
+  const raw=this.store.get<GoalRecord>(this.key(ctx,id))?.value;
+  // A stale project/session pointer must not expose another session's goal.
+  if(!raw||raw.sessionId!==ctx.sessionId)return;
+  const goal=this.read(id,ctx);return goal.status==='complete'?undefined:goal;
+ }
+ getLastCompleted(ctx:PluginContext){const id=this.store.get<string>(this.completedKey(ctx))?.value;if(!id)return;const goal=this.read(id,ctx);return goal.status==='complete'?goal:undefined;}
+ read(id:string,ctx:PluginContext):GoalRecord {
+  return this.store.transaction(()=>{
+   const row=this.store.get<GoalRecord>(this.key(ctx,id));if(!row||row.value.sessionId!==ctx.sessionId)throw new Error('目标与步骤由原会话持有，请在原会话查看或接续');
+   let goal=row.value;const oldStatus=String(goal.status),first=!this.loaded.has(this.key(ctx,id));
+   const status:GoalRecord['status']=oldStatus==='completed'?'complete':oldStatus==='stopped'||oldStatus==='verifying'||oldStatus==='waiting'&&(!goal.waitFor?.trim()||goal.waitFor==='user-acceptance')?'paused':oldStatus==='waiting'?'active':goal.status;
+   if(goal.schemaVersion!==2||status!==oldStatus||goal.timeUsedSeconds===undefined||first&&goal.activeSince!==undefined){
+    goal={...goal,schemaVersion:2,status,timeUsedSeconds:Number.isFinite(goal.timeUsedSeconds)?Math.max(0,goal.timeUsedSeconds!):0,...(status!==oldStatus?{legacyStatus:oldStatus}:{}),...(first||goal.schemaVersion!==2||status!==oldStatus||status!=='active'?{activeSince:undefined}:{})};
+    this.store.put(this.key(ctx,id),goal); // Preserve evidence and logical revision during format migration.
+   }
+   this.loaded.add(this.key(ctx,id));
+   if(goal.status==='complete'){
+    const previousId=this.store.get<string>(this.completedKey(ctx))?.value,previous=previousId?this.store.get<GoalRecord>(this.key(ctx,previousId))?.value:undefined;
+    if(!previous||previous.updatedAt<=goal.updatedAt)this.store.put(this.completedKey(ctx),goal.id);
+    if(this.store.get<string>(this.focusKey(ctx))?.value===goal.id)this.store.remove(this.focusKey(ctx));
+   }
+   return goal;
+  });
+ }
+ private cas(input:JsonObject,goal:GoalRecord|undefined){if(input.goalId!==undefined&&input.goalId!==goal?.id||input.expectedRevision!==undefined&&input.expectedRevision!==goal?.revision)throw new CapabilityError('VERSION_CONFLICT','目标或版本已变化，请刷新后重试');}
+ private put(goal:GoalRecord,ctx:PluginContext){
+  const timestamp=now(),previous=this.store.get<GoalRecord>(this.key(ctx,goal.id))?.value;
+  const elapsed=previous?.status==='active'&&previous.activeSince&&this.loaded.has(this.key(ctx,goal.id))?Math.max(0,(Date.parse(timestamp)-Date.parse(previous.activeSince))/1000):0;
+  goal={...goal,schemaVersion:2,timeUsedSeconds:(previous?.timeUsedSeconds??goal.timeUsedSeconds??0)+(Number.isFinite(elapsed)?elapsed:0),activeSince:goal.status==='active'?timestamp:undefined,revision:goal.revision+1,updatedAt:timestamp};
+  this.loaded.add(this.key(ctx,goal.id));this.store.put(this.key(ctx,goal.id),goal);
+  if(goal.status==='complete'){this.store.put(this.completedKey(ctx),goal.id);if(this.store.get<string>(this.focusKey(ctx))?.value===goal.id)this.store.remove(this.focusKey(ctx));}
+  this.store.afterCommit(()=>{ctx.emit('goal.changed',goal);ctx.appendEntry('friend-pi.goal.receipt',{goalId:goal.id,revision:goal.revision,status:goal.status,generation:goal.generation});});return goal;
+ }
+ create(input:JsonObject,ctx:PluginContext,generation:number):GoalRecord {
+  return this.store.transaction(()=>{
+   if(ctx.origin!=='user'&&input.userRequested!==true)throw new CapabilityError('PERMISSION_DENIED','只有用户明确请求才能创建长期目标');
+   const prior=this.current(ctx);this.cas(input,prior);if(prior)throw new Error('当前会话已有未完成目标；替换需要用户明确确认');
+   const objective=text(input.objective,'目标',4000),status=ctx.policy?.planMode?'paused':'active';
+   const goal:GoalRecord={id:randomUUID(),projectId:ctx.projectId,sessionId:ctx.sessionId,origin:ctx.origin==='user'?'user':'agent',sourceRunId:ctx.runId,objective,mode:ctx.executionMode||'single',status,revision:0,progress:'',nextAction:typeof input.nextAction==='string'?text(input.nextAction):objective,tokens:0,usageAvailable:true,timeUsedSeconds:0,safeCheckpoint:false,generation,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,createdAt:now(),updatedAt:now()};
+   this.store.put(this.focusKey(ctx),goal.id);return this.put(goal,ctx);
+  });
+ }
+ set(input:JsonObject,ctx:PluginContext,generation:number):GoalRecord {
+  if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','只有用户可以设置目标或修改目标状态');
+  return this.store.transaction(()=>{
+   const goal=this.current(ctx);this.cas(input,goal);
+   if(input.status!==undefined&&input.status!=='active'&&input.status!=='paused')throw new Error('设置目标仅支持 active 或 paused');
+   const objective=input.objective===undefined?goal?.objective:text(input.objective,'目标',4000);
+   if(!goal||input.replace===true){
+    // Validate before clearing so rejected replacements preserve the current focus.
+    text(objective,'目标',4000);if(goal)this.clear(ctx,{goalId:goal.id,expectedRevision:goal.revision});
+    const created=this.create({...input,objective,goalId:undefined,expectedRevision:undefined},ctx,generation);
+    return input.status==='paused'&&created.status!=='paused'?this.put({...created,status:'paused'},ctx):created;
+   }
+   return this.put({...goal,objective:objective!,nextAction:input.objective===undefined?goal.nextAction:objective!,status:ctx.policy?.planMode?'paused':input.status==='paused'?'paused':input.status==='active'?'active':goal.status,generation,safeCheckpoint:false,error:undefined},ctx);
+  });
+ }
+ clear(ctx:PluginContext,input:JsonObject={}){
+  if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','只有用户可以清除当前目标');
+  return this.store.transaction(()=>{const goal=this.current(ctx);this.cas(input,goal);if(!goal)return;const saved=this.put({...goal,status:goal.status==='active'?'paused':goal.status,safeCheckpoint:false},ctx);this.store.remove(this.focusKey(ctx));return saved;});
  }
  update(input:JsonObject,ctx:PluginContext){
-  const goal=input.goalId?this.read(text(input.goalId),ctx):this.current(ctx);if(!goal||goal.sessionId!==ctx.sessionId)throw new Error('没有当前会话目标');
-  if(input.objective!==undefined||input.tokenBudget!==undefined){if(ctx.origin!=='user')throw new Error('Agent 不能扩大目标或增加预算');}
-  if(input.objective!==undefined){const budget=input.tokenBudget===undefined?goal.tokenBudget:Number(input.tokenBudget);if(budget!==undefined&&(!Number.isSafeInteger(budget)||budget<1))throw new Error('令牌预算必须是正整数');return this.put({...goal,objective:text(input.objective),tokenBudget:budget,nextAction:text(input.objective),safeCheckpoint:false,status:'paused'},ctx);}
-  if(input.tokenBudget!==undefined){const budget=Number(input.tokenBudget);if(!Number.isSafeInteger(budget)||budget<1)throw new Error('令牌预算必须是正整数');return this.put({...goal,tokenBudget:budget,status:goal.tokens>=budget?'paused':goal.status,error:goal.tokens>=budget?'目标预算已经耗尽':goal.error},ctx);}
-  if(['completed','stopped'].includes(goal.status))throw new Error('目标已结束');
-  const continuation=input.continuation?object(input.continuation):undefined;
-  const waiting=continuation?.kind==='wait';const nextAction=typeof input.nextAction==='string'?text(input.nextAction):typeof continuation?.nextAction==='string'?text(continuation.nextAction):goal.nextAction;
-  return this.put({...goal,progress:typeof input.progress==='string'?text(input.progress):goal.progress,nextAction,status:waiting?'waiting':goal.status==='waiting'?'active':goal.status,waitFor:waiting?text(continuation?.taskId,'等待对象'):undefined,safeCheckpoint:false},ctx);
+  return this.store.transaction(()=>{
+   const goal=this.current(ctx);this.cas(input,goal);if(!goal)throw new Error('没有当前会话目标');
+   if(input.objective!==undefined||input.status!==undefined)return this.set(input,ctx,goal.generation);
+   const continuation=input.continuation?object(input.continuation):undefined,waiting=continuation?.kind==='wait';
+   const nextAction=typeof input.nextAction==='string'?text(input.nextAction):typeof continuation?.nextAction==='string'?text(continuation.nextAction):goal.nextAction;
+   return this.put({...goal,progress:typeof input.progress==='string'?text(input.progress):goal.progress,nextAction,waitFor:waiting?text(continuation?.taskId,'等待对象'):undefined,safeCheckpoint:false},ctx);
+  });
  }
- deliveryFailure(ctx:PluginContext,receipt:JsonObject,generation:number){const goal=this.current(ctx);if(!goal||goal.sourceRunId!==receipt.runId||goal.generation!==generation||['paused','stopped'].includes(goal.status))return;return this.put({...goal,status:'blocked',error:`角色交付未通过：${String(receipt.error)}`,safeCheckpoint:false,audit:{objectiveAudit:goal.audit,delivery:receipt}},ctx);}
- setState(status:GoalRecord['status'],ctx:PluginContext,error?:string){const goal=this.current(ctx);if(!goal||['completed','stopped'].includes(goal.status))return;return this.put({...goal,status,error,safeCheckpoint:false},ctx);}
- checkpoint(ctx:PluginContext,safe:boolean){const goal=this.current(ctx);if(goal?.waitFor==='user-acceptance')return goal;if(!goal||!['active','waiting'].includes(goal.status))return;return this.put({...goal,safeCheckpoint:safe,checkpointRevision:goal.revision+1},ctx);}
- admit(ctx:PluginContext){const goal=this.current(ctx);if(!goal||!['active','waiting'].includes(goal.status))return;return this.put({...goal,safeCheckpoint:false},ctx);}
- noteWrite(ctx:PluginContext,eventId?:string){const goal=this.current(ctx);if(!goal||!['active','waiting','verifying'].includes(goal.status))return;const key=eventId?`write:${goal.id}:${eventId}`:undefined;if(key&&this.store.get(key))return goal;if(key)this.store.put(key,true,null);return this.put({...goal,writeObserved:true,writeEpoch:(goal.writeEpoch||0)+1,safeCheckpoint:false},ctx);}
- account(ctx:PluginContext,tokens:number|undefined,goalId?:string){const goal=goalId?this.read(goalId,ctx):this.current(ctx);if(!goal)return;const next=this.put({...goal,tokens:goal.tokens+(tokens||0),usageAvailable:goal.usageAvailable&&tokens!==undefined},ctx);if(!['completed','stopped'].includes(next.status)&&this.current(ctx)?.id===next.id&&next.tokenBudget!==undefined&&(!next.usageAvailable||next.tokens>=next.tokenBudget))return this.setState('paused',ctx,'目标令牌预算耗尽或使用量不可核实');return next;}
-
+ deliveryFailure(ctx:PluginContext,receipt:JsonObject,generation:number){const goal=this.current(ctx);if(!goal||goal.sourceRunId!==receipt.runId||goal.generation!==generation||goal.status==='paused')return;return this.put({...goal,status:'blocked',error:`角色交付未通过：${String(receipt.error)}`,safeCheckpoint:false,audit:{objectiveAudit:goal.audit,delivery:receipt}},ctx);}
+ setState(status:GoalRecord['status']|'stopped'|'waiting'|'verifying'|'completed',ctx:PluginContext,error?:string,input:JsonObject={}){
+  return this.store.transaction(()=>{const goal=this.current(ctx);this.cas(input,goal);if(!goal)return;if(status==='complete'||status==='completed')throw new Error('请记录完成说明并调用 finish');const canonical=status==='stopped'||status==='verifying'?'paused':status==='waiting'?'active':status;return this.put({...goal,status:canonical,error,safeCheckpoint:false},ctx);});
+ }
+ checkpoint(ctx:PluginContext,safe:boolean){const goal=this.current(ctx);if(goal?.status!=='active')return;return this.put({...goal,safeCheckpoint:safe,checkpointRevision:goal.revision+1},ctx);}
+ admit(ctx:PluginContext){const goal=this.current(ctx);if(goal?.status!=='active')return;return this.put({...goal,safeCheckpoint:false},ctx);}
+ noteWrite(ctx:PluginContext,eventId?:string){const goal=this.current(ctx);if(goal?.status!=='active')return;const key=eventId?`write:${goal.id}:${eventId}`:undefined;if(key&&this.store.get(key))return goal;if(key)this.store.put(key,true,null);return this.put({...goal,writeObserved:true,writeEpoch:(goal.writeEpoch||0)+1,safeCheckpoint:false},ctx);}
+ account(ctx:PluginContext,tokens:number|undefined,goalId?:string){return this.store.transaction(()=>{const goal=goalId?this.read(goalId,ctx):this.current(ctx);if(!goal)return;const available=tokens!==undefined&&Number.isFinite(tokens)&&tokens>=0;return this.put({...goal,tokens:goal.tokens+(available?tokens:0),usageAvailable:goal.usageAvailable&&available},ctx);});}
  resume(input:JsonObject,ctx:PluginContext,generation:number){
-  if(ctx.origin!=='user')throw new Error('暂停或阻塞后的接续必须由用户执行');const goal=input.goalId?this.read(text(input.goalId),ctx):this.current(ctx);if(!goal||goal.status==='completed')throw new Error('目标不可接续');
-  if(ctx.executionMode&&ctx.executionMode!==goal.mode)throw new Error('目标沿用原执行模式；切回原模式接续，或为新模式创建新目标');
-  if(goal.sessionId!==ctx.sessionId)throw new Error('目标与步骤由原会话持有，请在原会话接续');
-  if(goal.tokenBudget!==undefined&&goal.tokens>=goal.tokenBudget&&input.tokenBudget===undefined)throw new Error('预算耗尽，请明确增加预算');
-  const budget=input.tokenBudget===undefined?goal.tokenBudget:Number(input.tokenBudget);if(budget!==undefined&&(!Number.isSafeInteger(budget)||budget<=goal.tokens))throw new Error('预算须高于已使用令牌');
-  if(goal.sessionId!==ctx.sessionId&&this.store.get<string>(`focus:${goal.sessionId}`)?.value===goal.id)this.store.remove(`focus:${goal.sessionId}`);
-  const revalidate=goal.waitFor==='user-acceptance';
-  this.store.put(`focus:${ctx.sessionId}`,goal.id);return this.put({...goal,sessionId:ctx.sessionId,mode:ctx.executionMode||goal.mode,generation,status:'active',tokenBudget:budget,safeCheckpoint:false,error:undefined,waitFor:undefined,acceptance:undefined,...(revalidate?{writeEpoch:(goal.writeEpoch||0)+1,cachedAudit:undefined}: {})},ctx);
+  if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','暂停或阻塞后的接续必须由用户执行');
+  return this.store.transaction(()=>{
+   const current=this.current(ctx),goal=input.goalId?this.read(text(input.goalId),ctx):current;
+   if(!goal||goal.status==='complete')throw new Error('目标不可接续');this.cas(input,goal);
+   if(current&&current.id!==goal.id)throw new CapabilityError('VERSION_CONFLICT','当前会话已有其他目标');
+   this.store.put(this.focusKey(ctx),goal.id);return this.put({...goal,mode:ctx.executionMode||goal.mode,modelId:ctx.modelId??goal.modelId,thinkingLevel:ctx.thinkingLevel??goal.thinkingLevel,sourceRunId:ctx.runId,generation,status:ctx.policy?.planMode?'paused':'active',safeCheckpoint:false,error:undefined,waitFor:undefined},ctx);
+  });
  }
- restore(ctx:PluginContext,generation:number,safeObjects:boolean){const goal=this.current(ctx);if(goal?.waitFor==='user-acceptance')return false;if(!goal||!['active','waiting'].includes(goal.status))return false;if(!goal.safeCheckpoint||!safeObjects||goal.mode!==(ctx.executionMode||'single')){this.put({...goal,status:'paused',error:'检查点或执行现场未确认安全，未自动重放'},ctx);return false;}this.put({...goal,generation},ctx);return true;}
- async finish(ctx:PluginContext,tasks:TaskLedger,audit:(goal:GoalRecord)=>Promise<{approved:boolean;findings:string;[key:string]:unknown}>,safeObjects:boolean){
-  const goal=this.current(ctx);if(!goal||goal.sessionId!==ctx.sessionId)throw new Error('没有当前目标');if(!['active','waiting'].includes(goal.status))throw new Error('目标需先显式接续，停止或暂停后不能完成');if(!safeObjects)throw new Error('执行对象尚未收敛，不能完成目标');tasks.assertComplete(goal.id,ctx);
-  if(goal.writeObserved&&!tasks.list(ctx,goal.id).some(task=>task.status==='completed'&&(task.verificationWriteEpoch||0)>=(goal.writeEpoch||0)&&task.evidence.length&&task.evidence.every(item=>item.exitCode===0)&&task.verificationCodeVersion===projectCodeVersion(ctx.projectDir,ctx.dataDir)))throw new Error('目标写入或成果已变化，需记录当前成果实际通过的客观检查步骤');
-  if(!goal.progress.trim())throw new Error('先记录实际成果和完成证据');
-  this.put({...goal,status:'verifying',safeCheckpoint:false},ctx);const goalVersion=digest({objective:goal.objective,progress:goal.progress,nextAction:goal.nextAction,mode:goal.mode,modelId:goal.modelId,writeEpoch:goal.writeEpoch}),taskVersion=digest(tasks.list(ctx,goal.id)),codeVersion=projectCodeVersion(ctx.projectDir,ctx.dataDir);
-  const binding=digest([goalVersion,taskVersion,codeVersion]);let cacheValid=false;try{const source=object(goal.cachedAudit?.result.source);cacheValid=goal.cachedAudit?.binding===binding&&goal.cachedAudit.result.independent===true&&typeof source.sessionFile==='string'&&typeof source.sessionId==='string'&&!isSessionDeleted(ctx.dataDir,source.sessionId)&&existsSync(source.sessionFile)&&digest(readFileSync(source.sessionFile))===goal.cachedAudit.sourceHash;}catch{}
-  if(goal.mode==='single'&&goal.writeObserved){const current=this.read(goal.id,ctx);return this.put({...current,status:'waiting',waitFor:'user-acceptance',safeCheckpoint:false,audit:{approved:false,independent:false,needsUserAcceptance:true,findings:'客观检查已通过，Single 写入成果等待用户验收'},acceptance:{binding,taskVersion,codeVersion,goalVersion,requestedAt:now()},error:'请在任务面板检查成果并确认验收，或切换协作模式进行独立复核'},ctx);}
-  try {const result=goal.mode==='single'?{approved:true,findings:'Single：主 Agent 完成说明及已记录客观检查；无独立审核'}:cacheValid?{...goal.cachedAudit!.result,reused:true}:await audit(goal);const current=this.read(goal.id,ctx);if(this.current(ctx)?.id!==goal.id||current.status!=='verifying'||current.generation!==goal.generation||current.writeEpoch!==goal.writeEpoch||digest({objective:current.objective,progress:current.progress,nextAction:current.nextAction,mode:current.mode,modelId:current.modelId,writeEpoch:current.writeEpoch})!==goalVersion||digest(tasks.list(ctx,goal.id))!==taskVersion||projectCodeVersion(ctx.projectDir,ctx.dataDir)!==codeVersion)throw new Error('审核期间目标或执行代次变化，迟到结果未采用');let cachedAudit=current.cachedAudit;try{const source=object((result as JsonObject).source);if(result.approved&&(result as JsonObject).independent===true&&typeof source.sessionFile==='string')cachedAudit={binding,result,sourceHash:digest(readFileSync(source.sessionFile))};}catch{}return this.put({...current,cachedAudit,status:result.approved?'completed':'blocked',audit:result,error:result.approved?undefined:result.findings,safeCheckpoint:result.approved},ctx);}catch(error){const current=this.current(ctx);if(current?.id===goal.id&&current.status==='verifying')this.setState('blocked',ctx,String(error));throw error;}
+ bindRun(ctx:PluginContext){const goal=this.current(ctx);if(goal?.status!=='active')return goal;return this.put({...goal,sourceRunId:ctx.runId,mode:ctx.executionMode||goal.mode,modelId:ctx.modelId??goal.modelId,thinkingLevel:ctx.thinkingLevel??goal.thinkingLevel,safeCheckpoint:false},ctx);}
+ restore(ctx:PluginContext,generation:number,safeObjects:boolean){const goal=this.current(ctx);if(goal?.status!=='active')return false;if(!goal.safeCheckpoint||!safeObjects||ctx.policy?.planMode){this.put({...goal,status:'paused',error:'检查点或执行现场未确认安全，未自动重放'},ctx);return false;}this.put({...goal,generation,mode:ctx.executionMode||goal.mode},ctx);return true;}
+ async finish(ctx:PluginContext,_tasks:TaskLedger,_audit:(goal:GoalRecord)=>Promise<{approved:boolean;findings:string;[key:string]:unknown}>,safeObjects:boolean,input:JsonObject={}){
+  return this.store.transaction(()=>{
+   const goal=this.current(ctx);this.cas(input,goal);if(!goal)throw new Error('没有当前目标');if(goal.status!=='active')throw new Error('目标需先显式接续，停止或暂停后不能完成');if(!safeObjects)throw new Error('执行对象尚未收敛，不能完成目标');
+   const provided=input.completionSummary??input.summary??input.progress;const summary=provided!==undefined?text(provided,'实际成果和完成说明',32000):goal.progress.trim()||'主 Agent 声明目标已完成；依据保留在 Pi 原生会话中';
+   return this.put({...goal,status:'complete',progress:summary,waitFor:undefined,safeCheckpoint:true,error:undefined,completionHistory:goal.audit===undefined?goal.completionHistory:[...(goal.completionHistory||[]),goal.audit],audit:{approved:true,independent:false,kind:'agent-completion',judgedBy:'main-agent',findings:summary,at:now(),goalRevision:goal.revision}},ctx);
+  });
  }
- accept(input:JsonObject,ctx:PluginContext,tasks:TaskLedger,safe:boolean){
-  if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','Single 写入成果只能由用户确认验收');const goal=this.current(ctx);if(!goal||goal.mode!=='single'||goal.status!=='waiting'||goal.waitFor!=='user-acceptance'||!goal.acceptance||!safe)throw new CapabilityError('VERSION_CONFLICT','当前成果不在可验收状态');if(input.goalId!==goal.id||input.expectedRevision!==goal.revision||input.candidateDigest!==goal.acceptance.binding)throw new CapabilityError('VERSION_CONFLICT','验收候选或目标版本已变化');tasks.assertComplete(goal.id,ctx);const goalVersion=digest({objective:goal.objective,progress:goal.progress,nextAction:goal.nextAction,mode:goal.mode,modelId:goal.modelId,writeEpoch:goal.writeEpoch});if(goalVersion!==goal.acceptance.goalVersion||digest(tasks.list(ctx,goal.id))!==goal.acceptance.taskVersion||projectCodeVersion(ctx.projectDir,ctx.dataDir)!==goal.acceptance.codeVersion)throw new CapabilityError('VERSION_CONFLICT','成果或检查已变化，请重新验证');return this.put({...goal,status:'completed',waitFor:undefined,safeCheckpoint:true,error:undefined,audit:{approved:true,independent:false,kind:'user-acceptance',candidateDigest:goal.acceptance.binding,at:now()}},ctx);
- }
- dispose(){this.store.close();}
+ accept(_input:JsonObject,_ctx:PluginContext,_tasks:TaskLedger,_safe:boolean):GoalRecord {throw new CapabilityError('VERSION_CONFLICT','旧验收入口已停用，请显式恢复目标、核对成果后记录完成说明');}
+ dispose(){for(const row of this.store.list<GoalRecord>('goal:')){const goal=row.value;if(this.loaded.has(`goal:${goal.projectId}:${goal.id}`)&&goal.activeSince){const elapsed=Math.max(0,(Date.now()-Date.parse(goal.activeSince))/1000);this.store.put(row.key,{...goal,timeUsedSeconds:(goal.timeUsedSeconds||0)+(Number.isFinite(elapsed)?elapsed:0),activeSince:undefined});}}this.store.close();}
 }
