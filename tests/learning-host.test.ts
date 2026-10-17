@@ -10,6 +10,7 @@ import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {historyItems,learningHostAvailable,learningRequestHash,learningRequestSnapshot,digest,projectIdentity,RecordStore,LearningBudget,type PluginContext} from '../packages/core/src/index.js';
 import {MemoryController,type LearningJob,type MemoryRecord} from '../packages/memory/src/index.js';
 import {createProviderRuntime,saveProviderConfiguration} from '../apps/desktop/src/provider-settings.js';
+import {foregroundBusy,writeForegroundLease} from '../apps/desktop/src/foreground-lease.js';
 
 type Stage='extract'|'compact'|'foreground';
 interface Call {stage:Stage;prompt:string;ended:boolean;closed:boolean;release:()=>void}
@@ -198,4 +199,32 @@ test('actual length-limited HTTP response is recorded as received incomplete and
   const cursorStore=new RecordStore('memory',f.dataDir);try{assert.equal(cursorStore.get(`cursor:${source.projectId}:${source.sessionId}`),undefined);}finally{cursorStore.close();}
   const count=f.calls.length;assert.equal(count,1,'confirmed length stops the scheduler without a new operation');await host.stop();const restarted=await f.startHost();await restarted.request('resume');await delay(1000);assert.equal(f.calls.length,1,'received incomplete calls are not replayed on restart');assert.equal(f.jobs().find(job=>job.id===source.jobId)?.state,'failed');await restarted.stop();
  }finally{await f.close();}
+});
+
+test('learning host ignores expired foreground leases and yields to a live one',{timeout:45000},async()=>{
+  const f=await fixture();try{
+    // An expired v1 lease (the previous writer's shape) must not block admission.
+    const stale=new RecordStore('runtime',f.dataDir);
+    stale.put('foreground:stale',{pid:process.pid,active:true,runId:'stale',expiresAt:Date.now()-5000});
+    stale.close();
+    const source=await f.enqueue('lease-expired'),host=await f.startHost();
+    await until(()=>f.jobs().find(job=>job.id===source.jobId)?.state==='completed','expired lease does not block extraction');
+    assert.equal(f.calls.filter(call=>call.stage==='extract').length,1);
+
+    // A live foreground lease pauses new background model calls.
+    const live=new RecordStore('runtime',f.dataDir);
+    writeForegroundLease(live,{pid:process.pid,sessionId:'live-foreground',runId:'live',active:true});
+    assert.equal(foregroundBusy(live),true);
+    live.close();
+    const blocked=await f.enqueue('lease-live');
+    await delay(1500);
+    assert.equal(f.jobs().find(job=>job.id===blocked.jobId)?.state,'queued','live foreground lease pauses host admission');
+    assert.equal(f.calls.filter(call=>call.stage==='extract').length,1,'no new model call while the foreground lease is live');
+
+    // Releasing the lease lets the same host resume the queued durable job.
+    const released=new RecordStore('runtime',f.dataDir);released.remove('foreground:live-foreground');released.close();
+    await until(()=>f.jobs().find(job=>job.id===blocked.jobId)?.state==='completed','host resumes after lease release');
+    assert.equal(f.calls.filter(call=>call.stage==='extract').length,2);
+    await host.stop();
+  }finally{await f.close();}
 });

@@ -7,6 +7,7 @@ import {ExpertController,peekExpertLearningJob,wakeExpertLearningJobs} from '../
 import {RebuildController} from '../../../packages/topic-rebuild/src/index.js';
 import {RecordStore,SourcePolicy,LearningBudget,learningRequestHash,learningRequestSnapshot,executeLearningRequest,modelTokenUsage,CapabilityError,acquireLearningLease,renewLearningLease,releaseLearningLease,assertLearningLease,readRegisteredArtifact,restrictedSourceItem,object,text,digest,dataDirectory,projectIdentity,historyItems,isSessionDeleted,readSourceSpan,visibleText,type PluginContext,type HostPolicy,type SourceRef,type LearningLeaseToken,installFixtureProvider} from '@friend-pi/core';
 import {requireReadyModel} from './model-readiness.js';
+import {foregroundBusy} from './foreground-lease.js';
 import {createProviderRuntime,providerMetadata} from './provider-settings.js';
 import {createExpertEvaluationHost} from './expert-evaluation-host.js';
 interface HostJob {id:string;projectId:string;projectDir?:string;sessionId:string;sessionFile?:string;agentDir?:string;modelId?:string;thinkingLevel?:string;sourceRunId?:string;budgetId?:string;stage?:string;attempts?:number}
@@ -18,8 +19,7 @@ let lease:LearningLeaseToken|undefined,closing=false,paused=desktop.get<boolean>
 function output(type:string,data:unknown){if(process.connected)process.send?.({type,data});}
 function heartbeat(){if(closing)return;try{lease=lease?renewLearningLease(leaseStore,lease):acquireLearningLease(leaseStore,owner);}catch{lease=undefined;active?.abort('lease-lost');}}
 heartbeat();const pulse=setInterval(heartbeat,5000);pulse.unref();
-function foregroundBusy(){return leaseStore.list<{pid:number;active:boolean;expiresAt:number}>('foreground:').some(row=>{if(!row.value.active)return false;try{process.kill(row.value.pid,0);return true;}catch{return false;}});}
-function canAdmit(){return !closing&&!paused&&!!lease&&!foregroundBusy();}
+function canAdmit(){return !closing&&!paused&&!!lease&&!foregroundBusy(leaseStore);}
 function history(job:HostJob){if(isSessionDeleted(dataDir,job.sessionId))throw new CapabilityError('SOURCE_UNAVAILABLE','来源会话已删除');const file=job.sessionFile||registry.get<{path:string}>(job.sessionId)?.value.path;if(!file||!existsSync(file))throw new CapabilityError('SOURCE_UNAVAILABLE','学习来源原史不可用');return historyItems(SessionManager.open(file).getBranch());}
 function context(job:HostJob,signal:AbortSignal):PluginContext {
  const global=desktop.get<Record<string,unknown>>('preferences')?.value||{},project=desktop.get<Record<string,unknown>>(`preferences:${job.projectId}`)?.value||{};const prefs={...global,...project};const id=job.modelId||(typeof prefs.backgroundModelId==='string'&&prefs.backgroundModelId?prefs.backgroundModelId:typeof prefs.defaultModelId==='string'&&prefs.defaultModelId?prefs.defaultModelId:undefined);const slash=id?.indexOf('/')??-1;const model=id&&slash>0?runtime.getModel(id.slice(0,slash),id.slice(slash+1)):undefined;const projectDir=job.projectDir||registry.get<{projectDir:string}>(job.sessionId)?.value.projectDir;if(!projectDir)throw new CapabilityError('SOURCE_UNAVAILABLE','学习项目来源缺失');let callIndex=0;

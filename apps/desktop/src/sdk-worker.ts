@@ -1,4 +1,5 @@
 import {questionBatch,questionAnswers,type QuestionBatchDialog,type QuestionBatchResult} from './question-batch.js';
+import {writeForegroundLease} from './foreground-lease.js';
 import {createDocumentReader} from './document-reader.js';
 const documentReader=createDocumentReader();
 import {createExternalCapabilities,nativeMcpResourceTools} from './external-capabilities.js';
@@ -40,7 +41,7 @@ let enabled=process.env.FRIEND_PI_PLUGINS?JSON.parse(process.env.FRIEND_PI_PLUGI
 let changeTracker:RunChangesTracker|undefined;let session:AgentSession;let runtime:ModelRuntime;const bus=createEventBus();let runId:string|undefined;let runRequiresSwarm:boolean|undefined;let disposed=false;let swarmRunning=false;let planMode=process.env.FRIEND_PI_PLAN_MODE==='1';let permissionMode:PermissionMode=process.env.FRIEND_PI_PERMISSION_MODE?parsePermissionMode(process.env.FRIEND_PI_PERMISSION_MODE):'auto';let executionMode:ExecutionMode=['team','swarm'].includes(process.env.FRIEND_PI_MODE||'')?process.env.FRIEND_PI_MODE as ExecutionMode:'single';let lifecycleStatus=process.env.FRIEND_PI_STATUS||'idle';let cancelRequested=false;let permissionEpoch=0;const activeGraphIds=new Set<string>();const runGraphIds=new Set<string>();const baselineGraphIds=new Set<string>();const pendingSwarmGraphIds=new Set<string>();const swarmGraphs=new Map<string,Record<string,unknown>>();let runStartedAt=0;let foregroundOpen=false;let authorityNotice='';let statusBeforeCompaction:string|undefined;let settledRunId:string|undefined;
 const dialogs=new Map<string,{resolve:(value:unknown)=>void;timer?:ReturnType<typeof setTimeout>;terminalRequestId?:string;batch?:QuestionBatchDialog;cleanup?():void}>();
 const foregroundStore=new RecordStore('runtime',dataDir),artifactStore=new RecordStore('artifacts',dataDir);
-function recordForeground(force?:boolean){if(disposed||!session)return;foregroundStore.put(`foreground:${session.sessionId}`,{pid:process.pid,active:force??(!session.isIdle||modelInFlight||rootExecutionBusy()||runtimeWakeBusy()),runId,expiresAt:Date.now()+15000});}
+function recordForeground(force?:boolean){if(disposed||!session)return;writeForegroundLease(foregroundStore,{pid:process.pid,sessionId:session.sessionId,runId,active:force??(!session.isIdle||modelInFlight||rootExecutionBusy()||runtimeWakeBusy())});}
 const foregroundPulse=setInterval(()=>recordForeground(),5000);foregroundPulse.unref();
 const businessStore=new RecordStore('plans',dataDir);let plans:PlanStore;let policyRevision=0;let modelInFlight=false;let auditRunning=false;let workflowRunning=false;let teammateRunning=false;const neutralToolIds=new Set<string>();const roleDeliveryErrors=new Map<string,string>();const workflowStatuses=new Map<string,string>();
 const external=createExternalCapabilities({dataDir,cwd,confirm:request=>approvePermission(request),publish:()=>{if(session&&!disposed)publish('state',current());}});

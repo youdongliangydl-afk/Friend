@@ -95,7 +95,7 @@ export class RecordStore {
   constructor(readonly namespace: string, readonly dataDir = dataDirectory()) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dataDir, 'plugins.sqlite'));
-    this.db.function('friend_pi_writer_version',{deterministic:true},()=>4);
+    this.db.function('friend_pi_writer_version',{deterministic:true},()=>5);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON');if(this.db.prepare('PRAGMA journal_mode').get()?.journal_mode!=='wal')this.db.exec('PRAGMA journal_mode=WAL');if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").get())this.db.exec('CREATE TABLE documents(namespace TEXT NOT NULL,key TEXT NOT NULL,revision INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(namespace,key))');
   }
   get<T>(key: string): StoredDocument<T> | undefined {
@@ -313,7 +313,7 @@ export function registerPlugin(pi: ExtensionAPI, name: string, controller: Plugi
   let current: ExtensionContext | undefined;
   const call = async (action: string, input: JsonObject, ctx: ExtensionContext, origin: 'user'|'agent'|'plugin' = 'agent',trusted?:TrustedPluginContext) => {
     const base = makeContext(pi,ctx,origin);const context:PluginContext=trusted?{...base,runId:trusted.runId,memberId:trusted.memberId,taskId:trusted.taskId,taskScope:trusted.taskScope,inputHash:trusted.inputHash,findJournalEntry:trusted.findJournalEntry}:base; const result = action === 'snapshot' ? controller.snapshot(context) : await controller.dispatch(action,input,context);
-    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','profile.list','profile.read','spawn.validate','timeline','citations.validate','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around','plan.validate','resume.preview','handoff.read','impact.preview','diagnostics','source.read','read.range','learning.status','validation.read','skill.read','skill.versions','catalog.search']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
+    if(!new Set(['snapshot','list','read','search','get','status','result','logs','versions','member.list','member.history','role.snapshot','role.read','role.versions','template.list','template.read','profile.list','profile.read','spawn.validate','timeline','citations.validate','shared.readVersion','shared.conflicts','invalidation.snapshot','history.search','history.read','history.around','plan.validate','resume.preview','handoff.read','impact.preview','diagnostics','source.read','read.range','learning.status','validation.read','skill.read','skill.versions','catalog.search','conflict.list','autoPublish.status','autoPublish.audit']).has(action))context.emit(`${name}.changed`,controller.snapshot(context)); return result;
   };
   pi.on('session_start',(_event,ctx) => { current = ctx; makeContext(pi,ctx); });
   pi.on('before_agent_start',(_event,ctx) => { current = ctx; });

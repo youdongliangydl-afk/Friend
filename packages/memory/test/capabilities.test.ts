@@ -320,18 +320,21 @@ test('the real extraction prompt requests literal fact sentences with complete b
  }finally{await f.close();}
 });
 
-test('an exact whole-entry model quote retains both business fact and subject and isolates the actual orders conflict',async()=>{
+test('an exact whole-entry model quote keeps the current subject value usable and isolates the differing value as a conflict candidate',async()=>{
  const f=fixture();try{
   const firstSource='项目事实：本验收项目的订单数据库实际使用 SQLite。主题标识：orders.database.engine。只回复已收到，不调用工具。',firstQuote=firstSource.slice(0,56),firstContent='本验收项目的订单数据库实际使用 SQLite。';f.items[0].id='orders-first';f.items[0].text=firstSource;
   f.ctx.complete=async()=>JSON.stringify({memories:[{title:'订单数据库使用 SQLite',content:firstContent,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['orders-first'],sourceQuotes:{'orders-first':firstQuote}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const first=(f.c.snapshot(f.ctx).memories as MemoryRecord[])[0];assert.equal(first.status,'active');
   const secondSource='独立观察：本验收项目的订单数据库实际使用 PostgreSQL。主题标识：orders.database.engine。只回复已收到，不调用工具。',secondContent='在“本验收项目”范围内，订单数据库实际使用 PostgreSQL。该事实的主题标识为 orders.database.engine。';assert.equal(secondSource.length,73);f.items.push({id:'orders-second',parentId:'orders-first',type:'message',role:'user',timestamp:new Date().toISOString(),text:secondSource});
   f.ctx.complete=async()=>JSON.stringify({memories:[{title:'订单数据库实际使用 PostgreSQL',content:secondContent,kind:'fact',subject:'orders.database.engine',sourceEntryIds:['orders-second'],sourceQuotes:{'orders-second':secondSource}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx),old=(snapshot.memories as MemoryRecord[]).find(record=>record.id===first.id)!,next=(snapshot.candidates as MemoryRecord[]).find(record=>record.title==='订单数据库实际使用 PostgreSQL')!;
-  assert.equal(next.status,'candidate');assert.deepEqual(old.conflictIds,[next.id]);assert.deepEqual(next.conflictIds,[old.id]);assert.equal(old.content,firstContent);assert.equal(next.content,secondContent);assert.equal(next.sources.length,1);assert.deepEqual([next.sources[0].start,next.sources[0].end],[0,73]);assert.equal(next.sources[0].hash,digest(secondSource));assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),secondSource);
-  assert.deepEqual(f.c.search({query:'数据库',match:'any'},f.ctx),[]);const selected=await f.c.dispatch('select',{query:'数据库'},f.ctx) as any;assert.deepEqual(selected.records,[]);assert.deepEqual(selected.directory,[]);
+  // Blueprint §6.3: the old active value stays usable; the different new value is isolated as a
+  // conflict candidate (no legacy two-sided conflictIds) and a first-class conflict object is opened.
+  assert.equal(next.status,'candidate');assert.deepEqual(old.conflictIds,[]);assert.equal(old.status,'active');assert.equal(old.content,firstContent);assert.ok(next.conflictId);assert.equal(next.conflictState,'open');assert.equal(next.content,secondContent);assert.equal(next.sources.length,1);assert.deepEqual([next.sources[0].start,next.sources[0].end],[0,73]);assert.equal(next.sources[0].hash,digest(secondSource));assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),secondSource);
+  const conflicts=(snapshot.conflicts as any[]).filter(conflict=>conflict.subjectKey==='orders.database.engine'&&conflict.status==='open');assert.equal(conflicts.length,1);assert.deepEqual(conflicts[0].sides.map((side:any)=>side.memoryId).sort(),[old.id,next.id].sort());
+  assert.equal(f.c.search({query:'数据库',match:'any'},f.ctx)[0]?.id,old.id);const selected=await f.c.dispatch('select',{query:'数据库'},f.ctx) as any;assert.equal(selected.records[0]?.id,old.id);
  }finally{await f.close();}
 });
 
-test('mixed knowledge extraction retains an unresolved observation and excludes both sides of its conflict',async()=>{
+test('mixed knowledge extraction keeps the current observation usable and isolates the unresolved alternative as a conflict candidate',async()=>{
  const f=fixture();try{
   const first='个人偏好：今后我默认偏好用中文解释技术问题。事实名称：服务协议；主题标识：service.protocol；已观察结论：本项目服务使用 HTTP/1.1。';
   f.items[0].text=first;
@@ -341,8 +344,9 @@ test('mixed knowledge extraction retains an unresolved observation and excludes 
   f.items.push({id:'independent-observation',parentId:'user1',type:'message',role:'user',timestamp:new Date().toISOString(),text:'事实名称：服务协议；主题标识：service.protocol；另一项独立观察结论：'+content});
   f.ctx.complete=async()=>JSON.stringify({memories:[{title:'服务使用 HTTP/2',content,kind:'fact',subject:'service.protocol',conditions:['两项观察尚未消歧'],sourceEntryIds:['independent-observation'],sourceQuotes:{'independent-observation':content}}]});
   await f.c.settled(f.ctx);await drain(f.c,f.ctx);const snapshot=f.c.snapshot(f.ctx),old=(snapshot.memories as MemoryRecord[]).find(record=>record.id===original.id)!,next=(snapshot.candidates as MemoryRecord[]).find(record=>record.content===content)!;
-  assert.ok(next);assert.deepEqual(old.conflictIds,[next.id]);assert.deepEqual(next.conflictIds,[old.id]);assert.equal(old.enabled,true);assert.equal(next.status,'candidate');assert.deepEqual(next.conditions,['两项观察尚未消歧']);assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),content);assert.equal(next.sources[0].hash,digest(content));
-  assert.deepEqual(f.c.search({query:'服务',match:'any'},f.ctx),[]);const selected=await f.c.dispatch('select',{query:'服务'},f.ctx) as any;assert.deepEqual(selected.records,[]);assert.deepEqual(selected.directory,[]);
+  assert.ok(next);assert.deepEqual(old.conflictIds,[]);assert.equal(old.status,'active');assert.equal(old.enabled,true);assert.equal(next.status,'candidate');assert.ok(next.conflictId);assert.equal(next.conflictState,'open');assert.deepEqual(next.conditions,['两项观察尚未消歧']);assert.equal(readSourceSpan(f.ctx.readSource(next.sources[0]),next.sources[0]),content);assert.equal(next.sources[0].hash,digest(content));
+  assert.equal(f.c.search({query:'服务',match:'any'},f.ctx)[0]?.id,old.id);const selected=await f.c.dispatch('select',{query:'服务'},f.ctx) as any;assert.equal(selected.records[0]?.id,old.id);
+  assert.equal((snapshot.conflicts as any[]).filter(conflict=>conflict.subjectKey==='service.protocol'&&conflict.status==='open').length,1);
  }finally{await f.close();}
 });
 
@@ -386,11 +390,12 @@ test('repeated observations do not become long-term instructions; explicit user 
  }finally{await f.close();}
 });
 
-test('conflicting subject evidence stops automatic use and explicit scope forget preserves the other scope (14-15)',async()=>{
+test('conflicting subject evidence keeps the current value usable and explicit scope forget preserves the other scope (14-15)',async()=>{
  const f=fixture();try{
   const project=await save(f.c,f.ctx,{title:'数据库',subject:'database',content:'数据库使用 SQLite'});await save(f.c,f.ctx,{content:'用户偏好中文',kind:'preference',scope:'personal'});
   f.items[0].text='数据库必须使用 PostgreSQL。';f.ctx.complete=async()=>JSON.stringify({memories:[{title:'数据库',subject:'database',content:'数据库使用 PostgreSQL',kind:'fact',sourceEntryIds:['user1'],sourceQuotes:{user1:f.items[0].text}}]});await f.c.settled(f.ctx);await drain(f.c,f.ctx);
-  assert.ok(!(f.c.select({query:'数据库'},f.ctx).records as MemoryRecord[]).some(record=>record.id===project.id));
+  // Blueprint §6.3: conflicting automatic evidence cannot silently retire the current usable value.
+  const conflictSnapshot=f.c.snapshot(f.ctx);assert.equal((conflictSnapshot.memories as MemoryRecord[]).find(record=>record.id===project.id)?.status,'active');assert.ok((f.c.select({query:'数据库'},f.ctx).records as MemoryRecord[]).some(record=>record.id===project.id));assert.equal((conflictSnapshot.conflicts as any[]).filter(conflict=>conflict.status==='open').length,1);
   await f.c.dispatch('forget',{scope:{type:'project',projectId:'p'},operationId:'forget-project'},f.ctx);assert.equal((f.c.snapshot(f.ctx).memories as MemoryRecord[]).length,1);assert.equal((f.c.snapshot(f.ctx).memories as MemoryRecord[])[0].scope,'personal');
  }finally{await f.close();}
 });

@@ -10,6 +10,15 @@ import {
   readSourceSpan, sourceFactRefs, isSessionDeleted, learningHostAvailable, isDerivedCapabilityInput,
   type HistoryItem, type JsonObject, type PluginContext, type PluginController, type SourceRef,
 } from '../../core/src/index.js';
+import { ensureMemorySchema, MEMORY_SCHEMA_TABLES, MEMORY_SCHEMA_VERSION, MEMORY_WRITER_VERSION, type MemoryV4Result } from './schema.js';
+import { normalizeSubjectKey, normalizeSubjectValue, subjectClaimHash, registerSubject, getSubject, activeSubjectPeers } from './subjects.js';
+import { ConflictStore, detectSubjectConflict, type ConflictRecord } from './conflicts.js';
+import {
+  AutoPublishStore, decideAutoPublish,
+  type AutoPublishMode, type AutoPublishPolicy, type CandidateFacts, type TrustLevel, type Authority,
+} from './autopublish.js';
+import { hasCorrectionMarker, hasStablePreferenceCue, isTaskOrQuotedCue, isExplicitUserRemember } from './language.js';
+import { buildSuppressionFamily, isRevivedRewrite, type SuppressionFamily } from './suppression.js';
 
 export type MemoryKind = 'fact' | 'experience' | 'preference';
 export type LegacyMemoryKind = MemoryKind | 'method';
@@ -30,6 +39,11 @@ export interface MemoryRecord {
   validFrom?:string|null;validTo?:string|null;semanticDigest?:string;reviewAfter?:string;assertedAt?:string;confirmedAt?:string;
   evidence?:MemoryEvidence[];dependencies?:CapabilityDependency[];sourceEpoch?:number;policyEpoch?:number;legacy?:boolean;
   expertCandidateId?: string; expertDelivery?: 'pending' | 'delivered' | 'unavailable';
+  /** P0 v4 (additive, read-compatible): subject/trust/auto-publish metadata. */
+  kindV2?:string; subjectKey?:string; subjectCardinality?:'single'|'multi'; trust?:TrustLevel; authority?:Authority;
+  autoPublished?:boolean; policyId?:string; policyVersion?:number; score?:number;
+  conflictId?:string; conflictState?:'open'|'deferred'|'resolved'; lineageRoot?:string;
+  lastUsedAt?:string; useCount?:number; feedbackScore?:number; expiresAt?:string; deletedAt?:string;
 }
 export interface MemoryTaskContext { goal?:string; scenario?:string; entities?:string[] }
 export interface MemoryFeedback {
@@ -87,9 +101,13 @@ const normalize = (value: string) => value.normalize('NFKC').toLowerCase().repla
 // Old SDK transcripts may include appended files without a valid input boundary.
 // Such text remains project material, but is not evidence of a user's preference/instruction.
 const typedUserText = (item:HistoryItem):string|undefined => item.userText??(/\n附件 [^\n]+[：:]\r?\n/u.test(item.text)?undefined:item.text);
-const correctionMarker = /更正|纠正|改为|改用|改成|换成|调整为|不再|取消|instead|change|no longer|correct/iu;
-const stablePreferenceCue = /偏好|更喜欢|我.*习惯|以后|今后|默认|总是|always|prefer|usually/iu;
-const taskOrQuotedCue = /^\s*(?:>+|原文|摘录|转述|当前目标|本次|此次|这次|本轮|当前任务|假设|假如|如果|若\b|示例|例如|引用|文档(?:写道|说明)|(?:请|先|请先)?(?:读取|查看|阅读|检查|搜索|打开)|read\b|inspect\b|open\b|search\b|for this task\b|if\b|example\b)/iu;
+const correctionMarker={test:(value:string)=>hasCorrectionMarker(value)};
+const stablePreferenceCue={test:(value:string)=>hasStablePreferenceCue(value)};
+const taskOrQuotedCue={test:(value:string)=>isTaskOrQuotedCue(value)};
+// P0 safety gates: deterministic, content-only, no model and no secret material echoed.
+const PII_CONTENT=/(?:1[3-9]\d{9}|(?<!\d)\d{17}[\dXx](?!\d)|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/u;
+const PROMPT_INJECTION_CONTENT=/(?:ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|忽略(?:之前|以上|前面|先前)的?(?:所有)?(?:指令|指示|要求)|system\s*prompt|开发者(?:指令|消息)|you\s+are\s+now\s+(?:a|an|the)\b|disregard\s+(?:all|any)\s+(?:previous|prior))/iu;
+const AUTHORITY_BY_TRUST:Record<TrustLevel,Authority>={external_import:'external',model_inferred:'none',model_supported:'model',quote_verified:'model',tool_verified:'tool',source_verified:'source',user_confirmed:'user',user_explicit:'user'};
 interface ProjectConstraintFact {source:SourceRef;content:string}
 /** Explicit project declarations are user authority, independent of an LLM's category. */
 function projectConstraintFacts(item:HistoryItem,sessionId:string):ProjectConstraintFact[] {
@@ -148,7 +166,7 @@ export function redactMemorySecrets(value:string):string {
 }
 /** Recover pure analysis checkpoints globally, before a host has any project-specific context. */
 export function recoverLearningJobs(dataDir:string):number {
-  const path=join(dataDir,'plugins.sqlite');if(!existsSync(path))return 0;const db=new DatabaseSync(path);db.function('friend_pi_writer_version',{deterministic:true},()=>4);let count=0;
+  const path=join(dataDir,'plugins.sqlite');if(!existsSync(path))return 0;const db=new DatabaseSync(path);db.function('friend_pi_writer_version',{deterministic:true},()=>MEMORY_WRITER_VERSION);let count=0;
   try{db.exec('PRAGMA busy_timeout=5000');if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_jobs'").get())return 0;
     db.exec('BEGIN IMMEDIATE');try{for(const row of db.prepare("SELECT json FROM memory_jobs WHERE state='running'").all()){
       const job=JSON.parse(String(row.json)) as LearningJob;if(job.owner&&alive(job.owner.pid)&&Number.isFinite(Date.parse(job.owner.heartbeatAt))&&Date.now()-Date.parse(job.owner.heartbeatAt)<=60000)continue;
@@ -233,6 +251,9 @@ export class MemoryController implements PluginController {
   private conflictNotice?:string;
   private policy?:SourcePolicy;
   private activeLease?:LearningLeaseToken;
+  private schemaV4?:MemoryV4Result;
+  private conflictsStore?:ConflictStore;
+  private autoPublishStore?:AutoPublishStore;
 
   private database(ctx: PluginContext): RecordStore {
     if (this.disposed) throw new Error('Memory 已关闭');
@@ -264,6 +285,9 @@ export class MemoryController implements PluginController {
         PRAGMA secure_delete=ON;
       `);
       this.policy=new SourcePolicy(this.store);
+      // First-open detection must happen before the v2/v3 migrations write their own rows,
+      // otherwise a brand-new install looks like an upgrade and would default to conservative auto-publish.
+      const freshInstall=!this.store.db.prepare('SELECT 1 FROM memory_migrations LIMIT 1').get()&&!this.store.db.prepare('SELECT 1 FROM memory_records LIMIT 1').get();
       if(!this.store.db.prepare('SELECT 1 FROM memory_migrations WHERE version=2').get()){
         const backup=join(ctx.dataDir,'memory-migration-backups');mkdirSync(backup,{recursive:true,mode:0o700});
         this.store.db.prepare('VACUUM INTO ?').run(join(backup,`before-v2-${randomUUID()}.sqlite`));
@@ -291,8 +315,27 @@ export class MemoryController implements PluginController {
           if(job.proposalLedger.some(proposal=>proposal.state==='pending')&&job.state!=='completed')job.stage='validate';job.activeProposalIds=job.proposalLedger.filter(proposal=>proposal.state==='validated').map(proposal=>proposal.id);this.writeJob(job);
         }this.store!.db.prepare('INSERT INTO memory_migrations VALUES(3,?,?)').run(digest('memory-durable-proposals-v1'),now());});
       }
+      // P0-S: schema v4 (writer 5). Runs after the legacy v2/v3 migrations it depends on,
+      // never rewrites v2/v3 rows, and is idempotent across reopenings. The result is kept
+      // for the install profile / autopublish defaults and diagnostics.
+      this.schemaV4=ensureMemorySchema(this.store.db,{
+        dataDir:ctx.dataDir,
+        now,
+        digest,
+        // Must stay byte-identical to the semantic identity used by every reader/writer.
+        semanticDigest:record=>memorySemanticDigest(record as MemoryRecord),
+        // P0: only ASCII legacy subjects become subject keys. Chinese free-form subjects are
+        // not reliable keys (the ASCII fold would collide), so they keep title-based behavior.
+        normalizeSubjectKey:raw=>{const value=typeof raw==='string'?raw.normalize('NFKC').trim():'';if(!value||/[^\x00-\x7F]/u.test(value))return undefined;return normalizeSubjectKey(value);},
+        normalizeSubjectValue,
+        recordClaim:record=>subjectClaimHash(record as {content:string;conditions?:string[]}),
+      });
+      if(freshInstall&&this.schemaV4.installProfile!=='fresh'){this.schemaV4={...this.schemaV4,installProfile:'fresh'};this.store.put('install-profile',{v:1,profile:'fresh',at:now()});}
       this.cleanPrivacyBackups();
-      requireSchemaWriter(this.store,'memory',4,['memory_records','memory_versions','memory_jobs','memory_suppression','memory_usage','memory_evidence','memory_dependencies','memory_operations','memory_projection_outbox','memory_migrations','memory_events','memory_queries']);
+      requireSchemaWriter(this.store,'memory',MEMORY_WRITER_VERSION,MEMORY_SCHEMA_TABLES);
+      this.conflictsStore??=new ConflictStore(this.store.db,{now});
+      this.autoPublishStore??=new AutoPublishStore(this.store.db,{now});
+      this.autoPublishStore.resolvePolicy(ctx.projectId,this.schemaV4?.installProfile??'upgraded');
       // A stopped process cannot continue a provider call. Preserve its checkpoint and require an idle replay of learning only.
       this.recoverDeadJobs();
     }
@@ -352,7 +395,7 @@ export class MemoryController implements PluginController {
     for(const task of this.store.list<{ids:string[];error?:string}>('privacy-cleanup:')){
       try{const ids=new Set(task.value.ids);const redact=(raw:unknown):unknown=>{if(Array.isArray(raw))return raw.map(redact);if(!raw||typeof raw!=='object')return raw;const value=raw as Record<string,unknown>;if(ids.has(String(value.id))&&('content' in value||'contextKey' in value))return {id:value.id,revision:value.revision,hash:value.hash,bodyRemoved:true};return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redact(item)]));};
         if(existsSync(root))for(const file of readdirSync(root,{withFileTypes:true})){if(!file.isFile()||!file.name.endsWith('.sqlite'))continue;const db=new DatabaseSync(join(root,file.name));
-          try{db.function('friend_pi_writer_version',{deterministic:true},()=>4);db.exec('PRAGMA secure_delete=ON');const has=(table:string)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+          try{db.function('friend_pi_writer_version',{deterministic:true},()=>MEMORY_WRITER_VERSION);db.exec('PRAGMA secure_delete=ON');const has=(table:string)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
             db.exec('BEGIN IMMEDIATE');for(const id of ids){for(const table of ['memory_records','memory_versions','memory_search','memory_search_v2'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id);for(const table of ['memory_evidence','memory_dependencies'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE ${table==='memory_evidence'?'memory_id':'owner_id'}=?`).run(id);}
             if(has('documents'))for(const row of db.prepare("SELECT key,json FROM documents WHERE namespace='memory'").all()){const value=redact(JSON.parse(String(row.json)));db.prepare("UPDATE documents SET json=? WHERE namespace='memory' AND key=?").run(JSON.stringify(value),String(row.key));}
             for(const table of ['memory_operations','memory_usage'])if(has(table))for(const row of db.prepare(`SELECT rowid,json FROM ${table}`).all())db.prepare(`UPDATE ${table} SET json=? WHERE rowid=?`).run(JSON.stringify(redact(JSON.parse(String(row.json)))),row.rowid);
@@ -399,6 +442,61 @@ export class MemoryController implements PluginController {
     if (!row) throw new Error('记忆不存在或不属于当前项目');
     const record=JSON.parse(String(row.json)) as MemoryRecord;return semanticRecord(record);
   }
+  /** P0: only ASCII legacy subjects become reliable subject keys. Chinese free-form subjects keep the legacy title path. */
+  private subjectKeyOf(value:unknown):string|undefined{const raw=typeof value==='string'?value.normalize('NFKC').trim():'';if(!raw||/[^\x00-\x7F]/u.test(raw))return undefined;return normalizeSubjectKey(raw);}
+  private conflictStore(ctx:PluginContext):ConflictStore{this.database(ctx);return this.conflictsStore!;}
+  private publishStore(ctx:PluginContext):AutoPublishStore{this.database(ctx);return this.autoPublishStore!;}
+  private publishPolicy(ctx:PluginContext):AutoPublishPolicy{return this.publishStore(ctx).resolvePolicy(ctx.projectId,this.schemaV4?.installProfile??'upgraded');}
+  /** Read v4 metadata from queryable columns when a migrated/legacy json lacks it. */
+  private subjectMeta(record:MemoryRecord,ctx:PluginContext):{subjectKey?:string;subjectCardinality:'single'|'multi'|null;trust?:string;authority?:string}{
+    if(record.subjectKey!==undefined||record.subjectCardinality!==undefined)return {subjectKey:record.subjectKey,subjectCardinality:record.subjectCardinality??null,trust:record.trust,authority:record.authority};
+    try{const row=this.database(ctx).db.prepare('SELECT subject_key,subject_cardinality,trust,authority FROM memory_records WHERE id=?').get(record.id) as {subject_key?:string|null;subject_cardinality?:string|null;trust?:string|null;authority?:string|null}|undefined;
+      const key=row?.subject_key??undefined;return {subjectKey:key,subjectCardinality:(row?.subject_cardinality==='multi'?'multi':key?'single':null),trust:row?.trust??undefined,authority:row?.authority??undefined};}catch{return {subjectKey:undefined,subjectCardinality:null};}
+  }
+  /** Register a reliable subject and return the record-level metadata to persist. */
+  private subjectMetadata(record:MemoryRecord,ctx:PluginContext,rawSubject?:unknown):Pick<MemoryRecord,'subjectKey'|'subjectCardinality'>{
+    const key=this.subjectKeyOf(rawSubject??record.subject);if(!key)return {subjectKey:undefined,subjectCardinality:undefined};
+    const db=this.database(ctx).db,scope=record.scope==='personal'?'personal':'project';
+    const existing=getSubject(db,ctx.projectId,scope,key);
+    const label=(typeof rawSubject==='string'?rawSubject:typeof record.subject==='string'?record.subject:record.title).trim().slice(0,200)||record.title.slice(0,200);
+    const defined=registerSubject(db,{projectId:ctx.projectId,scope,key,label,aliases:record.aliases||[],cardinality:existing?.cardinality??'single',valueType:existing?.valueType??'freeform',sensitivity:existing?.sensitivity??'normal',createdAt:existing?.createdAt??now(),updatedAt:now()});
+    return {subjectKey:key,subjectCardinality:defined.cardinality};
+  }
+  private claimOf(record:MemoryRecord):string{return subjectClaimHash({content:record.content,conditions:record.conditions||[]});}
+  private trustForPublication(input:{confirmedBy?:'user'|'system';userSource:boolean;toolSource:boolean;artifact:boolean;authoritative:boolean;literalsSupported:boolean}):{trust:TrustLevel;authority:Authority}{
+    const trust:TrustLevel=input.confirmedBy==='user'?'user_explicit'
+      :input.userSource&&input.authoritative&&input.literalsSupported?'source_verified'
+      :input.artifact&&input.authoritative?'source_verified'
+      :input.toolSource&&input.authoritative&&input.literalsSupported?'tool_verified'
+      :input.authoritative&&input.literalsSupported?'model_supported':'model_inferred';
+    const authority:Authority=AUTHORITY_BY_TRUST[trust];
+    return {trust,authority};
+  }
+  /** Caller must be inside a transaction; old active peer leaves the unique slot before a new active same-subject single record. */
+  private deactivateForSubject(record:MemoryRecord,ctx:PluginContext,reason:string):void{
+    if(record.status!=='active')return;
+    this.write({...record,revision:record.revision+1,status:'inactive',enabled:false,invalidatedReason:reason,updatedAt:now()},ctx,record.revision);
+  }
+  private conflictSideOf(record:MemoryRecord):{memoryId:string;revision:number;claimHash:string;supportScore:number;evidence:JsonObject[]}{
+    return {memoryId:record.id,revision:record.revision,claimHash:this.claimOf(record),supportScore:Math.max(0,Number(record.score??0)),evidence:(record.sources||[]).map(source=>({...source})) as unknown as JsonObject[]};
+  }
+  private openSubjectConflict(left:MemoryRecord,right:MemoryRecord,ctx:PluginContext,rightRevision?:number):ConflictRecord{
+    const meta=this.subjectMeta(right,ctx);const key=meta.subjectKey??this.subjectKeyOf(right.subject)??this.subjectKeyOf(left.subject);
+    if(!key)throw new CapabilityError('VALIDATION_ERROR','冲突需要可靠的主题键');
+    const conflict=this.conflictStore(ctx).open({projectId:ctx.projectId,scope:right.scope,subjectKey:key,left:this.conflictSideOf(left),right:{...this.conflictSideOf(right),revision:rightRevision??right.revision},openedBy:'learning',policyVersion:this.publishPolicy(ctx).version});
+    this.store!.afterCommit(()=>ctx.emit('memory.conflict.opened',{v:1,eventId:randomUUID(),projectId:ctx.projectId,conflictId:conflict.id,subjectKey:key,left:left.id,right:right.id}));
+    return conflict;
+  }
+  /** Retire an active same-subject peer before a new active single value is written. */
+  private retireSubjectPeer(old:MemoryRecord,ctx:PluginContext,retired:Set<string>):void{
+    if(retired.has(old.id)||old.status!=='active')return;
+    retired.add(old.id);
+    this.suppress(old,'corrected',ctx);
+    const record=this.write({...old,revision:old.revision+1,status:'inactive',enabled:false,invalidatedReason:'父记忆已纠正',updatedAt:now()},ctx,old.revision);
+    const ids=[old.id,...this.invalidateChildren(old,'父记忆已纠正',ctx)];
+    this.persistInvalidation(ids,'corrected',record.revision,ctx,old.sources,old.scope==='personal');
+    this.invalidate(ids,'corrected',record.revision,ctx,old.sources,false);
+  }
   private expected(input: JsonObject, previous: MemoryRecord): void {
     if (!Number.isInteger(input.expectedRevision??input.revision) || (input.expectedRevision??input.revision) !== previous.revision) throw new ConflictError();
   }
@@ -425,7 +523,16 @@ export class MemoryController implements PluginController {
       if(publishing&&this.runningJob?.sourceFence)this.policy!.assert(this.runningJob.sourceFence,this.activeLease);
       const previous = store.db.prepare('SELECT revision,json FROM memory_records WHERE id=?').get(record.id);
       if (previousRevision === undefined ? !!previous : Number(previous?.revision) !== previousRevision) throw new ConflictError();
-      store.db.prepare('INSERT INTO memory_records(id,project_id,scope,status,enabled,revision,json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,enabled=excluded.enabled,revision=excluded.revision,json=excluded.json').run(record.id,record.projectId,record.scope,record.status,Number(record.enabled),record.revision,JSON.stringify(record));
+      // P0-S: keep the queryable v4 columns in sync with the canonical json record. New fields
+      // arrive through record camelCase metadata; legacy/unspecified paths keep defaults.
+      const extended=record as MemoryRecord&{kindV2?:string;subjectKey?:string;subjectCardinality?:string;trust?:string;authority?:string;autoPublished?:boolean;policyId?:string;policyVersion?:number;score?:number;conflictState?:string;lineageRoot?:string;semanticDigest?:string;lastUsedAt?:string;useCount?:number;feedbackScore?:number;expiresAt?:string;deletedAt?:string};
+      // P0 invariant: one active single-cardinality subject among AUTO-PUBLISHED records.
+      // Explicit user writes remain user-authoritative (P1 conflict center unifies them).
+      if(record.status==='active'&&extended.autoPublished===true&&extended.subjectKey&&(extended.subjectCardinality??'single')==='single'){
+        const peer=store.db.prepare("SELECT id FROM memory_records WHERE project_id=? AND scope=? AND subject_key=? AND status='active' AND auto_published=1 AND id<>?").get(record.projectId,record.scope,extended.subjectKey,record.id);
+        if(peer)throw new CapabilityError('VERSION_CONFLICT','同一主题已有自动发布的生效记忆，需先裁决冲突');
+      }
+      store.db.prepare('INSERT INTO memory_records(id,project_id,scope,status,enabled,revision,json,kind_v2,subject_key,subject_cardinality,trust,authority,auto_published,policy_id,policy_version,score,conflict_state,lineage_root,semantic_digest,last_used_at,use_count,feedback_score,expires_at,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,enabled=excluded.enabled,revision=excluded.revision,json=excluded.json,kind_v2=excluded.kind_v2,subject_key=COALESCE(excluded.subject_key,memory_records.subject_key),subject_cardinality=COALESCE(excluded.subject_cardinality,memory_records.subject_cardinality),trust=COALESCE(excluded.trust,memory_records.trust),authority=COALESCE(excluded.authority,memory_records.authority),auto_published=excluded.auto_published,policy_id=COALESCE(excluded.policy_id,memory_records.policy_id),policy_version=COALESCE(excluded.policy_version,memory_records.policy_version),score=COALESCE(excluded.score,memory_records.score),conflict_state=COALESCE(excluded.conflict_state,memory_records.conflict_state),lineage_root=excluded.lineage_root,semantic_digest=excluded.semantic_digest,last_used_at=COALESCE(excluded.last_used_at,memory_records.last_used_at),use_count=excluded.use_count,feedback_score=excluded.feedback_score,expires_at=COALESCE(excluded.expires_at,memory_records.expires_at),deleted_at=COALESCE(excluded.deleted_at,memory_records.deleted_at)').run(record.id,record.projectId,record.scope,record.status,Number(record.enabled),record.revision,JSON.stringify(record),extended.kindV2??(record.kind==='method'?null:record.kind),extended.subjectKey??null,extended.subjectCardinality??null,extended.trust??null,extended.authority??null,Number(!!extended.autoPublished),extended.policyId??null,extended.policyVersion??null,extended.score??null,extended.conflictState??null,extended.lineageRoot??(record.parentIds[0]??record.id),extended.semanticDigest??memorySemanticDigest(record),extended.lastUsedAt??null,Number(extended.useCount??0),Number(extended.feedbackScore??0),extended.expiresAt??null,extended.deletedAt??null);
       store.db.prepare('INSERT INTO memory_versions(id,revision,json) VALUES(?,?,?)').run(record.id,record.revision,JSON.stringify(record));
       store.db.prepare('DELETE FROM memory_search WHERE id=?').run(record.id);
       store.db.prepare('INSERT INTO memory_search(id,project_id,scope,tokens) VALUES(?,?,?,?)').run(record.id,record.projectId,record.scope,searchTokens(`${record.title} ${record.content}`).join(' '));
@@ -446,6 +553,10 @@ export class MemoryController implements PluginController {
     this.database(ctx).remove(`disabled-record:${record.id}`);
     const stmt = this.database(ctx).db.prepare("INSERT INTO memory_suppression(project_id,kind,hash,reason,created_at) VALUES(?,?,?,?,?) ON CONFLICT(project_id,kind,hash) DO UPDATE SET reason=CASE WHEN memory_suppression.reason='disabled' THEN excluded.reason ELSE memory_suppression.reason END");
     stmt.run(projectId,'content',digest(normalize(record.content)),reason,now());
+    // M03: remember the content-bytes family of the retired value so a reworded
+    // (fork/paraphrase) proposal cannot revive it while exact content suppression
+    // is bypassed by different bytes.
+    if(this.familyKeysFor(reason)){const family=buildSuppressionFamily(record.content,searchTokens);stmt.run(projectId,'family',family.hash,reason,now());this.database(ctx).put(`family-suppression:${projectId}:${family.hash}`,{v:1,family,reason,recordId:record.id,at:now()});}
     this.retireSources(this.refineSources(record.sources,record.content,ctx),reason,ctx,record.scope==='personal');
     for(const evidence of record.evidence||[])if(evidence.kind==='artifact')this.database(ctx).put(`retired-artifact:${projectId}:${digest([evidence.artifact.sha256,evidence.visibleRanges||evidence.artifact.ranges])}`,{artifact:evidence.artifact,ranges:evidence.visibleRanges,reason,at:now()});
   }
@@ -498,6 +609,18 @@ export class MemoryController implements PluginController {
     if (stmt.get(ctx.projectId,'content',digest(normalize(content)))||this.disabledSuppressions(ctx).some(value=>value.contentHash===digest(normalize(content)))) return true;
     return sources.some(source => this.sourceSuppressed(source,ctx));
   }
+  /** M03: content-bytes family identity catches paragraph/citation rewrites that exact hashes miss. */
+  private familySuppressed(content:string,ctx:PluginContext):boolean {
+    const db=this.database(ctx),families:SuppressionFamily[]=[];
+    for(const row of db.list<{v:1;family:SuppressionFamily}>(`family-suppression:${ctx.projectId}:`))if(row.value?.family)families.push(row.value.family);
+    for(const row of db.list<{v:1;family:SuppressionFamily}>('family-suppression:*:'))if(row.value?.family)families.push(row.value.family);
+    if(!families.length)return false;
+    return isRevivedRewrite({content},families,searchTokens).revived;
+  }
+  // M03 family identity is written for irreversible withdrawals only. 'corrected'
+  // statements necessarily re-quote the retired tokens (e.g. "47183 已作废"), so a
+  // family there would reject the sanctioned replacement instead of a revival.
+  private familyKeysFor(reason:string):boolean{return reason==='forgotten'||reason==='auto-revoked';}
   private refineSources(sources:SourceRef[],content:string,ctx:PluginContext):SourceRef[] {
     return sources.map(source=>{
       let item:HistoryItem;try{item=ctx.readSource(source);}catch{return source;}if(source.start!==undefined&&(source.start!==0||source.end!==item.text.length))return source;const facts=sourceFactRefs(item,source.sessionId);
@@ -574,7 +697,7 @@ export class MemoryController implements PluginController {
     if(typeof rawScope==='object'&&scope==='project'&&object(rawScope).projectId!==ctx.projectId)throw new CapabilityError('PERMISSION_DENIED','不能写入其他项目记忆');
     if (scope !== 'project' && scope !== 'personal') throw new Error('未知记忆范围');
     const latestUserItem=ctx.history().filter(item=>item.role==='user').at(-1);const latestUser=latestUserItem?typedUserText(latestUserItem)??'':'';
-    const explicit = (input.explicitRemember === true||input.userConfirmed===true) && !automatic && (ctx.origin === 'user' || ctx.origin === 'agent' && !/不要记住|别记住|不(?:要|用).*记|do not remember|don't remember/iu.test(latestUser) && /(?:请|麻烦|帮我|please|\s)*(?:记住|记一下|remember\b|save (?:this|my).*(?:memory|preference))/iu.test(latestUser));
+    const explicit = (input.explicitRemember === true||input.userConfirmed===true) && !automatic && (ctx.origin === 'user' || ctx.origin === 'agent' && isExplicitUserRemember(latestUser));
     if (scope === 'personal' && !explicit && !automatic) throw new Error('个人偏好自动学习必须有用户原始来源，模型不能自行确认');
     if (kind === 'preference' && scope !== 'personal') throw new Error('个人偏好请使用 personal 范围并明确记住');
     const evidenceInput=input.evidence;if(evidenceInput!==undefined&&(!Array.isArray(evidenceInput)||evidenceInput.length>200))throw new CapabilityError('VALIDATION_ERROR','evidence 必须是有界数组');
@@ -600,7 +723,13 @@ export class MemoryController implements PluginController {
     if(!Array.isArray(dependencies)||dependencies.length>100||dependencies.some(d=>!d||!['memory','expert'].includes(d.capability)||typeof d.id!=='string'||!Number.isInteger(d.version)||typeof d.hash!=='string'||!['derived-from','adopted'].includes(d.relation)))throw new CapabilityError('VALIDATION_ERROR','dependencies 无效');
     if(automatic && kind==='preference'&&!sources.some(source=>{const item=ctx.readSource(source),typed=typedUserText(item);return item.role==='user'&&typed!==undefined&&(source.end??item.text.length)<=typed.length&&!/(?:不要|别|不用|不必).{0,8}(?:记住|保存|学习)|do not remember|don't remember/iu.test(typed);}))return undefined;
     if (automatic && (this.suppressed(content,sources,ctx)||evidence.some(item=>item.kind==='artifact'&&this.artifactSuppressed(item,ctx)))) return undefined;
+    // M03: a paraphrase/quote rewrite of a forgotten or corrected fact must not be re-learned automatically.
+    // The sanctioned replacement of an explicit user correction is exempt: it necessarily re-quotes
+    // the retired value, and the publish stage re-validates its correction authority and target.
+    const correctionProposal=Array.isArray(input.supersedesMemoryIds)&&input.supersedesMemoryIds.length>0;
+    if (automatic && !correctionProposal && this.familySuppressed(content,ctx)) return undefined;
     if(explicit){const projectKey=scope==='personal'?'*':ctx.projectId;const db=this.database(ctx);db.db.prepare('DELETE FROM memory_suppression WHERE project_id=? AND kind=? AND hash=?').run(projectKey,'content',digest(normalize(content)));
+      const explicitFamily=buildSuppressionFamily(content,searchTokens);db.remove(`family-suppression:${projectKey}:${explicitFamily.hash}`);
       for(const item of evidence)if(item.kind==='artifact')for(const row of db.list<{artifact:ArtifactRef;ranges?:[number,number][]}>(`retired-artifact:${projectKey}:`))if(row.value.artifact.sha256===item.artifact.sha256&&digest(row.value.ranges||row.value.artifact.ranges)===digest(item.visibleRanges||item.artifact.ranges))db.remove(row.key);
       for(const source of sources){if(source.factId)db.db.prepare('DELETE FROM memory_suppression WHERE project_id=? AND kind=? AND hash=?').run(projectKey,'fact',source.factId);if(source.hash)db.db.prepare('DELETE FROM memory_suppression WHERE project_id=? AND kind=? AND hash=?').run(projectKey,'fragment',digest([source.entryId,source.start,source.end,source.hash]));
         for(const row of db.list<{source:SourceRef}>(`retired-source:${projectKey}:`))if(row.value.source.entryId===source.entryId&&row.value.source.start===source.start&&row.value.source.end===source.end&&row.value.source.hash===source.hash)db.remove(row.key);
@@ -621,13 +750,15 @@ export class MemoryController implements PluginController {
       return merged.length>duplicate.sources.length?this.write({...duplicate,sources:merged,evidence:[...duplicate.evidence||[],...evidence.filter(e=>!(duplicate.evidence||[]).some(old=>old.evidenceId===e.evidenceId))],revision:duplicate.revision+1,updatedAt:now()},ctx,duplicate.revision):duplicate;
     } // Identical/forked summaries add no evidence; distinct user cases can support a stable preference.
     const time = now();const subject=typeof input.subject==='string'?redactMemorySecrets(normalize(input.subject)).slice(0,200):undefined;
+    const subjectInfo=this.subjectMetadata({id:'',revision:0,projectId:ctx.projectId,scope,kind,title:'',content,status:'candidate',enabled:true,sources:[],parentIds:[],fingerprint:'',hash:digest(content),createdAt:time,updatedAt:time,aliases,conditions,subject} as MemoryRecord,ctx,input.subject);
     return this.write({
       id:randomUUID(),revision:1,projectId:ctx.projectId,scope,kind,
       title:typeof input.title === 'string' && input.title.trim() ? redactMemorySecrets(input.title.trim()).slice(0,200) : content.slice(0,70),
       schemaVersion:2,aliases,conditions,evidence,dependencies,validFrom,validTo,reviewAfter,assertedAt:time,...(explicit?{confirmedAt:time}:{}),confidence:explicit?'supported':'ambiguous',
       content,hash:digest(content),status:explicit ? 'active' : 'candidate',enabled:true,subject,
       sources,parentIds,fingerprint,createdAt:time,updatedAt:time,
-      ...(explicit ? {confirmedBy:'user' as const} : {}),
+      ...subjectInfo,
+      ...(explicit ? {confirmedBy:'user' as const,trust:'user_explicit' as const,authority:'user' as const,autoPublished:false} : {autoPublished:false}),
     },ctx);
   }
 
@@ -897,11 +1028,15 @@ export class MemoryController implements PluginController {
       const artifactAvailable=await this.artifactMaterial(job,ctx);ensure();
       const publishIds=job.activeProposalIds?.map(id=>job.proposalLedger!.find(proposal=>proposal.id===id)!.memoryId!).filter(Boolean)||job.memoryIds;
       const grouped=new Map<string,string[]>();for(const id of [...new Set([...publishIds,...job.memoryIds.filter(id=>!job.proposalLedger?.some(proposal=>proposal.memoryId===id))])]){const key=job.proposalLedger?.find(proposal=>proposal.memoryId===id)?.groupId||id;grouped.set(key,[...grouped.get(key)||[],id]);}
-      for(const [groupId,ids] of grouped){const before=structuredClone(job);try{this.store!.transaction(()=>{ensure();for(const id of ids){let record=this.get(id,ctx);if(record.kind==='method'||record.status!=='candidate'&&!job.proposalLedger?.some(proposal=>proposal.memoryId===record.id&&proposal.state==='validated'))continue;
+      for(const [groupId,ids] of grouped){const before=structuredClone(job);try{this.store!.transaction(()=>{ensure();
+        const db=this.store!.db,policy=this.publishPolicy(ctx),retired=new Set<string>();
+        for(const id of ids){let record=this.get(id,ctx);if(record.kind==='method'||record.status!=='candidate'&&!job.proposalLedger?.some(proposal=>proposal.memoryId===record.id&&proposal.state==='validated'))continue;
         const proposal=job.proposalLedger?.find(proposal=>proposal.memoryId===record.id&&proposal.state==='validated');const correctionIds=proposal?.supersedes?.map(item=>item.id)||[];
         // A generated variant of the same native correction is not a new conflicting observation.
         const canonicalCorrection=this.records(ctx).find(active=>sameNativeCorrectedFact(active,record));
-        const conflicts=canonicalCorrection?[]:this.records(ctx).filter(active=>!correctionIds.includes(active.id)&&active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
+        const meta=this.subjectMeta(record,ctx);const subjectKey=this.subjectKeyOf(record.subject)??meta.subjectKey;const subjectCardinality=subjectKey?(meta.subjectCardinality??'single'):null;
+        // Legacy title/fingerprint conflicts remain for subjectless records (P0 compatibility).
+        const conflicts=canonicalCorrection||subjectKey?[]:this.records(ctx).filter(active=>!correctionIds.includes(active.id)&&active.id!==record.id&&active.enabled&&active.status==='active'&&active.scope===record.scope&&active.fingerprint!==record.fingerprint&&(!record.validTo||!active.validFrom||record.validTo>active.validFrom)&&(!active.validTo||!record.validFrom||active.validTo>record.validFrom)&&(normalize(active.title)===normalize(record.title)||!!record.subject&&record.subject===active.subject));
         const supporting=record.evidence?.length?record.evidence.filter(e=>e.kind==='pi'&&e.relation!=='contradicts').map(e=>(e as Extract<MemoryEvidence,{kind:'pi'}>).source):record.sources;const sourced=supporting.map(source=>({source,item:ctx.readSource(source)}));const userSources=sourced.filter(({item,source})=>{const typed=typedUserText(item);return item.role==='user'&&typed!==undefined&&(source.end??item.text.length)<=typed.length&&!taskOrQuotedCue.test(userEvidenceContext(item,source))&&!/(?:不要|别|不用|不必).{0,8}(?:记住|保存|学习)|do not remember|don't remember/iu.test(typed);});
         const artifactOriginals=(record.evidence||[]).flatMap(e=>{
           if(e.kind!=='artifact'||e.relation==='contradicts'||e.observer.kind==='parser'||!e.visibleRanges?.length||!this.artifactEvidenceAvailable(e,ctx))return [];
@@ -920,15 +1055,36 @@ export class MemoryController implements PluginController {
         const factSupported=record.kind!=='fact'||factSourceSupported(record.content,[...userSources.map(({item,source})=>readSourceSpan(item,source)),...artifactOriginals].join('\n'));
         const preferenceSupported=record.kind!=='preference'||userSources.some(({item,source})=>explicitPreferenceSource(item,source));
         const artifactSupported=record.kind!=='preference'&&artifactOriginals.length>0;
-        const authoritative=preferenceSupported&&literalsSupported&&factSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text)));
+        const toolSource=sourced.some(({item})=>item.role==='toolResult'&&!/failed|error|失败|未通过/iu.test(item.text));
+        const authoritative=preferenceSupported&&literalsSupported&&factSupported&&(artifactSupported||userSources.length>0||record.kind==='experience'&&toolSource);
         if(proposal?.supersedes?.length&&(!authoritative||conflicts.length||canonicalCorrection))throw new CapabilityError('VALIDATION_ERROR','更正尚未通过发布权威性或冲突检查');
+        const trustInfo=this.trustForPublication({confirmedBy:record.confirmedBy,userSource:userSources.length>0,toolSource,artifact:artifactOriginals.length>0,authoritative,literalsSupported});
+        const peers=subjectKey?activeSubjectPeers(db,{projectId:record.projectId,scope:record.scope,subjectKey,excludeId:record.id}).filter(peer=>!correctionIds.includes(peer.id)):[];
+        const subjectDecision=subjectKey&&!canonicalCorrection?detectSubjectConflict({subjectKey,claimHash:this.claimOf(record),trust:trustInfo.trust,kind:record.kind,peers,hasCorrectionEvidence:!!proposal?.supersedes?.length,explicitSupersedeIntent:correctionMarker.test(record.content)}):undefined;
+        const existingHeld=canonicalCorrection?'同一用户更正已生效；派生提案保留候选，不改变已确认事实':conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
+        // Same normalized value on a subject: merge evidence into the active record, never duplicate it.
+        if(subjectDecision?.action==='merge'&&!canonicalCorrection){const peer=this.get(subjectDecision.peer.id,ctx);const evidenceKey=(source:SourceRef)=>source.factId||preciseKey(source);const mergedSources=[...new Map([...peer.sources,...record.sources].map(source=>[evidenceKey(source),source])).values()];const mergedEvidence=[...(peer.evidence||[]),...(record.evidence||[])].filter((item,index,all)=>all.findIndex(other=>other.evidenceId===item.evidenceId)===index);this.write({...peer,revision:peer.revision+1,sources:mergedSources,evidence:mergedEvidence,updatedAt:now()},ctx,peer.revision);record=this.write({...record,revision:record.revision+1,status:'inactive',enabled:false,invalidatedReason:'同一主题同值；证据已合并到已有生效记忆',updatedAt:now()},ctx,record.revision);if(proposal){proposal.state='published';proposal.reason=record.invalidatedReason;}continue;}
+        let status:MemoryStatus='candidate',held:string|undefined=existingHeld,conflictId:string|undefined,autoPublished=false,score:number|undefined;
+        // Blueprint §6.3: open conflict keeps the old value usable and isolates the new value as a candidate.
+        const conflictOpen=subjectDecision?.action==='open'&&!canonicalCorrection;
+        if(conflictOpen){const left=this.get(subjectDecision!.peer!.id,ctx);const conflict=this.openSubjectConflict(left,record,ctx,record.revision+1);conflictId=conflict.id;held='与同主题生效记忆冲突，等待用户裁决';}
+        if(subjectDecision&&subjectDecision.action==='supersede'&&!canonicalCorrection){const peer=this.get(subjectDecision.peer.id,ctx);this.retireSubjectPeer(peer,ctx,retired);}
         if(authoritative&&conflicts.length)for(const conflict of conflicts)this.write({...conflict,revision:conflict.revision+1,conflictIds:[...new Set([...conflict.conflictIds||[],record.id])],updatedAt:now()},ctx,conflict.revision);
-        const status=authoritative&&!conflicts.length&&!canonicalCorrection?'active':'candidate';
-        const held=canonicalCorrection?'同一用户更正已生效；派生提案保留候选，不改变已确认事实':conflicts.length?'与有效事实冲突，系统等待新来源消歧':!preferenceSupported?'原文不足以证明稳定个人偏好，暂不跨项目采用':!literalsSupported?'摘要包含原文未支持的名称或字面值，暂不用于上下文':!factSupported?'来源片段不能完整支持事实正文，暂不用于上下文':!authoritative?'来源未提供可采用的用户事实声明或客观验证，暂不用于上下文':undefined;
-        record=this.write({...record,revision:record.revision+1,status,confidence:status==='active'?'supported':'ambiguous',confirmedAt:status==='active'?now():undefined,confirmedBy:status==='active'?'system':undefined,conflictIds:conflicts.map(item=>item.id),invalidatedReason:held,updatedAt:now()},ctx,record.revision);
+        const eligible=authoritative&&conflicts.length===0&&!canonicalCorrection&&!conflictOpen;
+        // A same-subject correction must vacate the single-subject slot before the replacement activates.
+        if(eligible&&subjectKey&&subjectCardinality==='single'&&correctionIds.length)for(const target of proposal!.supersedes!){if(retired.has(target.id))continue;const old=this.get(target.id,ctx);if(old.status!=='active')continue;const oldMeta=this.subjectMeta(old,ctx);if((oldMeta.subjectKey??this.subjectKeyOf(old.subject))!==subjectKey)continue;this.retireSubjectPeer(old,ctx,retired);}
+        if(eligible){
+          const independent=new Set([...sourced.map(({source})=>source.factId??preciseKey(source)),...(record.evidence||[]).filter(e=>e.kind==='artifact').map(e=>`artifact:${(e as Extract<MemoryEvidence,{kind:'artifact'}>).observationReceiptId}:${digest((e as Extract<MemoryEvidence,{kind:'artifact'}>).visibleRanges??(e as Extract<MemoryEvidence,{kind:'artifact'}>).artifact.ranges)}`)]).size;
+          const facts:CandidateFacts={kind:record.kind,trust:trustInfo.trust,authority:trustInfo.authority,quoteVerbatim:authoritative,quoteUnique:true,conditionsComplete:Array.isArray(record.conditions)&&record.conditions.every(condition=>typeof condition==='string'&&condition.trim().length>0),subjectKey:subjectKey??null,subjectCardinality:subjectCardinality??null,subjectConflict:false,correctionEvidence:subjectDecision?.action==='supersede'||!!proposal?.supersedes?.length,secretFree:!record.content.includes('[REDACTED_SECRET]'),piiFree:!PII_CONTENT.test(record.content),promptInjectionFree:!PROMPT_INJECTION_CONTENT.test(record.content),crossProjectLeak:false,novelty:'new',independentSources:independent,independentProjects:1,userPolicyEnabled:this.settings(ctx).enabled!==false&&!this.settings(ctx).paused&&policy.mode!=='off',autoPublishedToday:this.publishStore(ctx).countAutoPublishedToday(ctx.projectId),runtimeHealthy:true};
+          const decision=decideAutoPublish(facts,policy);score=decision.score;status=decision.status==='active'?'active':'candidate';autoPublished=status==='active'&&policy.mode!=='off';
+          if(status!=='active')held=held??decision.reason??'未通过自动发布门禁';
+          const audit=this.publishStore(ctx).record({projectId:ctx.projectId,memoryId:record.id,revision:record.revision+1,action:status==='active'?'publish':'candidate',mode:policy.mode,policyId:policy.id,policyVersion:policy.version,score:decision.score,gates:decision.gates,trust:trustInfo.trust,authority:trustInfo.authority,jobId:job.id,actor:'system',before:{status:'candidate'},after:{status,reason:held},batchKey:job.id});
+          if(status==='active')this.store!.afterCommit(()=>ctx.emit('memory.autopublish',{v:1,eventId:randomUUID(),projectId:ctx.projectId,memoryId:record.id,revision:record.revision+1,score:decision.score,rollbackToken:audit.rollbackToken,policyId:policy.id,policyVersion:policy.version}));
+        }
+        record=this.write({...record,revision:record.revision+1,status,confidence:status==='active'?'supported':'ambiguous',confirmedAt:status==='active'?now():undefined,confirmedBy:status==='active'?'system':undefined,conflictIds:conflicts.map(item=>item.id),invalidatedReason:held,updatedAt:now(),subjectKey:subjectKey??record.subjectKey,subjectCardinality:subjectCardinality??record.subjectCardinality,trust:trustInfo.trust,authority:trustInfo.authority,autoPublished,...(autoPublished?{policyId:policy.id,policyVersion:policy.version,score}:{}),...(conflictId?{conflictId,conflictState:'open' as const}:{})},ctx,record.revision);
         if(proposal){proposal.state=record.status==='active'?'published':'candidate';proposal.reason=held;}
       }
-      const retired=new Set<string>();for(const proposal of job.proposalLedger||[]){if(proposal.groupId!==groupId||!job.activeProposalIds?.includes(proposal.id)||!proposal.supersedes?.length)continue;for(const target of proposal.supersedes){if(retired.has(target.id))continue;retired.add(target.id);const old=this.get(target.id,ctx);if(old.revision!==target.revision)throw new ConflictError();this.suppress(old,'corrected',ctx);this.write({...old,status:'inactive',enabled:false,revision:old.revision+1,updatedAt:now()},ctx,old.revision);const ids=[old.id,...this.invalidateChildren(old,'父记忆已纠正',ctx)];this.persistInvalidation(ids,'corrected',old.revision+1,ctx,old.sources,old.scope==='personal');this.invalidate(ids,'corrected',old.revision+1,ctx,old.sources,false);job.sourceEpoch=this.epoch(ctx);}}
+      for(const proposal of job.proposalLedger||[]){if(proposal.groupId!==groupId||!job.activeProposalIds?.includes(proposal.id)||!proposal.supersedes?.length)continue;for(const target of proposal.supersedes){if(retired.has(target.id))continue;retired.add(target.id);const old=this.get(target.id,ctx);if(old.status==='active'){if(old.revision!==target.revision)throw new ConflictError();this.suppress(old,'corrected',ctx);this.write({...old,status:'inactive',enabled:false,revision:old.revision+1,updatedAt:now()},ctx,old.revision);}const ids=[old.id,...this.invalidateChildren(old,'父记忆已纠正',ctx)];this.persistInvalidation(ids,'corrected',old.revision+1,ctx,old.sources,old.scope==='personal');this.invalidate(ids,'corrected',old.revision+1,ctx,old.sources,false);job.sourceEpoch=this.epoch(ctx);}}
       this.writeJob(job);
       });}catch(error){Object.assign(job,before);ensure();const code=(error as {code?:string})?.code;if(code&&['SOURCE_UNAVAILABLE','OPERATION_UNKNOWN','PERMISSION_DENIED','VERSION_CONFLICT'].includes(code)||error instanceof ConflictError)throw error;this.store!.transaction(()=>{for(const proposal of job.proposalLedger||[]){if(proposal.groupId!==groupId)continue;proposal.state='rejected';proposal.reason=redactMemorySecrets(errorMessage(error));if(proposal.memoryId){const record=this.get(proposal.memoryId,ctx);if(record.status==='candidate')this.write({...record,revision:record.revision+1,invalidatedReason:proposal.reason,updatedAt:now()},ctx,record.revision);}}this.writeJob(job);});}}
       job.activeProposalIds=[];const final=job.memoryIds.map(id=>this.get(id,ctx));if(job.diagnostics?.reflection)job.diagnostics.reflection.processed=job.proposalLedger?.filter(proposal=>!['pending','validated'].includes(proposal.state)).length??job.diagnostics.reflection.processed;job.diagnostics={v:1,...job.diagnostics,publication:{active:final.filter(record=>record.status==='active').length,candidates:final.filter(record=>record.status==='candidate').length}};job.stage=job.proposalLedger?.some(proposal=>proposal.state==='pending')?'validate':'compact';if(job.stage==='compact'){job.pendingRanges=[];job.pendingArtifacts=[];}this.writeJob(job);return;
@@ -1006,7 +1162,12 @@ export class MemoryController implements PluginController {
           // The current fact and its support must change together. Old evidence
           // remains in memory_versions; it cannot support the replacement quote.
           const evidence:MemoryEvidence[]=[{kind:'pi',evidenceId:digest([preciseKey(source),'corrects']),relation:'corrects',observedAt:item.timestamp||now(),source,sourceRole:'user',visibility:'native-text'}];
-          this.suppress(old,'corrected',ctx);const next=this.write({...old,revision:old.revision+1,status:'active',enabled:true,...(old.subject?.startsWith('project-rule:')?{title:redactMemorySecrets(content).slice(0,200)}:{}),content:redactMemorySecrets(content),fingerprint:digest(normalize(redactMemorySecrets(content))),sources:[source],evidence,confirmedBy:'user',conflictIds:[],invalidatedReason:undefined,updatedAt:now()},ctx,old.revision);revision=next.revision;
+          // A user correction is authoritative: any other active single-subject peer is superseded first.
+          const oldMeta=this.subjectMeta(old,ctx),oldSubject=this.subjectKeyOf(old.subject)??oldMeta.subjectKey;
+          if(oldSubject&&(oldMeta.subjectCardinality??'single')==='single'){const retiredPeers=new Set<string>();for(const peer of activeSubjectPeers(this.database(ctx).db,{projectId:ctx.projectId,scope:old.scope,subjectKey:oldSubject,excludeId:old.id}))this.retireSubjectPeer(this.get(peer.id,ctx),ctx,retiredPeers);}
+          this.suppress(old,'corrected',ctx);const next=this.write({...old,revision:old.revision+1,status:'active',enabled:true,...(old.subject?.startsWith('project-rule:')?{title:redactMemorySecrets(content).slice(0,200)}:{}),content:redactMemorySecrets(content),fingerprint:digest(normalize(redactMemorySecrets(content))),sources:[source],evidence,confirmedBy:'user',trust:'user_explicit',authority:'user',autoPublished:false,conflictIds:[],conflictId:undefined,conflictState:undefined,invalidatedReason:undefined,updatedAt:now()},ctx,old.revision);revision=next.revision;
+          // Close conflicts that this user correction just decided (the corrected record supplies the new value).
+          for(const conflict of this.conflictStore(ctx).list(ctx.projectId,{status:'open'})){const side=conflict.sides.find(item=>item.memoryId===old.id);if(!side)continue;this.conflictStore(ctx).transition(conflict.id,ctx.projectId,{resolution:side.side==='left'?'keep_left':'keep_right',resolvedBy:'user',notes:'用户明确更正后自动裁决'});this.store!.afterCommit(()=>ctx.emit('memory.conflict.resolved',{v:1,eventId:randomUUID(),projectId:ctx.projectId,conflictId:conflict.id,resolution:side.side==='left'?'keep_left':'keep_right',by:'correction'}));}
         }
         // Retire the original fact even if no long-term record has been extracted
         // yet. This marker/epoch fences a captured Reflection without promoting
@@ -1119,13 +1280,98 @@ export class MemoryController implements PluginController {
   }
   snapshot(ctx: PluginContext): JsonObject {
     const records = this.records(ctx); const jobs = this.jobs(ctx);
+    let conflicts:ConflictRecord[]=[];let autoPublish:JsonObject={};
+    try{conflicts=this.conflictStore(ctx).list(ctx.projectId);}catch{conflicts=[];}
+    try{const policy=this.publishPolicy(ctx);autoPublish={policy,stats:this.publishStore(ctx).stats(ctx.projectId),audit:this.publishStore(ctx).listAudit(ctx.projectId,{limit:20})};}catch{autoPublish={};}
     return {
       memories:records.filter(record => record.status === 'active' || record.status === 'inactive'),
       candidates:records.filter(record => record.status === 'candidate' || record.status === 'invalidated'),
       learning:{...this.settings(ctx),running:jobs.some(job => job.state === 'running'),queued:jobs.filter(job => job.state === 'queued').length,jobs:jobs.map(job=>this.learningDiagnostic(job))},
       derivedRefs:records.filter(record => record.parentIds.length).map(record => ({id:record.id,parentIds:record.parentIds,status:record.status,revision:record.revision})),
-      usage:this.usage(ctx),feedback:this.feedbacks(ctx),epoch:this.epoch(ctx),schemaVersion:2,
+      usage:this.usage(ctx),feedback:this.feedbacks(ctx),epoch:this.epoch(ctx),schemaVersion:MEMORY_SCHEMA_VERSION,
+      conflicts,autoPublish,
     };
+  }
+
+  private conflictList(input:JsonObject,ctx:PluginContext):JsonObject {
+    const status=input.status===undefined?undefined:String(input.status);
+    if(status!==undefined&&!['open','deferred','resolved','superseded'].includes(status))throw new CapabilityError('VALIDATION_ERROR','冲突状态无效');
+    return {conflicts:this.conflictStore(ctx).list(ctx.projectId,status?{status:status as 'open'|'deferred'|'resolved'|'superseded'}:{})};
+  }
+  private conflictResolve(input:JsonObject,ctx:PluginContext):JsonObject {
+    if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','冲突裁决必须由用户操作');
+    const id=text(input.id,'冲突编号'),resolution=String(input.resolution);
+    if(!['keep_left','keep_right','merge','both','neither','defer'].includes(resolution))throw new CapabilityError('VALIDATION_ERROR','冲突裁决无效');
+    const store=this.conflictStore(ctx),conflict=store.get(id,ctx.projectId);
+    if(!conflict)throw new CapabilityError('VALIDATION_ERROR','冲突不存在');
+    if(input.expectedStatus!==undefined&&String(input.expectedStatus)!==conflict.status)throw new ConflictError('冲突状态已变化，请刷新后重试');
+    if(conflict.status!=='open'&&conflict.status!=='deferred')throw new ConflictError('冲突已裁决或已取代，不能再次迁移');
+    if(resolution==='defer')return {conflict:store.transition(id,ctx.projectId,{resolution:'defer',resolvedBy:'user',...(typeof input.notes==='string'?{notes:input.notes}:{})}),affectedRecordIds:[],records:[]};
+    const sideOf=(side:'left'|'right')=>{const found=conflict.sides.find(item=>item.side===side);if(!found)throw new CapabilityError('VALIDATION_ERROR',`冲突缺少${side}侧`);return this.get(found.memoryId,ctx);};
+    const left=sideOf('left'),right=sideOf('right');const affected=new Set<string>(),records:MemoryRecord[]=[];
+    const put=(record:MemoryRecord,status:MemoryStatus,extra:Partial<MemoryRecord>):MemoryRecord=>{const next=this.write({...record,revision:record.revision+1,status,enabled:status==='active',updatedAt:now(),...extra},ctx,record.revision);affected.add(next.id);records.push(next);return next;};
+    const activate=(record:MemoryRecord):MemoryRecord=>record.status==='active'?record:put(record,'active',{confirmedBy:'user',confirmedAt:now(),trust:'user_confirmed',authority:'user',autoPublished:false,conflictId:undefined,conflictState:undefined,invalidatedReason:undefined});
+    const deactivate=(record:MemoryRecord,reason:string):MemoryRecord=>record.status==='inactive'&&!record.enabled?record:put(record,'inactive',{invalidatedReason:reason,conflictId:undefined,conflictState:undefined});
+    if(resolution==='keep_left'){activate(left);deactivate(right,'冲突裁决：保留另一侧');}
+    else if(resolution==='keep_right'){deactivate(left,'冲突裁决：保留另一侧');activate(right);}
+    else if(resolution==='neither'){deactivate(left,'冲突裁决：两侧都不再适用');deactivate(right,'冲突裁决：两侧都不再适用');}
+    else if(resolution==='both'){
+      const conditionsLeft=(left.conditions||[]).map(normalize).filter(Boolean),conditionsRight=(right.conditions||[]).map(normalize).filter(Boolean);
+      if(!conditionsLeft.length||!conditionsRight.length||digest(conditionsLeft)===digest(conditionsRight))throw new CapabilityError('VALIDATION_ERROR','both 裁决要求两侧都有可区分的适用条件');
+      const meta=this.subjectMeta(right,ctx),subjectKey=this.subjectKeyOf(right.subject)??meta.subjectKey;
+      if(!subjectKey)throw new CapabilityError('VALIDATION_ERROR','both 裁决需要可靠的主题键');
+      const existing=getSubject(this.database(ctx).db,ctx.projectId,right.scope==='personal'?'personal':'project',subjectKey);
+      registerSubject(this.database(ctx).db,{projectId:ctx.projectId,scope:right.scope==='personal'?'personal':'project',key:subjectKey,label:existing?.label??right.title,aliases:existing?.aliases||[],cardinality:'multi',valueType:existing?.valueType??'freeform',sensitivity:existing?.sensitivity??'normal',createdAt:existing?.createdAt??now(),updatedAt:now()});
+      const markMulti=(record:MemoryRecord):MemoryRecord=>this.write({...record,subjectKey,subjectCardinality:'multi',revision:record.revision+1,updatedAt:now()},ctx,record.revision);
+      const nextLeft=left.subjectCardinality==='multi'?left:markMulti(left);affected.add(nextLeft.id);records.push(nextLeft);
+      const nextRight=activate(right);this.write({...nextRight,subjectKey,subjectCardinality:'multi',revision:nextRight.revision+1,updatedAt:now()},ctx,nextRight.revision);records[records.length-1]=this.get(nextRight.id,ctx);affected.add(nextRight.id);
+      activate(left.status==='active'?left:nextLeft);
+    }else if(resolution==='merge'){
+      const content=text(input.content,'合并后的正文',50000);const meta=this.subjectMeta(right,ctx),subjectKey=this.subjectKeyOf(left.subject)??this.subjectKeyOf(right.subject)??meta.subjectKey;
+      const sources=[...new Map([...left.sources,...right.sources].map(source=>[source.factId||preciseKey(source),source])).values()];
+      const evidence=[...(left.evidence||[]),...(right.evidence||[])].filter((item,index,all)=>all.findIndex(other=>other.evidenceId===item.evidenceId)===index);
+      const time=now();const merged=this.write({id:randomUUID(),revision:1,projectId:ctx.projectId,scope:left.scope,kind:left.kind,title:typeof input.title==='string'?redactMemorySecrets(text(input.title,'标题',200)):left.title,content:redactMemorySecrets(content),status:'active',enabled:true,confirmedBy:'user',confirmedAt:time,trust:'user_confirmed',authority:'user',autoPublished:false,aliases:[...new Set([...(left.aliases||[]),...(right.aliases||[])])],conditions:[...new Set([...(left.conditions||[]),...(right.conditions||[])])],sources,parentIds:[left.id,right.id],evidence,dependencies:[...(left.dependencies||[]),...(right.dependencies||[])].filter((item,index,all)=>all.findIndex(other=>other.id===item.id&&other.capability===item.capability)===index),fingerprint:digest([left.scope,left.kind,normalize(subjectKey||''),normalize(redactMemorySecrets(content)),[...new Set([...(left.conditions||[]),...(right.conditions||[])])].map(normalize)]),hash:digest(redactMemorySecrets(content)),createdAt:time,updatedAt:time,...(subjectKey?{subjectKey,subjectCardinality:'single' as const,subject:left.subject??right.subject}:{}),assertedAt:time},ctx);
+      affected.add(merged.id);records.push(merged);deactivate(left,'冲突裁决：已合并');deactivate(right,'冲突裁决：已合并');
+    }
+    const updated=store.transition(id,ctx.projectId,{resolution:resolution as 'keep_left'|'keep_right'|'merge'|'both'|'neither',resolvedBy:'user',...(typeof input.notes==='string'?{notes:input.notes}:{})});
+    this.store!.afterCommit(()=>ctx.emit('memory.conflict.resolved',{v:1,eventId:randomUUID(),projectId:ctx.projectId,conflictId:id,resolution,affectedRecordIds:[...affected]}));
+    return {conflict:updated,affectedRecordIds:[...affected],records};
+  }
+  private autoPublishStatus(input:JsonObject,ctx:PluginContext):JsonObject {
+    const limit=input.limit===undefined?20:Math.min(500,Math.max(1,Number(input.limit)));
+    return {policy:this.publishPolicy(ctx) as unknown as JsonObject,stats:this.publishStore(ctx).stats(ctx.projectId) as unknown as JsonObject,audit:this.publishStore(ctx).listAudit(ctx.projectId,{limit}) as unknown as JsonObject[]};
+  }
+  private autoPublishSettings(input:JsonObject,ctx:PluginContext):JsonObject {
+    if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','自动发布策略必须由用户配置');
+    const patch:Parameters<AutoPublishStore['updatePolicy']>[1]={};
+    if(input.mode!==undefined)patch.mode=String(input.mode) as AutoPublishMode;
+    if(input.minScore!==undefined)patch.minScore=Number(input.minScore);
+    if(input.maxAutoPerDay!==undefined)patch.maxAutoPerDay=Number(input.maxAutoPerDay);
+    if(input.requireReview!==undefined){if(typeof input.requireReview!=='boolean')throw new CapabilityError('VALIDATION_ERROR','requireReview 必须是布尔值');patch.requireReview=input.requireReview;}
+    if(!Object.keys(patch).length)throw new CapabilityError('VALIDATION_ERROR','自动发布设置没有可更新字段');
+    const current=this.publishPolicy(ctx);const expected=input.expectedVersion===undefined?current.version:Number(input.expectedVersion);
+    if(!Number.isInteger(expected))throw new CapabilityError('VALIDATION_ERROR','expectedVersion 必须是整数');
+    const policy=this.publishStore(ctx).updatePolicy(ctx.projectId,patch,expected);
+    this.store!.afterCommit(()=>ctx.emit('memory.autopublish',{v:1,eventId:randomUUID(),projectId:ctx.projectId,action:'settings',policy}));
+    return policy as unknown as JsonObject;
+  }
+  private autoPublishRevoke(input:JsonObject,ctx:PluginContext):JsonObject {
+    if(ctx.origin!=='user')throw new CapabilityError('PERMISSION_DENIED','撤销自动发布必须由用户操作');
+    const ids=input.ids===undefined?undefined:(Array.isArray(input.ids)?input.ids.map(value=>text(value,'记忆编号')):undefined);
+    if(input.ids!==undefined&&!ids)throw new CapabilityError('VALIDATION_ERROR','ids 必须是记忆编号数组');
+    const rows=this.publishStore(ctx).revoke({projectId:ctx.projectId,ids,batchKey:typeof input.batchKey==='string'?input.batchKey:undefined,policyVersion:input.policyVersion===undefined?undefined:Number(input.policyVersion),since:typeof input.since==='string'?input.since:undefined,actor:'user',reason:typeof input.reason==='string'?redactMemorySecrets(input.reason):undefined});
+    const revoked:string[]=[],skipped:{id:string;reason:string}[]=[];const sources:SourceRef[]=[];
+    for(const row of rows){let record:MemoryRecord;try{record=this.get(row.memoryId,ctx);}catch{skipped.push({id:row.memoryId,reason:'记录已不存在'});continue;}
+      if(record.status!=='active'||record.revision!==Number(row.revision)){skipped.push({id:record.id,reason:'记录已变化，未自动撤销'});continue;}
+      sources.push(...record.sources);this.suppress(record,'auto-revoked',ctx);
+      const next=this.write({...record,revision:record.revision+1,status:'inactive',enabled:false,autoPublished:false,invalidatedReason:'自动发布已由用户撤回',updatedAt:now()},ctx,record.revision);
+      const children=this.invalidateChildren(next,'自动发布已撤回',ctx);const affected=[next.id,...children];revoked.push(next.id);
+      this.persistInvalidation(affected,'auto-revoked',next.revision,ctx,sources,record.scope==='personal');
+      this.invalidate(affected,'auto-revoked',next.revision,ctx,[],false);
+    }
+    const downgrade=revoked.length?this.publishStore(ctx).noteRevoke(ctx.projectId,revoked.length):{downgraded:false};
+    this.store!.afterCommit(()=>ctx.emit('memory.autopublish.revoked',{v:1,eventId:randomUUID(),projectId:ctx.projectId,revoked,downgraded:!!downgrade.downgraded,...(downgrade.mode?{mode:downgrade.mode}:{})}));
+    return {revoked,skipped,...(downgrade.mode?{mode:downgrade.mode}:{})};
   }
 
   async dispatch(action:string,input:JsonObject,ctx:PluginContext):Promise<unknown> {
@@ -1134,7 +1380,7 @@ export class MemoryController implements PluginController {
       if(input.artifact){const artifact=object(input.artifact) as unknown as ArtifactRef;if(!this.records(ctx).some(record=>!this.unavailable(record,{},ctx)&&record.evidence?.some(e=>e.kind==='artifact'&&e.artifact.artifactId===artifact.artifactId&&e.artifact.version===artifact.version&&e.artifact.sha256===artifact.sha256))&&ctx.origin!=='user')throw new CapabilityError('SOURCE_UNAVAILABLE','产物不是已登记有效记忆的来源');if(!ctx.readArtifact)throw new CapabilityError('CAPABILITY_UNAVAILABLE','宿主产物读取未提供');return ctx.readArtifact(object(input.artifact) as unknown as ArtifactRef,{observationReceiptId:typeof input.observationReceiptId==='string'?input.observationReceiptId:undefined,cursor:input.cursor===undefined?undefined:this.bounded(input.cursor,0,Number.MAX_SAFE_INTEGER),maxChars:this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET)});}
       const source=object(input.source||input.ref) as unknown as SourceRef;this.policy!.assertSource(source);if(ctx.origin!=='user'&&(!this.records(ctx).some(record=>!this.unavailable(record,{},ctx)&&record.sources.some(ref=>ref.sessionId===source.sessionId&&ref.entryId===source.entryId&&(ref.start??0)<=(source.start??0)&&(source.end??Infinity)<=(ref.end??Infinity)))||this.sourceSuppressed(source,ctx)))throw new CapabilityError('SOURCE_UNAVAILABLE','原文回溯仅限已登记且有效的记忆来源');const item=ctx.readSource(source),span=readSourceSpan(item,source);const cursor=this.bounded(input.cursor,0,span.length),max=this.bounded(input.maxChars,READ_BUDGET,READ_BUDGET),end=Math.min(span.length,cursor+max);return {source,text:span.slice(cursor,end),hash:digest(span),sentSliceHash:digest(span.slice(cursor,end)),fullLength:span.length,visibleRanges:[[cursor,end]],...(end<span.length?{nextCursor:end,omittedRanges:[[end,span.length]]}:{})};
     }
-    const writes=new Set(['feedback','save','update','accept','toggle','forget','source.deleted','learning.run','learning.retry','learning.pause','learning.resume','learning.settings','learning.configuration']);
+    const writes=new Set(['feedback','save','update','accept','toggle','forget','source.deleted','learning.run','learning.retry','learning.pause','learning.resume','learning.settings','learning.configuration','conflict.resolve','autoPublish.settings','autoPublish.revoke']);
     if(!writes.has(action)){const result=this.action(action,input,ctx);if(action==='projection.status'||action==='projection.rebuild')return this.projectViews(ctx);return result;}
     const operationId=input.operationId===undefined?randomUUID():text(input.operationId,'operationId',200);
     if(input.origin!==undefined)throw new CapabilityError('PERMISSION_DENIED','origin 由可信入口提供');
@@ -1152,6 +1398,11 @@ export class MemoryController implements PluginController {
     this.database(ctx);
     switch (action) {
       case 'snapshot': return this.snapshot(ctx);
+      case 'conflict.list': return this.conflictList(input,ctx);
+      case 'conflict.resolve': return this.conflictResolve(input,ctx);
+      case 'autoPublish.status': return this.autoPublishStatus(input,ctx);
+      case 'autoPublish.settings': return this.autoPublishSettings(input,ctx);
+      case 'autoPublish.revoke': return this.autoPublishRevoke(input,ctx);
       case 'impact.preview': return this.impactPreview(input,ctx);
       case 'diagnostics': return {jobs:this.jobs(ctx).filter(job=>!input.jobId||job.id===input.jobId).map(job=>this.learningDiagnostic(job)),usage:this.usage(ctx),recallBoundary:'分别核对选中、上下文观察、请求准备与响应观察；读取收据不代表模型采纳或答案正确'};
       case 'list': {const records=this.records(ctx).filter(record=>this.scopeMatches(record,input,ctx)&&(!input.status||record.status===input.status));const cursor=this.bounded(input.cursor,0,records.length),limit=this.bounded(input.limit,100,100);return {...this.snapshot(ctx),records:records.slice(cursor,cursor+limit),nextCursor:cursor+limit<records.length?cursor+limit:undefined};}
@@ -1220,7 +1471,20 @@ export class MemoryController implements PluginController {
         return this.store!.transaction(() => {
           const previous = this.get(input.id,ctx);this.readonlyLegacy(previous); this.expected(input,previous);
           if (previous.status === 'invalidated') throw new Error('派生来源无效，不能直接采用');
-          return this.write({...previous,revision:previous.revision+1,status:'active',enabled:true,confidence:'supported',confirmedAt:now(),confirmedBy:'user',updatedAt:now()},ctx,previous.revision);
+          // P0: direct user confirmation does not silently discard a different active value.
+          // It either merges equal evidence or opens a first-class conflict for user resolution.
+          const meta=this.subjectMeta(previous,ctx),subjectKey=this.subjectKeyOf(previous.subject)??meta.subjectKey;
+          if(subjectKey&&(meta.subjectCardinality??'single')==='single'){
+            const peers=activeSubjectPeers(this.database(ctx).db,{projectId:ctx.projectId,scope:previous.scope,subjectKey,excludeId:previous.id});
+            if(peers.length){
+              const decision=detectSubjectConflict({subjectKey,claimHash:this.claimOf(previous),trust:'user_confirmed',kind:previous.kind,peers,hasCorrectionEvidence:false,explicitSupersedeIntent:false});
+              if(decision.action==='merge'){const peer=this.get(decision.peer.id,ctx);const evidenceKey=(source:SourceRef)=>source.factId||preciseKey(source);const mergedSources=[...new Map([...peer.sources,...previous.sources].map(source=>[evidenceKey(source),source])).values()];const mergedEvidence=[...(peer.evidence||[]),...(previous.evidence||[])].filter((item,index,all)=>all.findIndex(other=>other.evidenceId===item.evidenceId)===index);this.write({...peer,revision:peer.revision+1,sources:mergedSources,evidence:mergedEvidence,updatedAt:now()},ctx,peer.revision);return this.write({...previous,revision:previous.revision+1,status:'candidate',invalidatedReason:'同一主题同值；证据已合并到已有生效记忆',updatedAt:now()},ctx,previous.revision);}
+              if(decision.action!=='open'||!decision.peer)throw new CapabilityError('VALIDATION_ERROR','同主题冲突无法定位生效值');
+              const left=this.get(decision.peer.id,ctx);const conflict=this.openSubjectConflict(left,previous,ctx,previous.revision+1);
+              return this.write({...previous,revision:previous.revision+1,status:'candidate',conflictId:conflict.id,conflictState:'open',invalidatedReason:'与同主题生效记忆冲突，等待用户裁决',updatedAt:now()},ctx,previous.revision);
+            }
+          }
+          return this.write({...previous,revision:previous.revision+1,status:'active',enabled:true,confidence:'supported',confirmedAt:now(),confirmedBy:'user',trust:'user_confirmed',authority:'user',autoPublished:false,updatedAt:now()},ctx,previous.revision);
         });
       }
       case 'update': {
@@ -1235,7 +1499,16 @@ export class MemoryController implements PluginController {
           if(changedBody)this.suppress(previous,'corrected',ctx);
           if (previous.status === 'invalidated' && ctx.origin !== 'user') throw new Error('来源无效的记忆仅可由用户纠正');
           const userConfirmed = ctx.origin === 'user';
-          const changed = this.write({...previous,...(userConfirmed&&changedBody&&input.sources===undefined?{sources:[],evidence:[]}:{}),revision:previous.revision+1,content,...(input.aliases!==undefined?{aliases:this.strings(input.aliases,'aliases')}:{}),...(input.conditions!==undefined?{conditions:this.strings(input.conditions,'conditions')}:{}),...(input.validFrom!==undefined?{validFrom:this.time(input.validFrom,'validFrom')}:{}),...(input.validTo!==undefined?{validTo:this.time(input.validTo,'validTo')}:{}),...(input.reviewAfter!==undefined?{reviewAfter:this.time(input.reviewAfter,'reviewAfter')}:{}),...(nextSources!==undefined?{sources:nextSources,evidence:undefined}:{}),title:typeof input.title === 'string' ? redactMemorySecrets(text(input.title,'标题',200)) : previous.title===previous.content.slice(0,70)?content.slice(0,70):previous.title,fingerprint:digest(normalize(content)),status:userConfirmed ? 'active' : 'candidate',confidence:userConfirmed?'supported':'ambiguous',confirmedAt:userConfirmed?now():undefined,enabled:userConfirmed ? true : previous.enabled,confirmedBy:userConfirmed ? 'user' : undefined,invalidatedReason:userConfirmed ? undefined : previous.invalidatedReason,updatedAt:now()},ctx,previous.revision);
+          const autoCorrected=userConfirmed&&changedBody&&previous.autoPublished===true;
+          let downgraded:{downgraded:boolean;mode?:AutoPublishMode}|undefined;
+          if(userConfirmed&&changedBody&&previous.autoPublished===true){try{downgraded=this.publishStore(ctx).noteCorrection(ctx.projectId,previous.id);}catch{/* stats are optional */}}
+          if(userConfirmed&&changedBody){
+            // Explicit user edit is authoritative: a different active same-subject value is replaced first.
+            const previousMeta=this.subjectMeta(previous,ctx),subjectKey=this.subjectKeyOf(previous.subject)??previousMeta.subjectKey;
+            if(subjectKey&&(previousMeta.subjectCardinality??'single')==='single'){const retiredPeers=new Set<string>();const nextConditions=input.conditions!==undefined?this.strings(input.conditions,'conditions'):previous.conditions||[];const nextClaim=subjectClaimHash({content,conditions:nextConditions});for(const peer of activeSubjectPeers(this.database(ctx).db,{projectId:ctx.projectId,scope:previous.scope,subjectKey,excludeId:previous.id})){if(peer.claimHash===nextClaim)continue;this.retireSubjectPeer(this.get(peer.id,ctx),ctx,retiredPeers);}}
+          }
+          const changed = this.write({...previous,...(userConfirmed&&changedBody&&input.sources===undefined?{sources:[],evidence:[]}:{}),revision:previous.revision+1,content,...(input.aliases!==undefined?{aliases:this.strings(input.aliases,'aliases')}:{}),...(input.conditions!==undefined?{conditions:this.strings(input.conditions,'conditions')}:{}),...(input.validFrom!==undefined?{validFrom:this.time(input.validFrom,'validFrom')}:{}),...(input.validTo!==undefined?{validTo:this.time(input.validTo,'validTo')}:{}),...(input.reviewAfter!==undefined?{reviewAfter:this.time(input.reviewAfter,'reviewAfter')}:{}),...(nextSources!==undefined?{sources:nextSources,evidence:undefined}:{}),title:typeof input.title === 'string' ? redactMemorySecrets(text(input.title,'标题',200)) : previous.title===previous.content.slice(0,70)?content.slice(0,70):previous.title,fingerprint:digest(normalize(content)),status:userConfirmed ? 'active' : 'candidate',confidence:userConfirmed?'supported':'ambiguous',confirmedAt:userConfirmed?now():undefined,enabled:userConfirmed ? true : previous.enabled,confirmedBy:userConfirmed ? 'user' : undefined,...(userConfirmed?{trust:'user_explicit' as const,authority:'user' as const,autoPublished:autoCorrected?false:previous.autoPublished}:{}),invalidatedReason:userConfirmed ? undefined : previous.invalidatedReason,updatedAt:now()},ctx,previous.revision);
+          if(downgraded?.downgraded)this.store!.afterCommit(()=>ctx.emit('memory.autopublish',{v:1,eventId:randomUUID(),projectId:ctx.projectId,action:'downgrade',mode:downgraded!.mode}));
           const reason=changedBody?'corrected':'sources-changed';
           // A changed provenance invalidates derived snapshots, not the still-valid native text.
           const children = changedBody||changedSources?this.invalidateChildren(previous,changedBody?'父记忆已纠正':'父记忆来源已变化',ctx,changedBody):[];
@@ -1253,8 +1526,11 @@ export class MemoryController implements PluginController {
           if (typeof input.enabled !== 'boolean') throw new Error('enabled 必须为布尔值');
           if (previous.status === 'invalidated' && input.enabled) throw new Error('派生来源无效，不能重新启用');
           if(input.enabled)this.restoreDisabled(previous,ctx);
+          // Enabling a value must not silently create a second active value for one subject.
+          if(input.enabled){const meta=this.subjectMeta(previous,ctx),subjectKey=this.subjectKeyOf(previous.subject)??meta.subjectKey;
+            if(subjectKey&&(meta.subjectCardinality??'single')==='single'){const peers=activeSubjectPeers(this.database(ctx).db,{projectId:ctx.projectId,scope:previous.scope,subjectKey,excludeId:previous.id});if(peers.length){const left=this.get(peers[0].id,ctx);const conflict=this.openSubjectConflict(left,previous,ctx,previous.revision+1);return {record:this.write({...previous,revision:previous.revision+1,status:'inactive',enabled:false,conflictId:conflict.id,conflictState:'open',invalidatedReason:'与同主题生效记忆冲突，等待用户裁决',updatedAt:now()},ctx,previous.revision),ids:[],sources:[]};}}}
           const status: MemoryStatus = previous.status === 'active' && !input.enabled ? 'inactive' : previous.status === 'inactive' && input.enabled ? 'active' : previous.status;
-          const changed = this.write({...previous,revision:previous.revision+1,status,enabled:input.enabled,updatedAt:now()},ctx,previous.revision);
+          const changed = this.write({...previous,revision:previous.revision+1,status,enabled:input.enabled,...(input.enabled&&status==='active'?{trust:'user_confirmed' as const,authority:'user' as const,autoPublished:false}:{}),...(input.enabled?{}:{conflictId:undefined,conflictState:undefined}),updatedAt:now()},ctx,previous.revision);
           const ids:string[]=[];
           if (!input.enabled) { this.suppress(previous,'disabled',ctx); ids.push(previous.id,...this.invalidateChildren(previous,'父记忆已停用',ctx)); this.persistInvalidation(ids,'disabled',changed.revision,ctx,[...this.refineSources(previous.sources,previous.content,ctx),...this.descendants(previous.id,ctx).flatMap(child=>child.sources)],previous.scope==='personal'); }
           return {record:changed,ids,sources:[...this.refineSources(previous.sources,previous.content,ctx),...this.descendants(previous.id,ctx).flatMap(child=>child.sources)]};
