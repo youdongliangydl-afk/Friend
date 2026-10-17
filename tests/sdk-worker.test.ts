@@ -729,6 +729,30 @@ test('editing the objective during a model turn rejects its late completion and 
  }finally{releaseOld();releaseFinal();await h.close();}
 });
 
+test('get_goal in an old tool batch cannot authorise completion of an edited objective; the next model request can',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let releaseOld!:()=>void,releaseFresh!:()=>void;const oldGate=new Promise<void>(done=>{releaseOld=done;}),freshGate=new Promise<void>(done=>{releaseFresh=done;});
+ const h=await goalHttp(async(_payload,ordinal,res)=>{
+  if(ordinal===1){
+   goalChunk(res,{role:'assistant',content:'OLD_REQUEST_IN_FLIGHT'});await oldGate;
+   goalChunk(res,{tool_calls:[{index:0,id:'old-batch-get',type:'function',function:{name:'get_goal',arguments:'{}'}},{index:1,id:'old-batch-complete',type:'function',function:{name:'update_goal',arguments:JSON.stringify({status:'complete'})}}]});goalChunk(res,{},'tool_calls');res.end('data: [DONE]\n\n');
+  }else if(ordinal===2){await freshGate;goalComplete(res);}else goalReply(res,'Completed after reading the edited objective in a new model request');
+ });const {f}=h;
+ try{
+  const objective='ORIGINAL_OBJECTIVE_FOR_OLD_REQUEST',edited='LATEST_OBJECTIVE_FOR_FRESH_REQUEST';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  const original=await f.request('runtime',{action:'goal.get'}) as {id:string;revision:number};await f.request('runtime',{action:'goal.set',input:{goalId:original.id,expectedRevision:original.revision,objective:edited}});
+  releaseOld();await f.wait(()=>h.requests.length===2);
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal:{id:string;objective:string;status:string};lastCompletedGoal?:unknown}};
+  assert.ok(state.runtime.goal,'the old batch cannot clear Goal focus by completing the edited objective');assert.equal(state.runtime.goal.id,original.id);assert.equal(state.runtime.goal.objective,edited);assert.equal(state.runtime.goal.status,'active');assert.equal(state.runtime.lastCompletedGoal,undefined);
+  const results=SessionManager.open(state.sessionFile).getBranch().flatMap(entry=>entry.type==='message'&&entry.message.role==='toolResult'?[entry.message]:[]);
+  assert.ok(results.some(message=>message.toolCallId==='old-batch-get'&&!message.isError&&JSON.stringify(message.content).includes(edited)),'the old batch may read the edited goal');
+  assert.ok(results.some(message=>message.toolCallId==='old-batch-complete'&&message.isError),'reading in that same old batch must not refresh its completion authority');
+  assert.equal(h.requests[1].messages[0].role,'system');assert.ok(JSON.stringify(h.requests[1].messages.filter((message:any)=>message.role==='system')).includes(edited),'a new model request must receive the latest objective before gaining completion authority');
+  releaseFresh();await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'));
+  const final=await f.request('state') as {runtime:{goal?:unknown;lastCompletedGoal:{id:string;objective:string;status:string}};messages:{role:string;userText?:string}[]};assert.equal(final.runtime.goal,undefined);assert.equal(final.runtime.lastCompletedGoal.id,original.id);assert.equal(final.runtime.lastCompletedGoal.objective,edited);assert.equal(h.requests.length,3);
+  const completions=SessionManager.open(state.sessionFile).getBranch().flatMap(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='update_goal'?[entry.message.isError]:[]);assert.deepEqual(completions,[true,false]);assert.deepEqual(final.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
+ }finally{releaseOld();releaseFresh();await h.close();}
+});
+
 for(const action of ['goal.clear','stop'] as const)test(`late create_goal after ${action} cannot resurrect or replace the user-controlled Goal`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});
  const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===1){goalChunk(res,{role:'assistant',content:'WAITING_BEFORE_LATE_GOAL_TOOL'});await gate;goalTool(res,action==='stop'?'create_goal':'get_goal',action==='stop'?{objective:'Stale model request after Stop'}:{});}else if(ordinal===2)goalTool(res,'create_goal',{objective:'Stale model request to recreate the cleared goal'});else goalReply(res,'No goal recreation was authorised');});const {f}=h;
