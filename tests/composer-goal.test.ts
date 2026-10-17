@@ -54,3 +54,19 @@ test('existing mode selection configures host and optional Swarm atomically whil
 test('navigation while configuring cannot apply Plan or release Goal resume into another session',async()=>{
  const f=fixture();let release!:(value:any)=>void;f.ctx.window.friendPi.request=async(method:string,input:any)=>{f.requests.push({method,input});return new Promise(done=>release=done);};const toggle=f.act('plan',true);const resume=f.act('goal',{action:'goal.set',input:{goalId:'g',expectedRevision:3,status:'active'}});const rejected=assert.rejects(resume,/会话已切换/);f.ctx.navigationEpoch.current++;release({current:{...f.ctx.stateRef.current.current,planMode:true}});await toggle;await rejected;assert.equal(f.ctx.planMode,false);assert.equal(f.requests.length,1);
 });
+
+function resumePromptFixture(){
+ const fragment=source.slice(source.indexOf('  const goalSnapshotReady='),source.indexOf('  const composerSnapshot:ComposerSnapshot='));const prompts:any[]=[];
+ const ctx:any={asObject,state:{current:{sessionId:'s'}},booting:false,navigating:false,sessionId:'s',navigationEpoch:{current:3},goalResumeSeen:{current:''},setGoalResume(value:any){prompts.push(value);},useEffect(effect:()=>void){effect();}};
+ vm.createContext(ctx);const run=()=>vm.runInContext(stripTypeScriptTypes('{'+fragment+'}'),ctx);return {ctx,prompts,run};
+}
+test('cold reopen waits for runtime before showing one paused Goal resume prompt',()=>{
+ const f=resumePromptFixture();f.run();assert.equal(f.ctx.goalResumeSeen.current,'');assert.equal(f.prompts.length,0);
+ f.ctx.state.current.runtime={goal:{id:'g',status:'paused'}};f.run();assert.equal(f.prompts.length,1);assert.equal(f.prompts[0].goalId,'g');assert.equal(f.ctx.goalResumeSeen.current,'s:3');f.run();assert.equal(f.prompts.length,1);
+ f.ctx.state.current.runtime.goal.status='active';f.run();f.ctx.state.current.runtime.goal.status='paused';f.run();assert.equal(f.prompts.length,1);
+});
+test('authoritative empty runtime counts as seen and later in-session pauses do not reopen the prompt',()=>{
+ const f=resumePromptFixture();f.run();f.ctx.state.current.runtime={goal:null};f.run();assert.equal(f.ctx.goalResumeSeen.current,'s:3');assert.equal(f.prompts.length,1);assert.equal(f.prompts[0],null);
+ f.ctx.state.current.runtime.goal={id:'g',status:'paused'};f.run();assert.equal(f.prompts.length,1);f.ctx.navigationEpoch.current++;f.run();assert.equal(f.prompts.length,2);assert.equal(f.prompts[1].goalId,'g');
+ assert.match(source,/\[booting,navigating,sessionId,goalSnapshotReady,goal\?\.id,goal\?\.status\]/);
+});
