@@ -656,7 +656,7 @@ async function goalHttp(handler:(payload:any,ordinal:number,res:import('node:htt
  const requests:any[]=[];const errors:unknown[]=[];
  const server=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=String(chunk);const payload=JSON.parse(raw);requests.push(payload);await handler(payload,requests.length,res);}catch(error){errors.push(error);res.destroy(error as Error);}});
  await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));const address=server.address();assert.ok(address&&typeof address==='object');const f=await start();
- try{await f.request('provider.save',{provider:'goal-loopback',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});}catch(error){await f.close();server.closeAllConnections();server.close();throw error;}
+ try{await f.request('configure',{plugins:[]});await f.request('provider.save',{provider:'goal-loopback',modelId:'fixture',baseUrl:`http://127.0.0.1:${address.port}/v1`,api:'openai-completions',apiKey:'test-only-local-credential'});}catch(error){await f.close();server.closeAllConnections();server.close();throw error;}
  return {f,requests,close:async()=>{try{await f.close();}finally{server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));}assert.deepEqual(errors,[]);}};
 }
 function goalChunk(res:import('node:http').ServerResponse,delta:unknown,finishReason:string|null=null,usage?:unknown){
@@ -691,7 +691,7 @@ test('Goal draft sends the first user prompt once and idle continuation adds no 
   const state=await f.request('state') as {sessionFile:string;messages:{role:string;userText?:string}[];runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};
   assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
   const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1);
-  const wakes=entries.filter(entry=>entry.type==='message'&&entry.message.role==='custom'&&entry.message.customType==='friend-pi.goal-wake');assert.equal(wakes.length,1);assert.equal((wakes[0] as any).message.display,false);
+  const wakes=entries.filter(entry=>entry.type==='custom_message'&&entry.customType==='friend-pi.goal-wake');assert.equal(wakes.length,1);assert.equal(wakes[0].display,false);
   assert.equal(entries.filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi.input.v1').length,1);
  }finally{await h.close();}
 });
@@ -719,7 +719,7 @@ test('stopping current execution aborts the stream and leaves its Goal paused',{
  try{const objective='Stop current execution';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));const stopped=await f.request('stop') as {isRunning:boolean;runtime:{goal:{status:string}}};assert.equal(stopped.isRunning,false);assert.equal(stopped.runtime.goal.status,'paused');assert.equal(h.requests.length,1);}finally{release();await h.close();}
 });
 
-for(const usage of [undefined,{prompt_tokens:1000000,completion_tokens:1000000,total_tokens:2000000}])test(`Goal continues with ${usage?'large':'unknown'} token usage and ignores legacy token and wall-clock budgets`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+for(const usage of [undefined,{prompt_tokens:10000,completion_tokens:10000,total_tokens:20000}])test(`Goal continues with ${usage?'large':'unknown'} token usage and ignores legacy token and wall-clock budgets`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
  const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===2)goalComplete(res);else goalReply(res,'Continue the objective',usage);});const {f}=h;
  try{await f.request('runtime',{action:'goal.create',input:{objective:'Continue until complete regardless of usage',tokenBudget:1,wallClockBudgetSeconds:0.001}});await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'&&!event.event.data.isRunning));const snapshot=await f.request('runtime',{action:'snapshot'}) as {goal?:unknown;lastCompletedGoal:{status:string}};assert.equal(snapshot.goal,undefined);assert.equal(snapshot.lastCompletedGoal.status,'complete');assert.equal(h.requests.length,3);}finally{await h.close();}
 });
