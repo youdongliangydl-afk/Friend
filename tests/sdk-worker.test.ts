@@ -664,7 +664,8 @@ function goalChunk(res:import('node:http').ServerResponse,delta:unknown,finishRe
  res.write(`data: ${JSON.stringify({id:'goal-loopback',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,delta,finish_reason:finishReason}],...(usage?{usage}:{})})}\n\n`);
 }
 function goalReply(res:import('node:http').ServerResponse,text='Controlled answer',usage?:unknown){goalChunk(res,{role:'assistant',content:text});goalChunk(res,{},'stop',usage);res.end('data: [DONE]\n\n');}
-function goalComplete(res:import('node:http').ServerResponse){goalChunk(res,{role:'assistant',tool_calls:[{index:0,id:'complete-'+randomUUID(),type:'function',function:{name:'update_goal',arguments:JSON.stringify({status:'complete'})}}]});goalChunk(res,{},'tool_calls');res.end('data: [DONE]\n\n');}
+function goalTool(res:import('node:http').ServerResponse,name:string,input:Record<string,unknown>){goalChunk(res,{role:'assistant',tool_calls:[{index:0,id:'goal-tool-'+randomUUID(),type:'function',function:{name,arguments:JSON.stringify(input)}}]});goalChunk(res,{},'tool_calls');res.end('data: [DONE]\n\n');}
+function goalComplete(res:import('node:http').ServerResponse){goalTool(res,'update_goal',{status:'complete'});}
 const goalSettled=(events:Message[])=>events.some(event=>event.event?.type==='pi'&&event.event.data.type==='agent_settled');
 
 for(const mode of ['single','team'] as const)test(`Goal completion in ${mode} retains evidence without mandatory user acceptance or another reviewer`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
@@ -712,6 +713,38 @@ for(const action of ['goal.pause','goal.clear'] as const)test(`${action} during 
   assert.equal(SessionManager.open(after.sessionFile).getBranch().some(entry=>entry.type==='message'&&entry.message.role==='assistant'&&entry.message.stopReason==='aborted'),false);
   assert.equal(after.messages.filter(message=>message.role==='user').length,1,'rejected replacement cannot enter native history');
  }finally{release();await h.close();}
+});
+
+test('editing the objective during a model turn rejects its late completion and preserves the edited Goal',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let releaseOld!:()=>void,releaseFinal!:()=>void;const oldGate=new Promise<void>(done=>{releaseOld=done;}),finalGate=new Promise<void>(done=>{releaseFinal=done;});
+ const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===1){goalChunk(res,{role:'assistant',content:'ORIGINAL_GOAL_WORK'});await oldGate;goalComplete(res);}else{await finalGate;goalReply(res,'Old turn ended without completing the edited objective');}});const {f}=h;
+ try{
+  const objective='Original objective before the user edit';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  const original=await f.request('runtime',{action:'goal.get'}) as {id:string;revision:number};const replacement='Edited objective that has not been executed';
+  await f.request('runtime',{action:'goal.set',input:{goalId:original.id,expectedRevision:original.revision,objective:replacement}});releaseOld();await f.wait(()=>h.requests.length===2);
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal:{id:string;objective:string;status:string};lastCompletedGoal?:unknown}};
+  assert.equal(state.runtime.goal.id,original.id);assert.equal(state.runtime.goal.objective,replacement);assert.equal(state.runtime.goal.status,'active');assert.equal(state.runtime.lastCompletedGoal,undefined);
+  assert.ok(SessionManager.open(state.sessionFile).getBranch().some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='update_goal'&&entry.message.isError),'old model completion cannot consume the new objective');
+  await f.request('runtime',{action:'goal.pause'});releaseFinal();await f.wait(()=>goalSettled(f.events));assert.equal((await f.request('runtime',{action:'goal.get'}) as {objective:string;status:string}).objective,replacement);assert.equal(h.requests.length,2);
+ }finally{releaseOld();releaseFinal();await h.close();}
+});
+
+for(const action of ['goal.clear','stop'] as const)test(`late create_goal after ${action} cannot resurrect or replace the user-controlled Goal`,{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});
+ const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===1){goalChunk(res,{role:'assistant',content:'WAITING_BEFORE_LATE_GOAL_TOOL'});await gate;goalTool(res,action==='stop'?'create_goal':'get_goal',action==='stop'?{objective:'Stale model request after Stop'}:{});}else if(ordinal===2)goalTool(res,'create_goal',{objective:'Stale model request to recreate the cleared goal'});else goalReply(res,'No goal recreation was authorised');});const {f}=h;
+ try{
+  const objective='Original user-controlled Goal';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='pi'&&event.event.data.type==='message_update'));
+  const original=await f.request('runtime',{action:'goal.get'}) as {id:string};if(action==='stop')await f.request('stop');else await f.request('runtime',{action});release();await f.wait(()=>goalSettled(f.events));
+  const state=await f.request('state') as {sessionFile:string;runtime:{goal?:{id:string;status:string};lastCompletedGoal?:unknown}};assert.equal(state.runtime.lastCompletedGoal,undefined);
+  const entries=SessionManager.open(state.sessionFile).getBranch();
+  if(action==='goal.clear'){assert.equal(state.runtime.goal,undefined);assert.equal(h.requests.length,3);assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='create_goal'&&entry.message.isError),'even a fresh get_goal cannot restore the old turn create permission');}
+  else{assert.equal(state.runtime.goal?.id,original.id);assert.equal(state.runtime.goal?.status,'paused');assert.equal(h.requests.length,1);assert.equal(entries.some(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolName==='create_goal'),false);}
+ }finally{release();await h.close();}
+});
+
+test('a Goal draft beginning with a native slash command reaches the model literally once',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
+ const h=await goalHttp(async(_payload,ordinal,res)=>{if(ordinal===1)goalComplete(res);else goalReply(res,'The literal slash objective is complete');});const {f}=h;
+ try{const objective='/task list';await f.request('send',{text:objective,goal:{objective}});await f.wait(()=>f.events.some(event=>event.event?.type==='state'&&!event.event.data.isRunning&&(event.event.data.runtime as any)?.lastCompletedGoal?.status==='complete'));assert.equal(h.requests.length,2);assert.match(JSON.stringify(h.requests[0].messages.filter((message:any)=>message.role==='user')),/\/task list/);const state=await f.request('state') as {messages:{role:string;userText?:string}[];runtime:{lastCompletedGoal:{objective:string}}};assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);assert.equal(state.runtime.lastCompletedGoal.objective,objective);}finally{await h.close();}
 });
 
 test('stopping current execution aborts the stream and leaves its Goal paused',{timeout:SDK_JOURNEY_TIMEOUT},async()=>{
