@@ -127,3 +127,38 @@ test('goal cancellation removes only matching wake frames and preserves revision
 });
 
 test('a tool-first main Agent completion needs no additional summary field',async()=>{const f=fixture();try{f.goals.create({objective:'do requested work'},f.ctx,0);const done=await f.goals.finish(f.ctx,f.tasks,noAudit,true);assert.equal(done.status,'complete');assert.equal((done.audit as {judgedBy:string}).judgedBy,'main-agent');assert.match((done.audit as {findings:string}).findings,/依据保留在 Pi 原生会话/);}finally{f.close();}});
+
+
+test('Plan mode leaves Goal intent active and suppresses restore without mutating persistent state',()=>{
+ const f=fixture();try{
+  f.ctx.policy={v:1,revision:1,stage:'main',canSwitchRole:true,unsettledTools:0,tools:[],writeScopes:['.'],executionMode:'single',planMode:true};
+  let goal=f.goals.create({objective:'goal under Plan'},f.ctx,0);assert.equal(goal.status,'active');
+  const originalRevision=goal.revision;
+  assert.equal(f.goals.restore(f.ctx,1,false),false);assert.equal(f.goals.current(f.ctx)!.status,'active');assert.equal(f.goals.current(f.ctx)!.revision,originalRevision);
+  f.goals.setState('paused',f.ctx);goal=f.goals.set({objective:'edited under Plan'},f.ctx,1);assert.equal(goal.status,'active');
+  f.goals.setState('paused',f.ctx);goal=f.goals.resume({},f.ctx,2);assert.equal(goal.status,'active');
+  f.goals.checkpoint(f.ctx,true);const checkpoint=f.goals.current(f.ctx)!;assert.equal(f.goals.restore(f.ctx,3,true),false);assert.equal(f.goals.current(f.ctx)!.revision,checkpoint.revision);assert.equal(f.goals.current(f.ctx)!.status,'active');
+  goal=f.goals.set({objective:'explicitly paused',status:'paused'},f.ctx,3);assert.equal(goal.status,'paused');
+  goal=f.goals.set({replace:true,objective:'replacement under Plan'},f.ctx,4);assert.equal(goal.status,'active');
+ }finally{f.close();}
+});
+
+test('saving a paused or blocked goal objective defaults to active unless pause is explicit',()=>{
+ const f=fixture();try{
+  const goal=f.goals.create({objective:'initial'},f.ctx,0);
+  for(const status of ['paused','blocked','usage_limited'] as const){f.goals.setState(status,f.ctx);const saved=f.goals.set({goalId:goal.id,objective:'edited'},f.ctx,1);assert.equal(saved.status,'active');assert.equal(saved.id,goal.id);}
+  assert.equal(f.goals.set({objective:'keep paused',status:'paused'},f.ctx,1).status,'paused');
+ }finally{f.close();}
+});
+
+for(const [label,extra,expected] of [
+ ['audit rejection',{audit:{approved:false,findings:'review rejected'},error:'review rejected'},'paused'],
+ ['audit unavailable',{error:'独立审核不可用：没有配置审核模型'},'paused'],
+ ['execution unknown',{audit:{approved:false,findings:'review rejected'},error:'执行对象状态未知，需要人工核对'},'blocked'],
+ ['later execution failure',{audit:{approved:false,findings:'review rejected'},error:'步骤阻塞：编译失败'},'blocked'],
+ ['current audit record',{schemaVersion:2,audit:{approved:false,findings:'review rejected'},error:'review rejected'},'blocked'],
+] as const){
+ test(`legacy blocked migration preserves ${label} evidence and yields ${expected}`,()=>{
+  const f=fixture();try{const old=legacy(f,'blocked',extra),goal=f.goals.read(old.id,f.ctx);assert.equal(goal.status,expected);assert.deepEqual(goal.audit,old.audit);assert.equal(goal.error,old.error);assert.equal(goal.activeSince,undefined);assert.equal(f.goals.restore(f.ctx,1,true),false);}finally{f.close();}
+ });
+}

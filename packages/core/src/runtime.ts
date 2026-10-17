@@ -146,7 +146,13 @@ export class GoalLedger {
   return this.store.transaction(()=>{
    const row=this.store.get<GoalRecord>(this.key(ctx,id));if(!row||row.value.sessionId!==ctx.sessionId)throw new Error('目标与步骤由原会话持有，请在原会话查看或接续');
    let goal=row.value;const oldStatus=String(goal.status),first=!this.loaded.has(this.key(ctx,id));
-   const status:GoalRecord['status']=oldStatus==='completed'?'complete':oldStatus==='stopped'||oldStatus==='verifying'||oldStatus==='waiting'&&(!goal.waitFor?.trim()||goal.waitFor==='user-acceptance')?'paused':oldStatus==='waiting'?'active':goal.status;
+   const audit=goal.audit&&typeof goal.audit==='object'?goal.audit as JsonObject:undefined,error=goal.error||'';
+   const executionUnknown=/未知|unknown|未收敛/iu.test(error);
+   const legacyAuditBlocked=goal.schemaVersion!==2&&oldStatus==='blocked'&&!executionUnknown&&(
+    audit?.approved===false&&!audit.delivery&&(!error||error===audit.findings)||
+    /(?:独立审核|独立审计|独立复核|audit).*(?:不可用|未配置|无法启动|unavailable|not available|timeout)/iu.test(error)
+   );
+   const status:GoalRecord['status']=oldStatus==='completed'?'complete':legacyAuditBlocked||oldStatus==='stopped'||oldStatus==='verifying'||oldStatus==='waiting'&&(!goal.waitFor?.trim()||goal.waitFor==='user-acceptance')?'paused':oldStatus==='waiting'?'active':goal.status;
    if(goal.schemaVersion!==2||status!==oldStatus||goal.timeUsedSeconds===undefined||first&&goal.activeSince!==undefined){
     goal={...goal,schemaVersion:2,status,timeUsedSeconds:Number.isFinite(goal.timeUsedSeconds)?Math.max(0,goal.timeUsedSeconds!):0,...(status!==oldStatus?{legacyStatus:oldStatus}:{}),...(first||goal.schemaVersion!==2||status!==oldStatus||status!=='active'?{activeSince:undefined}:{})};
     this.store.put(this.key(ctx,id),goal); // Preserve evidence and logical revision during format migration.
@@ -173,7 +179,7 @@ export class GoalLedger {
   return this.store.transaction(()=>{
    if(ctx.origin!=='user'&&input.userRequested!==true)throw new CapabilityError('PERMISSION_DENIED','只有用户明确请求才能创建长期目标');
    const prior=this.current(ctx);this.cas(input,prior);if(prior)throw new Error('当前会话已有未完成目标；替换需要用户明确确认');
-   const objective=text(input.objective,'目标',4000),status=ctx.policy?.planMode?'paused':'active';
+   const objective=text(input.objective,'目标',4000),status='active';
    const goal:GoalRecord={id:randomUUID(),projectId:ctx.projectId,sessionId:ctx.sessionId,origin:ctx.origin==='user'?'user':'agent',sourceRunId:ctx.runId,objective,mode:ctx.executionMode||'single',status,revision:0,progress:'',nextAction:typeof input.nextAction==='string'?text(input.nextAction):objective,tokens:0,usageAvailable:true,timeUsedSeconds:0,safeCheckpoint:false,generation,modelId:ctx.modelId,thinkingLevel:ctx.thinkingLevel,createdAt:now(),updatedAt:now()};
    this.store.put(this.focusKey(ctx),goal.id);return this.put(goal,ctx);
   });
@@ -190,7 +196,7 @@ export class GoalLedger {
     const created=this.create({...input,objective,goalId:undefined,expectedRevision:undefined},ctx,generation);
     return input.status==='paused'&&created.status!=='paused'?this.put({...created,status:'paused'},ctx):created;
    }
-   return this.put({...goal,objective:objective!,nextAction:input.objective===undefined?goal.nextAction:objective!,status:ctx.policy?.planMode?'paused':input.status==='paused'?'paused':input.status==='active'?'active':goal.status,generation,safeCheckpoint:false,error:undefined},ctx);
+   return this.put({...goal,objective:objective!,nextAction:input.objective===undefined?goal.nextAction:objective!,status:input.status==='paused'?'paused':input.status==='active'||input.objective!==undefined?'active':goal.status,generation,safeCheckpoint:false,error:undefined},ctx);
   });
  }
  clear(ctx:PluginContext,input:JsonObject={}){
@@ -220,11 +226,11 @@ export class GoalLedger {
    const current=this.current(ctx),goal=input.goalId?this.read(text(input.goalId),ctx):current;
    if(!goal||goal.status==='complete')throw new Error('目标不可接续');this.cas(input,goal);
    if(current&&current.id!==goal.id)throw new CapabilityError('VERSION_CONFLICT','当前会话已有其他目标');
-   this.store.put(this.focusKey(ctx),goal.id);return this.put({...goal,mode:ctx.executionMode||goal.mode,modelId:ctx.modelId??goal.modelId,thinkingLevel:ctx.thinkingLevel??goal.thinkingLevel,sourceRunId:ctx.runId,generation,status:ctx.policy?.planMode?'paused':'active',safeCheckpoint:false,error:undefined,waitFor:undefined},ctx);
+   this.store.put(this.focusKey(ctx),goal.id);return this.put({...goal,mode:ctx.executionMode||goal.mode,modelId:ctx.modelId??goal.modelId,thinkingLevel:ctx.thinkingLevel??goal.thinkingLevel,sourceRunId:ctx.runId,generation,status:'active',safeCheckpoint:false,error:undefined,waitFor:undefined},ctx);
   });
  }
  bindRun(ctx:PluginContext){const goal=this.current(ctx);if(goal?.status!=='active')return goal;return this.put({...goal,sourceRunId:ctx.runId,mode:ctx.executionMode||goal.mode,modelId:ctx.modelId??goal.modelId,thinkingLevel:ctx.thinkingLevel??goal.thinkingLevel,safeCheckpoint:false},ctx);}
- restore(ctx:PluginContext,generation:number,safeObjects:boolean){const goal=this.current(ctx);if(goal?.status!=='active')return false;if(!goal.safeCheckpoint||!safeObjects||ctx.policy?.planMode){this.put({...goal,status:'paused',error:'检查点或执行现场未确认安全，未自动重放'},ctx);return false;}this.put({...goal,generation,mode:ctx.executionMode||goal.mode},ctx);return true;}
+ restore(ctx:PluginContext,generation:number,safeObjects:boolean){const goal=this.current(ctx);if(goal?.status!=='active'||ctx.policy?.planMode)return false;if(!goal.safeCheckpoint||!safeObjects){this.put({...goal,status:'paused',error:'检查点或执行现场未确认安全，未自动重放'},ctx);return false;}this.put({...goal,generation,mode:ctx.executionMode||goal.mode},ctx);return true;}
  async finish(ctx:PluginContext,_tasks:TaskLedger,_audit:(goal:GoalRecord)=>Promise<{approved:boolean;findings:string;[key:string]:unknown}>,safeObjects:boolean,input:JsonObject={}){
   return this.store.transaction(()=>{
    const goal=this.current(ctx);this.cas(input,goal);if(!goal)throw new Error('没有当前目标');if(goal.status!=='active')throw new Error('目标需先显式接续，停止或暂停后不能完成');if(!safeObjects)throw new Error('执行对象尚未收敛，不能完成目标');
