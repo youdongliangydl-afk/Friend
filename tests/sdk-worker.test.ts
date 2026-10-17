@@ -691,7 +691,7 @@ test('Goal draft sends the first user prompt once and idle continuation adds no 
   const state=await f.request('state') as {sessionFile:string;messages:{role:string;userText?:string}[];runtime:{goal?:unknown;lastCompletedGoal:{status:string}}};
   assert.equal(state.runtime.goal,undefined);assert.equal(state.runtime.lastCompletedGoal.status,'complete');assert.deepEqual(state.messages.filter(message=>message.role==='user').map(message=>message.userText),[objective]);
   const entries=SessionManager.open(state.sessionFile).getBranch();assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='user').length,1);
-  const wakes=entries.filter(entry=>entry.type==='custom_message'&&entry.customType==='friend-pi.goal-wake');assert.equal(wakes.length,1);assert.equal(wakes[0].display,false);
+  const wakes=entries.filter(entry=>entry.type==='custom_message'&&entry.customType==='friend-pi.goal-wake');assert.equal(wakes.length,1);const wake=wakes[0];assert.ok(wake?.type==='custom_message');assert.equal(wake.display,false);
   assert.equal(entries.filter(entry=>entry.type==='custom'&&entry.customType==='friend-pi.input.v1').length,1);
  }finally{await h.close();}
 });
