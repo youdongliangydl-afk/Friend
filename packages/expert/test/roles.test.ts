@@ -77,26 +77,48 @@ test('checklist metadata respects custom roles, host caps and adopted method all
     }
   }finally{f.dispose();}
 });
-test('existing builtin role catalogs gain checklist metadata only for future runs',async()=>{
+test('existing builtin role catalogs gain checklist and Goal metadata only for future runs',async()=>{
   const f=fixture();let reopened:ExpertController|undefined;try{
     const builtin=f.controller.store.get<RoleDefinition>('role:builtin:reviewer')!;
-    const prior=roleDefinition({...builtin.value,tools:builtin.value.tools.filter(tool=>tool!=='friend_todo')},{id:'reviewer',version:builtin.value.version,scope:'builtin'});
+    const prior=roleDefinition({...builtin.value,tools:builtin.value.tools.filter(tool=>!['friend_todo','create_goal','get_goal','update_goal'].includes(tool))},{id:'reviewer',version:builtin.value.version,scope:'builtin'});
     f.controller.store.put(builtin.key,prior,builtin.revision);
+    const priorRevision=f.controller.store.get<RoleDefinition>(builtin.key)!.revision;
     await f.controller.dispatch('role.assign',{id:'reviewer'},f.ctx);
     const run=f.controller.beginRun(f.ctx);
     await f.controller.dispatch('role.create',{...prior,title:'Custom allowlist',tools:['read']},f.ctx);
     const savedPrior=f.controller.roleDefinitions(f.ctx).find(role=>role.id==='reviewer')!;
     await f.controller.dispatch('role.update',{...savedPrior,tools:['read']},f.ctx);
     f.controller.dispose();reopened=new ExpertController(f.dir);
-    const upgraded=reopened.store.get<RoleDefinition>(builtin.key)!.value;
-    assert.equal(upgraded.version,prior.version+1);assert.notEqual(upgraded.hash,prior.hash);assert.equal(upgraded.tools.includes('friend_todo'),true);
+    const upgradedRecord=reopened.store.get<RoleDefinition>(builtin.key)!,upgraded=upgradedRecord.value;
+    assert.equal(upgraded.version,prior.version+1);assert.notEqual(upgraded.hash,prior.hash);
+    assert.equal(upgradedRecord.revision,priorRevision+1,'migration advances the record revision');
+    for(const tool of ['friend_todo','create_goal','get_goal','update_goal'])assert.equal(upgraded.tools.includes(tool),true,`builtin reviewer gains ${tool}`);
+    assert.deepEqual(upgraded.tools.filter(tool=>!['friend_todo','create_goal','get_goal','update_goal'].includes(tool)),prior.tools,'migration preserves all other saved tools');
     assert.equal(reopened.roleDefinitions(f.ctx).find(role=>role.title==='Custom allowlist')!.tools.includes('friend_todo'),false);
     assert.deepEqual(reopened.roleDefinitions(f.ctx).find(role=>role.id==='reviewer')!.tools,['read'],'project overrides retain their explicit allowlist');
     assert.equal((reopened.snapshot(f.ctx).adoptions as FrozenRun).roles!.find(role=>role.id==='reviewer')!.tools.includes('friend_todo'),false);
     assert.equal((reopened.snapshot(f.ctx).adoptions as FrozenRun).role!.effectiveTools.includes('friend_todo'),false);
     assert.deepEqual((reopened.snapshot(f.ctx).adoptions as FrozenRun).roles,run.roles);
+    const hostCapped=freezeRole(upgraded,{tools:['read'],writeScopes:[]});
+    for(const tool of ['create_goal','get_goal','update_goal'])assert.equal(blockedByFrozenRole(hostCapped,tool,{status:'complete'}),true,`parent host cap still blocks ${tool}`);
     reopened.dispose();reopened=new ExpertController(f.dir);
     assert.equal(reopened.store.get<RoleDefinition>(builtin.key)!.value.version,upgraded.version,'catalog migration is idempotent');
+  }finally{reopened?.dispose();rmSync(f.dir,{recursive:true,force:true});}
+});
+test('builtin metadata migration preserves existing tool and write scope grants',()=>{
+  const f=fixture();let reopened:ExpertController|undefined;try{
+    const builtin=f.controller.store.get<RoleDefinition>('role:builtin:implementer')!;
+    const prior=roleDefinition({...builtin.value,tools:builtin.value.tools.filter(tool=>!['friend_todo','create_goal','get_goal','update_goal'].includes(tool)),writeScopes:['src']},{id:'implementer',version:builtin.value.version+3,scope:'builtin'});
+    f.controller.store.put(builtin.key,prior,builtin.revision);
+    const priorRevision=f.controller.store.get<RoleDefinition>(builtin.key)!.revision;
+    f.controller.dispose();reopened=new ExpertController(f.dir);
+    const upgradedRecord=reopened.store.get<RoleDefinition>(builtin.key)!,upgraded=upgradedRecord.value;
+    assert.equal(upgraded.version,prior.version+1);assert.deepEqual(upgraded.writeScopes,['src']);
+    assert.equal(upgradedRecord.revision,priorRevision+1);
+    assert.deepEqual(upgraded.tools.filter(tool=>!['friend_todo','create_goal','get_goal','update_goal'].includes(tool)),prior.tools);
+    for(const tool of ['friend_todo','create_goal','get_goal','update_goal'])assert.equal(upgraded.tools.includes(tool),true);
+    const withoutParentWrite=freezeRole(upgraded,{tools:['read','create_goal','get_goal','update_goal'],writeScopes:[]});
+    assert.deepEqual(withoutParentWrite.effectiveWriteScopes,[],'migration does not widen the parent write cap');
   }finally{reopened?.dispose();rmSync(f.dir,{recursive:true,force:true});}
 });
 test('role management is user-only, project-scoped, CAS versioned, and cannot loosen builtin reviewer',async()=>{

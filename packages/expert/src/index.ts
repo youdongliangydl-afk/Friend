@@ -80,7 +80,10 @@ export class ExpertController {
     this.store.transaction(()=>{for(const role of builtinRoles){
       const key=`role:builtin:${role.id}`,saved=this.store.get<RoleDefinition>(key);
       if(!saved)this.store.put(key,roleDefinition({...role},{id:role.id,version:1,scope:'builtin'}),null);
-      else if(saved.value.scope==='builtin'&&!saved.value.tools.includes('friend_todo'))this.store.put(key,roleDefinition({...saved.value,tools:[...saved.value.tools,'friend_todo']},{id:role.id,version:saved.value.version+1,scope:'builtin'}),saved.revision);
+      else if(saved.value.scope==='builtin'){
+        const metadataTools=['friend_todo','create_goal','get_goal','update_goal'].filter(tool=>role.tools.includes(tool)&&!saved.value.tools.includes(tool));
+        if(metadataTools.length)this.store.put(key,roleDefinition({...saved.value,tools:[...saved.value.tools,...metadataTools]},{id:role.id,version:saved.value.version+1,scope:'builtin'}),saved.revision);
+      }
     }});
     for(const row of this.store.list<MethodCandidate>('candidate:'))if(row.value.status==='validating'&&(!row.value.validation||!alive(row.value.validation.ownerPid)))this.store.put(row.key,{...row.value,status:'candidate',error:'验证进程已结束；未发布，待重新验证',validation:undefined},row.revision);
     const lease=this.store.get<{pid:number}>('validation:lease');if(lease&&!alive(lease.value.pid))this.store.remove(lease.key);
