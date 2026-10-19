@@ -23,6 +23,60 @@ async function drain(c:MemoryController,ctx:PluginContext){for(let step=0;step<8
 const save=(f:Fixture,input:Record<string,unknown>)=>f.now.dispatch('save',{explicitRemember:true,...input},f.ctx) as Promise<MemoryRecord>;
 const snapshot=(f:Fixture)=>f.now.snapshot(f.ctx) as any;
 
+test('Dream profile proposals stay candidates even with confirmed parents or a claimed user origin',async()=>{
+ const f=fixture();try{
+  const a=await save(f,{kind:'preference',scope:'personal',content:'用户希望中文回答'});
+  const b=await save(f,{kind:'preference',scope:'personal',content:'用户希望回答简短'});
+  for(const origin of ['model','user']){
+   const content=`未经确认的画像 ${origin}：所有项目禁用测试`;
+   const result=await f.now.dispatch('dream.run',{proposals:[{kind:'profile',parentIds:[a.id,b.id],content,origin}]},{...f.ctx,origin:'plugin'}) as any;
+   assert.equal(result.childIds.length,1);
+   const child=await f.now.dispatch('read',{id:result.childIds[0]},f.ctx) as MemoryRecord;
+   assert.equal(child.content,content);assert.equal(child.scope,'personal');assert.equal(child.status,'candidate');
+   assert.equal(child.trust,'model_supported');assert.notEqual(child.confirmedBy,'user');
+   for(const parent of [a,b])assert.equal((await f.now.dispatch('read',{id:parent.id},f.ctx) as MemoryRecord).status,'active');
+  }
+ }finally{await f.close();}
+});
+
+test('personal imports preserve scope and remain external candidates without lifting suppression',async()=>{
+ const f=fixture();try{
+  const prior=await save(f,{kind:'knowledge',scope:'personal',content:'跨项目知识：交付前核对来源'});
+  await f.now.dispatch('forget',{id:prior.id,revision:prior.revision},f.ctx);
+  const result=await f.now.dispatch('import',{records:[
+   {kind:'knowledge',scope:'personal',content:prior.content,aliases:['来源核对'],validFrom:'2020-01-01T00:00:00.000Z'},
+   {kind:'preference',scope:'personal',content:'用户偏好中文回答'},
+  ]},f.ctx) as any;
+  assert.deepEqual(result.skipped,[]);assert.equal(result.imported.length,2);
+  const records=await Promise.all(result.imported.map((id:string)=>f.now.dispatch('read',{id},f.ctx))) as MemoryRecord[];
+  for(const record of records){assert.equal(record.scope,'personal');assert.equal(record.status,'candidate');assert.equal(record.trust,'external_import');assert.notEqual(record.confirmedBy,'user');}
+  assert.deepEqual(records[0].aliases,['来源核对']);assert.equal(records[0].validFrom,'2020-01-01T00:00:00.000Z');
+  const {DatabaseSync}=await import('node:sqlite');const db=new DatabaseSync(join(f.dir,'plugins.sqlite'));
+  try{assert.ok(Number(db.prepare('SELECT COUNT(*) AS n FROM memory_suppression').get()!.n)>0);}finally{db.close();}
+  assert.equal(f.now.search({query:prior.content},f.ctx).length,0);
+ }finally{await f.close();}
+});
+
+test('deferred reviews reopen once due while future and resolved reviews stay closed',async()=>{
+ const f=fixture();try{
+  const past=new Date(Date.now()-86400000).toISOString();
+  const records=await Promise.all(['到期','未来','已解决'].map(label=>save(f,{kind:'fact',content:`复审 ${label}`,expiresAt:past})));
+  const queue=await f.now.dispatch('review.list',{},f.ctx) as any;
+  const reviews=records.map(record=>queue.reviews.find((row:any)=>row.memory_id===record.id&&row.reason==='expired'));
+  for(const row of reviews.slice(0,2))await f.now.dispatch('review.resolve',{id:row.id,action:'defer',notes:'稍后复核'},f.ctx);
+  await f.now.dispatch('review.resolve',{id:reviews[2].id,action:'confirm'},f.ctx);
+  assert.ok(!(await f.now.dispatch('review.list',{},f.ctx) as any).reviews.some((row:any)=>reviews.some(review=>review.id===row.id)));
+  const {DatabaseSync}=await import('node:sqlite');const db=new DatabaseSync(join(f.dir,'plugins.sqlite'));
+  try{db.function('friend_pi_writer_version',{deterministic:true},()=>6);db.prepare('UPDATE memory_reviews SET due_at=? WHERE id=?').run(past,reviews[0].id);}finally{db.close();}
+  for(let scan=0;scan<2;scan++){
+   const open=(await f.now.dispatch('review.list',{},f.ctx) as any).reviews;
+   assert.equal(open.filter((row:any)=>row.id===reviews[0].id).length,1);
+   assert.equal(open.find((row:any)=>row.id===reviews[0].id).notes,'稍后复核');
+   assert.ok(!open.some((row:any)=>row.id===reviews[1].id||row.id===reviews[2].id));
+  }
+ }finally{await f.close();}
+});
+
 test('seven kinds enforce scope, TTL/review defaults and conditions',async()=>{
  const f=fixture();try{
   await assert.rejects(save(f,{kind:'profile',scope:'project',content:'用户画像'}),/范围/);

@@ -16,6 +16,36 @@ function fixture():Fixture {
   return {dir,store,v2,svc,close(){store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 const user={origin:'user' as const};
+
+test('scope binding checks every supplied object instead of trusting the first owned identifier',()=>{
+ const f=fixture();try{
+  const own={origin:'user',projectId:'own',sessionId:'own-session',projectDir:f.dir};
+  const foreign={...own,projectId:'other',sessionId:'other-session'};
+  const a=f.svc.dispatch('team.create',{},own) as {teamId:string};
+  const b=f.svc.dispatch('team.create',{},foreign) as {teamId:string};
+  const task=f.svc.dispatch('task.create',{teamId:a.teamId,title:'own',description:'own task',mode:'read',risk:'V0',writeScopes:[]},own) as {taskId:string};
+  const member=f.svc.dispatch('member.provision',{teamId:b.teamId,name:'foreign',role:'worker'},foreign) as {memberId:string};
+  const budget=f.svc.dispatch('budget.create',{teamId:b.teamId,scope:'team',scopeId:b.teamId,tokenLimit:10},foreign) as {budgetId:string};
+  const objects=[{id:'foreign-worker',kind:'member',status:'terminated'}];
+  assert.throws(()=>f.svc.dispatch('member.stop',{taskId:task.taskId,memberId:member.memberId,objects},own),{code:'PERMISSION_DENIED'});
+  assert.throws(()=>f.svc.dispatch('budget.read',{taskId:task.taskId,budgetId:budget.budgetId},own),{code:'PERMISSION_DENIED'});
+  assert.throws(()=>f.svc.dispatch('member.stop',{teamId:a.teamId,memberId:member.memberId,objects},own),{code:'PERMISSION_DENIED'});
+  assert.equal(f.v2.row<{phase:string}>('SELECT phase FROM swarm_v2_members WHERE member_id=?',member.memberId)!.phase,'provisioning');
+  const otherTask=f.svc.dispatch('task.create',{teamId:b.teamId,title:'other',description:'other task',mode:'read',risk:'V0',writeScopes:[]},foreign) as {taskId:string};
+  f.svc.dispatch('member.admit',{memberId:member.memberId,firstEntryId:'foreign-entry',firstEntryPersisted:true},foreign);
+  f.svc.dispatch('team.resume',{teamId:b.teamId,expectedRevision:1},foreign);
+  const scheduled=f.svc.dispatch('schedule.once',{teamId:b.teamId,memberIdForTask:{[otherTask.taskId]:member.memberId}},foreign) as {dispatched:{attemptId:string}[]};
+  assert.equal(scheduled.dispatched.length,1);
+  const attemptId=scheduled.dispatched[0].attemptId;
+  const entry=f.svc.dispatch('budget.reserve',{teamId:b.teamId,budgetId:budget.budgetId,attemptId,tokens:1},foreign) as {reservationId:string};
+  for(const reference of [{attemptId},{entryId:entry.reservationId},{reservationId:entry.reservationId},{reviewerMemberId:member.memberId},{taskIds:[otherTask.taskId]},{dependencies:[otherTask.taskId]},{memberIdForTask:{[task.taskId]:member.memberId}}]){
+   assert.throws(()=>f.svc.dispatch('task.get',{taskId:task.taskId,...reference},own),{code:'PERMISSION_DENIED'});
+  }
+  const gates=f.svc.dispatch('gates',{taskId:task.taskId,candidateDigest:'own-candidate'},own);
+  assert.deepEqual(f.svc.dispatch('gates',{taskId:task.taskId,candidateDigest:'own-candidate',gateInput:{taskId:otherTask.taskId,candidateDigest:'foreign-candidate'}},own),gates);
+  assert.equal((f.svc.dispatch('task.get',{taskId:task.taskId},own) as {taskId:string}).taskId,task.taskId);
+ }finally{f.close();}
+});
 function bootstrap(f:Fixture, options:{teamId?:string}={}) {
   const teamId=options.teamId??'team-e2e';
   const team=f.svc.dispatch('team.create',{teamId,projectId:'p',rootSessionId:'s',workspaceRoot:f.dir},{origin:'user'}) as {teamId:string;revision:number};

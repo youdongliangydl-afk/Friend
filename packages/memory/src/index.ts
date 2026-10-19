@@ -410,15 +410,30 @@ export class MemoryController implements PluginController {
       }catch(error){db.prepare("UPDATE memory_projection_outbox SET state='pending' WHERE scope=?").run(key);results.push({scope:key,epoch,state:'pending',error:errorMessage(error)});}finally{rmSync(temporary,{recursive:true,force:true});}
     }return results;
   }
+  /** Keep rollback identities while removing bodies copied into Dream audit plans. */
+  private scrubConsolidationBodies(db:DatabaseSync,ids:Set<string>):void {
+    if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_consolidations'").get())return;
+    const references=(value:unknown):boolean=>typeof value==='string'?ids.has(value):Array.isArray(value)?value.some(references):!!value&&typeof value==='object'&&Object.values(value).some(references);
+    for(const row of db.prepare('SELECT id,json,parent_ids_json,child_ids_json FROM memory_consolidations').all()){
+      const audit=JSON.parse(String(row.json));
+      if(!references(audit)&&!references(JSON.parse(String(row.parent_ids_json)))&&!references(JSON.parse(String(row.child_ids_json))))continue;
+      db.prepare('UPDATE memory_consolidations SET json=? WHERE id=?').run(JSON.stringify({...audit,plan:{consolidationId:String(row.id),projectId:audit.plan?.projectId,bodyRemoved:true},bodyRemoved:true}),String(row.id));
+    }
+  }
   private cleanPrivacyBackups():void {
     if(!this.store)return;const root=join(this.store.dataDir,'memory-migration-backups');
     for(const task of this.store.list<{ids:string[];error?:string}>('privacy-cleanup:')){
       try{const ids=new Set(task.value.ids);const redact=(raw:unknown):unknown=>{if(Array.isArray(raw))return raw.map(redact);if(!raw||typeof raw!=='object')return raw;const value=raw as Record<string,unknown>;if(ids.has(String(value.id))&&('content' in value||'contextKey' in value))return {id:value.id,revision:value.revision,hash:value.hash,bodyRemoved:true};return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redact(item)]));};
-        if(existsSync(root))for(const file of readdirSync(root,{withFileTypes:true})){if(!file.isFile()||!file.name.endsWith('.sqlite'))continue;const db=new DatabaseSync(join(root,file.name));
+        const backups:string[]=[];
+        if(existsSync(root))for(const file of readdirSync(root,{withFileTypes:true}))if(file.isFile()&&file.name.endsWith('.sqlite'))backups.push(join(root,file.name));
+        // Swarm migration snapshots contain the entire shared database, including memory.
+        for(const file of readdirSync(this.store.dataDir,{withFileTypes:true}))if(file.isFile()&&/^swarm-pre-v[234]-[a-f0-9-]+\.sqlite$/i.test(file.name))backups.push(join(this.store.dataDir,file.name));
+        for(const backup of backups){const db=new DatabaseSync(backup);
           try{db.function('friend_pi_writer_version',{deterministic:true},()=>MEMORY_WRITER_VERSION);db.exec('PRAGMA secure_delete=ON');const has=(table:string)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
             db.exec('BEGIN IMMEDIATE');for(const id of ids){for(const table of ['memory_records','memory_versions','memory_search','memory_search_v2'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id);for(const table of ['memory_evidence','memory_dependencies'])if(has(table))db.prepare(`DELETE FROM ${table} WHERE ${table==='memory_evidence'?'memory_id':'owner_id'}=?`).run(id);}
             if(has('documents'))for(const row of db.prepare("SELECT key,json FROM documents WHERE namespace='memory'").all()){const value=redact(JSON.parse(String(row.json)));db.prepare("UPDATE documents SET json=? WHERE namespace='memory' AND key=?").run(JSON.stringify(value),String(row.key));}
             for(const table of ['memory_operations','memory_usage'])if(has(table))for(const row of db.prepare(`SELECT rowid,json FROM ${table}`).all())db.prepare(`UPDATE ${table} SET json=? WHERE rowid=?`).run(JSON.stringify(redact(JSON.parse(String(row.json)))),row.rowid);
+            this.scrubConsolidationBodies(db,ids);
             if(has('memory_jobs'))for(const row of db.prepare('SELECT id,json FROM memory_jobs').all()){const job=JSON.parse(String(row.json)) as LearningJob;if(job.memoryIds.some(id=>ids.has(id)))db.prepare('UPDATE memory_jobs SET json=? WHERE id=?').run(JSON.stringify({...job,proposals:undefined,proposalLedger:job.proposalLedger?.map(proposal=>proposal.memoryId&&ids.has(proposal.memoryId)?{...proposal,original:{forgotten:true},state:'rejected',reason:'用户已遗忘对应记忆'}:proposal),memoryIds:job.memoryIds.filter(id=>!ids.has(id))}),String(row.id));}
             db.exec('COMMIT');db.exec('VACUUM');
           }finally{db.close();}
@@ -427,6 +442,7 @@ export class MemoryController implements PluginController {
     }
   }
   private clearUsage(ids:string[],ctx:PluginContext,sources:SourceRef[]=[]):void {
+    this.scrubConsolidationBodies(this.store!.db,new Set(ids));
     this.store!.put(`privacy-cleanup:${randomUUID()}`,{ids});this.store!.afterCommit(()=>this.cleanPrivacyBackups());this.store!.db.prepare('DELETE FROM memory_queries').run();
     for(const row of this.store!.list<MemoryFeedback>('feedback:'))if(ids.includes(row.value.id))this.store!.remove(row.key);
     const forgotten=new Set(ids);if(this.contextReceipt?.records.some(record=>forgotten.has(record.id)))this.contextReceipt=undefined;if(this.requestReceipt?.records.some(record=>forgotten.has(record.id)))this.requestReceipt=undefined;
@@ -721,7 +737,7 @@ export class MemoryController implements PluginController {
     const store=this.database(ctx);store.db.prepare('INSERT INTO memory_events VALUES(?,?,?)').run(event.eventId,event.epoch,JSON.stringify(event));
     store.afterCommit(()=>{ctx.emit('memory.invalidated',event);if(abortLearning)this.background?.abort('memory.invalidated');});
   }
-  private save(input: JsonObject, ctx: PluginContext, automatic = false): MemoryRecord | undefined {
+  private save(input: JsonObject, ctx: PluginContext, automatic = false, externalImport = false): MemoryRecord | undefined {
     const rawContent=input.content??input.text;text(rawContent,'记忆内容',50000);const content=redactMemorySecrets(rawContent as string);
     if(input.explicitRemember!==undefined&&typeof input.explicitRemember!=='boolean')throw new CapabilityError('VALIDATION_ERROR','explicitRemember 必须为布尔值');
     const rawKind=input.kindV2??input.kind??'fact';
@@ -734,7 +750,7 @@ export class MemoryController implements PluginController {
     if(!policy.scopes.includes(scope))throw new CapabilityError('VALIDATION_ERROR',`${policy.label}记忆的范围必须是 ${policy.scopes.join(' 或 ')}`);
     const latestUserItem=ctx.history().filter(item=>item.role==='user').at(-1);const latestUser=latestUserItem?typedUserText(latestUserItem)??'':'';
     const explicit = (input.explicitRemember === true||input.userConfirmed===true) && !automatic && (ctx.origin === 'user' || ctx.origin === 'agent' && isExplicitUserRemember(latestUser));
-    if (scope === 'personal' && !explicit && !automatic) throw new Error('个人偏好自动学习必须有用户原始来源，模型不能自行确认');
+    if (scope === 'personal' && !explicit && !automatic && !externalImport) throw new Error('个人偏好自动学习必须有用户原始来源，模型不能自行确认');
     const evidenceInput=input.evidence;if(evidenceInput!==undefined&&(!Array.isArray(evidenceInput)||evidenceInput.length>200))throw new CapabilityError('VALIDATION_ERROR','evidence 必须是有界数组');
     const piEvidence=Array.isArray(evidenceInput)?evidenceInput.filter(e=>object(e).kind==='pi').map(e=>object(e).source):[];
     const checkedSources=this.sources(input.sources??(piEvidence.length?piEvidence:undefined),ctx,automatic&&!evidenceInput);
@@ -1480,6 +1496,7 @@ export class MemoryController implements PluginController {
   /** Deterministic review enqueue via lifecycle.reviewCandidates plus controller-emitted stale-source rows. */
   private ensureReviews(ctx:PluginContext):number {
     const db=this.database(ctx).db;this.activeProjectId=ctx.projectId;
+    db.prepare("UPDATE memory_reviews SET status='open' WHERE project_id=? AND status='deferred' AND due_at<=? AND EXISTS (SELECT 1 FROM memory_records r WHERE r.id=memory_reviews.memory_id AND r.revision=memory_reviews.revision)").run(ctx.projectId,now());
     const insert=db.prepare("INSERT OR IGNORE INTO memory_reviews(id,project_id,memory_id,revision,reason,priority,due_at,status,created_at,resolved_at,resolution,notes) VALUES(?,?,?,?,?,?,?,'open',?,NULL,NULL,?)");
     const existing=new Set((db.prepare('SELECT id FROM memory_reviews WHERE project_id=?').all(ctx.projectId) as {id:string}[]).map(row=>String(row.id)));
     let created=0;const insertOne=(memoryId:string,revision:number,reason:ReviewReason,priority:number,dueAt:string,notes?:string)=>{if(created>=100)return;const id=this.reviewId(memoryId,revision,reason);if(existing.has(id))return;insert.run(id,ctx.projectId,memoryId,revision,reason,priority,dueAt,now(),notes??null);existing.add(id);created++;};
@@ -1660,7 +1677,7 @@ export class MemoryController implements PluginController {
     for(const [index,raw] of (input.records as unknown[]).entries()){try{const value=object(raw);const importContent=redactMemorySecrets(String(value.content??value.text??''));
         const existing=this.records(ctx).find(record=>record.status!=='candidate'&&record.enabled&&normalize(record.content)===normalize(importContent)&&(record.scope==='personal'||value.scope===undefined||record.scope===value.scope));
         if(existing&&(existing.confirmedBy==='user'||existing.trust==='user_explicit'||existing.trust==='user_confirmed'||existing.status==='active')){skipped.push({index,reason:'已存在同内容记忆，导入不覆盖现有权威'});continue;}
-        const record=this.save({kind:value.kind??value.type??'fact',title:value.title,content:value.content??value.text,subject:value.subject??value.subject_key,aliases:value.aliases,conditions:value.conditions,sources:value.sources,validFrom:value.validFrom??value.valid_from,validTo:value.validTo??value.valid_to,reviewAfter:value.reviewAfter},ctx,false);
+        const record=this.save({kind:value.kind??value.type??'fact',scope:value.scope,title:value.title,content:value.content??value.text,subject:value.subject??value.subject_key,aliases:value.aliases,conditions:value.conditions,sources:value.sources,validFrom:value.validFrom??value.valid_from,validTo:value.validTo??value.valid_to,reviewAfter:value.reviewAfter},ctx,false,true);
         if(!record)throw new Error('导入记录被跳过');const external=this.write({...record,revision:record.revision+1,trust:'external_import',authority:'external',status:'candidate',autoPublished:false,confidence:'ambiguous',invalidatedReason:'外部导入默认候选，需用户确认',updatedAt:now()},ctx,record.revision);imported.push(external.id);
       }catch(error){skipped.push({index,reason:redactMemorySecrets(errorMessage(error))});}}
     return {imported,skipped};
