@@ -349,7 +349,7 @@ test('validateDreamProposal only profiles user-confirmed parents', () => {
     const profiles = opsOf(accepted, 'profile') as Extract<DreamOperation, {kind: 'profile'}>[];
     assert.equal(profiles.length, 1);
     assert.deepEqual(profiles[0]!.parentIds, ['user-1', 'user-2']);
-    assert.equal(profiles[0]!.origin, 'user');
+    assert.equal(profiles[0]!.origin, 'model');
     assert.equal(accepted.proposals.length, 1);
     const again = validateDreamProposal({plan, records: [u1, u2, model], proposals: [
       {kind: 'profile', parentIds: ['user-1', 'user-2'], content: '用户偏好中文简洁回答'},

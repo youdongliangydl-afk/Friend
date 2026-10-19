@@ -32,26 +32,44 @@ export class CoordinationService {
     const teamRow = (teamId: string) => this.v2.row<{project_id: string; root_session_id: string}>('SELECT project_id,root_session_id FROM swarm_v2_teams WHERE team_id=?', teamId);
     if (action === 'team.create') return {...input, projectId: ctx.projectId, rootSessionId: ctx.sessionId, workspaceRoot: ctx.projectDir || input.workspaceRoot, teamId: typeof input.teamId === 'string' ? input.teamId : `team:${ctx.projectId}:${ctx.sessionId}`};
     let objectTeam: string | null = null;
+    const bindTeam = (teamId: string) => {
+      if (objectTeam && objectTeam !== teamId) throw new CapabilityError('PERMISSION_DENIED', '请求中的对象不属于同一团队');
+      objectTeam = teamId;
+    };
     const lookup: [string, string, string][] = [
-      ['taskId', 'swarm_v2_tasks', 'team_id'], ['memberId', 'swarm_v2_members', 'team_id'],
-      ['budgetId', 'swarm_v2_budgets', 'team_id'], ['messageId', 'swarm_v2_messages', 'team_id'],
-      ['verificationId', 'swarm_v2_verifications', 'team_id'], ['verdictId', 'swarm_v2_verdicts', 'team_id'],
+      ['taskId', 'swarm_v2_tasks', 'task_id'], ['memberId', 'swarm_v2_members', 'member_id'],
+      ['budgetId', 'swarm_v2_budgets', 'budget_id'], ['messageId', 'swarm_v2_messages', 'message_id'],
+      ['verificationId', 'swarm_v2_verifications', 'verification_id'], ['verdictId', 'swarm_v2_verdicts', 'verdict_id'],
+      ['reviewerMemberId', 'swarm_v2_members', 'member_id'],
     ];
-    for (const [field, table, column] of lookup) {
-      if (objectTeam) break;
-      const id = input[field];
+    const bindObject = (id: unknown, table: string, column: string) => {
       if (typeof id === 'string' && id) {
-        const row = this.v2.row<Record<string, unknown>>(`SELECT ${column} AS team_id FROM ${table} WHERE ${field === 'taskId' ? 'task_id' : field === 'memberId' ? 'member_id' : field === 'budgetId' ? 'budget_id' : field === 'messageId' ? 'message_id' : field === 'verificationId' ? 'verification_id' : 'verdict_id'}=?`, id);
-        if (row) objectTeam = String(row.team_id);
+        const row = this.v2.row<{team_id: string}>(`SELECT team_id FROM ${table} WHERE ${column}=?`, id);
+        if (row) bindTeam(String(row.team_id));
+      }
+    };
+    for (const [field, table, column] of lookup) bindObject(input[field], table, column);
+    for (const field of ['dependencies', 'taskIds']) if (Array.isArray(input[field])) {
+      for (const id of input[field]) bindObject(id, 'swarm_v2_tasks', 'task_id');
+    }
+    if (input.memberIdForTask && typeof input.memberIdForTask === 'object') {
+      for (const [taskId, memberId] of Object.entries(input.memberIdForTask)) {
+        bindObject(taskId, 'swarm_v2_tasks', 'task_id');
+        bindObject(memberId, 'swarm_v2_members', 'member_id');
       }
     }
-    if (!objectTeam && typeof input.attemptId === 'string') {
-      const row = this.v2.row<{team_id: string}>('SELECT t.team_id FROM swarm_v2_attempts a JOIN swarm_v2_tasks t ON t.task_id=a.task_id WHERE a.attempt_id=?', input.attemptId);
-      if (row) objectTeam = row.team_id;
+    if (action === 'budget.create') {
+      if (input.scope === 'task') bindObject(input.scopeId, 'swarm_v2_tasks', 'task_id');
+      if (input.scope === 'member') bindObject(input.scopeId, 'swarm_v2_members', 'member_id');
     }
-    if (!objectTeam && (typeof input.entryId === 'string' || typeof input.reservationId === 'string')) {
-      const row = this.v2.row<{team_id: string}>('SELECT b.team_id FROM swarm_v2_budget_entries e JOIN swarm_v2_budgets b ON b.budget_id=e.budget_id WHERE e.reservation_id=?', String(input.entryId ?? input.reservationId));
-      if (row) objectTeam = row.team_id;
+    if (typeof input.attemptId === 'string') {
+      const row = this.v2.row<{team_id: string}>('SELECT t.team_id FROM swarm_v2_attempts a JOIN swarm_v2_tasks t ON t.task_id=a.task_id WHERE a.attempt_id=?', input.attemptId);
+      if (row) bindTeam(row.team_id);
+    }
+    for (const id of [input.entryId, input.reservationId]) {
+      if (typeof id !== 'string') continue;
+      const row = this.v2.row<{team_id: string}>('SELECT b.team_id FROM swarm_v2_budget_entries e JOIN swarm_v2_budgets b ON b.budget_id=e.budget_id WHERE e.reservation_id=?', id);
+      if (row) bindTeam(row.team_id);
     }
     const declaredTeam = typeof input.teamId === 'string' && input.teamId ? input.teamId : null;
     if (objectTeam && declaredTeam && objectTeam !== declaredTeam) throw new CapabilityError('PERMISSION_DENIED', '对象不属于所声明的团队');
@@ -140,7 +158,7 @@ export class CoordinationService {
       case 'verify.checks': return recordChecks(v2, text(input.verificationId, 'verificationId', 200), input.results as never);
       case 'verify.submit': return submitVerdict(v2, {verificationId: text(input.verificationId, 'verificationId', 200), kind: text(input.kind, 'kind', 20) as never, reviewerMemberId: text(input.reviewerMemberId, 'reviewerMemberId', 200), sessionId: optionalText(input.sessionId, 'sessionId', 200), sessionFile: optionalText(input.sessionFile, 'sessionFile', 2000), approved: input.approved === true, findings: arrayText(input.findings, 'findings', 50, 2000), taskIds: arrayText(input.taskIds, 'taskIds', 64, 100), resultVersions: (input.resultVersions && typeof input.resultVersions === 'object' ? input.resultVersions : {}) as Record<string, number>, candidateDigest: text(input.candidateDigest, 'candidateDigest', 200), reviewedTip: text(input.reviewedTip, 'reviewedTip', 200), binding: optionalText(input.binding, 'binding', 30) as never});
       case 'verify.apply': return applyVerdict(v2, text(input.verdictId, 'verdictId', 200));
-      case 'gates': return evaluateMergeGates(v2, {taskId: text(input.taskId, 'taskId', 200), candidateDigest: text(input.candidateDigest, 'candidateDigest', 200), verdictId: optionalText(input.verdictId, 'verdictId', 200) ?? undefined, ...(input.gateInput && typeof input.gateInput === 'object' ? input.gateInput as object : {})});
+      case 'gates': return evaluateMergeGates(v2, {...(input.gateInput && typeof input.gateInput === 'object' ? input.gateInput as object : {}), taskId: text(input.taskId, 'taskId', 200), candidateDigest: text(input.candidateDigest, 'candidateDigest', 200), verdictId: optionalText(input.verdictId, 'verdictId', 200) ?? undefined});
       case 'integrate': return integrateTask(v2, {taskId: text(input.taskId, 'taskId', 200), candidateDigest: text(input.candidateDigest, 'candidateDigest', 200), verdictId: optionalText(input.verdictId, 'verdictId', 200) ?? undefined, files: input.files as never, gateInput: input.gateInput as never});
       case 'message.send': return sendMessage(store, {teamId: this.teamId(input), messageId: optionalText(input.messageId, 'messageId', 200), sender: {kind: text(input.senderKind, 'senderKind', 20), id: optionalText(input.senderId, 'senderId', 200), generation: intOrNull(input.senderGeneration, 'senderGeneration', 0) ?? undefined}, targetId: text(input.targetId, 'targetId', 200), targetKind: optionalText(input.targetKind, 'targetKind', 30) ?? 'member', type: text(input.type, 'type', 100), deliveryMode: text(input.deliveryMode, 'deliveryMode', 10), body: text(input.body, 'body', 16384), provenance: input.provenance, expiresAt: optionalText(input.expiresAt, 'expiresAt', 100)});
       case 'message.queue': return queueMessage(store, text(input.messageId, 'messageId', 200));

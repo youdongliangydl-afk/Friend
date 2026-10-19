@@ -17,6 +17,35 @@ function fixture(){
 async function drain(c:MemoryController,ctx:PluginContext){for(let i=0;i<80;i++){const job=peekLearningJob(ctx.dataDir);if(!job)break;await c.executeLearningJob(job.id,ctx);}}
 const save=(c:MemoryController,ctx:PluginContext,input:Record<string,unknown>)=>c.dispatch('save',{explicitRemember:true,...input},ctx) as Promise<MemoryRecord>;
 
+test('forget scrubs Dream bodies from live audits and Swarm full-database backups without losing rollback metadata',async()=>{
+ const f=fixture();try{
+  const left=await save(f.c,f.ctx,{kind:'experience',content:'合并前经验 A'});
+  const right=await save(f.c,f.ctx,{kind:'experience',content:'合并前经验 B'});
+  const marker='PRIVATE_DREAM_BODY_7419';
+  const merged=await f.c.dispatch('merge',{leftId:left.id,rightId:right.id,content:marker},f.ctx) as MemoryRecord;
+  const audits=f.c.snapshot(f.ctx).consolidations as any[];
+  const db=new DatabaseSync(join(f.dir,'plugins.sqlite'));
+  const backups=[2,3,4].map(version=>join(f.dir,`swarm-pre-v${version}-${merged.id}.sqlite`));
+  const unrelated=join(f.dir,'user-snapshot.sqlite');
+  try{for(const path of [...backups,unrelated])db.prepare('VACUUM INTO ?').run(path);}finally{db.close();}
+  await f.c.dispatch('forget',{id:merged.id,revision:merged.revision},f.ctx);
+  for(const path of [join(f.dir,'plugins.sqlite'),...backups]){
+   const snapshot=new DatabaseSync(path);try{
+    assert.equal(snapshot.prepare('SELECT id FROM memory_records WHERE id=?').get(merged.id),undefined);
+    const rows=snapshot.prepare('SELECT json,parent_ids_json,child_ids_json,rollback_token FROM memory_consolidations').all();
+    assert.ok(rows.length);assert.ok(rows.every(row=>!String(row.json).includes(marker)));
+    assert.ok(rows.some(row=>String(row.child_ids_json).includes(merged.id)&&String(row.parent_ids_json).includes(left.id)&&row.rollback_token));
+    assert.ok(snapshot.prepare('SELECT id FROM memory_records WHERE id=?').get(left.id));
+   }finally{snapshot.close();}
+  }
+  for(const path of backups)assert.ok(!readFileSync(path).includes(Buffer.from(marker)));
+  assert.ok(readFileSync(unrelated).includes(Buffer.from(marker)),'unmanaged user backups are not modified');
+  const consolidationId=audits[0].id;
+  const rollback=await f.c.dispatch('consolidation.rollback',{consolidationId},f.ctx) as any;
+  assert.ok(rollback.restored.includes(left.id));
+ }finally{await f.close();}
+});
+
 test('weighted title/alias FTS, exact literals and explanations keep projects isolated (03-05,08)',async()=>{
  const f=fixture();try{
   const target=await save(f.c,f.ctx,{title:'差旅报销失败',content:'发票重复导致退回',aliases:['费用报销','Reimburse.API','src/Expense.ts']});

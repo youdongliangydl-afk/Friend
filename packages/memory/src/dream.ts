@@ -773,7 +773,7 @@ export function validateDreamProposal(input:{plan:DreamPlan; proposals:unknown[]
       continue;
     }
 
-    // profile: only an aggregation of user-confirmed parents may become active.
+    // Trusted parents do not confirm new wording supplied by a proposal.
     if (!known.every(parent => isUserTrust(parent.trust))) continue;
     const content = proposal.content!;
     const requestedSources = proposal.sourceIds ?? [];
@@ -783,7 +783,7 @@ export function validateDreamProposal(input:{plan:DreamPlan; proposals:unknown[]
       parentIds:[...proposal.parentIds].sort(),
       content,
       conditions:proposal.conditions ?? [],
-      origin:'user',
+      origin:'model',
     });
     accepted.push(proposal);
   }
@@ -1324,6 +1324,7 @@ function applySplit(context:ApplyContext, op:Extract<DreamOperation, {kind:'spli
 }
 
 function applyProfile(context:ApplyContext, op:Extract<DreamOperation, {kind:'profile'}>):OperationOutcome {
+  const userConfirmed = op.origin !== 'model';
   const parentIds = [...op.parentIds].sort();
   const parents:StoredMemoryRecord[] = [];
   for (const id of parentIds) {
@@ -1347,11 +1348,11 @@ function applyProfile(context:ApplyContext, op:Extract<DreamOperation, {kind:'pr
     title:repTitle || '个人画像',
     content:op.content,
     conditions:op.conditions.length ? op.conditions : sortStrings(parents.flatMap(record => stringList(record.json.conditions))),
-    status:'active',
+    status:userConfirmed ? 'active' : 'candidate',
     sources:unionField(parents, 'sources'),
     parentIds,
-    trust:'user_confirmed',
-    confirmedBy:'user',
+    trust:userConfirmed ? 'user_confirmed' : 'model_supported',
+    ...(userConfirmed ? {confirmedBy:'user' as const} : {}),
     origin:op.origin === 'model' ? 'model' : 'user',
     at,
     hash:context.hash,
@@ -1366,8 +1367,8 @@ function applyProfile(context:ApplyContext, op:Extract<DreamOperation, {kind:'pr
   insertMemoryRecord(context.db, json, context.consolidationId, context.hash);
   context.created.add(childId);
   const retiredAt = context.stamp();
-  for (const parent of parents) retireRecord(context.db, parent, 'Dream 画像更新：已聚合为用户确认的新画像', context.consolidationId, retiredAt);
-  return {ok:true, parentIds, childIds:[childId], relationIds:[]};
+  if (userConfirmed) for (const parent of parents) retireRecord(context.db, parent, 'Dream 画像更新：已聚合为用户确认的新画像', context.consolidationId, retiredAt);
+  return {ok:true, parentIds:userConfirmed ? parentIds : [], childIds:[childId], relationIds:[]};
 }
 
 function applyDistill(context:ApplyContext, op:Extract<DreamOperation, {kind:'distill'}>):OperationOutcome {
