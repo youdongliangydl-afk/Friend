@@ -14,8 +14,10 @@ import './memory-center.css';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { asList, asObject, errorText, type JsonObject } from './types.js';
-import { Badge, Card, Empty, Field, JsonView, Markdown, TextDiff } from './ui.js';
+import { Badge, Card, Empty, Field, JsonView, Markdown, Modal, TextDiff } from './ui.js';
 import { MemoryFeedbackButtons, memoryFeedbackAvailable } from './memory-feedback.js';
+import { MemoryRow } from './memory-row.js';
+import { memoryDateText, memoryRelativeTime } from './memory-display.js';
 import {
   AUTO_PUBLISH_MODES,
   CONFLICT_RESOLUTION_LABELS,
@@ -201,17 +203,19 @@ function OverviewTab({ view, openTab }: TabBase) {
     { id: 'conflicts', label: '待裁决冲突', count: view.openConflicts.length, tab: 'conflicts' as const, tone: 'is-warning' },
     { id: 'reviews', label: '到期复审', count: view.reviewsDue, tab: 'reviews' as const, tone: 'is-warning' },
   ];
+  const extraProblems = view.problems.filter(problem => !['candidates', 'conflicts', 'reviews'].includes(problem.id));
   return <div className="memory-center-overview">
     <div className="memory-center-metrics" role="list" aria-label="记忆关键计数">
       {metrics.map(metric => <button type="button" role="listitem" key={metric.id} className={`memory-center-metric ${metric.tone}`} onClick={() => openTab(metric.tab)}>
-        <span>{metric.label}</span><strong>{metric.count}</strong><small>前往{memoryCenterTabLabel(metric.tab)}</small>
+        <span>{metric.label}</span><strong>{metric.count}</strong>
       </button>)}
     </div>
-    {view.problems.length > 0 && <Card title="需要处理">
-      <div className="memory-center-problems">{view.problems.map(problem => <button type="button" key={problem.id} className="memory-center-problem" onClick={() => openTab(problem.tab)}>
-        <span>{problem.label}</span><strong>{problem.count}</strong><small>前往{memoryCenterTabLabel(problem.tab)}</small>
-      </button>)}</div>
-    </Card>}
+    {extraProblems.length > 0 && <div className="memory-center-problems-line" role="status">
+      <span>另需处理</span>
+      {extraProblems.map(problem => <button type="button" key={problem.id} className="memory-center-problem" onClick={() => openTab(problem.tab)}>
+        {problem.label} <b>{problem.count}</b>
+      </button>)}
+    </div>}
     <div className="memory-center-columns">
       <Card title="按类型">
         <table className="memory-center-table"><caption className="memory-center-visually-hidden">记忆类型计数</caption>
@@ -241,7 +245,7 @@ function OverviewTab({ view, openTab }: TabBase) {
         <p className="hint">置顶稳定前缀上限 {PINNED_CHAR_LIMIT} 字符；超限时不会自动裁剪，需要用户取消部分置顶。</p>
       </Card>
     </div>
-    <p className="hint">记忆中心只展示控制器返回的状态：候选不会显示为生效；读取收据不代表模型采纳。{view.epoch !== undefined ? ` · 快照 epoch ${view.epoch}` : ''}{view.schemaVersion !== undefined ? ` · schema v${view.schemaVersion}` : ''}</p>
+    <p className="hint">{view.epoch !== undefined ? `快照 epoch ${view.epoch}` : 'epoch 未记录'}{view.schemaVersion !== undefined ? ` · schema v${view.schemaVersion}` : ''}</p>
   </div>;
 }
 
@@ -297,6 +301,8 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
   const [confirm, setConfirm] = useState<ConfirmToggleState | null>(null);
   const [forgetTarget, setForgetTarget] = useState<JsonObject | null>(null);
   const [bulk, setBulk] = useState<string[]>([]);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [creating, setCreating] = useState<{ title: string; content: string; kind: string; scope: string; error: string } | null>(null);
   const [pendingLabel, setPendingLabel] = useState('');
   const [advanced, setAdvanced] = useState<{ mode: 'merge' | 'split' | 'supersede'; peer: string; content: string; title: string; parts: { title: string; content: string; conditions: string }[]; error: string } | null>(null);
   const busy = Boolean(pending) || Boolean(pendingLabel);
@@ -352,6 +358,32 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
     } catch (error) {
       setDetail({ id, loading: false, error: errorText(error), record: fallback, versions: [], originals: null, sourcesLoading: false });
     }
+  };
+
+  const guardPending = () => {
+    if (editor) { report('请先保存或取消当前编辑。', true); return false; }
+    if (forgetTarget || confirm) { report('请先处理当前确认。', true); return false; }
+    return true;
+  };
+
+  const openDetail = (id: string) => {
+    if (!guardPending()) return;
+    setSelected(id);
+    setConfirm(null);
+    setEditor(null);
+    setForgetTarget(null);
+    setImpact(null);
+    void loadDetail(id);
+  };
+
+  const closeDetail = () => {
+    setSelected('');
+    setDetail(null);
+    setEditor(null);
+    setForgetTarget(null);
+    setConfirm(null);
+    setImpact(null);
+    setAdvanced(null);
   };
 
   const loadSources = async () => {
@@ -431,6 +463,26 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
     } finally { setPendingLabel(''); }
   };
 
+  const createMemory = async () => {
+    if (!creating) return;
+    const content = creating.content.trim();
+    if (!content) return;
+    setPendingLabel('create');
+    try {
+      const title = creating.title.trim() || Array.from(content).slice(0, 24).join('');
+      await perform('save', {
+        kind: creating.kind,
+        scope: creating.kind === 'preference' ? 'personal' : creating.scope,
+        explicitRemember: true,
+        title,
+        content,
+      }, '记忆已保存。');
+      setCreating(null);
+    } catch (error) {
+      setCreating(previous => previous ? { ...previous, error: errorText(error) } : previous);
+    } finally { setPendingLabel(''); }
+  };
+
   const runBulk = async (kind: 'disable' | 'enable' | 'pin') => {
     const records = view.records.filter(record => bulk.includes(String(record.id)));
     if (!records.length) return;
@@ -483,78 +535,85 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
   const detailOriginals = detail?.originals || memoryDetailSources(detailRecord || {}).originals;
   const detailSources = memoryDetailSources(detailRecord || {});
   const selectedRecord = view.recordById.get(selected);
-  const state = memoryRecordStateView(selectedRecord || {});
+  const detailState = memoryRecordStateView(detailRecord || {});
   const eligible = selectedRecord ? memoryPinEligible(selectedRecord) : { eligible: false, reason: '' };
   const pinned = selectedRecord ? view.pinned.ids.includes(String(selectedRecord.id)) : false;
+  const drawerOpen = Boolean(confirm || editor || forgetTarget || detail || (impact && !editor && !forgetTarget));
 
   return <div className="memory-center-records">
-    <Card title="筛选与搜索" actions={<span className="hint">{view.records.length} 条已保存记忆</span>}>
-      <div className="memory-center-filter-grid">
-        <Field label="类型"><select value={filters.kind} onChange={event => setFilter({ kind: event.target.value })}><option value="all">全部类型</option>{MEMORY_KIND_IDS.map(kind => <option key={kind} value={kind}>{memoryKindLabel(kind)}</option>)}<option value="method">旧方法</option></select></Field>
-        <Field label="范围"><select value={filters.scope} onChange={event => setFilter({ scope: event.target.value as MemoryRecordFilters['scope'] })}>{RECORD_SCOPE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></Field>
-        <Field label="状态"><select value={filters.status} onChange={event => setFilter({ status: event.target.value as MemoryRecordFilters['status'] })}>{RECORD_STATUS_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></Field>
-        <Field label="主题/别名"><input value={filters.subject} aria-label="按主题筛选记录" placeholder="subject、标题或别名" onChange={event => setFilter({ subject: event.target.value })} /></Field>
-      </div>
-      <form className="search-row" onSubmit={event => { event.preventDefault(); void runSearch(); }}>
-        <input aria-label="搜索记忆记录" placeholder="搜索中文或关键词" value={filters.query} onChange={event => setFilter({ query: event.target.value })} />
+    <section className="memory-center-toolbar" aria-label="筛选与搜索">
+      <form className="memory-center-toolbar-search" onSubmit={event => { event.preventDefault(); void runSearch(); }}>
+        <input aria-label="搜索记忆记录" placeholder="搜索标题、正文或主题" value={filters.query} onChange={event => setFilter({ query: event.target.value })} />
         <button type="submit" disabled={busy || !filters.query.trim()}>搜索</button>
-        {search && <button type="button" disabled={busy} onClick={() => { setSearch(null); setFilter({ query: '' }); }}>清除搜索</button>}
+        {search && <button type="button" disabled={busy} onClick={() => { setSearch(null); setFilter({ query: '' }); }}>清除</button>}
       </form>
-      {search && <p className="hint" role="status">搜索“{search.query}”命中 {search.ids.length} 条{search.error ? `：${search.error}` : '；结果仅包含当前可检索记录，停用与失效记录请清除搜索查看。'}</p>}
-      <p className="hint">候选与失效记录不在此页显示，请到“候选”页处理；零命中不代表历史中不存在。</p>
-    </Card>
+      <select aria-label="按类型筛选" value={filters.kind} onChange={event => setFilter({ kind: event.target.value })}>
+        <option value="all">全部类型</option>
+        {MEMORY_KIND_IDS.map(kind => <option key={kind} value={kind}>{memoryKindLabel(kind)}</option>)}
+        <option value="method">旧方法</option>
+      </select>
+      <select aria-label="按范围筛选" value={filters.scope} onChange={event => setFilter({ scope: event.target.value as MemoryRecordFilters['scope'] })}>
+        {RECORD_SCOPE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+      <select aria-label="按状态筛选" value={filters.status} onChange={event => setFilter({ status: event.target.value as MemoryRecordFilters['status'] })}>
+        {RECORD_STATUS_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+      <details className="memory-center-toolbar-more">
+        <summary>更多</summary>
+        <div className="memory-center-toolbar-pop">
+          <Field label="主题/别名"><input aria-label="按主题筛选记录" placeholder="subject、标题或别名" value={filters.subject} onChange={event => setFilter({ subject: event.target.value })} /></Field>
+        </div>
+      </details>
+      <button type="button" aria-pressed={bulkMode} onClick={() => { setBulkMode(value => !value); if (bulkMode) setBulk([]); }}>批量</button>
+      <button type="button" className="primary" disabled={busy} onClick={() => setCreating({ title: '', content: '', kind: 'fact', scope: 'project', error: '' })}>＋ 记住一条</button>
+      <span className="memory-center-toolbar-count">{view.records.length} 条</span>
+    </section>
 
-    {bulk.length > 0 && <div className="memory-center-bulk" role="region" aria-label="批量操作">
+    {search && <p className="memory-center-search-note" role="status">搜索“{search.query}”命中 {search.ids.length} 条{search.error ? `：${search.error}` : '；结果仅包含当前可检索记录，停用与失效记录请清除搜索查看。'}</p>}
+
+    {bulkMode && <div className="memory-center-bulk" role="region" aria-label="批量操作">
       <span>已选择 {bulk.length} 条</span>
-      <button type="button" disabled={busy} onClick={() => { setConfirm(null); void runBulk('disable'); }}>批量停用</button>
-      <button type="button" disabled={busy} onClick={() => void runBulk('enable')}>批量启用</button>
-      <button type="button" disabled={busy} onClick={() => void runBulk('pin')}>批量置顶</button>
-      <button type="button" disabled={busy} onClick={() => setBulk([])}>取消选择</button>
+      <button type="button" disabled={busy || !bulk.length} onClick={() => { setConfirm(null); void runBulk('disable'); }}>批量停用</button>
+      <button type="button" disabled={busy || !bulk.length} onClick={() => void runBulk('enable')}>批量启用</button>
+      <button type="button" disabled={busy || !bulk.length} onClick={() => void runBulk('pin')}>批量置顶</button>
+      <button type="button" onClick={() => { setBulk([]); setBulkMode(false); }}>退出批量</button>
       <small>批量停用影响派生内容；批量置顶遵守 {PINNED_CHAR_LIMIT} 字符预算，超限条目会跳过并提示。</small>
     </div>}
 
-    <div className="memory-center-records-body">
+    <div className={`memory-center-records-body ${drawerOpen ? 'has-detail' : ''}`}>
       <div className="memory-center-records-list">
-        <Card title="记忆列表" actions={<span className="hint">第 {recordPage.page + 1} / {recordPage.pageCount} 页</span>}>
-          {recordPage.items.length === 0 && <Empty title={search ? '没有匹配的记录' : '没有符合筛选条件的记忆'}>{search ? '清除搜索或调整筛选；零命中不代表历史中不存在。' : memoryCenterEmptyMessage('records', view)}</Empty>}
+        <Card title="记忆列表" actions={recordPage.pageCount > 1 ? <span className="hint">第 {recordPage.page + 1} / {recordPage.pageCount} 页</span> : undefined}>
+          {recordPage.items.length === 0 && <Empty title={search ? '没有匹配的记录' : '没有符合筛选条件的记忆'}>
+            {search ? '清除搜索或调整筛选；零命中不代表历史中不存在。' : '候选与失效记录在「候选」页处理；这里只显示已保存记录。'}
+          </Empty>}
           {recordPage.items.map(record => {
             const id = String(record.id);
-            const stateValue = memoryRecordStateView(record);
             const isPinned = view.pinned.ids.includes(id);
-            return <article key={id} className={`memory-center-record ${selected === id ? 'is-selected' : ''}`}>
-              <div className="memory-center-record-head">
-                <label className="check" title="选择以批量处理"><input type="checkbox" checked={bulk.includes(id)} aria-label={`选择记录 ${String(record.title)}`} onChange={event => setBulk(previous => event.target.checked ? [...new Set([...previous, id])] : previous.filter(value => value !== id))} /><strong>{String(record.title || '未命名记录')}</strong></label>
-                <span className="memory-center-record-badges">
-                  {isPinned && <span className="memory-center-pin-badge">置顶</span>}
-                  {record.autoPublished === true && <span className="memory-center-auto-badge">自动发布</span>}
-                  <span className={`memory-center-status ${toneClass[stateValue.tone]}`}>{stateValue.label}</span>
-                </span>
-              </div>
-              <small>{memoryKindLabel(record.kindV2 || record.kind)} · {memoryScopeLabel(record.scope)} · v{String(record.revision ?? '?')} · {asList(record.sources).length ? `${asList(record.sources).length} 条来源` : '用户明确输入'} · {memoryRecordSubject(record)}</small>
-              <p className="memory-center-summary">{memoryRecordSummary(record, 140)}</p>
-              {memoryRecordStateView(record).tone === 'candidate' && <p className="memory-center-warning">候选未采用，不参与召回。</p>}
-              {Array.isArray(record.conflictIds) && record.conflictIds.length > 0 && <p className="memory-center-warning" role="alert">存在冲突，等待核验。</p>}
-              {Boolean(record.invalidatedReason) && <p className="memory-center-warning">{String(record.invalidatedReason)}</p>}
-              {asList<string>(record.conditions).length > 0 && <p className="hint">条件：{asList<string>(record.conditions).join('；')}</p>}
-              <div className="memory-center-record-actions">
-                <button type="button" disabled={busy} onClick={() => { setSelected(id); void loadDetail(id); }}>详情</button>
-                <button type="button" disabled={busy} onClick={() => void pinRecord(record)}>{isPinned ? '取消置顶' : '置顶'}</button>
-                <button type="button" disabled={busy} onClick={() => setConfirm({ record, enabled: record.enabled === false })}>{record.enabled === false ? '启用' : '停用'}</button>
-                <button type="button" className="danger-text" disabled={busy} onClick={() => void startForgetImpact(record)}>遗忘</button>
-                <MemoryFeedbackButtons sessionId={sessionId} id={id} revision={Number(record.revision) || 1} goal={goal} query={filters.query} disabled={busy || !memoryFeedbackAvailable({ status: String(record.status), enabled: record.enabled !== false, validFrom: record.validFrom as string | undefined, validTo: record.validTo as string | undefined, invalidatedReason: record.invalidatedReason as string | undefined })} report={report} onSaved={() => { void refresh().catch(error => report(errorText(error), true)); }} />
-              </div>
-            </article>;
+            return <MemoryRow
+              key={id}
+              record={record}
+              selected={selected === id}
+              pinned={isPinned}
+              bulkMode={bulkMode}
+              checked={bulk.includes(id)}
+              busy={busy}
+              onOpen={() => openDetail(id)}
+              onCheck={checked => setBulk(previous => checked ? [...new Set([...previous, id])] : previous.filter(value => value !== id))}
+              onPin={() => void pinRecord(record)}
+              onToggle={() => { if (!guardPending()) return; setSelected(id); setConfirm({ record, enabled: record.enabled === false }); }}
+              onForget={() => { if (!guardPending()) return; setSelected(id); void startForgetImpact(record); }}
+            />;
           })}
-          {recordPage.total > 0 && <Pager page={recordPage} onPage={setPage} />}
+          {recordPage.pageCount > 1 && <Pager page={recordPage} onPage={setPage} />}
         </Card>
       </div>
 
-      <div className="memory-center-record-detail">
+      {drawerOpen && <aside className="memory-center-record-detail" aria-label="记录详情">
         {confirm && <Card title={confirm.enabled ? '启用记忆' : '停用记忆'} actions={<button type="button" className="memory-center-link" disabled={busy} onClick={() => setConfirm(null)}>取消</button>}>
           <p>将{confirm.enabled ? '启用' : '停用'}「{String(confirm.record.title)}」。{confirm.enabled ? '启用后重新参与检索。' : '停用会让相关派生内容同步失效；原始会话历史保留。'}</p>
           <button type="button" className={confirm.enabled ? 'primary' : 'danger'} disabled={busy} onClick={() => void toggleRecord(confirm.record, confirm.enabled)}>{busy ? '处理中…' : `确认${confirm.enabled ? '启用' : '停用'}`}</button>
         </Card>}
-        {editor && <Card title="编辑记忆" actions={<button type="button" className="memory-center-link" disabled={busy} onClick={() => { setEditor(null); }}>取消</button>}>
+        {editor && <Card title="编辑记忆" actions={<button type="button" className="memory-center-link" disabled={busy} onClick={() => setEditor(null)}>取消</button>}>
           <Field label="标题"><input value={editor.title} onChange={event => setEditor({ ...editor, title: event.target.value })} /></Field>
           <Field label="正文"><textarea rows={6} value={editor.content} onChange={event => setEditor({ ...editor, content: event.target.value })} /></Field>
           <Field label="适用条件（每行一条）" hint="条件必须完整；不完整的条件会影响召回适用范围。"><textarea rows={3} value={editor.conditions} onChange={event => setEditor({ ...editor, conditions: event.target.value })} /></Field>
@@ -576,36 +635,47 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
           {impact.preview && <ImpactPreviewPanel preview={impact.preview} />}
           <button type="button" className="danger full" disabled={busy || !impact.preview?.available} onClick={() => void commitImpact()}>{busy ? '正在遗忘…' : impact.preview?.available ? '确认遗忘' : '重新预览影响'}</button>
         </Card>}
-        {detail && !editor && !forgetTarget && <Card title={detailRecord?.title ? String(detailRecord.title) : '记录详情'} actions={<button type="button" className="memory-center-link" disabled={busy} onClick={() => { setDetail(null); setSelected(''); }}>关闭</button>}>
+        {detail && !editor && !forgetTarget && <Card title={detailRecord?.title ? String(detailRecord.title) : '记录详情'} actions={<button type="button" className="memory-center-link" disabled={busy} onClick={closeDetail}>关闭</button>}>
           {detail.loading && <p role="status">正在读取记录与版本…</p>}
-          {detail.error && <Notice message={detail.error} onClose={() => setDetail(null)} error />}
+          {detail.error && <Notice message={detail.error} onClose={closeDetail} error />}
           {detailRecord && <>
-            <div className="memory-center-detail-meta"><StatusPill record={detailRecord} /><span>{memoryKindLabel(detailRecord.kindV2 || detailRecord.kind)} · {memoryScopeLabel(detailRecord.scope)} · v{String(detailRecord.revision ?? '?')} · {memoryRecordSubject(detailRecord)}</span></div>
-            <p className="hint">{state.safety}{detailRecord.autoPublished === true ? ` · 自动发布 · 分数 ${String(detailRecord.score ?? '未记录')} · 策略 v${String(detailRecord.policyVersion ?? '?')} · 信任 ${String(detailRecord.trust ?? '未记录')}` : ''}</p>
+            <div className="memory-center-detail-meta">
+              <StatusPill record={detailRecord} />
+              <span>{memoryKindLabel(detailRecord.kindV2 || detailRecord.kind)} · {memoryScopeLabel(detailRecord.scope)} · 更新于 <span title={String(detailRecord.updatedAt || '')}>{memoryRelativeTime(detailRecord.updatedAt)}</span> · v{String(detailRecord.revision ?? '?')}</span>
+            </div>
+            {detailState.status !== 'active' && <p className="hint">{detailState.safety}</p>}
             <Markdown text={String(detailRecord.content || '')} />
-            {asList<string>(detailRecord.conditions).length > 0 && <p>完整适用条件：{asList<string>(detailRecord.conditions).join('；')}</p>}
-            <p className="hint">有效期：{String(detailRecord.validFrom || '未指定')} 至 {String(detailRecord.validTo || '未指定')}{detailRecord.expiresAt ? ` · 过期时间 ${String(detailRecord.expiresAt)}` : ''}{detailRecord.reviewAfter ? ` · 建议复核 ${String(detailRecord.reviewAfter)}` : ''}</p>
-            <dl className="memory-center-facts">
-              <div><dt>使用次数</dt><dd>{memoryCountText(Number(detailRecord.useCount) || undefined)}</dd></div>
-              <div><dt>反馈分</dt><dd>{memoryCountText(typeof detailRecord.feedbackScore === 'number' ? detailRecord.feedbackScore : undefined)}</dd></div>
-              <div><dt>置顶</dt><dd>{view.pinned.ids.includes(detail.id) ? `已置顶（${memoryPinnedChars(detailRecord)} 字符）` : eligible.eligible ? '未置顶' : eligible.reason}</dd></div>
-              <div><dt>来源</dt><dd>{detailSources.sources.length} 条</dd></div>
-            </dl>
-            {detailDiff && <details open={detailDiff.available}>
-              <summary>{detailDiff.summary}（{detail.versions.length} 个历史版本）</summary>
-              <TextDiff before={detailDiff.before} after={detailDiff.after} />
+            {asList<string>(detailRecord.conditions).length > 0 && <details className="memory-center-fold">
+              <summary>适用条件 {asList<string>(detailRecord.conditions).length} 条</summary>
+              <ul className="memory-center-condition-list">{asList<string>(detailRecord.conditions).map((condition, index) => <li key={index}>{condition}</li>)}</ul>
             </details>}
-            <details>
-              <summary>来源原文与影响预览</summary>
-              {detailSources.sources.length > 0 && <ul className="memory-center-source-list">{detailSources.sources.map(source => <li key={source.label}><code>{source.label}</code></li>)}</ul>}
+            {detailSources.sources.length > 0 ? <details className="memory-center-fold">
+              <summary>来源 {detailSources.sources.length} 条</summary>
+              <ul className="memory-center-source-list">{detailSources.sources.map(source => <li key={source.label}><code>{source.label}</code></li>)}</ul>
               {detail.originals === null && <button type="button" disabled={busy || detail.sourcesLoading} onClick={() => void loadSources()}>{detail.sourcesLoading ? '正在读取…' : '读取来源原文'}</button>}
               {detailOriginals.length > 0 && <div className="memory-center-original-list">{detailOriginals.map((original, index) => <article key={index}><strong>{original.title}</strong>{original.error ? <p className="memory-center-warning">{original.error}</p> : <Markdown text={original.text} />}</article>)}</div>}
+            </details> : <p className="hint">来源：用户明确输入</p>}
+            {detailDiff?.available && <details className="memory-center-fold">
+              <summary>版本 v{memoryCountText(detailDiff.currentRevision)}：{detailDiff.summary}</summary>
+              <TextDiff before={detailDiff.before} after={detailDiff.after} />
+            </details>}
+            <details className="memory-center-fold">
+              <summary>更多信息</summary>
+              <dl className="memory-center-facts">
+                <div><dt>使用次数</dt><dd>{memoryCountText(Number(detailRecord.useCount) || undefined)}</dd></div>
+                <div><dt>反馈分</dt><dd>{memoryCountText(typeof detailRecord.feedbackScore === 'number' ? detailRecord.feedbackScore : undefined)}</dd></div>
+                <div><dt>置顶</dt><dd>{pinned ? `已置顶（${memoryPinnedChars(detailRecord)} 字符）` : eligible.eligible ? '未置顶' : eligible.reason}</dd></div>
+                <div><dt>来源</dt><dd>{detailSources.sources.length} 条</dd></div>
+              </dl>
+              <p className="hint">有效期：{memoryDateText(detailRecord.validFrom) || '未指定'} 至 {memoryDateText(detailRecord.validTo) || '未指定'}{detailRecord.expiresAt ? ` · 过期 ${memoryDateText(detailRecord.expiresAt)}` : ''}{detailRecord.reviewAfter ? ` · 建议复核 ${memoryDateText(detailRecord.reviewAfter)}` : ''}</p>
+              {detailRecord.autoPublished === true && <p className="hint">自动发布 · 分数 {String(detailRecord.score ?? '未记录')} · 策略 v{String(detailRecord.policyVersion ?? '?')} · 信任 {String(detailRecord.trust ?? '未记录')}</p>}
             </details>
             <div className="memory-center-record-actions">
               <button type="button" disabled={busy} onClick={() => setEditor({ record: detailRecord, title: String(detailRecord.title || ''), content: String(detailRecord.content || ''), conditions: asList<string>(detailRecord.conditions).join('\n'), error: '' })}>编辑</button>
               <button type="button" disabled={busy} onClick={() => void pinRecord(detailRecord)}>{pinned ? '取消置顶' : '置顶'}</button>
               <button type="button" disabled={busy} onClick={() => setConfirm({ record: detailRecord, enabled: detailRecord.enabled === false })}>{detailRecord.enabled === false ? '启用' : '停用'}</button>
               <button type="button" className="danger-text" disabled={busy} onClick={() => void startForgetImpact(detailRecord)}>遗忘</button>
+              <MemoryFeedbackButtons sessionId={sessionId} id={String(detailRecord.id)} revision={Number(detailRecord.revision) || 1} goal={goal} query={filters.query} disabled={busy || !memoryFeedbackAvailable({ status: String(detailRecord.status), enabled: detailRecord.enabled !== false, validFrom: detailRecord.validFrom as string | undefined, validTo: detailRecord.validTo as string | undefined, invalidatedReason: detailRecord.invalidatedReason as string | undefined })} report={report} onSaved={() => { void refresh().catch(error => report(errorText(error), true)); }} />
             </div>
             <details className="memory-center-advanced">
               <summary>高级整理（合并 / 拆分 / 替代，记录血缘且可回滚）</summary>
@@ -636,15 +706,27 @@ function RecordsTab({ view, request, perform, pending, report, openRecord, focus
                 </div>
               </section>}
             </details>
-            <p className="hint">详情读取不回填使用量；来源原文读取仅限已登记且有效的来源。</p>
           </>}
         </Card>}
-        {!detail && !editor && !forgetTarget && !confirm && <Card title="记录详情"><p className="hint">从左侧选择一条记录查看正文、条件、有效期、版本差异、来源与影响预览。候选不会在这里出现。</p>
-          <ul className="memory-center-count-list"><li><span>已保存（生效+停用）</span><strong>{view.records.length}</strong></li><li><span>候选（另一页签）</span><strong>{view.candidates.length}</strong></li></ul>
-        </Card>}
         {impact?.action === 'update' && !editor && impact.preview && <Card title="待确认的更正"><ImpactPreviewPanel preview={impact.preview} /><div className="button-row"><button type="button" className="primary" disabled={busy || !impact.preview?.available} onClick={() => void commitImpact()}>确认保存更正</button><button type="button" disabled={busy} onClick={() => setImpact(null)}>取消</button></div>{impact.error && <Notice message={impact.error} onClose={() => setImpact(null)} error />}</Card>}
-      </div>
+      </aside>}
     </div>
+
+    {creating && <Modal title="记住一条" closeDisabled={busy} onClose={() => setCreating(null)}>
+      <Field label="标题"><input value={creating.title} onChange={event => setCreating({ ...creating, title: event.target.value })} /></Field>
+      <Field label="内容"><textarea rows={6} value={creating.content} onChange={event => setCreating({ ...creating, content: event.target.value })} /></Field>
+      <div className="form-row">
+        <Field label="类型"><select value={creating.kind} disabled={busy} onChange={event => setCreating({ ...creating, kind: event.target.value, scope: event.target.value === 'preference' ? 'personal' : creating.scope })}>
+          <option value="fact">项目事实</option><option value="experience">项目经验</option><option value="preference">个人偏好</option>
+        </select></Field>
+        <Field label="范围"><select value={creating.scope} disabled={busy || creating.kind === 'preference'} onChange={event => setCreating({ ...creating, scope: event.target.value })}>
+          <option value="project" disabled={creating.kind === 'preference'}>本项目</option><option value="personal">个人</option>
+        </select></Field>
+      </div>
+      <p className="hint">点击记住表示你明确要求保存此内容；保存后直接生效。</p>
+      {creating.error && <p className="memory-center-warning" role="alert">{creating.error}</p>}
+      <button className="primary full" disabled={busy || !creating.content.trim()} onClick={() => void createMemory()}>{pendingLabel === 'create' ? '正在保存…' : '记住'}</button>
+    </Modal>}
   </div>;
 }
 

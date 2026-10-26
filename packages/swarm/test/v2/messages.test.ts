@@ -275,10 +275,10 @@ test('expireMessages expires only due non-incorporated messages, is idempotent a
 test('expireMessages accepts an explicit clock override',()=>{
   const f=fixture();
   try{
-    send(f.store,{messageId:'override-1',expiresAt:'2026-10-18T00:00:00.000Z'});
+    send(f.store,{messageId:'override-1',expiresAt:'2999-01-01T00:00:00.000Z'});
     send(f.store,{messageId:'override-2'});
     assert.deepEqual(expireMessages(f.store,TEAM),[]);
-    const expired=expireMessages(f.store,TEAM,'2026-10-19T00:00:00.000Z');
+    const expired=expireMessages(f.store,TEAM,'2999-01-02T00:00:00.000Z');
     assert.deepEqual(expired.map(message=>message.messageId),['override-1']);
     assert.equal(getMessage(f.store,'override-2')?.state,'accepted');
   }finally{f.close();}

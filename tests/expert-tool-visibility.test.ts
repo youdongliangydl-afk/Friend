@@ -42,7 +42,7 @@ function renderWorkbench(page:'expert'|'memory',enabled:boolean){
 
 test('Expert workbench exposes its authoritative directory and exact adoption details',()=>{
  assert.match(renderWorkbench('expert',true),/专家库/);assert.match(renderWorkbench('expert',true),/角色合同与执行范围/);assert.match(renderWorkbench('expert',false),/当前会话未启用此能力/);
- const memory=renderWorkbench('memory',true);assert.match(memory,/本轮尚无记忆使用记录/);assert.match(memory,/记忆学习设置/);
+ const memory=renderWorkbench('memory',true);assert.match(memory,/尚无记忆注入回执/);assert.match(memory,/记忆设置/);
 });
 
 test('App view projection retains Expert and other fullscreen tabs without mutation',()=>{
