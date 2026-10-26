@@ -398,7 +398,7 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
         store.put(transferKey,{...transfer,id,phase:'saved'});await request(worker,'queue',{action:'move.commit',id:input.id,targetId:id});publishState();return {sessionId:id,state:sideState(child)};
       }catch(error){await request(worker,'queue',{action:'move.failed',id:input.id,targetId:id}).catch(()=>{});throw error;}
     }
-    if(!['list','add','edit','save','cancelEdit','remove','steer','pause','resume'].includes(String(input.action)))throw new Error('排队操作无效');
+    if(!['list','add','edit','save','cancelEdit','remove','steer','followUp','pause','resume'].includes(String(input.action)))throw new Error('排队操作无效');
     const result=await request(worker,'queue',input);worker.state=object(await request(worker,'state'));publishState();return result;
   }
   if(method==='session.sidechat.read'){worker.state=object(await request(worker,'state'));return sideState(worker);}

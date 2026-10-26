@@ -24,7 +24,7 @@
 .composer-surface,.composer-surface #root{background:transparent!important;height:100%;margin:0;overflow:hidden}.composer-surface #root{display:flex;align-items:flex-end;padding:0}.composer-surface .floating-composer{width:100%;box-shadow:none;margin:0}
 @media(max-width:760px){.floating-host{width:min(530px,calc(100vw - 45px));right:20px;bottom:20px}.new-tab-page{padding:30px 22px 240px}.new-tab-tools{grid-template-columns:1fr}.view-tab{flex-basis:160px;width:160px;max-width:200px}}
 
-.workbench-content-host{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}.overlay-composer-theme.friend-layout{display:flex;width:100%;height:100%;align-items:flex-end;padding:0;background:transparent}
+.workbench-content-host{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}.workbench-content-column{position:relative;width:100%;max-width:var(--content-width,1240px);margin-inline:auto;display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}.content-resize{position:absolute;left:0;top:0;bottom:0;width:9px;min-width:9px;cursor:col-resize;z-index:6}.content-resize span{height:110px}.overlay-composer-theme.friend-layout{display:flex;width:100%;height:100%;align-items:flex-end;padding:0;background:transparent}
 
 .floating-composer .composer-toolbar{justify-content:space-between;flex-wrap:nowrap}.floating-composer .send-button,.floating-composer .stop-button{margin-left:auto}
 

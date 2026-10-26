@@ -18,7 +18,7 @@
 .badge-completed, .badge-active, .badge-integrated, .badge-published, .badge-ready { color: #547638; }
 .text-button, details>summary, .attempt-link, .selection-option { color: #67854e; }
 .empty, .empty p, .muted, .selection-option small, .card-heading h3 { color: #718265; }
-.composer-hint, .welcome>p, .session-status { color: #7a8774; }
+.welcome>p, .session-status { color: #7a8774; }
 .inline-error { color: #936349; }
 .diff-add { color: #487522; }
 .diff-remove { color: #987444; }

@@ -10,6 +10,7 @@ import * as model from '../apps/desktop/src/renderer/goal-model.js';
 import {GoalBar} from '../apps/desktop/src/renderer/GoalBar.js';
 import {GoalEditor} from '../apps/desktop/src/renderer/GoalDialog.js';
 import {SessionComposer,type ComposerSnapshot} from '../apps/desktop/src/renderer/SessionComposer.js';
+import {ComposerAddMenu} from '../apps/desktop/src/renderer/ComposerAddMenu.js';
 import {errorText} from '../apps/desktop/src/renderer/types.js';
 const goal:model.ComposerGoal={id:'g',revision:2,objective:'核对项目并交付成果',status:'active',timeUsedSeconds:65,updatedAt:'2026-10-17T04:00:00Z'};
 const nodes=(n:any):any[]=>!n?[]:Array.isArray(n)?n.flatMap(nodes):n.props?[n,...nodes(n.props.children)]:[];
@@ -48,6 +49,10 @@ test('Goal editor enforces the backend 4000 character limit for both controls an
 });
 test('composer keeps Goal visible beside queued user messages with all plugins disabled and Plan independent',()=>{
  const value:ComposerSnapshot={goal,goalDraft:true,sessionId:'s',epoch:1,draft:'新的目标',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:true,permissionMode:'auto',permissionExplicit:false,mode:'single',plugins:[],models:[],modelId:'',thinkingLevel:'off',thinkingLevels:['off'],ready:false,floating:false,collapsed:false,status:'',queue:{paused:false,items:[]}} as ComposerSnapshot;
- const html=renderToStaticMarkup(createElement(SessionComposer,{value,action:async()=>{}}));for(const label of ['当前目标','目标输入模式','计划模式（只读分析）','Agent 协作方式','发送消息'])assert.ok(html.includes(label));assert.doesNotMatch(html,/预算|令牌|验证完成/);
+ const html=renderToStaticMarkup(createElement(SessionComposer,{value,action:async()=>{}}));for(const label of ['当前目标','计划模式（只读分析）','Agent 协作方式','发送消息'])assert.ok(html.includes(label));assert.doesNotMatch(html,/预算|令牌|验证完成/);
+ // The Goal entry point now lives in the add menu; the toolbar keeps only its active state.
+ const addMenuHtml=renderToStaticMarkup(createElement(ComposerAddMenu,{disabled:false,planDisabled:false,onFiles(){},onGoal(){},onPlan(){}}));
+ assert.match(addMenuHtml,/<strong>目标<\/strong>/);
+ assert.doesNotMatch(html,/aria-label="目标输入模式"/);
  const editorHtml=renderToStaticMarkup(createElement(GoalEditor,{goal,archived:false,onClose(){},onAction:async()=>{}}));assert.match(editorHtml,/<aside[^>]*aria-label="编辑目标"/);assert.match(editorHtml,/最近更新/);
 });

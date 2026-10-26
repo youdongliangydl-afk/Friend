@@ -9,12 +9,12 @@ import {SessionComposer,permissionRail,type ComposerSnapshot} from '../apps/desk
 const base:ComposerSnapshot={sessionId:'permission',epoch:1,draft:'检查权限',attachments:[],running:false,sending:false,navigating:false,archived:false,planMode:false,permissionMode:'auto',permissionExplicit:true,mode:'single',plugins:[],models:[],modelId:'fixture',thinkingLevel:'off',thinkingLevels:['off'],ready:true,floating:false,collapsed:false,status:'准备就绪'};
 const html=(value:Partial<ComposerSnapshot>)=>renderToStaticMarkup(React.createElement(SessionComposer,{value:{...base,...value},action:async()=>{}}));
 
-test('the pure permission rail reports the mode, inherited hint, danger flag and lock reason',()=>{
+test('the pure permission rail reports the mode, inherited state, danger flag and lock reason',()=>{
  const base={permissionMode:'auto' as const,permissionExplicit:true,running:false,sending:false,navigating:false,archived:false};
- assert.deepEqual(permissionRail(base),{mode:'auto',explicit:true,danger:false,lockedReason:undefined});
+ assert.deepEqual(permissionRail(base),{mode:'auto',explicit:true,danger:false,lockedReason:undefined,inherited:false});
  assert.equal(permissionRail({...base,permissionMode:'allPermissions'}).danger,true);
- assert.equal(permissionRail({...base,permissionExplicit:false}).hint,'默认');
- assert.equal(permissionRail({...base,permissionExplicit:true}).hint,undefined);
+ assert.equal(permissionRail({...base,permissionExplicit:false}).inherited,true);
+ assert.equal(permissionRail({...base,permissionExplicit:true}).inherited,false);
  assert.equal(permissionRail({...base,running:true}).lockedReason,'执行中不能切换权限策略');
  assert.equal(permissionRail({...base,sending:true}).lockedReason,'消息提交中，暂不能切换权限策略');
  assert.equal(permissionRail({...base,navigating:true}).lockedReason,'正在切换会话，暂不能切换权限策略');
@@ -35,11 +35,15 @@ test('the composer always renders the effective permission mode and marks the da
  assert.match(html({permissionMode:'allPermissions'}),/class="permission-control all-permissions"/);
  assert.doesNotMatch(html({permissionMode:'auto'}),/all-permissions/);
 });
-test('an inherited permission default is labelled while an explicit choice removes the hint',()=>{
+test('the permission button keeps only the shield and the mode, and the inherited default moves into its tooltip',()=>{
  const inherited=html({permissionMode:'auto',permissionExplicit:false});
- assert.match(inherited,/class="permission-hint"[^>]*title="未显式选择：沿用新会话默认权限策略，切换后写入本会话">默认/);
+ assert.doesNotMatch(inherited,/permission-hint/);
+ assert.doesNotMatch(inherited,/control-chevron/);
+ assert.ok(inherited.includes('title="权限策略：安全自动（沿用新会话默认权限策略）"'),'the inherited default stays available as a tooltip');
  const explicit=html({permissionMode:'auto',permissionExplicit:true});
  assert.doesNotMatch(explicit,/permission-hint/);
+ assert.doesNotMatch(explicit,/control-chevron/);
+ assert.ok(explicit.includes('title="权限策略：安全自动"'));
 });
 test('the rail stays mounted for every lifecycle state and explains why it is locked',()=>{
  for(const [patch,reason] of [
@@ -59,6 +63,6 @@ test('the rail stays mounted for every lifecycle state and explains why it is lo
 });
 test('permission changes still travel through the composer permission action',()=>{
  const source=readFileSync('apps/desktop/src/renderer/SessionComposer.tsx','utf8');
- assert.ok(source.includes("disabled={busy} onChange={async mode=>{await dispatch({type:'permission',value:mode});}}"));
+ assert.ok(source.includes("disabled={busy} inherited={permission.inherited} onChange={async mode=>{await dispatch({type:'permission',value:mode});}}"));
  assert.ok(source.includes("mode={value.permissionMode}"));
 });

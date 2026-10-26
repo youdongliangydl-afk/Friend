@@ -612,6 +612,14 @@ async function handle(method:string,input:Record<string,unknown>,approvedExecuti
       const item=inputQueue.claim(id,revision,runId&&session.isStreaming?runId:randomUUID());
       try{await handle('send',{queueId:item.id,admissionEpoch:queueEpoch,runId:item.runId,inputMode:'steer',mode:item.mode,planMode:item.planMode});}catch(error){inputQueue.failed(item.id);throw error;}
     }
+    // A queued message can be guided straight into the running turn, with the same
+    // admission the ⌘Enter follow-up uses, instead of waiting for the next boundary.
+    else if(action==='followUp'){
+      if(queueDriving||stopping||lifecycleStatus==='rebuilding')throw new Error('请等待当前执行状态稳定');
+      if(!session.isStreaming&&(swarmBusy()||finiteJobs()))throw new Error('协作仍在执行，暂不能发送引导信息');
+      const item=inputQueue.claim(id,revision,runId&&session.isStreaming?runId:randomUUID());
+      try{await handle('send',{queueId:item.id,admissionEpoch:queueEpoch,runId:item.runId,inputMode:'followUp',mode:item.mode,planMode:item.planMode});}catch(error){inputQueue.failed(item.id);throw error;}
+    }
     else if(action==='move.prepare'){const leaf=stableForkLeaf(session.sessionManager.getBranch());if(!leaf)throw new Error('尚无可继承的上下文');return inputQueue.moving(id,revision,text(input.targetId),leaf);}
     else if(action==='move.inspect'){const item=inputQueue.read(id);if(item.targetId!==input.targetId||!['moving','unknown'].includes(item.state))throw new Error('分支会话交接身份不匹配');return item;}
     else if(action==='move.failed'){const item=inputQueue.snapshot().items.find(row=>row.id===id);if(item&&item.targetId===input.targetId&&['moving','unknown'].includes(item.state))inputQueue.unknown(id);}

@@ -34,28 +34,45 @@ test('the legacy key mapping keeps its published contract for plain and modifier
  for(const key of ['metaKey','ctrlKey','shiftKey','altKey'] as const)assert.equal(composerKeyAction({key:'Enter',[key]:true},false),'newline');
  assert.deepEqual(insertNewline('abcd',1,3),{value:'a\nd',caret:2});
 });
-test('the running composer exposes a queue, followUp and steer control with the queue hint',()=>{
- const markup=html({running:true});
- for(const label of ['排队消息','追加到当前回合','插入纠偏'])assert.equal(buttons(markup,label).length,1,label);
- assert.match(buttons(markup,'排队消息')[0],/title="Enter 排队/);
- assert.match(buttons(markup,'追加到当前回合')[0],/⌘ Enter/);
- assert.match(buttons(markup,'插入纠偏')[0],/⌘⇧ Enter/);
- assert.match(markup,/aria-label="队列操作说明"[\s\S]*?Enter 排队 · ⌘ Enter 追加 · ⌘⇧ Enter 纠偏/);
- assert.equal(buttons(markup,'发送消息').length,0);
-});
-test('running composer controls stay disabled for empty, goal-draft, sending or archived input',()=>{
- for(const patch of [{draft:''},{goalDraft:true},{sending:true},{archived:true}] as Partial<ComposerSnapshot>[]){
-  const markup=html({running:true,...patch});
-  for(const label of ['排队消息','追加到当前回合','插入纠偏'])assert.match(buttons(markup,label)[0],/\bdisabled=""/,label);
- }
+test('the composer keeps one right-side action button that follows the run state',()=>{
  const idle=html({running:false});
- for(const label of ['排队消息','追加到当前回合','插入纠偏'])assert.equal(buttons(idle,label).length,0);
  assert.equal(buttons(idle,'发送消息').length,1);
+ assert.match(buttons(idle,'发送消息')[0],/title="Enter 发送/);
+ assert.equal(buttons(idle,'停止当前任务').length,0);
+ const running=html({running:true});
+ assert.equal(buttons(running,'发送并排队').length,1);
+ assert.match(buttons(running,'发送并排队')[0],/title="Enter 排队/);
+ assert.equal(buttons(running,'发送消息').length,0);
+ assert.equal(buttons(running,'停止当前任务').length,0);
+ const empty=html({running:true,draft:''});
+ assert.equal(buttons(empty,'停止当前任务').length,1);
+ assert.equal(buttons(empty,'发送并排队').length,0);
+});
+test('the composer drops the separate queue buttons and the queue hint line',()=>{
+ for(const label of ['排队消息','追加到当前回合','插入纠偏'])assert.equal(buttons(html({running:true}),label).length,0,label);
+ assert.doesNotMatch(html({running:true}),/队列操作说明/);
+});
+test('running composer controls stay disabled for goal-draft, sending or archived input',()=>{
+ for(const patch of [{goalDraft:true},{sending:true},{archived:true}] as Partial<ComposerSnapshot>[]){
+  const markup=html({running:true,...patch});
+  assert.match(buttons(markup,'发送并排队')[0],/\bdisabled=""/,JSON.stringify(patch));
+ }
 });
 test('member composers keep their addendum send control without the main queue actions',()=>{
  const markup=renderToStaticMarkup(React.createElement(SessionComposer,{value:{...base,running:true},recipient:'成员 A',action:async()=>{}}));
  assert.equal(buttons(markup,'发送补充').length,1);
- for(const label of ['排队消息','追加到当前回合','插入纠偏'])assert.equal(buttons(markup,label).length,0);
+ assert.equal(buttons(markup,'停止该成员').length,1);
+ assert.equal(buttons(markup,'停止当前任务').length,0);
+ for(const label of ['排队消息','追加到当前回合','插入纠偏','发送并排队'])assert.equal(buttons(markup,label).length,0,label);
+});
+test('a queued message is guided into the running turn with the follow-up admission',()=>{
+ const queue=readFileSync('apps/desktop/src/renderer/QueueMessages.tsx','utf8');
+ assert.match(queue,/operate\('followUp',item\)/);
+ assert.doesNotMatch(queue,/operate\('steer',item\)/);
+ const worker=readFileSync('apps/desktop/src/sdk-worker.ts','utf8');
+ assert.match(worker,/action==='followUp'/);
+ assert.match(worker,/inputMode:'followUp'/);
+ assert.match(readFileSync('apps/desktop/src/main.ts','utf8'),/'followUp'/);
 });
 
 function surfaceAction(){
