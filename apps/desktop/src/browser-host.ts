@@ -34,7 +34,7 @@ export class BrowserHost {
     const contents=view.webContents;
     contents.on('will-navigate',(event,url)=>{try{if(url!=='about:blank')browserUrl(url);}catch{event.preventDefault();}});
     contents.on('will-redirect',(event,url)=>{try{if(url!=='about:blank')browserUrl(url);}catch{event.preventDefault();}});
-    contents.on('before-input-event',(event,input)=>{if(input.type==='keyDown'&&(input.meta||input.control)&&['t','w','n','k','l'].includes(input.key.toLowerCase())&&!input.isComposing){event.preventDefault();this.emit('browser.shortcut',{key:input.key.toLowerCase()},entry?.owner||this.overlayOwner);}});
+    contents.on('before-input-event',(event,input)=>{if(input.type==='keyDown'&&(input.meta||input.control)&&['t','w','n','k','f','l'].includes(input.key.toLowerCase())&&!input.isComposing){event.preventDefault();this.emit('browser.shortcut',{key:input.key.toLowerCase()},entry?.owner||this.overlayOwner);}});
   }
   private attach(owner:string,tab:ViewTab,popupContents?:WebContents):Entry {
     const context=this.context(owner),partition=browserPartition(context.ui.browserScope,owner,context.workspacePath),ses=session.fromPartition(partition);

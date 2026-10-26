@@ -37,6 +37,7 @@ function fixture({runtime={},graphs=[],flows=[],mode='swarm',failure,previews=[]
   if(name==='./swarm-controls.js')return swarmControls;
   if(name==='./types.js')return rendererTypes;if(name==='./ui.js')return ui;
   if(name==='./TaskGraph.js')return {TaskGraphCanvas,TaskEvidenceSummary};if(name==='./task-graph-model.js')return graphModel;if(name==='./view-tabs.js')return {openTool};
+  if(name==='./SwarmV2Panel.js')return {SwarmV2Workbench:()=>null};
   if(name==='./Teammates.js')return {TeammateRoster:({rootSessionId}:{rootSessionId:string})=>createElement('div',{'data-members-for':rootSessionId}),openTeammate(){throw new Error('SSR must not open a teammate');}};
   throw new Error('Unexpected panel import: '+name);
  },window:{confirm,friendPi:{onEvent:()=>()=>{},request(method:string,input:JsonObject){

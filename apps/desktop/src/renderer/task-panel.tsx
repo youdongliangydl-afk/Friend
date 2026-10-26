@@ -1,3 +1,4 @@
+import {SwarmV2Workbench} from './SwarmV2Panel.js';
 import {SwarmCreationControls,GraphExecutionFacts} from './swarm-controls.js';
 import {TeammateRoster,openTeammate} from './Teammates.js';
 import {useCallback,useEffect,useState,useRef,useMemo} from 'react';
@@ -54,6 +55,7 @@ export function TaskPanel({state,report}:{state:AppState;report(message:string,e
    {jobs.map(job=><section key={String(job.id)}><h3>{String(job.name)} · <Badge value={String(job.status)}/></h3><small>{job.kind==='service'?'持续服务':'有限任务'} · {String(job.origin)}</small><div className="button-row"><button disabled={busy} onClick={()=>void act(()=>runtime('jobs.logs',{id:job.id})).then(setDetail)}>查看日志</button><button disabled={busy||job.status!=='running'} onClick={()=>void act(()=>runtime('jobs.kill',{id:job.id}))}>停止命令</button></div></section>)}
   </Card>}
   {receiptsForRun.length>0&&<Card title="本轮方法与记忆"><p className="hint">选中、进入上下文、请求和检查分别记录；不推断模型采纳或答案正确。</p><ul className="task-capability-receipts" tabIndex={0} aria-label="能力原生收据阶段">{receiptsForRun.map((row,index)=><li key={row.entryId||index}><strong>{row.capability==='memory'?'Memory':'Expert'} · {row.stage}</strong><span>{row.refs.map(ref=>`${String(ref.id)} v${String(ref.version)} · ${String(ref.hash||'摘要待核对')}`).join('；')||'精确版本待核对'}</span></li>)}</ul><div className="button-row"><button onClick={()=>void openCapability('memory')}>在 Memory 查看原记录</button><button onClick={()=>void openCapability('expert')}>在 Expert 查看方法</button></div><details><summary>原生收据与条目引用</summary><JsonView value={receiptsForRun.map(row=>row.raw)}/></details></Card>}
+  {sessionId&&current?.plugins.includes('swarm')&&<SwarmV2Workbench key={sessionId} sessionId={String(sessionId)} report={report}/>}
   {detail!==undefined&&<Card title="成果详情"><button onClick={()=>setDetail(undefined)}>关闭详情</button><JsonView value={detail}/></Card>}
  </div>;
 }

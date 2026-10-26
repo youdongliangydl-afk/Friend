@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {toolNames,type SessionViewState,type ToolPage} from '../session-view.js';
 import {visibleSessionView} from './view-tabs.js';
 import {Icon,type IconName} from './Icons.js';
-export const toolIcons:Record<ToolPage,IconName>={trace:'trace',file:'file',diff:'diff',terminal:'terminal',swarm:'swarm',expert:'expert',memory:'memory'};
+export const toolIcons:Record<ToolPage,IconName>={trace:'trace',file:'file',diff:'diff',git:'git',terminal:'terminal',swarm:'swarm',expert:'expert',memory:'memory'};
 export function SessionTabs({view,onSelect,onClose,onNew}:{view:SessionViewState;onSelect(id:string):void;onClose(id:string):void;onNew():void}){
   const strip=useRef<HTMLDivElement>(null);
   const visible=visibleSessionView(view),active=visible.active;

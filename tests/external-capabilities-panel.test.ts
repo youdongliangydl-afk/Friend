@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {transformSync} from 'esbuild';
+import * as capabilityCatalog from '../apps/desktop/src/renderer/capability-catalog.js';
 
 const compiled=transformSync(readFileSync('apps/desktop/src/renderer/CapabilitiesPanel.tsx','utf8'),{loader:'tsx',format:'cjs',jsx:'automatic',target:'node24'}).code;
 type Node={type:unknown;props:Record<string,any>};
@@ -23,8 +24,9 @@ function panel(){
     if(name==='react/jsx-runtime')return {jsx:(type:unknown,props:Node['props'])=>({type,props}),jsxs:(type:unknown,props:Node['props'])=>({type,props}),Fragment:'Fragment'};
     if(name==='./ui.js')return {Field:'Field',Empty:'Empty'};
     if(name==='./types.js')return {errorText:(error:unknown)=>error instanceof Error?error.message:String(error)};
+    if(name==='./capability-catalog.js')return capabilityCatalog;
     throw new Error('Unexpected component import: '+name);
-  },window:{friendPi:{request:(_method:string,request:any)=>{const action=request.input.action;requests.push({sessionId:request.sessionId,action,input:request.input.input});if(action==='snapshot')return Promise.resolve(snapshot(request.sessionId));return new Promise(resolve=>pending.push({action,resolve}));}}}});
+  },window:{friendPi:{request:(_method:string,request:any)=>{if(_method==='reference.list')return Promise.resolve({items:[]});const action=request.input.action;requests.push({sessionId:request.sessionId,action,input:request.input.input});if(action==='snapshot')return Promise.resolve(snapshot(request.sessionId));return new Promise(resolve=>pending.push({action,resolve}));}}}});
   vm.runInContext(compiled,context);
   function render(id=sessionId){sessionId=id;let turns=0;do{if(++turns>10)throw new Error('render loop');dirty=false;index=0;tree=module.exports.CapabilitiesPanel({sessionId,report:message=>reports.push(message)});while(effects.length)effects.shift()!();}while(dirty);return tree;}
   function nodes(){const result:Node[]=[];function visit(value:unknown){if(Array.isArray(value)){value.forEach(visit);return;}if(value&&typeof value==='object'&&'props' in value){const node=value as Node;result.push(node);visit(node.props.children);}}visit(tree);return result;}
@@ -54,4 +56,16 @@ test('a late MCP save cannot clear a new session edit or its draft',async()=>{
 test('a late search configuration save cannot erase a new session credential draft',async()=>{
   const ui=panel();await ui.flush();ui.input('粘贴 Brave Search API Key').props.onChange({target:{value:'a-unsaved-key'}});ui.render();ui.form(1).props.onSubmit({preventDefault(){}});ui.render();
   ui.render('B');await ui.flush();ui.input('粘贴 Brave Search API Key').props.onChange({target:{value:'b-unsaved-key'}});ui.render();ui.complete('web.save',{});await ui.flush();assert.equal(ui.input('粘贴 Brave Search API Key').props.value,'b-unsaved-key');assert.equal(ui.button('保存检索配置').props.disabled,false);assert.deepEqual(ui.reports,[]);
+});
+
+const readable=(value:any):string=>Array.isArray(value)?value.map(readable).join(''):value&&typeof value==='object'?readable(value.props?.children):typeof value==='string'?value:'';
+test('capability center renders the four sources with three explicit states and honest empty states',async()=>{
+  const ui=panel();await ui.flush();
+  const sections=ui.nodes().filter(node=>node.type==='section'&&node.props['aria-label']);
+  assert.deepEqual(sections.map(node=>node.props['aria-label']).filter(label=>['Skills','Plugins','MCP','Slash 命令'].includes(label)),['Skills','Plugins','MCP','Slash 命令']);
+  const mcp=readable(sections.find(node=>node.props['aria-label']==='MCP')!);
+  assert.match(mcp,/shared/);assert.match(mcp,/✓ 已配置/);assert.match(mcp,/— 已加载/);assert.match(mcp,/— 当前会话可用/);assert.match(mcp,/服务已停用/);
+  assert.match(readable(sections.find(node=>node.props['aria-label']==='Plugins')!),/未提供当前会话的插件启用列表/);
+  assert.match(readable(sections.find(node=>node.props['aria-label']==='Skills')!),/没有返回技能/);
+  assert.match(readable(sections.find(node=>node.props['aria-label']==='Slash 命令')!),/没有注册 slash 命令/);
 });

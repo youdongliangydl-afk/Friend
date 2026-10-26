@@ -57,6 +57,7 @@ function fixture(){
       if(specifier==='./session-order.js')return sessionOrder;
       if(specifier==='./browser-host.js')return {BrowserHost:class{destroy(){}removeSession(){}}};
       if(specifier==='./workspace-files.js')return workspace;
+      if(specifier==='./git-service.js')return {gitHandlers:()=>({}),gitMethods:[]};
       if(specifier==='./run-changes.js')return runChanges;
       if(specifier==='./session-attention.js')return {AttentionRegistry:class extends AttentionRegistry {constructor(){super({now:()=>now});}}};
       if(specifier==='./attachment-input.js')return attachmentInput;

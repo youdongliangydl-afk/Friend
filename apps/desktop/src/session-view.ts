@@ -1,10 +1,10 @@
 
 export type LayoutMode = 'standard' | 'fullscreen';
 export type BrowserScope = 'app' | 'project' | 'session';
-export type ToolPage = 'trace' | 'file' | 'diff' | 'terminal' | 'swarm' | 'expert' | 'memory';
+export type ToolPage = 'trace' | 'file' | 'diff' | 'git' | 'terminal' | 'swarm' | 'expert' | 'memory';
 export interface ViewTab { id: string; kind: 'new' | 'tool' | 'browser'; page?: ToolPage; url?: string; title?: string }
 export interface SessionViewState { version: 1; mode: LayoutMode; tabs: ViewTab[]; active: string; sidebar: boolean; composerCollapsed: boolean; browserScope: BrowserScope; normalPage?: ToolPage|'browser'|null; normalTerminal?: boolean }
-export const toolNames: Record<ToolPage,string> = {trace:'轨迹',file:'文件',diff:'Diff',terminal:'终端',swarm:'任务',expert:'Expert',memory:'Memory'};
+export const toolNames: Record<ToolPage,string> = {trace:'轨迹',file:'文件',diff:'Diff',git:'Git',terminal:'终端',swarm:'任务',expert:'Expert',memory:'Memory'};
 export const browserScopeNames: Record<BrowserScope,string> = {app:'整个 Friend 共用',project:'按项目隔离',session:'按会话隔离'};
 export function initialView(defaults: {defaultLayoutMode?: LayoutMode; defaultBrowserScope?: BrowserScope} = {}): SessionViewState {
   return {version:1,mode:'fullscreen',browserScope:defaults.defaultBrowserScope||'app',tabs:[],active:'conversation',sidebar:true,composerCollapsed:false};

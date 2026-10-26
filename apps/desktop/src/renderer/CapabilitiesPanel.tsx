@@ -2,20 +2,39 @@ import {useEffect,useRef,useState} from 'react';
 import type {ExternalCapabilitiesSnapshot} from '../external-capabilities.js';
 import {Field,Empty} from './ui.js';
 import {errorText} from './types.js';
+import {capabilityCatalog,capabilityCounts,type CapabilitySection} from './capability-catalog.js';
 
 interface Draft {name:string;type:'stdio'|'http';command:string;args:string;cwd:string;url:string;env:string;headers:string;enabled:boolean}
 const blank=():Draft=>({name:'',type:'stdio',command:'',args:'',cwd:'',url:'',env:'',headers:'',enabled:false});
 const states:Record<string,string>={disabled:'已停用',connecting:'连接中',connected:'已连接',failed:'连接失败',disconnected:'连接已断开','needs-auth':'需要认证',unchecked:'待检查'};
-export function CapabilitiesPanel({sessionId,report}:{sessionId:string;report?:(message:string,error?:boolean)=>void}){
-  const [state,setState]=useState<ExternalCapabilitiesSnapshot>(),[draft,setDraft]=useState(blank),[editing,setEditing]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[key,setKey]=useState(''),[searchEnabled,setSearchEnabled]=useState(false),[remove,setRemove]=useState('');
+/** Each section renders exactly what its data source returned; an empty source never becomes sample data. */
+const sectionView=(section:CapabilitySection)=>{const counts=capabilityCounts(section);return <section key={section.kind} className="card" aria-label={section.title}>
+  <div className="card-heading"><h3>{section.title}</h3><span className="hint">{section.entries.length?`${section.entries.length} 项 · 已加载 ${counts.loaded} · 当前会话可用 ${counts.available}`:'空态'}</span></div>
+  <p className="hint">{section.hint} 来源：{section.source}。</p>
+  {section.entries.length?<ul className="capability-tool-list">{section.entries.map(entry=><li key={entry.id}>
+    <div className="capability-service-heading"><strong>{entry.name}</strong><span>{[[entry.configured,'已配置'],[entry.loaded,'已加载'],[entry.available,'当前会话可用']].map(([value,label])=><span key={String(label)} className={'capability-state '+(value?'connected':'disabled')}>{value?'✓':'—'} {String(label)}</span>)}</span></div>
+    {entry.description&&<p>{entry.description}</p>}
+    {entry.reason&&<p className="hint" role="status">{entry.reason}</p>}
+  </li>)}</ul>:<Empty title="暂无条目">{section.emptyReason}</Empty>}
+</section>;};
+export function CapabilitiesPanel({sessionId,report,plugins,defaultPlugins}:{sessionId:string;plugins?:string[];defaultPlugins?:string[];report?:(message:string,error?:boolean)=>void}){
+  const [state,setState]=useState<ExternalCapabilitiesSnapshot>(),[draft,setDraft]=useState(blank),[editing,setEditing]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[key,setKey]=useState(''),[searchEnabled,setSearchEnabled]=useState(false),[remove,setRemove]=useState(''),[snapshotError,setSnapshotError]=useState(''),[references,setReferences]=useState<{items?:unknown[];error?:string;loading?:boolean}>({loading:true});
   const generation=useRef(0),mounted=useRef(true);
   const call=<T,>(action:string,input:Record<string,unknown>={})=>window.friendPi.request<T>('runtime.call',{sessionId,action:'external.call',input:{action,input}});
-  useEffect(()=>{mounted.current=true;const current=++generation.current;setState(undefined);setDraft(blank());setEditing('');setBusy('');setRemove('');setSearchEnabled(false);setKey('');setError('');void call<ExternalCapabilitiesSnapshot>('snapshot').then(value=>{if(mounted.current&&current===generation.current){setState(value);setSearchEnabled(value.web.enabled);}}).catch(err=>{if(current===generation.current)setError(errorText(err));});return()=>{mounted.current=false;generation.current++;};},[sessionId]);
+  useEffect(()=>{mounted.current=true;const current=++generation.current;setState(undefined);setDraft(blank());setEditing('');setBusy('');setRemove('');setSearchEnabled(false);setKey('');setError('');setSnapshotError('');void call<ExternalCapabilitiesSnapshot>('snapshot').then(value=>{if(mounted.current&&current===generation.current){setState(value);setSearchEnabled(value.web.enabled);setSnapshotError('');}}).catch(err=>{if(current===generation.current){const message=errorText(err);setSnapshotError(message);setError(message);}});return()=>{mounted.current=false;generation.current++;};},[sessionId]);
+  const referenceGeneration=useRef(0);
+  const loadReferences=()=>{const current=++referenceGeneration.current;setReferences({loading:true});void window.friendPi.request<{items?:unknown[]}>('reference.list',{sessionId,type:'/',query:''}).then(value=>{if(current===referenceGeneration.current)setReferences({items:Array.isArray(value.items)?value.items:[]});}).catch(err=>{if(current===referenceGeneration.current)setReferences({error:errorText(err)});});};
+  useEffect(()=>{loadReferences();return()=>{referenceGeneration.current++;};},[sessionId]);
   const update=(changes:Partial<Draft>)=>setDraft(value=>({...value,...changes}));
   const run=async(name:string,operation:()=>Promise<unknown>,message?:string,onSuccess?:()=>void)=>{if(busy)return;const current=generation.current;setBusy(name);setError('');try{const result=await operation();if(current!==generation.current)return;const value=await call<ExternalCapabilitiesSnapshot>('snapshot');if(current===generation.current){setState(value);onSuccess?.();if(message)report?.(message);return result;}}catch(err){if(current===generation.current){setError(errorText(err));report?.(errorText(err),true);}}finally{if(mounted.current&&current===generation.current)setBusy('');}};
+  const catalog=capabilityCatalog({plugins:plugins===undefined&&defaultPlugins===undefined?undefined:{enabled:plugins,defaults:defaultPlugins},mcp:{snapshot:state??null,error:snapshotError||undefined,loading:!state&&!snapshotError},references});
   const json=(text:string,label:string)=>{if(!text.trim())return undefined;let value:unknown;try{value=JSON.parse(text);}catch{throw new Error(label+'须为 JSON 对象');}if(!value||typeof value!=='object'||Array.isArray(value))throw new Error(label+'须为 JSON 对象');return value;};
   return <section className="capabilities-panel" aria-label="外部能力设置">
-    <div className="panel-intro"><h2>外部能力</h2><p>连接你的工具服务，或让 Friend 查找和读取网页。</p></div>
+    <div className="panel-intro"><h2>能力中心</h2><p>统一查看 Skills、Plugins、MCP 与 Slash 的三态；在下方连接和管理 MCP 服务与网页检索。</p></div>
+    <h3>统一能力中心</h3><p className="hint">三态依次为：已配置（存在配置）→ 已加载（运行时已加载）→ 当前会话可用（本会话可调用）。失败项给出具体原因；没有数据源的分区保持空态，不列出示例。</p>
+    {references.error&&<p className="hint" role="status">运行时清单读取失败：{references.error}<button type="button" onClick={loadReferences}>重试</button></p>}
+    <div className="capability-catalog">{catalog.sections.map(sectionView)}</div>
+    <h3>MCP 与外部工具</h3><p className="hint">连接你的工具服务，或让 Friend 查找和读取网页。</p>
     <div className="capabilities-toolbar"><span>当前会话的连接与工具</span><button disabled={!!busy} onClick={()=>void run('refresh',()=>call('mcp.status'))}>{busy==='refresh'?'刷新中…':'刷新状态'}</button></div>
     {error&&<p className="inline-error" role="alert">{error}</p>}
     {!state&&!error?<p role="status">正在读取配置…</p>:<>

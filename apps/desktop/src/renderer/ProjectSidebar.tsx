@@ -2,6 +2,7 @@ import {useEffect,useRef,useState,type KeyboardEvent,type DragEvent} from 'react
 import {Icon} from './Icons.js';
 import type {AppState,SessionSummary} from './types.js';
 import type {AttentionActivity} from '../session-attention.js';
+import type {SessionWait} from './session-wait.js';
 import {orderedSessions} from '../session-order.js';
 
 export function sidebarSessions(sessions:SessionSummary[],activities:Pick<AttentionActivity,'sessionId'|'kind'|'unseen'>[]):SessionSummary[]{
@@ -25,13 +26,14 @@ export interface SessionMoves {up?:()=>void;down?:()=>void}
 export interface ProjectSidebarProps {
   projects:AppState['projects'];sessions:AppState['sessions'];sessionOrder?:Record<string,string[]>;
   selectedProject?:string;selectedSession?:string;query?:string;archived?:boolean;disabled?:boolean;
+  wait?:Record<string,SessionWait>;
   onProject(id:string):void;onSession(id:string):void;onNewSession(id:string):void;
   onMenu(session:SessionSummary,position:{x:number;y:number},moves?:SessionMoves):void;
   onReorder(ids:string[]):void|Promise<unknown>;
   onReorderSessions(projectId:string,ids:string[]):void|Promise<unknown>;onToggleArchive?():void;
 }
 const statuses:Record<string,string>={awaiting_user:'等待你处理',unread_completed:'有新回复',unread_failed:'任务失败，尚未查看',idle:'准备就绪',running:'正在执行',awaiting_review:'等待复核',rebuilding:'整理上下文',stopping:'正在停止',completed:'本轮已结束',failed:'执行失败',interrupted:'已中断',stopped:'已停止',paused:'已暂停'};
-export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProject='',selectedSession,query='',archived=false,disabled=false,onProject,onSession,onNewSession,onMenu,onReorder,onReorderSessions,onToggleArchive}:ProjectSidebarProps) {
+export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProject='',selectedSession,query='',archived=false,disabled=false,wait={},onProject,onSession,onNewSession,onMenu,onReorder,onReorderSessions,onToggleArchive}:ProjectSidebarProps) {
   const [menu,setMenu]=useState<string>(),[pending,setPending]=useState(false),[error,setError]=useState('');
   const [drop,setDrop]=useState<{kind:'project'|'session';id:string;after:boolean}>();
   const menuRoot=useRef<HTMLDivElement>(null),menuTrigger=useRef<HTMLButtonElement|null>(null),reordering=useRef(false);
@@ -84,7 +86,7 @@ export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProjec
           <button type="button" role="menuitem" onClick={closeMenu}>关闭菜单</button>
         </div>}
         {chats.length?<ul className="project-sidebar-chats">{chats.map(session=>{
-          const status=session.status||'idle',statusLabel=statuses[status]||status;
+          const status=session.status||'idle',statusLabel=statuses[status]||status,currentWait=wait[session.id];
           return <li key={session.id} className={'project-sidebar-chat'+(selectedSession===session.id?' is-selected':'')+(drop?.kind==='session'&&drop.id===session.id?drop.after?' drop-after':' drop-before':'')} onContextMenu={event=>{if(locked)return;event.preventDefault();setMenu(undefined);onMenu(session,{x:event.clientX,y:event.clientY},moves(session.id));}} onDragOver={event=>{
             const source=dragging.current;if(locked||source?.kind!=='session'||source.projectId!==group.id||source.id===session.id)return;
             event.preventDefault();event.dataTransfer.dropEffect='move';setDrop({kind:'session',id:session.id,after:after(event)});
@@ -93,6 +95,7 @@ export function ProjectSidebar({projects,sessions,sessionOrder={},selectedProjec
             event.preventDefault();void commit(reorderVisibleIds(allIds,visibleIds,source.id,session.id,after(event)),group.id);
           }}>
             <button type="button" className="project-sidebar-session" disabled={locked} title={session.name} aria-current={selectedSession===session.id?'page':undefined} draggable={!locked} onDragStart={event=>{if(locked){event.preventDefault();return;}setMenu(undefined);dragging.current={kind:'session',id:session.id,projectId:group.id};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('application/x-friend-session',session.id);}} onDragEnd={endDrag} onClick={()=>{setMenu(undefined);onSession(session.id);}} onKeyDown={event=>{if(event.altKey&&event.shiftKey&&['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();moveSession(session.id,event.key==='ArrowUp'?-1:1);}}}><span>{session.name}</span></button>
+            {currentWait&&<span className={'session-wait wait-'+currentWait.kind} data-wait={currentWait.kind} role="img" aria-label={'在等你：'+currentWait.label} title={currentWait.detail} style={{background:currentWait.tone.background,color:currentWait.tone.color,flex:'none',padding:'1px 6px',borderRadius:'9px',fontSize:'9px',lineHeight:'15px',whiteSpace:'nowrap'}}>{currentWait.label}</span>}
             <span className={'project-sidebar-status status-'+status} role="img" aria-label={statusLabel} title={statusLabel}/>
             <button type="button" className="project-sidebar-more" disabled={locked} aria-label={'聊天 '+session.name+' 的更多操作'} aria-haspopup="menu" onClick={event=>{setMenu(undefined);const box=event.currentTarget.getBoundingClientRect();onMenu(session,{x:box.right,y:box.bottom},moves(session.id));}}>⋯</button>
           </li>;

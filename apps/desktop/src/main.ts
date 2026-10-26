@@ -1,4 +1,5 @@
 import {AttentionRegistry,type AttentionOwner} from './session-attention.js';
+import {gitHandlers,gitMethods,type GitMethod} from './git-service.js';
 import {SessionNavigation,type SessionRoute} from './session-navigation.js';
 import {validateSessionOrder} from './session-order.js';
 import {BrowserHost} from './browser-host.js';
@@ -67,6 +68,7 @@ for(const method of ['attachment.import','attachment.inspect','reference.list','
 allowed.add('link.open');allowed.add('model.test');
 for(const method of ['session.ui.get','session.ui.update','browser.list','browser.present','browser.navigate','browser.action','browser.cancelDownload'])allowed.add(method);
 for(const method of ['project.reorder','file.search','file.write','file.preview','file.preview.revoke'])allowed.add(method);
+for(const method of gitMethods)allowed.add(method);
 for(const method of ['session.queue','session.sidechat.read','session.sidechat.draft','session.sidechat.send'])allowed.add(method);
 const terminalBroker=new TerminalBroker(root,node,dataDir,event=>publish('terminal',event));
 for(const method of ['open','create','list','read','input','response','resize','takeover','release','stop'])allowed.add('terminal.'+method);
@@ -344,6 +346,10 @@ async function handle(method:string,input:Record<string,unknown>):Promise<unknow
   if(method.startsWith('document.')){const workspace=resolveWorkspaceInput(input),path=projectFile(workspace.path,text(input.path));if(method==='document.pdf.page'){const result=await renderPdfPage(path,Number(input.pageIndex)||0);if(input.expectedHash&&result.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return result;}const doc=await documentReader.read(path);if(input.expectedHash&&doc.hash!==input.expectedHash)throw new Error('文件已变更，请重新打开预览');return method==='document.read'?documentManifest(doc):paginateDocument(doc,{sectionId:typeof input.sectionId==='string'?input.sectionId:undefined,offset:Number(input.offset)||0,limit:Number(input.limit)||32000,rowOffset:Number(input.rowOffset)||0,maxRows:Number(input.maxRows)||40});}
   if(method==='file.pick'){const result=await dialog.showOpenDialog(window,{title:'添加文件和文件夹',properties:['openFile','openDirectory','multiSelections']});return result.canceled?[]:result.filePaths.map(path=>({path,name:path.split('/').at(-1)}));}
   if(method==='file.preview.revoke'){revokeHtmlPreview(text(input.token));return {revoked:true};}
+  if((gitMethods as readonly string[]).includes(method)){
+    const workspace=resolveWorkspaceInput(input);
+    return await gitHandlers(workspace.path)[method as GitMethod](input as never);
+  }
   if(['file.search','file.read','file.tree','file.open','file.write','file.preview','git.diff'].includes(method)){
     const workspace=resolveWorkspaceInput(input);
     if(method==='file.search'){const all=fileTree(workspace.path),query=text(input.query).toLowerCase();return {entries:all.entries.filter(entry=>entry.kind!=='directory'&&entry.path.toLowerCase().includes(query)).map(entry=>({...entry,name:entry.path})),truncated:all.truncated};}

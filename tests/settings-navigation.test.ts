@@ -95,7 +95,11 @@ test('Expert toggle submits only its plugin change and keeps unsaved model draft
 test('Settings retain only General Expert switch and external Extensions capabilities',async()=>{
   const f=fixture('extensions');f.render();f.get().resolve(settings());await f.flush();
   const html=renderToStaticMarkup(f.render());assert.match(html,/外部能力设置/);assert.match(html,/连接你的工具服务/);
-  assert.doesNotMatch(html,/Swarm|上下文高级诊断|专家库与版本管理|专家库|方法候选/);
+  // The capability catalog is read-only: it may list plugin names, but plugin/role management must not appear here.
+  assert.doesNotMatch(html,/上下文高级诊断|专家库与版本管理|专家库|方法候选/);
+  const catalog=html.slice(html.indexOf('aria-label="外部能力设置"'),html.indexOf('<footer'));
+  assert.ok(catalog.length>0,'capability catalog rendered on the extensions page');
+  assert.doesNotMatch(catalog,/role="switch"|<input/);
   const nav=nodes(f.render()).find(node=>node.type==='nav')!;
   assert.equal(text(nav),'常规模型自定义指令记忆扩展');
   f.props.page='general';const tree=f.render();const general=nodes(tree).find(node=>node.type==='div'&&'data-settings-general' in node.props)!;

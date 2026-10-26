@@ -54,7 +54,7 @@ test('a captured old composer callback cannot write into the new session after i
 
 function appFixture() {
   const source = readFileSync('apps/desktop/src/renderer/App.tsx', 'utf8');
-  const send = between(source, '  const send=async(goalInput?:GoalSubmission)=>{', '  const selectProject=');
+  const send = between(source, '  const send=async(goalInput?:GoalSubmission,submitIntent?:ComposerSubmitIntent)=>{', '  const selectProject=');
   const action = between(source, '  const composerAction=async(action:ComposerAction)=>{', '  useEffect(()=>{setMemberRoute');
   const storage = new Map<string, string>(), requests: any[] = [], errors: string[] = [];
   let release!: () => void; const acknowledgement = new Promise<void>(done => {release = done;});
