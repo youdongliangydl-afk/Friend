@@ -8,6 +8,7 @@
 - Default tests use a fake provider. Real models use only explicitly configured credentials; never print credentials.
 - Never stash, reset --hard, clean -fd, overwrite unrelated changes, force push, publish npm or create a remote. Commit explicit owned paths.
 - Final client evidence binds the exact candidate commit, Pi SHA, artifact hash and actual Computer Use journeys. Report unrun verification accurately.
+- README is the only user-facing description. Any change to features, commands, UI behaviour, data locations, limits or build steps must update README in the same commit; describe current behaviour only, and keep README free of reference-project and competitor traces except the Pi derivation statement.
 
 ## 并行开发规则
 
@@ -19,3 +20,10 @@
 - **统一集成**：集成会话逐项接收代码，负责冲突处理和验收问题修复，并对最终集成候选重新执行完整本地测试和 Computer Use 验收。
 - **远端合码**：全部验收通过后，仅由集成会话创建 PR 并自主合入远端 `main`。候选或主分支发生变化时，重新集成验收。
 - **完成确认**：核对远端合码结果并统一保存验收证据后，才标记完成；清理 Worktree 前须确保代码、证据及未提交内容不会丢失。
+
+## 文档规则
+
+- **README 是唯一面向用户的说明文档**。功能、命令、界面行为、数据位置、限制或构建步骤发生变化时，同一次提交必须同步更新 README，不得留下与新实现不一致的描述。
+- **只写已完成的行为**。计划中的能力不进功能说明；未完成项写入「边界与未完成」，并标明状态。
+- **不保留参考痕迹**。README 不引用参考项目、竞品或外部实现，也不罗列致谢清单；只保留一条 Pi 派生声明。来源与许可记录留在 `THIRD_PARTY_NOTICES.md` 与各包 `SOURCES.md`，这两类文件不属用户文档，不向其扩写。
+- **交接前自检**。提交前确认 README 与代码一致；无法同步时在交接说明中写明原因和待补项。
