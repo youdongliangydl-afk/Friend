@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRegistry } from '@earendil-works/pi-durable';
+import { CodingTools } from '@earendil-works/pi-durable/tools';
+import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import type { Models } from '@earendil-works/pi-ai';
 import {
@@ -101,6 +103,10 @@ export async function openDurableWorkerSession(options: DurableWorkerSessionOpti
     ...(options.expertEvaluation ? { expertEvaluation: options.expertEvaluation } : {}),
     ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
     ...(options.agent ? { agent: options.agent } : {}),
+    // Pi shipped read/write/edit/bash as built-ins; durable has none, and without an environment its
+    // own tool set fails every call.
+    extensions: [CodingTools as never],
+    env: (target: { cwd?: string }) => new NodeExecutionEnv({ cwd: target.cwd ?? options.cwd }),
     // Capability packages arrive as factories so their `registerPlugin` call lands on the facade,
     // exactly as it would on Pi.
     factories: [...capabilityFactories, ...options.factories],

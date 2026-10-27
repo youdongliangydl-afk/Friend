@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { Context } from '@earendil-works/chord';
-import { Harness, watchEvents, type Registry, type Storage } from '@earendil-works/pi-durable';
+import { Harness, watchEvents, type EnvTarget, type Extension, type Registry, type Storage } from '@earendil-works/pi-durable';
 import type { Models } from '@earendil-works/pi-ai';
 import type { Bus, JsonObject, PluginController, PluginRegistrationOptions } from './index.js';
 import { createDurablePluginHost, durablePiEntries, type PiShapedEntry } from './durable-plugin-host.js';
@@ -36,6 +36,13 @@ export interface DurableSessionOptions {
   plugins?: readonly DurableSessionPlugin[];
   /** Plain Pi extension factories, for the worker's own extensions that are not PluginControllers. */
   factories?: readonly ((pi: never) => unknown)[];
+  /**
+   * Durable extensions that must also be selected — `CodingTools` supplies read/write/edit/bash,
+   * which on Pi came from the built-in tool set and therefore arrive from nowhere here.
+   */
+  extensions?: readonly Extension[];
+  /** Builds the execution environment per use; without one those tools fail with an error result. */
+  env?: (target: EnvTarget, context: Context) => unknown;
   agent?: { model?: { provider: string; modelId: string }; thinkingLevel?: string };
   policy?(sessionId: string): JsonObject | undefined;
   expertEvaluation?(sessionId: string): unknown;
@@ -89,7 +96,15 @@ function roleOf(entry: PiShapedEntry): string | undefined {
 export async function openDurableSession(options: DurableSessionOptions): Promise<DurableSession> {
   const context = options.context ?? BACKGROUND_CONTEXT;
   // The agent choices belong to the conversation, not to the harness.
-  const harness = await Harness.open(options.storage, { models: options.models, registry: options.registry } as never, context);
+  const harness = await Harness.open(
+    options.storage,
+    {
+      models: options.models,
+      registry: options.registry,
+      ...(options.env ? { env: options.env as never } : {}),
+    } as never,
+    context,
+  );
   const conversation = await harness.root(context, (options.agent ? { agent: options.agent } : undefined) as never);
 
   /** Raw durable entries, oldest first, so the plugin host projects from the source of truth. */
@@ -154,9 +169,12 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
    */
   const install = async () => {
     const extension = host.buildExtension('friend-pi');
+    const extras = options.extensions ?? [];
     options.registry.install(extension as never);
-    // Awaited: submitting before selection lands would run the turn without the prompt section.
-    await conversation.configure({ extensions: [extension] } as never, context);
+    for (const extra of extras) options.registry.install(extra as never);
+    // Awaited: submitting before selection lands would run the turn without the prompt section or
+    // without its file tools.
+    await conversation.configure({ extensions: [extension, ...extras] } as never, context);
   };
   const mountAll = async () => {
     for (const plugin of options.plugins ?? []) host.mount(plugin.name, plugin.controller, plugin.description, plugin.options);
