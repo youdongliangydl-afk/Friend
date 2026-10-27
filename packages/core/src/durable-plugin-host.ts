@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { defineExtension, defineTool, section, type Extension } from '@earendil-works/pi-durable';
 import { registerPlugin, type Bus, type PluginController, type PluginRegistrationOptions, type JsonObject } from './index.js';
 import type { DurableEntryLike } from './durable-projection.js';
 
@@ -119,7 +120,16 @@ export interface DurablePluginHost {
   mountFactory(factory: (pi: ExtensionAPI) => unknown): (() => void) | undefined;
   /** Drive the lifecycle events the plugins subscribe to. */
   sessionStart(): void;
+  /**
+   * Runs the `before_agent_start` handlers once per run and keeps whatever prompt text they return.
+   * Pi fires this event once per turn with the current prompt; durable renders sections per request,
+   * so the text is captured here and re-emitted by the generated section.
+   */
   beforeAgentStart(): void;
+  /** Prompt text captured from the last `before_agent_start`, or '' when nothing appended. */
+  promptText(): string;
+  /** Build a durable extension carrying the mounted tools and the captured prompt section. */
+  buildExtension(name?: string): Extension;
   sessionShutdown(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -215,15 +225,21 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
     for (const handler of handlers) handler({ type: event }, ctx);
   }
 
+  let capturedPrompt = '';
+  const registeredTools: unknown[] = [];
+  const registeredCommands: string[] = [];
+  /** The facade handed to every mounted factory, so tools land in one shared list. */
+  function sharedApi(): ExtensionAPI { return makeFakeApi(registeredTools, registeredCommands); }
+
   return {
     mount(name, controller, description, registration = {}) {
-      const tools: unknown[] = [];
-      const commands: string[] = [];
-      registerPlugin(makeFakeApi(tools, commands), name, controller, description, registration);
+      const before = registeredTools.length;
+      const commandsBefore = registeredCommands.length;
+      registerPlugin(sharedApi(), name, controller, description, registration);
       const plugin: MountedPlugin = {
         name,
-        tools,
-        commands,
+        tools: registeredTools.slice(before),
+        commands: registeredCommands.slice(commandsBefore),
         async dispose() {
           await controller.dispose?.();
         },
@@ -232,16 +248,45 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
       return plugin;
     },
     mountFactory(factory) {
-      const tools: unknown[] = [];
-      const commands: string[] = [];
-      const result = factory(makeFakeApi(tools, commands));
+      const result = factory(sharedApi());
       return typeof result === 'function' ? (result as () => void) : undefined;
     },
     sessionStart() {
       fire('session_start');
     },
     beforeAgentStart() {
-      fire('before_agent_start');
+      const handlers = lifecycle.get('before_agent_start') ?? [];
+      const ctx = makeFakeContext();
+      const appended: string[] = [];
+      for (const handler of handlers) {
+        // Pi hands the current prompt in and takes a replacement out; running with an empty base
+        // yields exactly the text this handler contributes, which is what a section needs.
+        const result = handler({ systemPrompt: '' }, ctx) as { systemPrompt?: unknown } | undefined;
+        if (result && typeof result.systemPrompt === 'string' && result.systemPrompt) appended.push(result.systemPrompt);
+      }
+      capturedPrompt = appended.join('\n');
+    },
+    promptText: () => capturedPrompt,
+    buildExtension(name = 'friend-pi') {
+      const tools = registeredTools.map(tool => {
+        const descriptor = record(tool);
+        return defineTool({
+          name: String(descriptor.name),
+          description: String(descriptor.description ?? ''),
+          parameters: descriptor.parameters as never,
+          execute: async (args: unknown) => {
+            const execute = descriptor.execute as (...callArgs: unknown[]) => Promise<{ content?: unknown }> | unknown;
+            const result = await execute('friend-pi', args, undefined, undefined, makeFakeContext());
+            const content = record(result).content;
+            return Array.isArray(content) ? ({ content } as never) : ({} as never);
+          },
+        });
+      });
+      return defineExtension({
+        name,
+        tools,
+        sections: [section('friend-pi-prompt', () => capturedPrompt || undefined)],
+      }) as Extension;
     },
     async sessionShutdown() {
       const handlers = lifecycle.get('session_shutdown') ?? [];

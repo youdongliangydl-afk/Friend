@@ -145,9 +145,14 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     ...(options.expertEvaluation ? { expertEvaluation: options.expertEvaluation } : {}),
   });
 
+  /** Build the durable extension from everything mounted so far and publish it to the registry. */
+  const install = () => {
+    options.registry.install(host.buildExtension('friend-pi') as never);
+  };
   const mountAll = () => {
     for (const plugin of options.plugins ?? []) host.mount(plugin.name, plugin.controller, plugin.description, plugin.options);
     host.sessionStart();
+    install();
   };
   mountAll();
 
@@ -160,7 +165,13 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     const touchesHistory = translated.some(event => event.type === 'message_end' || event.type === 'agent_settled');
     if (touchesHistory) await loadEntries().catch(() => undefined);
     for (const event of translated) {
-      if (event.type === 'agent_start') idle = false;
+      if (event.type === 'agent_start') {
+        idle = false;
+        // Pi fired `before_agent_start` once per turn; durable has no such event, so the run
+        // boundary is the equivalent moment. Running it here also refreshes the prompt section
+        // before the first request of the run is rendered.
+        host.beforeAgentStart();
+      }
       if (event.type === 'agent_settled') { idle = true; streaming = false; }
       if (event.type === 'message_start') streaming = true;
       if (event.type === 'message_end') streaming = false;

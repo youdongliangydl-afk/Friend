@@ -190,3 +190,58 @@ test('worker-level extension factories mount through the same facade and can be 
     await host.dispose();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('before_agent_start splits into a one-per-run side effect and a rendered prompt section',async()=>{
+  const dir=workdir();
+  try{
+    const bus=createBus();
+    const host=createDurablePluginHost({
+      bus,cwd:dir,
+      conversation:{id:'s',entries:()=>[],append:()=>'x',isIdle:()=>true},
+      models:{available:()=>[],find:()=>undefined,current:()=>undefined,thinkingLevel:()=>'off'},
+      confirm:async()=>false,notify:()=>undefined,
+    });
+    let begins=0;
+    host.mountFactory(pi=>{
+      // Side effect: Pi fires this once per turn.
+      pi.on('before_agent_start',()=>{begins+=1;});
+      // Prompt contribution: Pi expects a replacement prompt.
+      pi.on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}加上的规则`}));
+    });
+
+    host.beforeAgentStart();
+    assert.equal(begins,1,'the side effect runs once per run');
+    assert.equal(host.promptText(),'加上的规则','only the appended text is captured, not the empty base');
+    assert.equal(host.promptText(),'加上的规则','reading it again does not re-run handlers');
+
+    host.beforeAgentStart();
+    assert.equal(begins,2,'a second run fires the side effect again');
+
+    const extension=host.buildExtension('probe');
+    assert.equal(extension.name,'probe');
+    assert.equal(extension.sections?.length,1,'the captured prompt becomes exactly one section');
+    await host.dispose();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('mounted friend_ tools are carried into the durable extension',async()=>{
+  const dir=workdir();
+  try{
+    const bus=createBus();
+    const host=createDurablePluginHost({
+      bus,cwd:dir,
+      conversation:{id:'s',entries:()=>[],append:()=>'x',isIdle:()=>true},
+      models:{available:()=>[],find:()=>undefined,current:()=>undefined,thinkingLevel:()=>'off'},
+      confirm:async()=>false,notify:()=>undefined,
+    });
+    const seen:{action:string}[]=[];
+    host.mount('memory',{
+      dispatch:(action:string)=>{seen.push({action});return {ok:true};},
+      snapshot:()=>({}),
+    } as never,'记忆');
+    const extension=host.buildExtension('capabilities');
+    assert.equal(extension.tools?.length,1,'the friend_ tool is installed on the extension');
+    assert.equal(extension.tools?.[0]?.name,'friend_memory');
+    await host.dispose();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});

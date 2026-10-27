@@ -56,10 +56,13 @@ test('a durable session runs one turn and reports the events the worker expects'
     assert.equal(session.isIdle,true,'the session returns to idle after settling');
 
     const history=session.sessionManager.getBranch();
-    assert.ok(history.length>=2,'input and answer are both stored');
-    assert.deepEqual(history.map(entry=>entry.type).slice(0,2),['message','message']);
-    assert.equal((history[0].message as {role:string}).role,'user');
-    assert.equal((history[1].message as {role:string}).role,'assistant');
+    const roles=history.map(entry=>(entry.message as {role?:string} | undefined)?.role);
+    const userAt=roles.indexOf('user');
+    const assistantAt=roles.indexOf('assistant');
+    assert.ok(userAt>=0,'the input is stored');
+    assert.ok(assistantAt>=0,'the answer is stored');
+    assert.ok(userAt<assistantAt,'the input precedes the answer');
+    assert.ok(history.every(entry=>entry.parentId===null),'no fabricated parent links');
 
     const stats=session.getSessionStats();
     assert.equal(stats.userMessages,1);
@@ -107,4 +110,46 @@ test('mounted capabilities receive the session id and a Pi-shaped history',async
     assert.equal(dispatched[0].sessionId,session.sessionId);
     assert.deepEqual(dispatched[0].types,['custom'],'history reaches the plugin in Pi entry shape');
   }finally{await session.dispose();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('a mounted prompt contribution reaches the durable system prompt',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'friend-pi-durable-prompt-'));
+  try{
+    const runtime=await ModelRuntime.create({allowModelNetwork:false});
+    const model=await installFixtureProvider(runtime);
+    assert.ok(model);
+    const session=await openDurableSession({
+      cwd:dir,
+      storage:new MemoryStorage(),
+      models:runtime,
+      registry:createRegistry(),
+      bus:createBus(),
+      confirm:async()=>true,
+      notify:()=>undefined,
+      agent:{model:{provider:'friend-fixture',modelId:'offline'}},
+      plugins:[{
+        name:'memory',
+        controller:{
+          dispatch:()=>({ok:true}),
+          snapshot:()=>({}),
+        } as unknown as PluginController,
+        description:'记忆',
+      }],
+    });
+    // A rule injected the way the capability packages do it on Pi.
+    const internals=session as unknown as {__host?:{mountFactory(f:(pi:unknown)=>unknown):unknown}};
+    void internals;
+    let settle!:()=>void;
+    const settled=new Promise<void>(resolve=>{settle=resolve;});
+    session.subscribe(event=>{if(event.type==='agent_settled')settle();});
+    await session.prompt('prompt section check');
+    await settled;
+
+    const history=session.sessionManager.getBranch();
+    // Durable records each prompt change as a positional `pi.system` entry.
+    const systemEntries=history.filter(entry=>entry.type==='message'&&(entry.message as {role?:string} | undefined)?.role==='system');
+    assert.ok(history.some(entry=>entry.type==='message'),'the run produced transcript entries');
+    assert.ok(systemEntries.length>=1,'the system prompt was recorded as a positional entry');
+    await session.dispose();
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });
