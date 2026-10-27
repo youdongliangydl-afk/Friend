@@ -154,3 +154,39 @@ test('the host forwards the policy it is given, so capabilities keep their write
     await host.dispose();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('worker-level extension factories mount through the same facade and can be disposed',async()=>{
+  const dir=workdir();
+  try{
+    const bus=createBus();
+    const host=createDurablePluginHost({
+      bus,cwd:dir,
+      conversation:{id:'s',entries:()=>[],append:()=>'x',isIdle:()=>true},
+      models:{available:()=>[],find:()=>undefined,current:()=>undefined,thinkingLevel:()=>'off'},
+      confirm:async()=>false,notify:()=>undefined,
+    });
+    const appended:{kind:string;data:unknown}[]=[];
+    const host2=createDurablePluginHost({
+      bus,cwd:dir,
+      conversation:{id:'s2',entries:()=>[],append:(kind,data)=>{appended.push({kind,data});return 'x';},isIdle:()=>true},
+      models:{available:()=>[],find:()=>undefined,current:()=>undefined,thinkingLevel:()=>'off'},
+      confirm:async()=>false,notify:()=>undefined,
+    });
+    void host2;
+    let disposed=0;
+    const dispose=host.mountFactory(pi=>{
+      // The worker's own extensions use exactly this surface; none of it may throw on the facade.
+      pi.registerTool({name:'read_document'} as never);
+      pi.registerCommand('plan' as never,{handler:()=>undefined} as never);
+      pi.appendEntry('friend-pi.custom-instructions.v1',{v:1});
+      assert.equal(pi.getThinkingLevel(),'off','thinking level is readable through the facade');
+      return ()=>{disposed+=1;};
+    });
+    assert.equal(typeof dispose,'function','the factory disposer is handed back');
+    host.sessionStart();
+    dispose?.();
+    assert.equal(disposed,1,'the factory disposer runs');
+    await host2.dispose();
+    await host.dispose();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});

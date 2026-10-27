@@ -111,6 +111,12 @@ export interface MountedPlugin {
 export interface DurablePluginHost {
   /** Register one capability package exactly as `registerPlugin` would on Pi. */
   mount(name: string, controller: PluginController, description: string, options?: PluginRegistrationOptions): MountedPlugin;
+  /**
+   * Register a plain Pi extension factory — the worker's own extensions (custom instructions,
+   * guard, services, document tools, …) are written in that form and are not PluginControllers.
+   * Returns the disposer the factory produced, when it produced one.
+   */
+  mountFactory(factory: (pi: ExtensionAPI) => unknown): (() => void) | undefined;
   /** Drive the lifecycle events the plugins subscribe to. */
   sessionStart(): void;
   beforeAgentStart(): void;
@@ -224,6 +230,12 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
       };
       mounted.push(plugin);
       return plugin;
+    },
+    mountFactory(factory) {
+      const tools: unknown[] = [];
+      const commands: string[] = [];
+      const result = factory(makeFakeApi(tools, commands));
+      return typeof result === 'function' ? (result as () => void) : undefined;
     },
     sessionStart() {
       fire('session_start');
