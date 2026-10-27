@@ -39,6 +39,7 @@
     "@earendil-works/pi-agent-core": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-agent-core-1.0.4-0650b4409f29.tgz",
     "@earendil-works/pi-ai": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-ai-1.0.4-a76ca247dfc4.tgz",
     "@earendil-works/pi-coding-agent": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-coding-agent-1.0.4-8eb9349f6d82.tgz",
+    "@earendil-works/pi-durable": "file:./.cache/pi/artifacts/tarballs/earendil-works-pi-durable-1.0.4-df99197797fa.tgz",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "codemirror": "6.0.2",

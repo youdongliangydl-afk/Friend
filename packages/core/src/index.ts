@@ -1,6 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+
+// Re-exported so hosts switch execution backends without reaching into a subpath.
+export { durableHistoryItems, historyTypeOf, INPUT_BOUNDARY_KIND, RUNTIME_WAKE_KIND, type DurableEntryLike } from './durable-projection.js';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -34,7 +37,7 @@ export interface HostPolicy {
 }
 export interface SourceRef { sessionId: string; entryId: string; label?: string;start?:number;end?:number;hash?:string;factId?:string }
 export interface HistoryItem { id: string; parentId: string | null; type: string; timestamp: string; role?: string; text: string;userText?:string;toolName?:string;sourceKind?:string }
-export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }
+export interface Bus { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void;/** Drop every listener; the session calls this on shutdown so a closed worker leaves nothing subscribed. */ clear?(): void }
 export interface TrustedPluginContext {runId:string;memberId?:string;taskId?:string;taskScope?:string;inputHash?:string;findJournalEntry(operationId:string):{entryId:string;customType:string;data:unknown}|undefined}
 export interface PluginContext {
   origin?: 'user' | 'agent' | 'plugin';
@@ -86,6 +89,50 @@ export function atomicWrite(path: string, value: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   writeFileSync(temporary, value, { mode: 0o600 }); renameSync(temporary, path);
+}
+
+/**
+ * Host-created extension bus. Plugins receive it through the host they are registered on;
+ * nothing here is a module singleton, so two sessions in one process never share channels.
+ * Handlers are isolated like Pi's own bus: a throwing handler cannot abort the emitter, and
+ * an async rejection is reported instead of escaping as an unhandled rejection.
+ */
+export function createBus(): Bus {
+  const channels = new Map<string, Set<(data: unknown) => void>>();
+  return {
+    emit(channel, data) {
+      const handlers = channels.get(channel);
+      if (!handlers) return;
+      for (const handler of [...handlers]) {
+        try {
+          const settled = handler(data) as unknown;
+          if (settled && typeof (settled as Promise<unknown>).catch === 'function')
+            (settled as Promise<unknown>).catch(error => console.error(`Event handler error (${channel}):`, error));
+        } catch (error) { console.error(`Event handler error (${channel}):`, error); }
+      }
+    },
+    on(channel, handler) {
+      const handlers = channels.get(channel) ?? new Set();
+      channels.set(channel, handlers);
+      handlers.add(handler);
+      return () => { handlers.delete(handler); if (!handlers.size) channels.delete(channel); };
+    },
+    clear() { channels.clear(); },
+  };
+}
+
+/** Execution backend that owns the model loop and the durable conversation transcript. */
+export type ExecutionBackend = 'pi' | 'durable';
+/**
+ * P0 switch. `pi` (default) keeps today's `pi-coding-agent` loop and JSONL history; `durable`
+ * selects the Pi Durable harness. An unknown value fails fast instead of silently falling back,
+ * so a typo cannot masquerade as a successful rollout.
+ */
+export function executionBackend(value: string | undefined = process.env.FRIEND_PI_EXEC): ExecutionBackend {
+  const backend = (value ?? '').trim().toLowerCase();
+  if (!backend) return 'pi';
+  if (backend === 'pi' || backend === 'durable') return backend;
+  throw new Error(`FRIEND_PI_EXEC 取值无效：${value}（只接受 pi 或 durable）`);
 }
 
 /** Small namespace-owned durable records. SQLite serializes compare-and-swap writes across Pi processes. */
