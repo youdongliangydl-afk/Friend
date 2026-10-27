@@ -32,7 +32,8 @@ export const INPUT_BOUNDARY_KIND = 'friend-pi.input.v1';
 export const RUNTIME_WAKE_KIND = 'friend-pi.runtime-wake.input';
 
 export interface DurableEntryLike {
-  readonly id: string;
+  /** Durable brands entry ids (numeric at runtime); callers pass them through unchanged. */
+  readonly id: string | number;
   readonly kind: string;
   readonly model?: readonly unknown[];
   readonly data?: unknown;
@@ -91,7 +92,7 @@ export function durableHistoryItems(entries: readonly DurableEntryLike[]): Histo
           : typeof data.text === 'string'
             ? data.text
             : '';
-    const boundary = boundaries.get(entry.id);
+    const boundary = boundaries.get(String(entry.id));
     const userText =
       boundary && digestOf(value.slice(0, boundary.textEnd)) === boundary.hash ? value.slice(0, boundary.textEnd) : undefined;
     const timestamp =
@@ -101,12 +102,12 @@ export function durableHistoryItems(entries: readonly DurableEntryLike[]): Histo
           ? data.timestamp
           : '';
     return {
-      id: entry.id,
+      id: String(entry.id),
       // Durable appends entries in order; there is no per-entry parent link.
       parentId: null,
       type: historyTypeOf(entry.kind),
       timestamp,
-      role: automatic.get(entry.id) === digestOf(value) ? 'custom' : message && typeof message.role === 'string' ? message.role : undefined,
+      role: automatic.get(String(entry.id)) === digestOf(value) ? 'custom' : message && typeof message.role === 'string' ? message.role : undefined,
       text: value,
       userText,
       ...(message && typeof message.toolName === 'string' ? { toolName: message.toolName } : {}),

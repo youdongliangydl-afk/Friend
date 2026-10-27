@@ -51,11 +51,11 @@ export function toPiEntry(entry: DurableEntryLike): PiShapedEntry {
         ? data.timestamp
         : '';
   if (MESSAGE_KINDS[entry.kind])
-    return { id: entry.id, parentId: null, type: 'message', timestamp, ...(message === undefined ? {} : { message }) };
+    return { id: String(entry.id), parentId: null, type: 'message', timestamp, ...(message === undefined ? {} : { message }) };
   if (entry.kind === 'pi.compaction')
-    return { id: entry.id, parentId: null, type: 'compaction', timestamp, ...(typeof data.summary === 'string' ? { summary: data.summary } : {}) };
+    return { id: String(entry.id), parentId: null, type: 'compaction', timestamp, ...(typeof data.summary === 'string' ? { summary: data.summary } : {}) };
   // Every other kind keeps its identity as `customType`, which is exactly what Pi used to store.
-  return { id: entry.id, parentId: null, type: 'custom', timestamp, customType: entry.kind, ...(entry.data === undefined ? {} : { data: entry.data }) };
+  return { id: String(entry.id), parentId: null, type: 'custom', timestamp, customType: entry.kind, ...(entry.data === undefined ? {} : { data: entry.data }) };
 }
 
 /** Project a whole conversation. Order is preserved because callers rely on it. */
