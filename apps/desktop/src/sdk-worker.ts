@@ -444,7 +444,10 @@ async function initialize(){
   guardDesktopModelRequests(runtime,dataDir);
   startupPhase('resources');
   const settings=SettingsManager.inMemory({...(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'?{cacheWarming:'off' as const}:{}),extensions:enabled.map(name=>join(root,'packages',name,'dist','index.js')),packages:[],defaultTools:['read','bash','edit','write','ls','find','grep'],compaction:{enabled:true,...(process.env.FRIEND_PI_TEST_PROVIDER==='1'?{keepRecentTokens:512,reserveTokens:2048}:{})}});
-  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,extensionFactories:[customInstructionsExtension(dataDir,{sourceEvidence:true,executionId:()=>runId}),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
+  const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noExtensions:false,noSkills:false,noPromptTemplates:false,noThemes:true,eventBus:bus,// Durable mounts these on its own host. Loading them into Pi's loader as well would bind a second
+// copy of every handler to the same bus, and those copies dereference a Pi runtime that durable
+// never initializes.
+  extensionFactories:execBackend==='durable'?[]:[customInstructionsExtension(dataDir,{sourceEvidence:true,executionId:()=>runId}),guard(),services.extension(),services.jobs.extension(),documentTools(cwd,documentAttachments,documentReader.read),external.extensionFactory]});
   await loader.reload({resolveProjectTrust:async()=>true});
   startupPhase('native-session');
   const priorFile=process.env.FRIEND_PI_SESSION_FILE;
@@ -473,13 +476,19 @@ async function initialize(){
       models: runtime,
       bus,
       extensionPaths: enabled.map(name => join(root, 'packages', name, 'dist', 'index.js')),
-      factories: [customInstructionsExtension(dataDir, {sourceEvidence: true, executionId: () => runId}), guard(), services.extension(), services.jobs.extension(), documentTools(cwd, documentAttachments, documentReader.read), external.extensionFactory] as never,
+      // `external` is Pi's MCP extension: it reads Pi-internal event fields
+      // (`systemPromptOptions.sections`) that durable does not produce, and this product keeps its
+      // MCP server list empty, so mounting it here would fabricate a surface with nothing behind it.
+      factories: [customInstructionsExtension(dataDir, {sourceEvidence: true, executionId: () => runId}), guard(), services.extension(), services.jobs.extension(), documentTools(cwd, documentAttachments, documentReader.read)] as never,
       confirm: (title: string, message: string) => dialog('confirm', title, {message}, 60000).then(Boolean),
       notify: (message: string, level?: 'info' | 'warning' | 'error') => publish('notice', {message, level}),
       ...(model ? {agent: {model: {provider: model.provider, modelId: model.id}}} : {}),
       // Pi enforced readiness by patching streamFunction; durable has no such seam, so the same
       // gate runs before each provider stream instead of being dropped.
-      beforeStream: async target => { await requireReadyModel(runtime, dataDir, `${target.provider}/${target.id}`); },
+      // Mirrors the Pi path exactly: the readiness gate only applies to desktop-managed sessions.
+      ...(process.env.FRIEND_PI_DESKTOP_MANAGED === '1'
+        ? {beforeStream: async (target: {provider: string; id: string}) => { await requireReadyModel(runtime, dataDir, `${target.provider}/${target.id}`); }}
+        : {}),
     }) as unknown as AgentSession;
   } else {
     const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager,customTools:[createBashToolDefinition(cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});session=created.session;

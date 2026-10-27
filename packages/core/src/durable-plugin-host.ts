@@ -125,7 +125,7 @@ export interface DurablePluginHost {
    * Pi fires this event once per turn with the current prompt; durable renders sections per request,
    * so the text is captured here and re-emitted by the generated section.
    */
-  beforeAgentStart(): void;
+  beforeAgentStart(prompt?: string, images?: readonly unknown[]): void;
   /** Prompt text captured from the last `before_agent_start`, or '' when nothing appended. */
   promptText(): string;
   /** Build a durable extension carrying the mounted tools and the captured prompt section. */
@@ -215,6 +215,22 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
         return (await models.setModel?.(target.provider, target.id)) ?? false;
       },
       setThinkingLevel: (level: string) => models.setThinkingLevel?.(level),
+      /**
+       * Pi tool renderers are a terminal-UI concern; the desktop renders results itself, so this is
+       * a no-op rather than a missing member. Pi's own MCP extension calls it during setup, and a
+       * missing method aborted the whole worker.
+       */
+      registerToolRenderer: (() => undefined) as unknown,
+      /** MCP is not part of durable; the desktop keeps its server list empty, so these are inert. */
+      registerMcpServer: (() => undefined) as unknown,
+      unregisterMcpServer: (() => undefined) as unknown,
+      /** Durable has no MCP client; the desktop keeps its server list empty, so this reports none. */
+      getMcpServers: () => [],
+      /** Tool visibility: durable offers what the extension declares, so this list is the truth. */
+      getActiveTools: () => registeredTools.map(tool => ({ name: String(record(tool).name ?? '') })),
+      setActiveTools: (names: readonly string[]) => {
+        activeTools = names.length ? [...names] : undefined;
+      },
     };
     return api as unknown as ExtensionAPI;
   }
@@ -226,6 +242,8 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
   }
 
   let capturedPrompt = '';
+  /** Tool names a plugin asked to keep active; undefined means "whatever is registered". */
+  let activeTools: string[] | undefined;
   const registeredTools: unknown[] = [];
   const registeredCommands: string[] = [];
   /** The facade handed to every mounted factory, so tools land in one shared list. */
@@ -254,14 +272,15 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
     sessionStart() {
       fire('session_start');
     },
-    beforeAgentStart() {
+    beforeAgentStart(prompt = '', images = []) {
       const handlers = lifecycle.get('before_agent_start') ?? [];
       const ctx = makeFakeContext();
       const appended: string[] = [];
       for (const handler of handlers) {
-        // Pi hands the current prompt in and takes a replacement out; running with an empty base
-        // yields exactly the text this handler contributes, which is what a section needs.
-        const result = handler({ systemPrompt: '' }, ctx) as { systemPrompt?: unknown } | undefined;
+        // Pi's event carries the user prompt and takes a replacement system prompt out. Handlers
+        // read `prompt`/`images` too, so passing only `systemPrompt` made them dereference
+        // undefined. The empty base yields exactly the text this handler contributes.
+        const result = handler({ systemPrompt: '', prompt, images }, ctx) as { systemPrompt?: unknown } | undefined;
         if (result && typeof result.systemPrompt === 'string' && result.systemPrompt) appended.push(result.systemPrompt);
       }
       capturedPrompt = appended.join('\n');

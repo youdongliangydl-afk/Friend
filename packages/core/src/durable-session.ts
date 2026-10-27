@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { Context } from '@earendil-works/chord';
 import { Harness, watchEvents, type EnvTarget, type Extension, type Registry, type Storage } from '@earendil-works/pi-durable';
 import type { Models } from '@earendil-works/pi-ai';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { Bus, JsonObject, PluginController, PluginRegistrationOptions } from './index.js';
 import { createDurablePluginHost, durablePiEntries, type PiShapedEntry } from './durable-plugin-host.js';
 import type { DurableEntryLike } from './durable-projection.js';
@@ -81,6 +82,7 @@ export interface DurableSession {
   subscribe(listener: (event: PiWorkerEvent) => void): () => void;
   setModel(model: { provider: string; id: string }): Promise<boolean>;
   setThinkingLevel(level: string): void;
+  getAvailableThinkingLevels(): readonly string[];
   getSessionStats(): DurableSessionStats;
   bindExtensions(): Promise<void>;
   /** Drop every mounted capability so the next `bindExtensions()` re-mounts the current set. */
@@ -241,7 +243,7 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
       idle = false;
       // Durable may commit the first system entry before `run_start` reaches us, so refresh the
       // captured prompt here as well; otherwise a contribution would only land on the second turn.
-      host.beforeAgentStart();
+      host.beforeAgentStart(text);
       const submission = await conversation.submit({ type: 'input', content: text } as never, context);
       void submission.wait(context).then(async settled => {
         if (settled.status !== 'done') idle = true;
@@ -261,6 +263,14 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
       return true;
     },
     setThinkingLevel(level) { thinking = level; },
+    getAvailableThinkingLevels() {
+      const current = options.agent?.model;
+      if (!current) return [];
+      const model = (options.models as unknown as { getModel?: (provider: string, id: string) => unknown }).getModel?.(current.provider, current.modelId);
+      // Durable resolves levels per model rather than per harness, so the catalog is the only
+      // truthful source; an unknown model offers none instead of a hard-coded ladder.
+      return model ? (getSupportedThinkingLevels(model as never) as readonly string[]) : [];
+    },
     getSessionStats() {
       return {
         userMessages: entriesAscending.filter(entry => roleOf(entry) === 'user').length,
