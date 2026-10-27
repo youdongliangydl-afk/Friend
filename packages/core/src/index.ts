@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 export { durableHistoryItems, historyTypeOf, INPUT_BOUNDARY_KIND, RUNTIME_WAKE_KIND, type DurableEntryLike } from './durable-projection.js';
 export { createDurablePluginHost, durablePiEntries, toPiEntry, type DurableConversationPort, type DurableModelPort, type DurablePluginHost, type DurablePluginHostOptions, type MountedPlugin, type PiShapedEntry } from './durable-plugin-host.js';
 export { translateAgentEvent, translateAgentEvents, type PiWorkerEvent } from './durable-events.js';
+export { openDurableSession, type DurableSession, type DurableSessionOptions, type DurableSessionPlugin, type DurableSessionStats } from './durable-session.js';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
