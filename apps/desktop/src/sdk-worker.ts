@@ -25,6 +25,7 @@ import {providerSystems,projectMessages,projectTeammateMessages,projectTraceSyst
 import {RunChangesTracker,projectRunChanges,RUN_CHANGES_TYPE} from './run-changes.js';
 import {SessionMetricRecorder,projectSessionMonitor,SESSION_METRIC_TYPE} from './session-monitor.js';
 import {guardDesktopModelRequests,customInstructionsExtension} from '@friend-pi/core';
+import {openDurableWorkerSession} from './durable-worker-session.js';
 import {requireReadyModel,configuredModelMetadata} from './model-readiness.js';
 import { createProviderRuntime,providerMetadata,saveProviderConfiguration } from './provider-settings.js';
 import {createExpertEvaluationHost} from './expert-evaluation-host.js';
@@ -461,17 +462,38 @@ async function initialize(){
   if(inputQueue.store.get(`suspension:${manager.getSessionId()}`))inputQueue.pause(true);
   plans=new PlanStore(businessStore,projectIdentity(cwd),manager.getSessionId());plans.recover();recoverPlanInputs(manager,plans);
   startupPhase('agent-session');
-  const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager,customTools:[createBashToolDefinition(cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});session=created.session;
-  const previousPayload=session.agent.onPayload;
-  session.agent.onPayload=async(payload,model)=>{
-    const transformed=await previousPayload?.(payload,model),actual=object(transformed??payload);
-    const systems=providerSystems(actual);
-    if(systems.length){const text=traceJSON(systems),hash=digest(text),prior=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.trace.system.v1'&&object(entry.data).runId===runId&&object(entry.data).phase==='provider-payload');if(!prior||prior.type!=='custom'||object(prior.data).hash!==hash)session.sessionManager.appendCustomEntry('friend-pi.trace.system.v1',{v:1,runId,phase:'provider-payload',modelId:`${model.provider}/${model.id}`,text:text.slice(0,65536),hash,truncated:text.length>65536});}
-    return transformed;
-  };
+  // Durable keeps its own harness, storage and transcript; Pi's session is not created at all.
+  let created: {session: AgentSession; extensionsResult: {errors: {error: string}[]}} | undefined;
+  if (execBackend === 'durable') {
+    session = await openDurableWorkerSession({
+      cwd,
+      dataDir,
+      sessionId: manager.getSessionId(),
+      ...(manager.getSessionFile() ? {sessionFile: manager.getSessionFile()} : {}),
+      models: runtime,
+      bus,
+      extensionPaths: enabled.map(name => join(root, 'packages', name, 'dist', 'index.js')),
+      factories: [customInstructionsExtension(dataDir, {sourceEvidence: true, executionId: () => runId}), guard(), services.extension(), services.jobs.extension(), documentTools(cwd, documentAttachments, documentReader.read), external.extensionFactory] as never,
+      confirm: (title: string, message: string) => dialog('confirm', title, {message}, 60000).then(Boolean),
+      notify: (message: string, level?: 'info' | 'warning' | 'error') => publish('notice', {message, level}),
+      ...(model ? {agent: {model: {provider: model.provider, modelId: model.id}}} : {}),
+      // Pi enforced readiness by patching streamFunction; durable has no such seam, so the same
+      // gate runs before each provider stream instead of being dropped.
+      beforeStream: async target => { await requireReadyModel(runtime, dataDir, `${target.provider}/${target.id}`); },
+    }) as unknown as AgentSession;
+  } else {
+    const created=await createAgentSession({cwd,agentDir,modelRuntime:runtime,model,resourceLoader:loader,settingsManager:settings,sessionManager:manager,customTools:[createBashToolDefinition(cwd,{spawnHook:ctx=>({...ctx,env:shellEnvironment(ctx.env)})}) as ToolDefinition]});session=created.session;
+    const previousPayload=session.agent.onPayload;
+    session.agent.onPayload=async(payload,model)=>{
+      const transformed=await previousPayload?.(payload,model),actual=object(transformed??payload);
+      const systems=providerSystems(actual);
+      if(systems.length){const text=traceJSON(systems),hash=digest(text),prior=session.sessionManager.getBranch().findLast(entry=>entry.type==='custom'&&entry.customType==='friend-pi.trace.system.v1'&&object(entry.data).runId===runId&&object(entry.data).phase==='provider-payload');if(!prior||prior.type!=='custom'||object(prior.data).hash!==hash)session.sessionManager.appendCustomEntry('friend-pi.trace.system.v1',{v:1,runId,phase:'provider-payload',modelId:`${model.provider}/${model.id}`,text:text.slice(0,65536),hash,truncated:text.length>65536});}
+      return transformed;
+    };
+  }
   changeTracker=new RunChangesTracker(cwd,projectIdentity(cwd),dataDir,session.sessionId,summary=>{session.sessionManager.appendCustomEntry(RUN_CHANGES_TYPE,summary);publish('state',current());},()=>projectRunChanges(session.sessionManager.getBranch()));
-  if(process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDir,`${model.provider}/${model.id}`),context,options);}
-  if(created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
+  if(execBackend==='pi' && process.env.FRIEND_PI_DESKTOP_MANAGED==='1'){const originalStream=session.agent.streamFunction;session.agent.streamFunction=async(model,context,options)=>originalStream(await requireReadyModel(runtime,dataDir,`${model.provider}/${model.id}`),context,options);}
+  if(created && created.extensionsResult.errors.length)throw new Error(created.extensionsResult.errors.map(error=>error.error).join('; '));
   let liveSequence=0;let liveStreamId="";const metricRecorder=new SessionMetricRecorder();let metricMessage:unknown;
   session.subscribe(event=>{
     if(event.type==='message_end'&&event.message.role==='assistant')metricMessage=event.message;

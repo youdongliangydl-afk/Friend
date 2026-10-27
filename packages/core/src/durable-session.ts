@@ -34,6 +34,8 @@ export interface DurableSessionOptions {
   confirm(title: string, message: string): Promise<boolean>;
   notify(message: string, level?: 'info' | 'warning' | 'error'): void;
   plugins?: readonly DurableSessionPlugin[];
+  /** Plain Pi extension factories, for the worker's own extensions that are not PluginControllers. */
+  factories?: readonly ((pi: never) => unknown)[];
   agent?: { model?: { provider: string; modelId: string }; thinkingLevel?: string };
   policy?(sessionId: string): JsonObject | undefined;
   expertEvaluation?(sessionId: string): unknown;
@@ -145,16 +147,24 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     ...(options.expertEvaluation ? { expertEvaluation: options.expertEvaluation } : {}),
   });
 
-  /** Build the durable extension from everything mounted so far and publish it to the registry. */
-  const install = () => {
-    options.registry.install(host.buildExtension('friend-pi') as never);
+  /**
+   * Build the durable extension from everything mounted so far, publish it, and select it on this
+   * conversation. Installing alone is not enough: a conversation resolves its extension set when it
+   * is created, and this one exists before anything was mounted.
+   */
+  const install = async () => {
+    const extension = host.buildExtension('friend-pi');
+    options.registry.install(extension as never);
+    // Awaited: submitting before selection lands would run the turn without the prompt section.
+    await conversation.configure({ extensions: [extension] } as never, context);
   };
-  const mountAll = () => {
+  const mountAll = async () => {
     for (const plugin of options.plugins ?? []) host.mount(plugin.name, plugin.controller, plugin.description, plugin.options);
+    for (const factory of options.factories ?? []) host.mountFactory(factory as never);
     host.sessionStart();
-    install();
+    await install();
   };
-  mountAll();
+  await mountAll();
 
   const stream = await watchEvents(harness, conversation.id, context);
   await stream.start(async events => {
@@ -211,6 +221,9 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     },
     async prompt(text) {
       idle = false;
+      // Durable may commit the first system entry before `run_start` reaches us, so refresh the
+      // captured prompt here as well; otherwise a contribution would only land on the second turn.
+      host.beforeAgentStart();
       const submission = await conversation.submit({ type: 'input', content: text } as never, context);
       void submission.wait(context).then(async settled => {
         if (settled.status !== 'done') idle = true;
@@ -240,7 +253,7 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     async bindExtensions() { host.sessionStart(); },
     async reload() {
       await host.dispose();
-      mountAll();
+      await mountAll();
     },
     async dispose() {
       await stream.stop().catch(() => undefined);

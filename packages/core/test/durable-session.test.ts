@@ -112,44 +112,47 @@ test('mounted capabilities receive the session id and a Pi-shaped history',async
   }finally{await session.dispose();rmSync(dir,{recursive:true,force:true});}
 });
 
-test('a mounted prompt contribution reaches the durable system prompt',async()=>{
+test('a mounted prompt contribution reaches the model request',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'friend-pi-durable-prompt-'));
   try{
     const runtime=await ModelRuntime.create({allowModelNetwork:false});
-    const model=await installFixtureProvider(runtime);
-    assert.ok(model);
+    await installFixtureProvider(runtime);
+    // Capture what the provider is actually asked to answer: durable keeps `pi.system` entries as
+    // positional markers with empty content, so the transcript is not where the prompt lives.
+    const captured:string[]=[];
+    const capturing=new Proxy(runtime as unknown as Record<string,unknown>,{
+      get(target,prop,receiver){
+        if(prop!=='streamSimple'&&prop!=='stream')return Reflect.get(target,prop,receiver);
+        const original=Reflect.get(target,prop,target) as (...args:unknown[])=>unknown;
+        if(typeof original!=='function')return original;
+        return (model:unknown,context:unknown,options:unknown)=>{
+          try{captured.push(JSON.stringify((context as {messages?:unknown}).messages??[]));}catch{/* keep going */}
+          return (original as (this:unknown,...args:unknown[])=>unknown).call(target,model,context,options);
+        };
+      },
+    });
+    const marker='FRIEND_PI_PROMPT_MARKER';
     const session=await openDurableSession({
       cwd:dir,
       storage:new MemoryStorage(),
-      models:runtime,
+      models:capturing as never,
       registry:createRegistry(),
       bus:createBus(),
       confirm:async()=>true,
       notify:()=>undefined,
       agent:{model:{provider:'friend-fixture',modelId:'offline'}},
-      plugins:[{
-        name:'memory',
-        controller:{
-          dispatch:()=>({ok:true}),
-          snapshot:()=>({}),
-        } as unknown as PluginController,
-        description:'记忆',
-      }],
+      factories:[((pi:unknown)=>{
+        (pi as {on(event:string,handler:(event:{systemPrompt:string})=>{systemPrompt:string}):void}).on('before_agent_start',event=>({systemPrompt:`${event.systemPrompt}\n${marker}`}));
+      }) as never],
     });
-    // A rule injected the way the capability packages do it on Pi.
-    const internals=session as unknown as {__host?:{mountFactory(f:(pi:unknown)=>unknown):unknown}};
-    void internals;
     let settle!:()=>void;
     const settled=new Promise<void>(resolve=>{settle=resolve;});
-    session.subscribe(event=>{if(event.type==='agent_settled')settle();});
+    const off=session.subscribe(event=>{if(event.type==='agent_settled')settle();});
     await session.prompt('prompt section check');
     await settled;
-
-    const history=session.sessionManager.getBranch();
-    // Durable records each prompt change as a positional `pi.system` entry.
-    const systemEntries=history.filter(entry=>entry.type==='message'&&(entry.message as {role?:string} | undefined)?.role==='system');
-    assert.ok(history.some(entry=>entry.type==='message'),'the run produced transcript entries');
-    assert.ok(systemEntries.length>=1,'the system prompt was recorded as a positional entry');
+    off();
+    assert.ok(captured.length>=1,'the provider was asked at least once');
+    assert.ok(captured.some(entry=>entry.includes(marker)),'the contributed prompt text reached the model');
     await session.dispose();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
