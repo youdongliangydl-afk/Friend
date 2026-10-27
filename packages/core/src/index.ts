@@ -7,6 +7,7 @@ export { durableHistoryItems, historyTypeOf, INPUT_BOUNDARY_KIND, RUNTIME_WAKE_K
 export { createDurablePluginHost, durablePiEntries, toPiEntry, type DurableConversationPort, type DurableModelPort, type DurablePluginHost, type DurablePluginHostOptions, type MountedPlugin, type PiShapedEntry } from './durable-plugin-host.js';
 export { translateAgentEvent, translateAgentEvents, type PiWorkerEvent } from './durable-events.js';
 export { openDurableSession, type DurableSession, type DurableSessionOptions, type DurableSessionPlugin, type DurableSessionStats } from './durable-session.js';
+export { draftToProjectionInput, importIsLossless, IMPORTED_MARKER_KINDS, piEntriesToDurableDrafts, piEntryToDurableDraft, type DurableImportDraft, type DurableImportResult, type PiJsonlEntryLike } from './durable-import.js';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
