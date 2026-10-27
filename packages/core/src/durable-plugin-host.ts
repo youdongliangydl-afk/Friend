@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { defineExtension, defineTool, section, type Extension } from '@earendil-works/pi-durable';
+import { defineExtension, defineTool, GenerationTask, hook, section, ToolTask, type Extension } from '@earendil-works/pi-durable';
 import { registerPlugin, type Bus, type PluginController, type PluginRegistrationOptions, type JsonObject } from './index.js';
 import type { DurableEntryLike } from './durable-projection.js';
 
@@ -286,6 +286,52 @@ export function createDurablePluginHost(options: DurablePluginHostOptions): Dura
         name,
         tools,
         sections: [section('friend-pi-prompt', () => capturedPrompt || undefined)],
+        // The remaining Pi events become durable hooks here. Capability packages only observe on
+        // most of them, so returning undefined keeps durable's own semantics intact.
+        hooks: [
+          hook(ToolTask, {
+            beforeTool: (call: { id: string; name: string; arguments: unknown }) => {
+              const ctx = makeFakeContext();
+              for (const handler of lifecycle.get('tool_call') ?? []) {
+                const result = handler({ toolName: call.name, toolCallId: call.id, args: call.arguments, input: call.arguments }, ctx) as
+                  | { block?: unknown; reason?: unknown }
+                  | undefined;
+                // Pi blocks with `{block: true, reason}`; durable blocks with a message string.
+                if (result && result.block) return { block: typeof result.reason === 'string' && result.reason ? result.reason : `工具 ${call.name} 被宿主策略阻止` };
+              }
+              return undefined;
+            },
+            afterTool: (call: { id: string; name: string }, result: { isError?: boolean; content?: unknown; details?: unknown }) => {
+              const ctx = makeFakeContext();
+              for (const handler of lifecycle.get('tool_result') ?? [])
+                handler(
+                  {
+                    toolName: call.name,
+                    toolCallId: call.id,
+                    isError: result.isError === true,
+                    content: result.content ?? [],
+                    // Durable tool results carry no structuredContent; a plugin that reads it sees
+                    // undefined instead of a fabricated value.
+                    structuredContent: undefined,
+                    details: result.details,
+                  },
+                  ctx,
+                );
+              return undefined;
+            },
+          }),
+          hook(GenerationTask, {
+            beforeRequest: (request: { messages: readonly unknown[] }) => {
+              const ctx = makeFakeContext();
+              for (const handler of lifecycle.get('before_provider_request') ?? []) handler({ messages: request.messages }, ctx);
+              return undefined;
+            },
+            afterResponse: (message: unknown) => {
+              const ctx = makeFakeContext();
+              for (const handler of lifecycle.get('after_provider_response') ?? []) handler({ message }, ctx);
+            },
+          }),
+        ],
       }) as Extension;
     },
     async sessionShutdown() {

@@ -245,3 +245,45 @@ test('mounted friend_ tools are carried into the durable extension',async()=>{
     await host.dispose();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('tool and request events become durable hooks that keep Pi blocking semantics',async()=>{
+  const dir=workdir();
+  try{
+    const bus=createBus();
+    const host=createDurablePluginHost({
+      bus,cwd:dir,
+      conversation:{id:'s',entries:()=>[],append:()=>'x',isIdle:()=>true},
+      models:{available:()=>[],find:()=>undefined,current:()=>undefined,thinkingLevel:()=>'off'},
+      confirm:async()=>false,notify:()=>undefined,
+    });
+    const seen={results:0,requests:0,responses:0,structured:[] as unknown[]};
+    host.mountFactory(pi=>{
+      pi.on('tool_call',(event:unknown)=>(event as {toolName:string}).toolName==='bash'?({block:true,reason:'危险命令已阻止'} as never):undefined);
+      pi.on('tool_result',(event:unknown)=>{seen.results+=1;seen.structured.push((event as {structuredContent?:unknown}).structuredContent);});
+      pi.on('before_provider_request',()=>{seen.requests+=1;});
+      pi.on('after_provider_response',()=>{seen.responses+=1;});
+    });
+    const extension=host.buildExtension('probe');
+    const hooks=extension.hooks ?? [];
+    const toolHook=hooks.find(entry=>entry.task==='pi.tool')?.handlers as Record<string,(...args:unknown[])=>unknown>;
+    const generationHook=hooks.find(entry=>entry.task==='pi.generation')?.handlers as Record<string,(...args:unknown[])=>unknown>;
+    assert.ok(toolHook,'the tool hook is registered');
+    assert.ok(generationHook,'the generation hook is registered');
+
+    const blocked=toolHook.beforeTool({id:'c1',name:'bash',arguments:{command:'rm -rf /'}});
+    assert.deepEqual(blocked,{block:'危险命令已阻止'},'a Pi block becomes a durable block message');
+
+    const allowed=toolHook.beforeTool({id:'c2',name:'read',arguments:{path:'a'}});
+    assert.equal(allowed,undefined,'a call the plugin does not block is left alone');
+
+    toolHook.afterTool({id:'c3',name:'bash'},{isError:false,content:[{type:'text',text:'ok'}]});
+    assert.equal(seen.results,1);
+    assert.equal(seen.structured[0],undefined,'structuredContent is not fabricated');
+
+    generationHook.beforeRequest({messages:[]});
+    generationHook.afterResponse({role:'assistant'});
+    assert.equal(seen.requests,1);
+    assert.equal(seen.responses,1);
+    await host.dispose();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
