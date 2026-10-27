@@ -1,9 +1,9 @@
 # Friend-Pi development
 
 - Implement the approved four-plugin product in this repository only. Preserve the original Friend and reference repositories.
-- Pi's public SDK and extensions own model execution and JSONL session history. Do not fork its loop or duplicate transcripts.
+- The Pi SDK and extensions own model execution and session history on the `pi` backend; Pi Durable owns them on the `durable` backend, where history is a per-session SQLite file. Neither loop is forked and no transcript is duplicated.
 - Development chats own their assigned scope. The designated integration chat owns dependency/lockfile changes, shared build scripts and final Git integration. Plugin subagents own only their assigned package and focused tests.
-- Four plugins must work independently. Communicate through versioned Pi event-bus requests, not shared module singletons. GUI and model tools call the same controller.
+- Four plugins must work independently. Communicate through versioned event-bus requests, not shared module singletons. GUI and model tools call the same controller.
 - Use Node 24. Native plugins provide host Pi packages as peers and do not bundle Pi. Keep open-source license and source records.
 - Default tests use a fake provider. Real models use only explicitly configured credentials; never print credentials.
 - Never stash, reset --hard, clean -fd, overwrite unrelated changes, force push, publish npm or create a remote. Commit explicit owned paths.
