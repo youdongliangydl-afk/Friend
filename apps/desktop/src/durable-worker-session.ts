@@ -59,23 +59,6 @@ export interface DurableWorkerSessionOptions {
   beforeStream?(model: { provider: string; id: string }): Promise<void>;
 }
 
-/** Wrap the model catalog so the readiness gate still runs before a request leaves the process. */
-function gateModels(models: Models, gate: ((model: { provider: string; id: string }) => Promise<void>) | undefined): Models {
-  if (!gate) return models;
-  return new Proxy(models as unknown as Record<string, unknown>, {
-    get(target, property, receiver) {
-      if (property !== 'streamSimple' && property !== 'stream') return Reflect.get(target, property, receiver);
-      const original = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
-      if (typeof original !== 'function') return original;
-      return async (...args: unknown[]) => {
-        const model = args[0] as { provider?: unknown; id?: unknown } | undefined;
-        if (typeof model?.provider === 'string' && typeof model.id === 'string') await gate({ provider: model.provider, id: model.id });
-        return original.apply(target, args);
-      };
-    },
-  }) as unknown as Models;
-}
-
 /** Load enabled capability packages and hand back their factories. */
 async function loadCapabilityFactories(paths: readonly string[]): Promise<((pi: never) => unknown)[]> {
   const factories: ((pi: never) => unknown)[] = [];
@@ -121,7 +104,7 @@ export async function openDurableWorkerSession(options: DurableWorkerSessionOpti
     // conversation number.
     sessionId: options.sessionId,
     storage,
-    models: gateModels(options.models, options.beforeStream),
+    models: options.models,
     registry: createRegistry(),
     bus: options.bus,
     confirm: options.confirm,
@@ -129,6 +112,9 @@ export async function openDurableWorkerSession(options: DurableWorkerSessionOpti
     ...(options.policy ? { policy: options.policy } : {}),
     ...(options.expertEvaluation ? { expertEvaluation: options.expertEvaluation } : {}),
     ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
+    // The readiness gate runs at the submit boundary; `streamSimple` must return its iterable
+    // synchronously, so it cannot be awaited there.
+    ...(options.beforeStream ? { beforePrompt: options.beforeStream } : {}),
     ...(initialEntries ? { initialEntries } : {}),
     ...(options.agent ? { agent: options.agent } : {}),
     // Pi shipped read/write/edit/bash as built-ins; durable has none, and without an environment its

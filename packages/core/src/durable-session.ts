@@ -53,6 +53,11 @@ export interface DurableSessionOptions {
    * on the `pi` backend keeps its transcript when it first opens on this one.
    */
   initialEntries?: readonly { kind: string; model?: readonly unknown[]; data?: unknown }[];
+  /**
+   * Awaited once before each submit. `streamSimple` must return an async iterable synchronously, so
+   * the readiness gate cannot live there; the submit boundary is the earliest point that can await.
+   */
+  beforePrompt?(model: { provider: string; id: string }): Promise<void>;
   /** Builds the execution environment per use; without one those tools fail with an error result. */
   env?: (target: EnvTarget, context: Context) => unknown;
   agent?: { model?: { provider: string; modelId: string }; thinkingLevel?: string };
@@ -201,6 +206,8 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
   const mountAll = async () => {
     for (const plugin of options.plugins ?? []) host.mount(plugin.name, plugin.controller, plugin.description, plugin.options);
     for (const factory of options.factories ?? []) host.mountFactory(factory as never);
+    // Exactly once: the worker's background-job extension claims session ownership on activation,
+    // so a repeated `session_start` collides with its own claim.
     host.sessionStart();
     await install();
   };
@@ -260,6 +267,8 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
       getRegisteredCommands: () => [],
     },
     async prompt(text) {
+      const target = options.agent?.model;
+      if (options.beforePrompt && target) await options.beforePrompt({ provider: target.provider, id: target.modelId });
       idle = false;
       // Durable may commit the first system entry before `run_start` reaches us, so refresh the
       // captured prompt here as well; otherwise a contribution would only land on the second turn.
