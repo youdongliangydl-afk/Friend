@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRegistry } from '@earendil-works/pi-durable';
@@ -6,7 +7,9 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import type { Models } from '@earendil-works/pi-ai';
 import {
+  importIsLossless,
   openDurableSession,
+  piEntriesToDurableDrafts,
   type Bus,
   type DurableSession,
   type JsonObject,
@@ -85,14 +88,38 @@ async function loadCapabilityFactories(paths: readonly string[]): Promise<((pi: 
   return factories;
 }
 
+/** Read a Pi JSONL transcript into drafts, refusing anything the projection cannot carry. */
+function importHistory(sessionFile: string | undefined): { kind: string; model?: readonly unknown[]; data?: unknown }[] | undefined {
+  if (!sessionFile || !existsSync(sessionFile)) return undefined;
+  const raw = readFileSync(sessionFile, 'utf8').trim();
+  if (!raw) return undefined;
+  const entries = raw.split('\n').flatMap(line => {
+    try { return [JSON.parse(line) as never]; } catch { return []; }
+  });
+  // The first line is the Pi session header, not a transcript entry.
+  const result = piEntriesToDurableDrafts(entries.slice(1));
+  if (!importIsLossless(result))
+    throw new Error(
+      `会话历史不能无损导入到新执行后端：跳过 ${result.skipped.length} 条，重复 ID ${result.duplicateIds.length} 个。已拒绝切换，历史未被改动。`,
+    );
+  return result.drafts.length ? [...result.drafts] : undefined;
+}
+
 export async function openDurableWorkerSession(options: DurableWorkerSessionOptions): Promise<DurableWorkerSession> {
   // One storage per session keeps durable's "one process owns a storage" contract intact, because
   // the desktop already runs one worker process per session.
-  const storage = await openNodeSqliteStorage(join(options.dataDir, 'durable', `${options.sessionId}.sqlite`));
+  const storagePath = join(options.dataDir, 'durable', `${options.sessionId}.sqlite`);
+  // A session that lived on the Pi backend carries its transcript across on first open. Doing this
+  // only when the file is new avoids re-importing into a store that already has the history.
+  const initialEntries = existsSync(storagePath) ? undefined : importHistory(options.sessionFile);
+  const storage = await openNodeSqliteStorage(storagePath);
   const capabilityFactories = await loadCapabilityFactories(options.extensionPaths);
 
   const session = await openDurableSession({
     cwd: options.cwd,
+    // The product keys provenance, tombstones and queues on this id, not on the durable
+    // conversation number.
+    sessionId: options.sessionId,
     storage,
     models: gateModels(options.models, options.beforeStream),
     registry: createRegistry(),
@@ -102,6 +129,7 @@ export async function openDurableWorkerSession(options: DurableWorkerSessionOpti
     ...(options.policy ? { policy: options.policy } : {}),
     ...(options.expertEvaluation ? { expertEvaluation: options.expertEvaluation } : {}),
     ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
+    ...(initialEntries ? { initialEntries } : {}),
     ...(options.agent ? { agent: options.agent } : {}),
     // Pi shipped read/write/edit/bash as built-ins; durable has none, and without an environment its
     // own tool set fails every call.

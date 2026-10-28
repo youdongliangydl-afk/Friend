@@ -8,6 +8,7 @@ export { createDurablePluginHost, durablePiEntries, toPiEntry, type DurableConve
 export { translateAgentEvent, translateAgentEvents, type PiWorkerEvent } from './durable-events.js';
 export { openDurableSession, type DurableSession, type DurableSessionOptions, type DurableSessionPlugin, type DurableSessionStats } from './durable-session.js';
 export { openDurableReadOnly, type DurableReadOnlySession } from './durable-readonly.js';
+import { openDurableReadOnly as openDurableReadOnlyForRead } from './durable-readonly.js';
 export { draftToProjectionInput, importIsLossless, IMPORTED_MARKER_KINDS, piEntriesToDurableDrafts, piEntryToDurableDraft, type DurableImportDraft, type DurableImportResult, type PiJsonlEntryLike } from './durable-import.js';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -215,10 +216,10 @@ export function sourceFactRefs(item:HistoryItem,sessionId:string):SourceRef[] {
 }
 export function isSessionDeleted(dataDir:string,sessionId:string):boolean {const store=new RecordStore('sessions',dataDir);try{return !!store.get(`tombstone:${sessionId}`);}finally{store.close();}}
 /** Host-only metadata registration. Resolve the real Pi header before advertising a child history. */
-export function registerSourceSession(input:{sessionId:string;path:string;projectDir:string;nativeCwd?:string},dataDir=dataDirectory()):void {
+export function registerSourceSession(input:{sessionId:string;path:string;projectDir:string;nativeCwd?:string;durablePath?:string},dataDir=dataDirectory()):void {
  const path=realpathSync(input.path),projectDir=realpathSync(input.projectDir),header=object(JSON.parse(readFileSync(path,'utf8').split('\n',1)[0]));
  if(header.type!=='session'||header.id!==input.sessionId||typeof header.cwd!=='string'||realpathSync(header.cwd)!==realpathSync(input.nativeCwd||projectDir))throw new CapabilityError('SOURCE_UNAVAILABLE','成员原生会话身份不匹配');
- const registry=new RecordStore('sessions',dataDir);try{if(registry.get(`tombstone:${input.sessionId}`))throw new CapabilityError('SOURCE_UNAVAILABLE','成员会话已删除');const previous=registry.get<{path:string;projectDir:string}>(input.sessionId)?.value;if(previous&&(previous.path!==path||realpathSync(previous.projectDir)!==projectDir))throw new CapabilityError('VERSION_CONFLICT','原生会话登记与现有身份不匹配');if(!previous)registry.put(input.sessionId,{path,projectDir},null);}finally{registry.close();}
+ const registry=new RecordStore('sessions',dataDir);try{if(registry.get(`tombstone:${input.sessionId}`))throw new CapabilityError('SOURCE_UNAVAILABLE','成员会话已删除');const durablePath=input.durablePath&&existsSync(input.durablePath)?realpathSync(input.durablePath):undefined;const previous=registry.get<{path:string;projectDir:string;durablePath?:string}>(input.sessionId)?.value;if(previous&&(previous.path!==path||realpathSync(previous.projectDir)!==projectDir))throw new CapabilityError('VERSION_CONFLICT','原生会话登记与现有身份不匹配');if(!previous||previous.durablePath!==durablePath)registry.put(input.sessionId,{path,projectDir,...(durablePath?{durablePath}:{})},previous?null:null);}finally{registry.close();}
 }
 export function learningHostAvailable(dataDir:string):boolean {
   const store=new RecordStore('runtime',dataDir);try{const host=store.get<{pid:number;expiresAt:number}>('learning-host')?.value;if(!host||host.expiresAt<Date.now())return false;try{process.kill(host.pid,0);return true;}catch{return false;}}finally{store.close();}
@@ -281,7 +282,10 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
   pi.events?.emit('friend-pi:v1:expert-evaluation',{v:1,sessionId,reply:(value:ExpertEvaluationHost)=>{if(value?.v===1&&typeof value.catalog==='function'&&typeof value.advance==='function'&&typeof value.read==='function')expertEvaluation=value;}});
   const availableModels=(ctx.modelRegistry?.getAvailable?.()||[]).filter(item=>process.env.FRIEND_PI_DESKTOP_MANAGED!=='1'||savedModelIds(dataDir).includes(`${item.provider}/${item.id}`)).map(item=>({id:`${item.provider}/${item.id}`,thinkingLevels:getSupportedThinkingLevels(item)}));
   if (sessionFile) {
-    const registry = new RecordStore('sessions',dataDir);try{const old=registry.get<{path:string;projectDir:string}>(sessionId)?.value;if(old?.path!==sessionFile||old?.projectDir!==ctx.cwd)registry.put(sessionId,{path:sessionFile,projectDir:ctx.cwd});}finally{registry.close();}
+    // A durable session keeps its transcript beside the Pi header, so peers can find it without
+    // being told which backend this session chose.
+    const durablePath=join(dataDir,'durable',`${sessionId}.sqlite`);
+    const registry = new RecordStore('sessions',dataDir);try{const old=registry.get<{path:string;projectDir:string;durablePath?:string}>(sessionId)?.value;const durable=existsSync(durablePath)?durablePath:undefined;if(old?.path!==sessionFile||old?.projectDir!==ctx.cwd||old?.durablePath!==durable)registry.put(sessionId,{path:sessionFile,projectDir:ctx.cwd,...(durable?{durablePath:durable}:{})});}finally{registry.close();}
   }
   let learningModel:PluginContext['learningModel'];const preferences=new RecordStore('desktop',dataDir);try{const global=preferences.get<JsonObject>('preferences')?.value||{},local=preferences.get<JsonObject>(`preferences:${projectIdentity(ctx.cwd)}`)?.value||{},background=local.backgroundModelId??global.backgroundModelId;if(typeof background==='string'&&background){const target=availableModels.find(item=>item.id===background);learningModel={modelId:background,thinkingLevel:target?.thinkingLevels.includes(thinkingLevel)?thinkingLevel:'off'};}}finally{preferences.close();}
   return {
@@ -314,10 +318,15 @@ export function makeContext(pi: ExtensionAPI, ctx: ExtensionContext, origin: 'us
       const authority=new RecordStore('source-policy',dataDir);try{new SourcePolicy(authority).assertSource(source);}finally{authority.close();}
       if (source.sessionId === sessionId) entries = ctx.sessionManager.getEntries();
       else {
-        const registry = new RecordStore('sessions',dataDir); const saved = registry.get<{path:string;projectDir:string}>(source.sessionId); registry.close();
+        const registry = new RecordStore('sessions',dataDir); const saved = registry.get<{path:string;projectDir:string;durablePath?:string}>(source.sessionId); registry.close();
         let personalSource=false;if(saved&&projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd)){const authority=new RecordStore('source-policy',dataDir);try{personalSource=new SourcePolicy(authority).canReadPersonalSource(source);}finally{authority.close();}}
-        if (!saved || !personalSource&&projectIdentity(saved.value.projectDir) !== projectIdentity(ctx.cwd) || !existsSync(saved.value.path)) throw new Error('来源不存在或不属于当前项目及有效个人记忆');
-        crossProject=projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd);entries = SessionManager.open(saved.value.path).getEntries();
+        const savedDurable=saved?.value.durablePath;const usableDurable=savedDurable&&existsSync(savedDurable)?savedDurable:undefined;
+        if (!saved || !personalSource&&projectIdentity(saved.value.projectDir) !== projectIdentity(ctx.cwd) || !usableDurable&&!existsSync(saved.value.path)) throw new Error('来源不存在或不属于当前项目及有效个人记忆');
+        crossProject=projectIdentity(saved.value.projectDir)!==projectIdentity(ctx.cwd);
+        // A peer on the durable backend keeps its transcript in SQLite. Reads there are unaffected
+        // by that backend's single-writer rule, because SQLite serves concurrent readers.
+        if(usableDurable){const peer=openDurableReadOnlyForRead(usableDurable);try{entries=peer.entries();}finally{peer.close();}}
+        else entries = SessionManager.open(saved.value.path).getEntries();
       }
       const item = historyItems(entries).find(entry => entry.id === source.entryId); if (!item) throw new Error('来源已不可用');readSourceSpan(item,source); return crossProject?restrictedSourceItem(item,source):item;
     },

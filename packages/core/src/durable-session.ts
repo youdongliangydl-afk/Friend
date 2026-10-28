@@ -27,6 +27,12 @@ export interface DurableSessionPlugin {
 
 export interface DurableSessionOptions {
   cwd: string;
+  /**
+   * Product-level session identity. Durable's conversation id is a per-file number, but every
+   * provenance key, tombstone check and queue key in this product is built from the session id, so
+   * the facade must report the latter or those keys silently diverge between backends.
+   */
+  sessionId?: string;
   storage: Storage;
   /** Any pi-ai `Models`; this project passes its existing `ModelRuntime`. */
   models: Models;
@@ -42,6 +48,11 @@ export interface DurableSessionOptions {
    * which on Pi came from the built-in tool set and therefore arrive from nowhere here.
    */
   extensions?: readonly Extension[];
+  /**
+   * History to write before the conversation is used, in order. This is how a session that lived
+   * on the `pi` backend keeps its transcript when it first opens on this one.
+   */
+  initialEntries?: readonly { kind: string; model?: readonly unknown[]; data?: unknown }[];
   /** Builds the execution environment per use; without one those tools fail with an error result. */
   env?: (target: EnvTarget, context: Context) => unknown;
   agent?: { model?: { provider: string; modelId: string }; thinkingLevel?: string };
@@ -108,6 +119,15 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     context,
   );
   const conversation = await harness.root(context, (options.agent ? { agent: options.agent } : undefined) as never);
+  /** The identity the rest of the product keys on; never the durable conversation number. */
+  const identity = options.sessionId ?? String(conversation.id);
+  if (options.initialEntries?.length) {
+    // One commit: a partial import would leave a transcript that claims to be complete.
+    await conversation.commit(async tx => {
+      for (const entry of options.initialEntries ?? [])
+        await tx.appendEntry(conversation.id, { kind: entry.kind, ...(entry.model === undefined ? {} : { model: entry.model }), ...(entry.data === undefined ? {} : { data: entry.data }) } as never);
+    }, context);
+  }
 
   /** Raw durable entries, oldest first, so the plugin host projects from the source of truth. */
   let rawEntries: readonly DurableEntryLike[] = [];
@@ -143,7 +163,7 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     bus: options.bus,
     cwd: options.cwd,
     conversation: {
-      id: String(conversation.id),
+      id: identity,
       entries: () => rawEntries,
       append: (kind, data) => {
         void conversation.commit(tx => tx.appendEntry(conversation.id, { kind, data } as never), context);
@@ -213,7 +233,7 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
   await loadEntries();
 
   return {
-    sessionId: String(conversation.id),
+    sessionId: identity,
     sessionFile: options.sessionFile,
     get isIdle() { return idle; },
     get isStreaming() { return streaming; },
@@ -224,7 +244,7 @@ export async function openDurableSession(options: DurableSessionOptions): Promis
     get thinkingLevel() { return thinking; },
     get messages() { return entriesAscending.filter(entry => entry.type === 'message').map(entry => entry.message); },
     sessionManager: {
-      getSessionId: () => String(conversation.id),
+      getSessionId: () => identity,
       getSessionFile: () => options.sessionFile,
       getEntries: () => entriesAscending,
       getBranch: () => entriesAscending,
